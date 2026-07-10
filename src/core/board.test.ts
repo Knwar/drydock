@@ -384,9 +384,19 @@ describe('outbox', () => {
 describe('migrate: outbox.origin', () => {
   it('adds origin to a pre-existing outbox table without it, and is idempotent', () => {
     // Simulate an OLD DB: outbox created before the origin column existed.
-    // migrate() also inspects tasks first, so give it a minimal tasks table.
+    // migrate() applies schema.sql (whose idx_tasks_project_lane references
+    // project_id/lane/position), so seed a realistic legacy tasks table that
+    // already carries those original columns.
     const db = new Database(':memory:');
-    db.exec('CREATE TABLE tasks (id TEXT PRIMARY KEY)');
+    db.exec(`CREATE TABLE tasks (
+      id            TEXT PRIMARY KEY,
+      project_id    TEXT NOT NULL,
+      title         TEXT NOT NULL,
+      lane          TEXT NOT NULL DEFAULT 'backlog',
+      position      INTEGER NOT NULL DEFAULT 0,
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL
+    )`);
     db.exec(`CREATE TABLE outbox (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id      TEXT NOT NULL,

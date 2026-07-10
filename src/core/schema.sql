@@ -1,3 +1,5 @@
+-- Single source of truth for all table/index DDL. Applied by migrate() in db.ts;
+-- do not re-declare CREATE TABLE for these tables anywhere else.
 CREATE TABLE IF NOT EXISTS projects (
   id          TEXT PRIMARY KEY,           -- uuid
   name        TEXT NOT NULL,

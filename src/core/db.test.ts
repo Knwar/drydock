@@ -6,6 +6,27 @@ import { describe, it } from 'node:test';
 import Database from 'better-sqlite3';
 import { migrate, openDb } from './db.js';
 
+// The original tasks table as it existed before the additive ALTERs (subtasks/
+// phase_id/skill/blocked_at/blocked_reason). Includes the columns the app has
+// always had — notably project_id/lane/position, which the schema's
+// idx_tasks_project_lane index references.
+const LEGACY_TASKS_DDL = `CREATE TABLE tasks (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL,
+  title          TEXT NOT NULL,
+  lane           TEXT NOT NULL DEFAULT 'backlog',
+  requirements   TEXT,
+  tag            TEXT,
+  assigned_agent TEXT,
+  worktree_path  TEXT,
+  branch         TEXT,
+  depends_on     TEXT,
+  review_rounds  INTEGER NOT NULL DEFAULT 0,
+  position       INTEGER NOT NULL DEFAULT 0,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL
+)`;
+
 describe('openDb', () => {
   it('opens an in-memory db with the schema applied', () => {
     const db = openDb();
@@ -29,18 +50,27 @@ describe('openDb', () => {
 });
 
 describe('migrate', () => {
-  it('adds the subtasks column to a legacy tasks table', () => {
+  it('adds the newer columns to a legacy tasks table', () => {
     const db = new Database(':memory:');
-    db.exec('CREATE TABLE tasks (id TEXT)');
+    // A realistic pre-migrate legacy tasks table: the original columns the app
+    // always had, WITHOUT the newer ALTER-added ones (subtasks/phase_id/skill/
+    // blocked_at/blocked_reason). This exercises migrate()'s add-column path.
+    db.exec(LEGACY_TASKS_DDL);
+    const before = (db.pragma('table_info(tasks)') as { name: string }[]).map((c) => c.name);
+    assert.ok(!before.includes('subtasks'));
+
     migrate(db);
     const cols = (db.pragma('table_info(tasks)') as { name: string }[]).map((c) => c.name);
-    assert.ok(cols.includes('subtasks'));
+    for (const added of ['subtasks', 'phase_id', 'skill', 'blocked_at', 'blocked_reason']) {
+      assert.ok(cols.includes(added), `migrate() should add ${added}`);
+    }
     db.close();
   });
 
-  it('is a no-op when subtasks already exists', () => {
+  it('is a no-op when the newer columns already exist', () => {
     const db = new Database(':memory:');
-    db.exec('CREATE TABLE tasks (id TEXT, subtasks TEXT)');
+    // A DB already carrying subtasks: migrate()'s guards must skip re-adding it.
+    db.exec(LEGACY_TASKS_DDL.replace(')', ', subtasks TEXT)'));
     assert.doesNotThrow(() => migrate(db));
     db.close();
   });
