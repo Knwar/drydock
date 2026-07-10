@@ -130,6 +130,25 @@ describe('LocalHTTPTransport', () => {
     assert.equal(typeof res.error, 'string');
   });
 
+  it('does NOT follow redirects (redirect:manual) — a 302 yields a non-ok 3xx result', async () => {
+    // A server that 302-redirects to the metadata endpoint. With redirect:'manual'
+    // the transport surfaces the 3xx itself (ok:false) and never chases the Location.
+    const redirector = createServer((_req, res) => {
+      res.writeHead(302, { Location: 'http://169.254.169.254/latest/meta-data/' });
+      res.end();
+    });
+    await new Promise<void>((resolve) => redirector.listen(0, '127.0.0.1', resolve));
+    const { port } = redirector.address() as AddressInfo;
+    try {
+      const t = new LocalHTTPTransport();
+      const res = await t.send(`http://127.0.0.1:${port}`, {}, 'body');
+      assert.equal(res.ok, false); // a 3xx is not ok
+      assert.ok(res.status >= 300 && res.status < 400, `expected a 3xx, got ${res.status}`);
+    } finally {
+      await new Promise<void>((resolve) => redirector.close(() => resolve()));
+    }
+  });
+
   it('returns ok:false status:0 (never throws) when the target hangs past the timeout', async () => {
     const hang = createServer((_req, _res) => {
       // Deliberately never respond — force the AbortController timeout to fire.

@@ -48,6 +48,10 @@ export class LocalHTTPTransport implements DeliveryTransport {
         headers: finalHeaders,
         body,
         signal: controller.signal,
+        // SSRF defense: never auto-follow redirects — a validated target must not
+        // be able to 302 to an internal/metadata address. A redirect just yields a
+        // 3xx status (non-ok delivery), which is fine: webhooks shouldn't redirect.
+        redirect: 'manual',
       });
       return { ok: res.ok, status: res.status };
     } catch (err) {
