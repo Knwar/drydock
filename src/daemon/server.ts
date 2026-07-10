@@ -12,6 +12,7 @@ import * as board from '../core/board.js';
 import { openDb } from '../core/db.js';
 import type { Project, Task } from '../core/types.js';
 import { Broadcaster } from './broadcast.js';
+import { Dispatcher } from './dispatcher.js';
 
 const PORT = Number(process.env.PORT ?? 7890);
 const HOST = process.env.HOST; // unset → all interfaces (default); set 127.0.0.1 to keep the terminal local
@@ -846,3 +847,15 @@ const onListening = () =>
   );
 if (HOST) server.listen(PORT, HOST, onListening);
 else server.listen(PORT, onListening);
+
+// ── delivery worker ─────────────────────────────────────────────────
+// Drains the outbox and delivers events to matching subscriptions. Runs by
+// DEFAULT (so the webhook/Slack demo works out of the box); set KANKAN_DISPATCHER=0
+// to disable it. A bad tick is swallowed so a delivery hiccup can't kill the
+// daemon; runOnce is fire-and-forget so a slow send never blocks the interval.
+if (process.env.KANKAN_DISPATCHER !== '0') {
+  const dispatcher = new Dispatcher(db);
+  setInterval(() => {
+    dispatcher.runOnce().catch((err) => console.error(`dispatcher tick failed: ${(err as Error).message}`));
+  }, 1000).unref();
+}
