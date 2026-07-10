@@ -28,6 +28,31 @@ class StubTransport implements DeliveryTransport {
   }
 }
 
+/**
+ * A stub transport whose `send` returns a promise you resolve MANUALLY, so a
+ * test can hold a send "in flight" across the await and drive OVERLAPPING
+ * runOnce calls. `resolveNext` settles the pending send with a programmed result.
+ */
+class DeferredTransport implements DeliveryTransport {
+  calls: { target: string; headers: Record<string, string>; body: string }[] = [];
+  private pending: ((r: { ok: boolean; status: number; error?: string }) => void) | null = null;
+
+  async send(target: string, headers: Record<string, string>, body: string) {
+    this.calls.push({ target, headers, body });
+    return new Promise<{ ok: boolean; status: number; error?: string }>((resolve) => {
+      this.pending = resolve;
+    });
+  }
+
+  /** Resolve the currently in-flight send (the one runOnce is awaiting). */
+  resolveNext(result: { ok: boolean; status: number; error?: string }): void {
+    const resolve = this.pending;
+    assert.ok(resolve, 'no send in flight to resolve');
+    this.pending = null;
+    resolve(result);
+  }
+}
+
 function setup() {
   const db = openDb();
   const project = getOrCreateProject(db, '/tmp/dispatcher-app', 'Dispatcher App');
@@ -256,6 +281,70 @@ describe('Dispatcher delivery', () => {
     await dispatcher.runOnce(now + MAX_BACKOFF_SENTINEL);
     assert.equal(transport.calls.length, MAX_ATTEMPTS);
     assert.equal(onlyDelivery(db).status, 'dead');
+  });
+});
+
+describe('Dispatcher re-entrancy guard', () => {
+  it('overlapping runOnce sends a due delivery exactly once; the row is never regressed', async () => {
+    const { db, project } = setup();
+    createSubscription(db, {
+      project_id: project.id,
+      kind: 'webhook',
+      event_filter: '*',
+      target: 'https://example.com/hook',
+    });
+    appendEvent(db, { project_id: project.id, type: 'note', payload: { msg: 'hi' } });
+
+    const transport = new DeferredTransport();
+    const dispatcher = new Dispatcher(db, transport);
+
+    // runOnce #1 fans out, selects the due delivery, and awaits the (deferred)
+    // send — it is now parked mid-flight, before any mark* update runs.
+    const first = dispatcher.runOnce(1000);
+    await Promise.resolve(); // let #1 reach the awaited send
+    assert.equal(transport.calls.length, 1); // the one due send is in flight
+
+    // runOnce #2 enters WHILE #1 is still in-flight. (c) It must no-op: return
+    // without selecting/sending anything, so the same row isn't sent twice.
+    await dispatcher.runOnce(1001);
+    assert.equal(transport.calls.length, 1); // (a) still exactly one send — #2 no-opped
+
+    // Resolve the in-flight send OK and let #1 finish its update.
+    transport.resolveNext({ ok: true, status: 200 });
+    await first;
+
+    // (b) the row settles to 'delivered' and is never regressed to 'failed'.
+    const row = onlyDelivery(db);
+    assert.equal(row.status, 'delivered');
+    assert.equal(row.attempts, 0);
+    assert.equal(row.last_status_code, 200);
+    assert.equal(transport.calls.length, 1); // no redelivery across the overlap
+  });
+
+  it('a runOnce entered while another is in-flight returns without sending', async () => {
+    const { db, project } = setup();
+    createSubscription(db, {
+      project_id: project.id,
+      kind: 'webhook',
+      event_filter: '*',
+      target: 'https://example.com/hook',
+    });
+    appendEvent(db, { project_id: project.id, type: 'note', payload: { msg: 'hi' } });
+
+    const transport = new DeferredTransport();
+    const dispatcher = new Dispatcher(db, transport);
+
+    const first = dispatcher.runOnce(1000);
+    await Promise.resolve(); // #1 is now awaiting the deferred send
+    assert.equal(transport.calls.length, 1);
+
+    // A plain assertion: a second runOnce, entered mid-flight, sends nothing.
+    const before = transport.calls.length;
+    await dispatcher.runOnce(1000);
+    assert.equal(transport.calls.length, before); // guard short-circuited it
+
+    transport.resolveNext({ ok: true, status: 200 });
+    await first;
   });
 });
 

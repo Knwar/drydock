@@ -60,6 +60,17 @@ interface DueDeliveryRow {
 export class Dispatcher {
   private readonly db: DB;
   private readonly transport: DeliveryTransport;
+  /**
+   * RE-ENTRANCY GUARD. runOnce awaits transport.send(), which can hang up to the
+   * transport timeout (LocalHTTPTransport: 10s). The daemon's 1s interval would
+   * otherwise start ~10 overlapping runOnce calls during one slow send, and each
+   * overlap re-selects the SAME still-'pending'/'failed' row (its update hasn't
+   * committed yet) and sends it AGAIN — a redelivery storm — while out-of-order
+   * updates across the await can regress a 'delivered' row back to 'failed'. This
+   * flag makes runOnce non-overlapping: a call that starts while one is in-flight
+   * cleanly no-ops, and the next tick picks up the work.
+   */
+  private running = false;
 
   constructor(db: DB, transport: DeliveryTransport = new LocalHTTPTransport()) {
     this.db = db;
@@ -70,10 +81,20 @@ export class Dispatcher {
    * One drain cycle: fan out any pending outbox events into delivery rows, then
    * attempt every due delivery. `now` (epoch ms) is injectable for deterministic
    * tests; the daemon passes the wall clock.
+   *
+   * Non-overlapping: if a previous runOnce is still in-flight (awaiting a send),
+   * this call returns immediately without touching the DB — the guard is on the
+   * method itself, so a direct caller can't overlap it either.
    */
   async runOnce(now: number = Date.now()): Promise<void> {
-    this.fanOut(now);
-    await this.deliver(now);
+    if (this.running) return;
+    this.running = true;
+    try {
+      this.fanOut(now);
+      await this.deliver(now);
+    } finally {
+      this.running = false;
+    }
   }
 
   /**
