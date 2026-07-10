@@ -15,7 +15,10 @@ import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
 
 const PORT = Number(process.env.PORT ?? 7890);
-const HOST = process.env.HOST; // unset → all interfaces (default); set 127.0.0.1 to keep the terminal local
+// Bind loopback by DEFAULT so the daemon (incl. the unauthenticated overlay
+// routes) is not reachable from the LAN. Exposing it is an explicit opt-in:
+// set HOST=0.0.0.0 (all interfaces) or a specific IP.
+const HOST = process.env.HOST ?? '127.0.0.1';
 const DB_PATH = process.env.DB_PATH ?? join(process.cwd(), 'data', 'board.db');
 const OVERLAY_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'overlay');
 const INIT_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'init-project.sh');
@@ -73,6 +76,16 @@ function getPtySession(projectId: string, root: string): PtySession {
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
+/** The addresses Node reports for a connection arriving over the loopback
+ *  interface: IPv4, IPv6, and the IPv4-mapped-IPv6 form. */
+const LOOPBACK_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+/** True when the request arrived on the loopback interface (same machine). */
+function isLoopback(req: IncomingMessage): boolean {
+  const addr = req.socket.remoteAddress;
+  return addr != null && LOOPBACK_ADDRS.has(addr);
+}
+
 /** /pty gate: valid per-start token + a same-machine Origin (or none, for CLIs). */
 function authTerminal(req: IncomingMessage, url: URL): boolean {
   if (!terminalReady() || url.searchParams.get('token') !== terminalToken) return false;
@@ -85,6 +98,17 @@ function authTerminal(req: IncomingMessage, url: URL): boolean {
     }
   }
   return true;
+}
+
+/** Gate for the outbound-webhook routes (/subscriptions*, /deliveries): allow if
+ *  the request is loopback (same machine — how the MCP tools + hooks reach the
+ *  daemon, over localhost with no token) OR it presents the daemon's per-start
+ *  token (the SAME token the terminal uses, served via /config). Anything else
+ *  is a non-loopback caller without a valid token → denied. */
+function authDaemonRoute(req: IncomingMessage, url: URL): boolean {
+  if (isLoopback(req)) return true;
+  const token = url.searchParams.get('token') ?? req.headers['x-kankan-token'];
+  return terminalToken !== null && token === terminalToken;
 }
 
 // ── broadcast plumbing ──────────────────────────────────────────────
@@ -322,9 +346,32 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+// Cap the accumulated request body so a huge (or unbounded) POST can't be
+// buffered into memory → OOM. Normal small JSON bodies stay well under this.
+const MAX_BODY_BYTES = 1_000_000; // ~1MB
+
+/** Thrown when a request body exceeds MAX_BODY_BYTES; mapped to 413 by route(). */
+class PayloadTooLargeError extends Error {
+  readonly status = 413;
+  constructor() {
+    super('request body too large');
+    this.name = 'PayloadTooLargeError';
+  }
+}
+
 async function readBody(req: IncomingMessage): Promise<any> {
   let raw = '';
-  for await (const chunk of req) raw += chunk;
+  let bytes = 0;
+  for await (const chunk of req) {
+    bytes += Buffer.byteLength(chunk);
+    if (bytes > MAX_BODY_BYTES) {
+      // Stop buffering (breaking the loop halts consumption) and let route()'s
+      // catch send the 413. We intentionally don't destroy the socket here so
+      // the response still reaches the client.
+      throw new PayloadTooLargeError();
+    }
+    raw += chunk;
+  }
   return raw ? JSON.parse(raw) : {};
 }
 
@@ -520,6 +567,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const b = await readBody(req);
       return json(res, 200, board.updateTeamMember(db, id, b));
     }
+  }
+
+  // ── outbound-webhook routes: gate the NEW /subscriptions* + /deliveries routes
+  // (loopback OR daemon token) so a non-loopback LAN host can't register outbound
+  // webhooks or read deliveries. Applies ONLY to these three; no pre-existing
+  // board route is gated. Loopback stays open for the MCP tools + hooks.
+  const isWebhookRoute =
+    pathname === '/subscriptions' ||
+    pathname === '/deliveries' ||
+    /^\/subscriptions\/[^/]+$/.test(pathname);
+  if (isWebhookRoute && !authDaemonRoute(req, url)) {
+    return json(res, 401, { error: 'unauthorized' });
   }
 
   // ── subscription registry (redacted views; board.ts owns secret redaction) ──
@@ -772,7 +831,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
 // ── server ──────────────────────────────────────────────────────────
 const server = createServer((req, res) => {
-  route(req, res).catch((err: Error) => json(res, 400, { error: err.message }));
+  route(req, res).catch((err: Error) =>
+    json(res, err instanceof PayloadTooLargeError ? err.status : 400, { error: err.message }),
+  );
 });
 
 const wss = new WebSocketServer({ noServer: true });
@@ -855,10 +916,9 @@ wss.on('error', onListenError);
 
 const onListening = () =>
   console.log(
-    `board daemon on http://${HOST ?? 'localhost'}:${PORT}  (db: ${DB_PATH})${terminalReady() ? '  [terminal on]' : ''}`,
+    `board daemon on http://${HOST}:${PORT}  (db: ${DB_PATH})${terminalReady() ? '  [terminal on]' : ''}`,
   );
-if (HOST) server.listen(PORT, HOST, onListening);
-else server.listen(PORT, onListening);
+server.listen(PORT, HOST, onListening);
 
 // ── delivery worker ─────────────────────────────────────────────────
 // Drains the outbox and delivers events to matching subscriptions. Runs by
