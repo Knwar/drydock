@@ -7,8 +7,10 @@ import {
   cardTotals,
   checkSubtask,
   createPhase,
+  createSubscription,
   createTask,
   createTeamMember,
+  deleteSubscription,
   deleteTask,
   deleteTeamMember,
   getActiveCards,
@@ -22,6 +24,9 @@ import {
   getPhases,
   getRecentEvents,
   getStats,
+  getSubscription,
+  getSubscriptionSecret,
+  listSubscriptions,
   listTeam,
   moveTask,
   raiseBlocker,
@@ -30,6 +35,8 @@ import {
   redirectTask,
   resolveBlocker,
   setSubtasks,
+  subscriptionMatches,
+  updateSubscription,
   updateTask,
   updateTeamMember,
 } from './board.js';
@@ -654,5 +661,140 @@ describe('team roster', () => {
     assert.equal(team.length, 1);
     assert.equal(team[0].name, 'Turing');
     assert.equal(team[0].skill, null);
+  });
+});
+
+describe('subscriptionMatches', () => {
+  it('wildcard matches every event type', () => {
+    assert.equal(subscriptionMatches('*', 'create'), true);
+    assert.equal(subscriptionMatches('*', 'phase_done'), true);
+  });
+
+  it('single-token filter matches only that type', () => {
+    assert.equal(subscriptionMatches('move', 'move'), true);
+    assert.equal(subscriptionMatches('move', 'create'), false);
+  });
+
+  it('list membership matches any listed type and nothing else', () => {
+    assert.equal(subscriptionMatches('create,move,review', 'move'), true);
+    assert.equal(subscriptionMatches('create,move,review', 'review'), true);
+    assert.equal(subscriptionMatches('create,move,review', 'assign'), false);
+  });
+
+  it('trims whitespace around tokens', () => {
+    assert.equal(subscriptionMatches(' create , move ,  review ', 'move'), true);
+    assert.equal(subscriptionMatches(' create , move ', 'assign'), false);
+  });
+});
+
+describe('subscriptions (CRUD + redaction)', () => {
+  it('creates and gets back a redacted view (create→get round-trip)', () => {
+    const { db, project } = setup();
+    const created = createSubscription(db, {
+      project_id: project.id,
+      kind: 'webhook',
+      event_filter: 'create,move',
+      target: 'https://example.com/hook',
+      secret: 's3cr3t',
+      scopes: 'read',
+    });
+    assert.ok(created.id);
+    assert.equal(created.enabled, 1);
+    const fetched = getSubscription(db, created.id);
+    assert.deepEqual(fetched, created);
+    assert.equal(fetched!.kind, 'webhook');
+    assert.equal(fetched!.event_filter, 'create,move');
+    assert.equal(fetched!.target, 'https://example.com/hook');
+    assert.equal(fetched!.scopes, 'read'); // scopes returned as-is, no redaction
+  });
+
+  it('redacts the secret: view has has_secret and no secret field', () => {
+    const { db, project } = setup();
+    const withSecret = createSubscription(db, {
+      project_id: project.id,
+      kind: 'webhook',
+      event_filter: '*',
+      target: 'https://example.com/a',
+      secret: 'shhh',
+    });
+    const noSecret = createSubscription(db, {
+      project_id: project.id,
+      kind: 'connector',
+      event_filter: '*',
+      target: 'https://example.com/b',
+    });
+    assert.equal(withSecret.has_secret, true);
+    assert.equal(noSecret.has_secret, false);
+    // the raw secret is nowhere in the public view
+    assert.ok(!('secret' in withSecret));
+    assert.equal((withSecret as unknown as Record<string, unknown>).secret, undefined);
+    assert.ok(JSON.stringify(getSubscription(db, withSecret.id)).indexOf('shhh') === -1);
+  });
+
+  it('getSubscriptionSecret returns the raw secret (internal delivery accessor)', () => {
+    const { db, project } = setup();
+    const sub = createSubscription(db, {
+      project_id: project.id,
+      kind: 'webhook',
+      event_filter: '*',
+      target: 'https://example.com/hook',
+      secret: 'raw-secret',
+    });
+    assert.equal(getSubscriptionSecret(db, sub.id), 'raw-secret');
+    const noSecret = createSubscription(db, {
+      project_id: project.id,
+      kind: 'bridge',
+      event_filter: '*',
+      target: 'https://example.com/nb',
+    });
+    assert.equal(getSubscriptionSecret(db, noSecret.id), null);
+    assert.equal(getSubscriptionSecret(db, 'nope'), null);
+  });
+
+  it('list returns project-scoped subs plus globals; get returns null for missing', () => {
+    const { db, project } = setup();
+    const other = getOrCreateProject(db, '/tmp/other-sub-app');
+    const global = createSubscription(db, { project_id: null, kind: 'webhook', event_filter: '*', target: 'g' });
+    const mine = createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: '*', target: 'm' });
+    const theirs = createSubscription(db, { project_id: other.id, kind: 'webhook', event_filter: '*', target: 't' });
+
+    const scoped = listSubscriptions(db, project.id).map((s) => s.id).sort();
+    assert.deepEqual(scoped, [global.id, mine.id].sort()); // mine + global, not theirs
+    assert.equal(listSubscriptions(db).length, 3); // omitted project → all
+    assert.equal(getSubscription(db, 'missing'), null);
+  });
+
+  it('update toggles enabled and returns the redacted view', () => {
+    const { db, project } = setup();
+    const sub = createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: '*', target: 'x', secret: 'k' });
+    assert.equal(sub.enabled, 1);
+    const off = updateSubscription(db, sub.id, { enabled: false });
+    assert.equal(off.enabled, 0);
+    assert.equal(off.has_secret, true); // still redacted, secret preserved
+    assert.ok(!('secret' in off));
+    assert.equal(updateSubscription(db, sub.id, { enabled: true }).enabled, 1);
+    assert.throws(() => updateSubscription(db, 'nope', { enabled: false }), /no such subscription/);
+  });
+
+  it('delete removes the row and reports whether one was deleted', () => {
+    const { db, project } = setup();
+    const sub = createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: '*', target: 'x' });
+    assert.equal(deleteSubscription(db, sub.id), true);
+    assert.equal(getSubscription(db, sub.id), null);
+    assert.equal(deleteSubscription(db, sub.id), false); // already gone
+  });
+
+  it('validation throws on bad kind and on a bogus event_filter token', () => {
+    const { db, project } = setup();
+    assert.throws(
+      () => createSubscription(db, { project_id: project.id, kind: 'email' as never, event_filter: '*', target: 'x' }),
+      /invalid subscription kind/,
+    );
+    assert.throws(
+      () => createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: 'create,bogus', target: 'x' }),
+      /invalid event_filter token/,
+    );
+    // a real EventType list is accepted
+    assert.ok(createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: 'create,move,phase_done', target: 'x' }).id);
   });
 });
