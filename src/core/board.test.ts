@@ -15,6 +15,7 @@ import {
   deleteSubscription,
   deleteTask,
   deleteTeamMember,
+  detectSyncConflicts,
   getSyncLink,
   getSyncLinkByLocal,
   getTask,
@@ -41,6 +42,7 @@ import {
   recordReview,
   redirectTask,
   resolveBlocker,
+  resolveSyncConflict,
   setSubtasks,
   subscriptionMatches,
   taskContentHash,
@@ -1162,5 +1164,63 @@ describe('sync_conflict attention', () => {
     link(db, project.id, t.id, { local_hash: synced, remote_hash: synced, last_synced_at: 1000 });
     updateTask(db, t.id, { requirements: 'y' }); // a normal local edit
     assert.equal(getAttention(db, project.id).filter((i) => i.kind === 'sync_conflict').length, 0);
+  });
+
+  // Build a genuinely conflicted link (local moved, remote moved, both disagree)
+  // and return { t, conflicted }. Same recipe as the "flags a divergent link" test.
+  const conflict = (db: ReturnType<typeof openDb>, projectId: string) => {
+    const t = createTask(db, projectId, 'Both changed', { requirements: 'x' });
+    const synced = taskContentHash(getTask(db, t.id)); // content at last sync
+    const conflicted = link(db, projectId, t.id, {
+      local_hash: synced,
+      remote_hash: 'remote-moved',
+      last_synced_at: 1000,
+    });
+    updateTask(db, t.id, { requirements: 'y' }); // local moves → current != synced != remote
+    return { t, conflicted };
+  };
+
+  it("resolveSyncConflict 'local' clears the conflict (both hashes == current local)", () => {
+    const { db, project } = setup();
+    const { t, conflicted } = conflict(db, project.id);
+    // precondition: it IS a conflict / Attention item before we resolve
+    assert.equal(detectSyncConflicts(db, project.id).length, 1);
+    assert.ok(getAttention(db, project.id).some((i) => i.kind === 'sync_conflict' && i.card_id === t.id));
+
+    const updated = resolveSyncConflict(db, conflicted.id, 'local');
+    const currentLocalHash = taskContentHash(getTask(db, t.id));
+    assert.equal(updated.local_hash, currentLocalHash);
+    assert.equal(updated.remote_hash, currentLocalHash); // both sides agree on local
+    assert.ok(updated.last_synced_at != null);
+
+    // no longer a conflict, and no sync_conflict Attention item for this card
+    assert.equal(detectSyncConflicts(db, project.id).length, 0);
+    assert.equal(
+      getAttention(db, project.id).filter((i) => i.kind === 'sync_conflict' && i.card_id === t.id).length,
+      0,
+    );
+  });
+
+  it("resolveSyncConflict 'remote' clears the conflict (local_hash == remote_hash)", () => {
+    const { db, project } = setup();
+    const { t, conflicted } = conflict(db, project.id);
+    assert.equal(detectSyncConflicts(db, project.id).length, 1);
+    assert.ok(getAttention(db, project.id).some((i) => i.kind === 'sync_conflict' && i.card_id === t.id));
+
+    const updated = resolveSyncConflict(db, conflicted.id, 'remote');
+    assert.equal(updated.local_hash, conflicted.remote_hash); // == 'remote-moved'
+    assert.equal(updated.local_hash, updated.remote_hash); // remote-moved divergence cleared
+    assert.ok(updated.last_synced_at != null);
+
+    assert.equal(detectSyncConflicts(db, project.id).length, 0);
+    assert.equal(
+      getAttention(db, project.id).filter((i) => i.kind === 'sync_conflict' && i.card_id === t.id).length,
+      0,
+    );
+  });
+
+  it('resolveSyncConflict throws on an unknown linkId', () => {
+    const { db } = setup();
+    assert.throws(() => resolveSyncConflict(db, 'nope', 'local'), /no such sync_link/);
   });
 });

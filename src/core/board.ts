@@ -1242,3 +1242,34 @@ export function detectSyncConflicts(db: DB, projectId: string): SyncConflict[] {
   }
   return conflicts;
 }
+
+/**
+ * Resolve a sync conflict by reconciling the link's stored HASH STATE so
+ * detectSyncConflicts no longer flags it (and the sync_conflict Attention item
+ * clears). LOCAL-ONLY — this reconciles bookkeeping, it does NOT fetch/merge/apply
+ * any provider content.
+ *   - 'local'  (accept local): stamp both hashes to the card's CURRENT content →
+ *     "local moved" (currentLocalHash != local_hash) becomes false.
+ *   - 'remote' (accept remote): set local_hash = remote_hash → "remote moved"
+ *     (remote_hash != local_hash) becomes false.
+ * Throws if the id doesn't exist (mirrors resolveBlocker / updateSyncLink).
+ */
+export function resolveSyncConflict(db: DB, linkId: string, resolution: 'local' | 'remote'): SyncLink {
+  const link = getSyncLink(db, linkId);
+  if (!link) throw new Error(`no such sync_link: ${linkId}`);
+  if (resolution === 'local') {
+    const currentLocalHash = taskContentHash(getTask(db, link.local_id));
+    return updateSyncLink(db, linkId, {
+      local_hash: currentLocalHash,
+      remote_hash: currentLocalHash,
+      last_synced_at: now(),
+    });
+  }
+  // 'remote': reconcile the hash only. Actually applying the remote CONTENT to
+  // the local card is Phase 9; here we just make local_hash == remote_hash so
+  // the "remote moved" divergence — and its conflict Attention item — clears.
+  return updateSyncLink(db, linkId, {
+    local_hash: link.remote_hash,
+    last_synced_at: now(),
+  });
+}
