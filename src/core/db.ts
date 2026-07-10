@@ -39,4 +39,17 @@ export function migrate(db: DB): void {
     attempts        INTEGER DEFAULT 0,
     last_attempt_at INTEGER
   )`);
+  // Subscription registry (Phase 2): queryable "who wants which events" the Phase 3 dispatcher reads.
+  // This card only creates the table; CRUD/matcher/dispatcher land in later cards.
+  db.exec(`CREATE TABLE IF NOT EXISTS subscriptions (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT,
+    kind         TEXT NOT NULL CHECK (kind IN ('webhook','connector','bridge')),
+    event_filter TEXT NOT NULL,
+    target       TEXT NOT NULL,
+    secret       TEXT,
+    scopes       TEXT,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   INTEGER NOT NULL
+  )`);
 }
