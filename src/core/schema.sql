@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS outbox (  -- durable event log for fan-out delivery (
   type            TEXT NOT NULL,              -- EventType: create|move|assign|note|block|...
   payload         TEXT,                       -- JSON snapshot of event details
   created_at      INTEGER NOT NULL,           -- epoch ms
-  status          TEXT DEFAULT 'pending',     -- pending|delivered|failed — Phase 3 dispatcher fills this in
+  status          TEXT DEFAULT 'pending',     -- FAN-OUT marker: pending (not yet fanned out) -> processed (delivery rows created). Per-target delivered/failed/dead lives in the deliveries table, not here.
   attempts        INTEGER DEFAULT 0,          -- Phase 3 dispatcher increments on retry
   last_attempt_at INTEGER                     -- Phase 3 dispatcher updates; null until first delivery attempt
 );
@@ -104,6 +104,21 @@ CREATE TABLE IF NOT EXISTS subscriptions (  -- registry of "who wants which even
   created_at   INTEGER NOT NULL            -- epoch ms
 );
 
+CREATE TABLE IF NOT EXISTS deliveries (  -- per-(outbox event x subscription) delivery state machine + attempt log (Phase 3 dispatcher fans out into this)
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  outbox_id        INTEGER NOT NULL,           -- the outbox event being delivered
+  subscription_id  TEXT NOT NULL,              -- the target subscription
+  status           TEXT NOT NULL DEFAULT 'pending',  -- pending|delivered|failed|dead
+  attempts         INTEGER NOT NULL DEFAULT 0,
+  last_status_code INTEGER,                    -- nullable; HTTP status of last attempt
+  last_error       TEXT,                       -- nullable
+  next_attempt_at  INTEGER,                    -- nullable; when a retry is due (backoff scheduling)
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL,
+  UNIQUE (outbox_id, subscription_id)          -- makes fan-out idempotent: a re-run can't double-create a delivery row
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_project_lane ON tasks(project_id, lane, position);
 CREATE INDEX IF NOT EXISTS idx_phases_project ON phases(project_id, position);
 CREATE INDEX IF NOT EXISTS idx_events_recent ON task_events(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(status, next_attempt_at);
