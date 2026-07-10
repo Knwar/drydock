@@ -266,4 +266,58 @@ server.registerTool(
   ({ project_id }) => api('POST', '/phase/advance', { project_id }),
 );
 
+server.registerTool(
+  'create_subscription',
+  {
+    description:
+      'Register an outbound subscription (webhook|connector|bridge) that fires on matching board events. Returns the redacted subscription view (secret is never echoed back — only has_secret).',
+    inputSchema: {
+      project_id: z.string().optional(),
+      kind: z.enum(['webhook', 'connector', 'bridge']),
+      event_filter: z.string(),
+      target: z.string(),
+      secret: z.string().optional(),
+      scopes: z.string().optional(),
+    },
+  },
+  (input) => api('POST', '/subscriptions', input),
+);
+
+server.registerTool(
+  'list_subscriptions',
+  {
+    description: 'List subscriptions (redacted; secrets shown only as has_secret). Pass project_id to scope to one project.',
+    inputSchema: { project_id: z.string().optional() },
+  },
+  ({ project_id }) =>
+    api('GET', project_id ? `/subscriptions?project_id=${encodeURIComponent(project_id)}` : '/subscriptions'),
+);
+
+server.registerTool(
+  'get_subscription',
+  {
+    description: 'Get one subscription by id (redacted; secret shown only as has_secret).',
+    inputSchema: { id: z.string() },
+  },
+  ({ id }) => api('GET', `/subscriptions/${encodeURIComponent(id)}`),
+);
+
+server.registerTool(
+  'delete_subscription',
+  {
+    description: 'Delete a subscription by id.',
+    inputSchema: { id: z.string() },
+  },
+  ({ id }) => api('DELETE', `/subscriptions/${encodeURIComponent(id)}`),
+);
+
+server.registerTool(
+  'update_subscription',
+  {
+    description: 'Enable or disable a subscription by id. Returns the redacted subscription view.',
+    inputSchema: { id: z.string(), enabled: z.boolean() },
+  },
+  ({ id, enabled }) => api('PATCH', `/subscriptions/${encodeURIComponent(id)}`, { enabled }),
+);
+
 await server.connect(new StdioServerTransport());
