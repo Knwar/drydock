@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS outbox (  -- durable event log for fan-out delivery (
   created_at      INTEGER NOT NULL,           -- epoch ms
   status          TEXT DEFAULT 'pending',     -- FAN-OUT marker: pending (not yet fanned out) -> processed (delivery rows created). Per-target delivered/failed/dead lives in the deliveries table, not here.
   attempts        INTEGER DEFAULT 0,          -- Phase 3 dispatcher increments on retry
-  last_attempt_at INTEGER                     -- Phase 3 dispatcher updates; null until first delivery attempt
+  last_attempt_at INTEGER,                    -- Phase 3 dispatcher updates; null until first delivery attempt
+  origin          TEXT NOT NULL DEFAULT 'local'  -- loop-prevention tag: 'local' (originated here) vs a remote provider (Phase 5 bridge)
 );
 
 CREATE TABLE IF NOT EXISTS subscriptions (  -- registry of "who wants which events" (Phase 3 dispatcher reads it)
