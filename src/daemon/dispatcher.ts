@@ -1,6 +1,7 @@
 import type { DB } from '../core/db.js';
 import { getSubscriptionSecret, subscriptionMatches } from '../core/board.js';
 import { LocalHTTPTransport, signDelivery, type DeliveryTransport } from './transport.js';
+import { resolveConnector, type ConnectorEvent } from './connectors.js';
 
 /**
  * The delivery worker: drains the durable outbox and pushes each event to every
@@ -157,41 +158,75 @@ export class Dispatcher {
       `SELECT id, project_id, task_id, type, payload, created_at FROM outbox WHERE id = ?`,
     );
     const loadSub = this.db.prepare(
-      `SELECT id, target FROM subscriptions WHERE id = ?`,
+      `SELECT id, kind, target FROM subscriptions WHERE id = ?`,
     );
 
     for (const delivery of due) {
       const event = loadEvent.get(delivery.outbox_id) as
         | Pick<OutboxRow, 'id' | 'project_id' | 'task_id' | 'type' | 'payload' | 'created_at'>
         | undefined;
-      const sub = loadSub.get(delivery.subscription_id) as { id: string; target: string } | undefined;
+      const sub = loadSub.get(delivery.subscription_id) as
+        | { id: string; kind: string; target: string }
+        | undefined;
       // A delivery whose event or subscription vanished can never succeed — park it.
       if (!event || !sub) {
         this.markDead(delivery, now, null, 'event or subscription missing');
         continue;
       }
 
-      // payload is the stored JSON string — included as-is (not re-parsed), so
-      // the delivered body carries the exact payload snapshot from the outbox.
-      const body = JSON.stringify({
-        id: event.id,
-        type: event.type,
-        project_id: event.project_id,
-        task_id: event.task_id,
-        payload: event.payload,
-        created_at: event.created_at,
-      });
+      // Build the body + transport target + content-type, branching on the
+      // subscription kind. A 'connector' sub gets a provider-formatted body sent
+      // to the scheme-stripped endpoint; everything else keeps the generic
+      // envelope sent to the raw target.
+      let finalBody: string;
+      let sendTarget: string;
+      let contentType: string;
+      if (sub.kind === 'connector') {
+        const resolved = resolveConnector(sub.target);
+        if (!resolved) {
+          // Unknown/unparseable scheme can never succeed — park this delivery.
+          this.markDead(delivery, now, null, `unknown connector scheme: ${sub.target}`);
+          continue;
+        }
+        const connectorEvent: ConnectorEvent = {
+          id: event.id,
+          type: event.type,
+          project_id: event.project_id,
+          task_id: event.task_id,
+          payload: event.payload,
+          created_at: event.created_at,
+        };
+        const msg = resolved.connector.format(connectorEvent);
+        finalBody = msg.body;
+        contentType = msg.contentType ?? 'application/json';
+        sendTarget = resolved.endpoint;
+      } else {
+        // payload is the stored JSON string — included as-is (not re-parsed), so
+        // the delivered body carries the exact payload snapshot from the outbox.
+        finalBody = JSON.stringify({
+          id: event.id,
+          type: event.type,
+          project_id: event.project_id,
+          task_id: event.task_id,
+          payload: event.payload,
+          created_at: event.created_at,
+        });
+        contentType = 'application/json';
+        sendTarget = sub.target;
+      }
+
       const timestamp = now;
       const secret = getSubscriptionSecret(this.db, delivery.subscription_id);
-      const sig = signDelivery(body, secret, timestamp);
+      // Sign the FINAL body regardless of path.
+      const sig = signDelivery(finalBody, secret, timestamp);
       const headers: Record<string, string> = {
-        'content-type': 'application/json',
+        'content-type': contentType,
         'X-Kankan-Timestamp': String(timestamp),
         'X-Kankan-Event': event.type,
         ...(sig ? { 'X-Kankan-Signature': sig } : {}),
       };
 
-      const result = await this.transport.send(sub.target, headers, body);
+      const result = await this.transport.send(sendTarget, headers, finalBody);
       if (result.ok) {
         this.markDelivered(delivery, now, result.status);
         continue;

@@ -348,5 +348,103 @@ describe('Dispatcher re-entrancy guard', () => {
   });
 });
 
+describe('Dispatcher connector delivery', () => {
+  it('connector sub → provider-formatted Slack body sent to the scheme-stripped endpoint', async () => {
+    const { db, project } = setup();
+    createSubscription(db, {
+      project_id: project.id,
+      kind: 'connector',
+      event_filter: 'block',
+      target: 'slack:https://hooks.slack.com/services/T/B/xxx',
+    });
+    appendEvent(db, {
+      project_id: project.id,
+      task_id: 'card-1',
+      type: 'block',
+      payload: { reason: 'need a secret' },
+    });
+
+    const transport = new StubTransport();
+    transport.program({ ok: true, status: 200 });
+    await new Dispatcher(db, transport).runOnce(1720000000);
+
+    assert.equal(onlyDelivery(db).status, 'delivered');
+    assert.equal(transport.calls.length, 1);
+    const call = transport.calls[0];
+    // Scheme stripped: the raw https endpoint, NOT the 'slack:' target.
+    assert.equal(call.target, 'https://hooks.slack.com/services/T/B/xxx');
+    assert.equal(call.headers['content-type'], 'application/json');
+    // Slack incoming-webhook shape: a single {"text": ...} field.
+    const parsed = JSON.parse(call.body) as { text?: string };
+    assert.equal(typeof parsed.text, 'string');
+    assert.ok(parsed.text!.includes('card-1'));
+    assert.ok(parsed.text!.includes('need a secret'));
+    // Signed over the FINAL (Slack) body; event header still carries the type.
+    assert.equal(call.headers['X-Kankan-Event'], 'block');
+    assert.equal(call.headers['X-Kankan-Timestamp'], '1720000000');
+  });
+
+  it('webhook sub → unchanged generic envelope body + raw target', async () => {
+    const { db, project } = setup();
+    const sub = createSubscription(db, {
+      project_id: project.id,
+      kind: 'webhook',
+      event_filter: 'block',
+      target: 'https://example.com/hook',
+    });
+    const ev = appendEvent(db, {
+      project_id: project.id,
+      task_id: 'card-2',
+      type: 'block',
+      payload: { reason: 'still blocked' },
+    });
+
+    const transport = new StubTransport();
+    transport.program({ ok: true, status: 200 });
+    await new Dispatcher(db, transport).runOnce(1720000000);
+
+    assert.equal(onlyDelivery(db).status, 'delivered');
+    assert.equal(transport.calls.length, 1);
+    const call = transport.calls[0];
+    // Raw target, unchanged behavior.
+    assert.equal(call.target, sub.target);
+    assert.equal(call.headers['content-type'], 'application/json');
+    // Generic envelope, NOT the Slack shape.
+    const parsed = JSON.parse(call.body) as Record<string, unknown>;
+    assert.equal(parsed.id, ev.id);
+    assert.equal(parsed.type, 'block');
+    assert.equal(parsed.project_id, project.id);
+    assert.equal(parsed.task_id, 'card-2');
+    assert.equal(parsed.payload, ev.payload); // stored JSON string, not re-parsed
+    assert.equal(parsed.text, undefined); // definitely not a connector body
+  });
+
+  it('connector sub with an unknown scheme → dead with last_error, transport NOT called', async () => {
+    const { db, project } = setup();
+    createSubscription(db, {
+      project_id: project.id,
+      kind: 'connector',
+      event_filter: 'block',
+      target: 'foo:bar',
+    });
+    appendEvent(db, {
+      project_id: project.id,
+      task_id: 'card-3',
+      type: 'block',
+      payload: { reason: 'unknown provider' },
+    });
+
+    const transport = new StubTransport();
+    transport.program({ ok: true, status: 200 });
+    await new Dispatcher(db, transport).runOnce(1720000000);
+
+    const row = onlyDelivery(db);
+    assert.equal(row.status, 'dead');
+    assert.ok(row.last_error?.includes('unknown connector scheme'));
+    assert.ok(row.last_error?.includes('foo:bar'));
+    assert.equal(transport.calls.length, 0); // never sent
+  });
+});
+
 // A large clock jump to prove a 'dead' delivery is never re-selected as due.
 const MAX_BACKOFF_SENTINEL = 10_000_000;
