@@ -53,12 +53,23 @@ export function appendEvent(
 ): TaskEvent {
   const created_at = now();
   const payload = e.payload === undefined ? null : JSON.stringify(e.payload);
-  const result = db
-    .prepare(
-      `INSERT INTO task_events (project_id, task_id, type, payload, agent, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .run(e.project_id, e.task_id ?? null, e.type, payload, e.agent ?? null, created_at);
+  // Tee every event into the outbox in the SAME transaction: both inserts commit
+  // or neither does. better-sqlite3 transactions nest via savepoints, so when a
+  // caller (e.g. deleteTask) already holds a transaction this joins it; called
+  // standalone it opens its own — atomic either way, never a partial write.
+  const result = db.transaction(() => {
+    const r = db
+      .prepare(
+        `INSERT INTO task_events (project_id, task_id, type, payload, agent, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(e.project_id, e.task_id ?? null, e.type, payload, e.agent ?? null, created_at);
+    db.prepare(
+      `INSERT INTO outbox (project_id, task_id, type, payload, created_at, status, attempts, last_attempt_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', 0, NULL)`,
+    ).run(e.project_id, e.task_id ?? null, e.type, payload, created_at);
+    return r;
+  })();
   return {
     id: Number(result.lastInsertRowid),
     project_id: e.project_id,
