@@ -34,6 +34,7 @@ import {
   updateTeamMember,
 } from './board.js';
 import { openDb } from './db.js';
+import type { TaskEvent } from './types.js';
 
 function setup() {
   const db = openDb();
@@ -291,6 +292,50 @@ describe('board reads', () => {
     const other = getOrCreateProject(db, '/tmp/other-app');
     appendEvent(db, { project_id: other.id, type: 'note', payload: { msg: 'hi' } });
     assert.equal(getRecentEvents(db, project.id).length, 0);
+  });
+});
+
+describe('outbox', () => {
+  it('tees every appendEvent into the outbox in the same transaction', () => {
+    const { db, project } = setup();
+    const ev = appendEvent(db, {
+      project_id: project.id,
+      task_id: 't1',
+      type: 'note',
+      payload: { msg: 'hi' },
+    });
+    // (a) task_events row exists
+    const teRow = db.prepare('SELECT * FROM task_events WHERE id = ?').get(ev.id) as TaskEvent;
+    assert.ok(teRow);
+    assert.equal(teRow.type, 'note');
+    // (b) matching outbox row with same type + payload
+    const obRow = db
+      .prepare('SELECT * FROM outbox WHERE project_id = ? AND task_id = ?')
+      .get(project.id, 't1') as {
+      type: string;
+      payload: string;
+      created_at: number;
+      status: string;
+      attempts: number;
+      last_attempt_at: number | null;
+    };
+    assert.ok(obRow);
+    assert.equal(obRow.type, ev.type);
+    assert.equal(obRow.payload, ev.payload);
+    assert.equal(obRow.created_at, ev.created_at);
+    // (c) status='pending', attempts=0
+    assert.equal(obRow.status, 'pending');
+    assert.equal(obRow.attempts, 0);
+    assert.equal(obRow.last_attempt_at, null);
+  });
+
+  it('writes one outbox row per event, unconditionally, for every mutation', () => {
+    const { db, project } = setup();
+    createTask(db, project.id, 'First'); // logs a create event
+    const events = db.prepare('SELECT COUNT(*) AS c FROM task_events WHERE project_id = ?').get(project.id) as { c: number };
+    const outbox = db.prepare('SELECT COUNT(*) AS c FROM outbox WHERE project_id = ?').get(project.id) as { c: number };
+    assert.equal(events.c, outbox.c);
+    assert.ok(events.c > 0);
   });
 });
 
