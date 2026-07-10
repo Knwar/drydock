@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import Database from 'better-sqlite3';
 import {
   advancePhase,
   appendEvent,
@@ -41,6 +42,7 @@ import {
   resolveBlocker,
   setSubtasks,
   subscriptionMatches,
+  taskContentHash,
   updateSubscription,
   updateSyncLink,
   updateTask,
@@ -349,6 +351,125 @@ describe('outbox', () => {
     const outbox = db.prepare('SELECT COUNT(*) AS c FROM outbox WHERE project_id = ?').get(project.id) as { c: number };
     assert.equal(events.c, outbox.c);
     assert.ok(events.c > 0);
+  });
+
+  it("defaults the outbox origin to 'local' when appendEvent gets no origin", () => {
+    const { db, project } = setup();
+    appendEvent(db, { project_id: project.id, task_id: 't-loc', type: 'note', payload: { m: 1 } });
+    const row = db
+      .prepare('SELECT origin FROM outbox WHERE project_id = ? AND task_id = ?')
+      .get(project.id, 't-loc') as { origin: string };
+    assert.equal(row.origin, 'local');
+  });
+
+  it("writes the given origin onto the outbox row (e.g. 'remote')", () => {
+    const { db, project } = setup();
+    appendEvent(db, {
+      project_id: project.id,
+      task_id: 't-rem',
+      type: 'note',
+      payload: { m: 2 },
+      origin: 'remote',
+    });
+    const row = db
+      .prepare('SELECT origin FROM outbox WHERE project_id = ? AND task_id = ?')
+      .get(project.id, 't-rem') as { origin: string };
+    assert.equal(row.origin, 'remote');
+  });
+});
+
+describe('migrate: outbox.origin', () => {
+  it('adds origin to a pre-existing outbox table without it, and is idempotent', () => {
+    // Simulate an OLD DB: outbox created before the origin column existed.
+    // migrate() also inspects tasks first, so give it a minimal tasks table.
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE tasks (id TEXT PRIMARY KEY)');
+    db.exec(`CREATE TABLE outbox (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id      TEXT NOT NULL,
+      task_id         TEXT,
+      type            TEXT NOT NULL,
+      payload         TEXT,
+      created_at      INTEGER NOT NULL,
+      status          TEXT DEFAULT 'pending',
+      attempts        INTEGER DEFAULT 0,
+      last_attempt_at INTEGER
+    )`);
+    db.prepare(
+      "INSERT INTO outbox (project_id, task_id, type, payload, created_at) VALUES ('p', 'old', 'note', NULL, 1)",
+    ).run();
+    const before = (db.pragma('table_info(outbox)') as { name: string }[]).map((c) => c.name);
+    assert.ok(!before.includes('origin'));
+
+    migrate(db);
+    const after = (db.pragma('table_info(outbox)') as { name: string }[]).map((c) => c.name);
+    assert.ok(after.includes('origin'));
+    // existing row backfills to the 'local' default
+    const row = db.prepare("SELECT origin FROM outbox WHERE task_id = 'old'").get() as { origin: string };
+    assert.equal(row.origin, 'local');
+
+    // idempotent: a second migrate() must not throw (no duplicate ALTER)
+    assert.doesNotThrow(() => migrate(db));
+  });
+});
+
+describe('taskContentHash', () => {
+  const base = {
+    title: 'Ship it',
+    requirements: 'do the thing',
+    lane: 'backlog' as const,
+    tag: 'db',
+    subtasks: JSON.stringify([
+      { text: 'a', done: false },
+      { text: 'b', done: true },
+    ]),
+  };
+
+  it('is stable across unrelated fields and object key order', () => {
+    const h1 = taskContentHash(base);
+    // reorder keys + add unrelated fields (id/timestamps/position) → same hash
+    const h2 = taskContentHash({
+      id: 'xyz',
+      position: 99,
+      created_at: 123,
+      updated_at: 456,
+      tag: 'db',
+      lane: 'backlog',
+      requirements: 'do the thing',
+      title: 'Ship it',
+      subtasks: base.subtasks,
+    } as unknown as typeof base);
+    assert.equal(h1, h2);
+  });
+
+  it('treats an array of subtasks the same as its JSON-string form', () => {
+    const asArray = taskContentHash({
+      ...base,
+      subtasks: [
+        { text: 'a', done: false },
+        { text: 'b', done: true },
+      ],
+    });
+    assert.equal(asArray, taskContentHash(base));
+  });
+
+  it('changes when a syncable field changes (title)', () => {
+    assert.notEqual(taskContentHash(base), taskContentHash({ ...base, title: 'Different' }));
+  });
+
+  it('changes when a subtask changes', () => {
+    const changed = taskContentHash({
+      ...base,
+      subtasks: JSON.stringify([
+        { text: 'a', done: true }, // done flipped
+        { text: 'b', done: true },
+      ]),
+    });
+    assert.notEqual(taskContentHash(base), changed);
+  });
+
+  it('returns a 64-char hex sha256 digest', () => {
+    assert.match(taskContentHash(base), /^[0-9a-f]{64}$/);
   });
 });
 

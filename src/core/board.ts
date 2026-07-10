@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import type { DB } from './db.js';
 import {
@@ -48,6 +48,33 @@ export function getTask(db: DB, taskId: string): Task {
   return task;
 }
 
+/**
+ * Deterministic SHA-256 (hex) over a card's SYNCABLE content — the loop/change
+ * detector the bridge sync engine will compare against remote hashes. Hashes a
+ * CANONICAL JSON of exactly these fields, in fixed order: title, requirements,
+ * lane, tag, subtasks. Subtasks are normalized to an ordered [{text,done}] list
+ * so equal content → equal hash regardless of object key order, extra fields
+ * (id/timestamps/position), or how subtasks arrive (JSON string or array).
+ */
+export function taskContentHash(
+  task: Pick<Task, 'title' | 'requirements' | 'lane' | 'tag'> & {
+    subtasks: Task['subtasks'] | Subtask[];
+  },
+): string {
+  const raw = task.subtasks;
+  const list: Subtask[] =
+    raw == null ? [] : typeof raw === 'string' ? (JSON.parse(raw) as Subtask[]) : raw;
+  const subtasks = list.map((s) => ({ text: s.text, done: !!s.done }));
+  const canonical = JSON.stringify({
+    title: task.title,
+    requirements: task.requirements ?? null,
+    lane: task.lane,
+    tag: task.tag ?? null,
+    subtasks,
+  });
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
 export function appendEvent(
   db: DB,
   e: {
@@ -56,10 +83,14 @@ export function appendEvent(
     type: EventType;
     payload?: unknown;
     agent?: string | null;
+    // Loop-prevention tag written to the OUTBOX row only (task_events has no such
+    // column). Optional with a 'local' default so no existing caller changes.
+    origin?: string;
   },
 ): TaskEvent {
   const created_at = now();
   const payload = e.payload === undefined ? null : JSON.stringify(e.payload);
+  const origin = e.origin ?? 'local';
   // Tee every event into the outbox in the SAME transaction: both inserts commit
   // or neither does. better-sqlite3 transactions nest via savepoints, so when a
   // caller (e.g. deleteTask) already holds a transaction this joins it; called
@@ -72,9 +103,9 @@ export function appendEvent(
       )
       .run(e.project_id, e.task_id ?? null, e.type, payload, e.agent ?? null, created_at);
     db.prepare(
-      `INSERT INTO outbox (project_id, task_id, type, payload, created_at, status, attempts, last_attempt_at)
-       VALUES (?, ?, ?, ?, ?, 'pending', 0, NULL)`,
-    ).run(e.project_id, e.task_id ?? null, e.type, payload, created_at);
+      `INSERT INTO outbox (project_id, task_id, type, payload, created_at, status, attempts, last_attempt_at, origin)
+       VALUES (?, ?, ?, ?, ?, 'pending', 0, NULL, ?)`,
+    ).run(e.project_id, e.task_id ?? null, e.type, payload, created_at, origin);
     return r;
   })();
   return {

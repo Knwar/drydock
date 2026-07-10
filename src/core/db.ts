@@ -38,8 +38,13 @@ export function migrate(db: DB): void {
     created_at      INTEGER NOT NULL,
     status          TEXT DEFAULT 'pending',
     attempts        INTEGER DEFAULT 0,
-    last_attempt_at INTEGER
+    last_attempt_at INTEGER,
+    origin          TEXT NOT NULL DEFAULT 'local'
   )`);
+  // Loop-prevention origin tag (Phase 5): add to outbox tables created before it existed.
+  const outboxCols = (db.pragma('table_info(outbox)') as { name: string }[]).map((c) => c.name);
+  if (!outboxCols.includes('origin'))
+    db.exec("ALTER TABLE outbox ADD COLUMN origin TEXT NOT NULL DEFAULT 'local'");
   // Subscription registry (Phase 2): queryable "who wants which events" the Phase 3 dispatcher reads.
   // This card only creates the table; CRUD/matcher/dispatcher land in later cards.
   db.exec(`CREATE TABLE IF NOT EXISTS subscriptions (
