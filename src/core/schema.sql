@@ -118,6 +118,20 @@ CREATE TABLE IF NOT EXISTS deliveries (  -- per-(outbox event x subscription) de
   UNIQUE (outbox_id, subscription_id)          -- makes fan-out idempotent: a re-run can't double-create a delivery row
 );
 
+CREATE TABLE IF NOT EXISTS sync_links (  -- local<->remote link state for the bridge (Phase 5 foundations; sync engine lands in later cards)
+  id             TEXT PRIMARY KEY,           -- short id (same shortId convention as tasks/phases/subscriptions)
+  project_id     TEXT,                       -- nullable
+  local_id       TEXT NOT NULL,              -- the local card/task id
+  provider       TEXT NOT NULL,              -- free text (e.g. 'jira'|'linear'); no provider code here
+  external_id    TEXT,                       -- nullable: the remote item id, null until linked
+  local_hash     TEXT,                       -- nullable: set by the sync engine later
+  remote_hash    TEXT,                       -- nullable
+  last_synced_at INTEGER,                    -- nullable
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL,
+  UNIQUE (provider, local_id)                -- one link per (provider, local card)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_project_lane ON tasks(project_id, lane, position);
 CREATE INDEX IF NOT EXISTS idx_phases_project ON phases(project_id, position);
 CREATE INDEX IF NOT EXISTS idx_events_recent ON task_events(project_id, created_at);

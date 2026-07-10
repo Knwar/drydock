@@ -22,6 +22,7 @@ import {
   type Subscription,
   type SubscriptionKind,
   type SubscriptionView,
+  type SyncLink,
   type Subtask,
   type Task,
   type TaskEvent,
@@ -1020,4 +1021,131 @@ export function listDeliveries(
        FROM deliveries ${clause}ORDER BY id DESC LIMIT ?`,
     )
     .all(...params, limit) as Delivery[];
+}
+
+// ── sync_links: local<->remote link state for the bridge (Phase 5 foundations) ──
+
+export interface CreateSyncLinkInput {
+  project_id?: string | null;
+  local_id: string;
+  provider: string;
+  external_id?: string | null;
+}
+
+/**
+ * Create a local<->remote link row. The sync bookkeeping fields
+ * (local_hash/remote_hash/last_synced_at) start null — the sync engine sets
+ * them later via updateSyncLink. Emits no events (pure bridge metadata).
+ */
+export function createSyncLink(db: DB, input: CreateSyncLinkInput): SyncLink {
+  if (!input.local_id) throw new Error('sync_link local_id is required');
+  if (!input.provider) throw new Error('sync_link provider is required');
+  const ts = now();
+  const link: SyncLink = {
+    id: shortId(),
+    project_id: input.project_id ?? null,
+    local_id: input.local_id,
+    provider: input.provider,
+    external_id: input.external_id ?? null,
+    local_hash: null,
+    remote_hash: null,
+    last_synced_at: null,
+    created_at: ts,
+    updated_at: ts,
+  };
+  db.prepare(
+    `INSERT INTO sync_links (id, project_id, local_id, provider, external_id, local_hash, remote_hash, last_synced_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    link.id,
+    link.project_id,
+    link.local_id,
+    link.provider,
+    link.external_id,
+    link.local_hash,
+    link.remote_hash,
+    link.last_synced_at,
+    link.created_at,
+    link.updated_at,
+  );
+  return link;
+}
+
+/** Lookup a sync link by id, or null. */
+export function getSyncLink(db: DB, id: string): SyncLink | null {
+  const row = db.prepare('SELECT * FROM sync_links WHERE id = ?').get(id) as SyncLink | undefined;
+  return row ?? null;
+}
+
+/** Lookup the sync link for a (provider, local_id) pair, or null (the engine's key). */
+export function getSyncLinkByLocal(db: DB, provider: string, localId: string): SyncLink | null {
+  const row = db
+    .prepare('SELECT * FROM sync_links WHERE provider = ? AND local_id = ?')
+    .get(provider, localId) as SyncLink | undefined;
+  return row ?? null;
+}
+
+/**
+ * List sync links, oldest-first (created_at). Optional filters — applied only
+ * when provided — narrow by provider and/or project_id.
+ */
+export function listSyncLinks(
+  db: DB,
+  opts: { provider?: string; project_id?: string } = {},
+): SyncLink[] {
+  const where: string[] = [];
+  const params: string[] = [];
+  if (opts.provider !== undefined) {
+    where.push('provider = ?');
+    params.push(opts.provider);
+  }
+  if (opts.project_id !== undefined) {
+    where.push('project_id = ?');
+    params.push(opts.project_id);
+  }
+  const clause = where.length ? `WHERE ${where.join(' AND ')} ` : '';
+  return db
+    .prepare(`SELECT * FROM sync_links ${clause}ORDER BY created_at`)
+    .all(...params) as SyncLink[];
+}
+
+/**
+ * Patch a sync link's mutable fields (external_id, local_hash, remote_hash,
+ * last_synced_at) — this is how the sync engine records a sync. Only provided
+ * keys are written; updated_at is always bumped. Returns the updated SyncLink.
+ */
+export function updateSyncLink(
+  db: DB,
+  id: string,
+  patch: {
+    external_id?: string | null;
+    local_hash?: string | null;
+    remote_hash?: string | null;
+    last_synced_at?: number | null;
+  },
+): SyncLink {
+  const sets: string[] = [];
+  const params: (string | number | null)[] = [];
+  if ('external_id' in patch) {
+    sets.push('external_id = ?');
+    params.push(patch.external_id ?? null);
+  }
+  if ('local_hash' in patch) {
+    sets.push('local_hash = ?');
+    params.push(patch.local_hash ?? null);
+  }
+  if ('remote_hash' in patch) {
+    sets.push('remote_hash = ?');
+    params.push(patch.remote_hash ?? null);
+  }
+  if ('last_synced_at' in patch) {
+    sets.push('last_synced_at = ?');
+    params.push(patch.last_synced_at ?? null);
+  }
+  sets.push('updated_at = ?');
+  params.push(now());
+  db.prepare(`UPDATE sync_links SET ${sets.join(', ')} WHERE id = ?`).run(...params, id);
+  const link = getSyncLink(db, id);
+  if (!link) throw new Error(`no such sync_link: ${id}`);
+  return link;
 }
