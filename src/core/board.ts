@@ -1047,6 +1047,26 @@ const DELIVERY_LIMIT_DEFAULT = 100;
 const DELIVERY_LIMIT_MAX = 500;
 
 /**
+ * Build an optional-filter WHERE clause: for each key whose value is defined,
+ * emit `key = ?` and collect its param. Preserves the trailing space after the
+ * clause so callers can concatenate the following SQL (ORDER BY / LIMIT) directly.
+ */
+function buildWhere(filters: Record<string, string | number | undefined>): {
+  clause: string;
+  params: (string | number)[];
+} {
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined) {
+      where.push(`${key} = ?`);
+      params.push(value);
+    }
+  }
+  return { clause: where.length ? `WHERE ${where.join(' AND ')} ` : '', params };
+}
+
+/**
  * List delivery rows (per outbox-event × subscription attempt state), newest
  * first (id DESC). Optional filters — applied only when provided — narrow by
  * subscription_id and/or status ('dead' is the DLQ view). The limit defaults to
@@ -1056,18 +1076,11 @@ export function listDeliveries(
   db: DB,
   opts: { subscription_id?: string; status?: string; limit?: number } = {},
 ): Delivery[] {
-  const where: string[] = [];
-  const params: (string | number)[] = [];
-  if (opts.subscription_id !== undefined) {
-    where.push('subscription_id = ?');
-    params.push(opts.subscription_id);
-  }
-  if (opts.status !== undefined) {
-    where.push('status = ?');
-    params.push(opts.status);
-  }
+  const { clause, params } = buildWhere({
+    subscription_id: opts.subscription_id,
+    status: opts.status,
+  });
   const limit = Math.min(Math.max(1, opts.limit ?? DELIVERY_LIMIT_DEFAULT), DELIVERY_LIMIT_MAX);
-  const clause = where.length ? `WHERE ${where.join(' AND ')} ` : '';
   return db
     .prepare(
       `SELECT id, outbox_id, subscription_id, status, attempts, last_status_code, last_error, next_attempt_at, created_at, updated_at
@@ -1146,21 +1159,16 @@ export function listSyncLinks(
   db: DB,
   opts: { provider?: string; project_id?: string } = {},
 ): SyncLink[] {
-  const where: string[] = [];
-  const params: string[] = [];
-  if (opts.provider !== undefined) {
-    where.push('provider = ?');
-    params.push(opts.provider);
-  }
-  if (opts.project_id !== undefined) {
-    where.push('project_id = ?');
-    params.push(opts.project_id);
-  }
-  const clause = where.length ? `WHERE ${where.join(' AND ')} ` : '';
+  const { clause, params } = buildWhere({
+    provider: opts.provider,
+    project_id: opts.project_id,
+  });
   return db
     .prepare(`SELECT * FROM sync_links ${clause}ORDER BY created_at`)
     .all(...params) as SyncLink[];
 }
+
+const SYNC_LINK_FIELDS = ['external_id', 'local_hash', 'remote_hash', 'last_synced_at'] as const;
 
 /**
  * Patch a sync link's mutable fields (external_id, local_hash, remote_hash,
@@ -1179,21 +1187,10 @@ export function updateSyncLink(
 ): SyncLink {
   const sets: string[] = [];
   const params: (string | number | null)[] = [];
-  if ('external_id' in patch) {
-    sets.push('external_id = ?');
-    params.push(patch.external_id ?? null);
-  }
-  if ('local_hash' in patch) {
-    sets.push('local_hash = ?');
-    params.push(patch.local_hash ?? null);
-  }
-  if ('remote_hash' in patch) {
-    sets.push('remote_hash = ?');
-    params.push(patch.remote_hash ?? null);
-  }
-  if ('last_synced_at' in patch) {
-    sets.push('last_synced_at = ?');
-    params.push(patch.last_synced_at ?? null);
+  for (const field of SYNC_LINK_FIELDS) {
+    if (!(field in patch)) continue;
+    sets.push(`${field} = ?`);
+    params.push(patch[field] ?? null);
   }
   sets.push('updated_at = ?');
   params.push(now());
