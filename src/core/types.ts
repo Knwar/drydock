@@ -157,7 +157,8 @@ export type AttentionKind =
   | 'merge_conflict'
   | 'stalled'
   | 'awaiting_review'
-  | 'needs_spec';
+  | 'needs_spec'
+  | 'sync_conflict';
 export type AttentionSeverity = 'blocker' | 'warn' | 'info';
 
 export const SUBSCRIPTION_KINDS = ['webhook', 'connector', 'bridge'] as const;
