@@ -192,6 +192,22 @@ export interface Delivery {
   updated_at: number;
 }
 
+/** One local<->remote link row for the bridge (Phase 5 foundations). Tracks
+ *  which local card maps to which remote item per provider, plus the sync
+ *  bookkeeping (hashes + last_synced_at) the sync engine fills in later. */
+export interface SyncLink {
+  id: string;
+  project_id: string | null;
+  local_id: string; // the local card/task id
+  provider: string; // free text (e.g. 'jira'|'linear')
+  external_id: string | null; // the remote item id, null until linked
+  local_hash: string | null; // set by the sync engine later
+  remote_hash: string | null;
+  last_synced_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
 /** Public/redacted subscription — every field EXCEPT the raw secret, which is
  *  collapsed to has_secret. This is the ONLY shape board.ts hands to callers. */
 export interface SubscriptionView {

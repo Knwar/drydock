@@ -69,4 +69,20 @@ export function migrate(db: DB): void {
     UNIQUE (outbox_id, subscription_id)
   )`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(status, next_attempt_at)');
+  // Sync links (Phase 5): local<->remote link state for the bridge foundations.
+  // This card only creates the table + CRUD; the sync engine lands in later cards.
+  // The UNIQUE (provider, local_id) keeps one link per (provider, local card).
+  db.exec(`CREATE TABLE IF NOT EXISTS sync_links (
+    id             TEXT PRIMARY KEY,
+    project_id     TEXT,
+    local_id       TEXT NOT NULL,
+    provider       TEXT NOT NULL,
+    external_id    TEXT,
+    local_hash     TEXT,
+    remote_hash    TEXT,
+    last_synced_at INTEGER,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    UNIQUE (provider, local_id)
+  )`);
 }

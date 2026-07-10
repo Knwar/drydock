@@ -8,11 +8,14 @@ import {
   checkSubtask,
   createPhase,
   createSubscription,
+  createSyncLink,
   createTask,
   createTeamMember,
   deleteSubscription,
   deleteTask,
   deleteTeamMember,
+  getSyncLink,
+  getSyncLinkByLocal,
   getActiveCards,
   getActivePhase,
   getAttention,
@@ -28,6 +31,7 @@ import {
   getSubscriptionSecret,
   listDeliveries,
   listSubscriptions,
+  listSyncLinks,
   listTeam,
   moveTask,
   raiseBlocker,
@@ -38,10 +42,11 @@ import {
   setSubtasks,
   subscriptionMatches,
   updateSubscription,
+  updateSyncLink,
   updateTask,
   updateTeamMember,
 } from './board.js';
-import { openDb } from './db.js';
+import { migrate, openDb } from './db.js';
 import type { TaskEvent } from './types.js';
 
 function setup() {
@@ -874,5 +879,108 @@ describe('deliveries (read-only listing + DLQ)', () => {
     // seed past the cap to prove the 500 ceiling is enforced
     for (let i = 121; i <= 600; i++) insertDelivery(db, { outbox_id: i, subscription_id: 'sub-a' });
     assert.equal(listDeliveries(db, { limit: 9999 }).length, 500);
+  });
+});
+
+describe('sync_links (CRUD)', () => {
+  it('creates and gets back the row (create→get round-trip)', () => {
+    const { db, project } = setup();
+    const link = createSyncLink(db, {
+      project_id: project.id,
+      local_id: 'card-1',
+      provider: 'jira',
+      external_id: 'JIRA-42',
+    });
+    assert.ok(link.id);
+    assert.equal(link.provider, 'jira');
+    assert.equal(link.local_id, 'card-1');
+    assert.equal(link.external_id, 'JIRA-42');
+    // sync bookkeeping starts null — the engine sets it later
+    assert.equal(link.local_hash, null);
+    assert.equal(link.remote_hash, null);
+    assert.equal(link.last_synced_at, null);
+    assert.equal(link.created_at, link.updated_at);
+    const fetched = getSyncLink(db, link.id);
+    assert.deepEqual(fetched, link);
+    assert.equal(getSyncLink(db, 'missing'), null);
+  });
+
+  it('defaults project_id and external_id to null when omitted', () => {
+    const { db } = setup();
+    const link = createSyncLink(db, { local_id: 'card-2', provider: 'linear' });
+    assert.equal(link.project_id, null);
+    assert.equal(link.external_id, null);
+  });
+
+  it('getSyncLinkByLocal finds the link for a (provider, local_id) pair', () => {
+    const { db, project } = setup();
+    const jira = createSyncLink(db, { project_id: project.id, local_id: 'card-3', provider: 'jira' });
+    createSyncLink(db, { project_id: project.id, local_id: 'card-3', provider: 'linear' });
+    const found = getSyncLinkByLocal(db, 'jira', 'card-3');
+    assert.equal(found!.id, jira.id);
+    assert.equal(getSyncLinkByLocal(db, 'jira', 'nope'), null);
+  });
+
+  it('lists filtered by provider (oldest-first)', () => {
+    const { db, project } = setup();
+    const a = createSyncLink(db, { project_id: project.id, local_id: 'c-a', provider: 'jira' });
+    createSyncLink(db, { project_id: project.id, local_id: 'c-b', provider: 'linear' });
+    const c = createSyncLink(db, { project_id: project.id, local_id: 'c-c', provider: 'jira' });
+    const jira = listSyncLinks(db, { provider: 'jira' });
+    assert.deepEqual(
+      jira.map((l) => l.id),
+      [a.id, c.id],
+    );
+    assert.equal(listSyncLinks(db).length, 3); // no filter → all
+    assert.equal(listSyncLinks(db, { provider: 'linear' }).length, 1);
+  });
+
+  it('lists filtered by project_id', () => {
+    const { db, project } = setup();
+    const other = getOrCreateProject(db, '/tmp/other-sync-app');
+    createSyncLink(db, { project_id: project.id, local_id: 'm', provider: 'jira' });
+    createSyncLink(db, { project_id: other.id, local_id: 't', provider: 'jira' });
+    assert.equal(listSyncLinks(db, { project_id: project.id }).length, 1);
+    assert.equal(listSyncLinks(db, { provider: 'jira', project_id: other.id }).length, 1);
+  });
+
+  it('updateSyncLink sets local_hash/last_synced_at and bumps updated_at', () => {
+    const { db, project } = setup();
+    const link = createSyncLink(db, { project_id: project.id, local_id: 'card-4', provider: 'jira' });
+    const updated = updateSyncLink(db, link.id, {
+      external_id: 'JIRA-99',
+      local_hash: 'lh',
+      remote_hash: 'rh',
+      last_synced_at: 1234,
+    });
+    assert.equal(updated.external_id, 'JIRA-99');
+    assert.equal(updated.local_hash, 'lh');
+    assert.equal(updated.remote_hash, 'rh');
+    assert.equal(updated.last_synced_at, 1234);
+    assert.ok(updated.updated_at >= link.updated_at);
+    assert.equal(updated.created_at, link.created_at); // created_at untouched
+    // a partial patch leaves other fields as-is
+    const again = updateSyncLink(db, link.id, { local_hash: 'lh2' });
+    assert.equal(again.local_hash, 'lh2');
+    assert.equal(again.external_id, 'JIRA-99'); // unchanged by this patch
+    assert.throws(() => updateSyncLink(db, 'nope', { local_hash: 'x' }), /no such sync_link/);
+  });
+
+  it('UNIQUE(provider, local_id) rejects a duplicate', () => {
+    const { db, project } = setup();
+    createSyncLink(db, { project_id: project.id, local_id: 'dup', provider: 'jira' });
+    assert.throws(
+      () => createSyncLink(db, { project_id: project.id, local_id: 'dup', provider: 'jira' }),
+      /UNIQUE/,
+    );
+    // same local_id under a different provider is allowed
+    assert.ok(createSyncLink(db, { project_id: project.id, local_id: 'dup', provider: 'linear' }).id);
+  });
+
+  it('migrate() is idempotent (re-running keeps the table + rows)', () => {
+    const { db, project } = setup();
+    const link = createSyncLink(db, { project_id: project.id, local_id: 'card-5', provider: 'jira' });
+    migrate(db); // re-run: CREATE TABLE IF NOT EXISTS is a no-op, row survives
+    assert.deepEqual(getSyncLink(db, link.id), link);
   });
 });
