@@ -80,6 +80,18 @@ CREATE TABLE IF NOT EXISTS card_activity (  -- one row per build run: cost + chu
   created_at    INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS outbox (  -- durable event log for fan-out delivery (Phase 3 dispatcher drains it)
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,   -- monotonic cursor for the future dispatcher
+  project_id      TEXT NOT NULL,
+  task_id         TEXT,                       -- nullable, for task events
+  type            TEXT NOT NULL,              -- EventType: create|move|assign|note|block|...
+  payload         TEXT,                       -- JSON snapshot of event details
+  created_at      INTEGER NOT NULL,           -- epoch ms
+  status          TEXT DEFAULT 'pending',     -- pending|delivered|failed — Phase 3 dispatcher fills this in
+  attempts        INTEGER DEFAULT 0,          -- Phase 3 dispatcher increments on retry
+  last_attempt_at INTEGER                     -- Phase 3 dispatcher updates; null until first delivery attempt
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_project_lane ON tasks(project_id, lane, position);
 CREATE INDEX IF NOT EXISTS idx_phases_project ON phases(project_id, position);
 CREATE INDEX IF NOT EXISTS idx_events_recent ON task_events(project_id, created_at);

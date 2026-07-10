@@ -26,4 +26,17 @@ export function migrate(db: DB): void {
   if (!cols.includes('skill')) db.exec('ALTER TABLE tasks ADD COLUMN skill TEXT');
   if (!cols.includes('blocked_at')) db.exec('ALTER TABLE tasks ADD COLUMN blocked_at INTEGER');
   if (!cols.includes('blocked_reason')) db.exec('ALTER TABLE tasks ADD COLUMN blocked_reason TEXT');
+  // Outbox event backbone (Phase 1): durable log the Phase 3 dispatcher will drain.
+  // status/attempts/last_attempt_at are written by Phase 3 — Phase 1 only creates the table.
+  db.exec(`CREATE TABLE IF NOT EXISTS outbox (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      TEXT NOT NULL,
+    task_id         TEXT,
+    type            TEXT NOT NULL,
+    payload         TEXT,
+    created_at      INTEGER NOT NULL,
+    status          TEXT DEFAULT 'pending',
+    attempts        INTEGER DEFAULT 0,
+    last_attempt_at INTEGER
+  )`);
 }
