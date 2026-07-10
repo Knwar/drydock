@@ -521,6 +521,36 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
   }
 
+  // ── subscription registry (redacted views; board.ts owns secret redaction) ──
+  if (pathname === '/subscriptions') {
+    if (method === 'GET') {
+      const projectId = url.searchParams.get('project_id');
+      return json(res, 200, board.listSubscriptions(db, projectId ?? undefined));
+    }
+    if (method === 'POST') {
+      const b = await readBody(req);
+      return json(res, 200, board.createSubscription(db, b));
+    }
+  }
+  const subMatch = pathname.match(/^\/subscriptions\/([^/]+)$/);
+  if (subMatch) {
+    const id = subMatch[1];
+    if (method === 'GET') {
+      const sub = board.getSubscription(db, id);
+      if (!sub) return json(res, 404, { error: 'no such subscription' });
+      return json(res, 200, sub);
+    }
+    if (method === 'PATCH') {
+      if (!board.getSubscription(db, id)) return json(res, 404, { error: 'no such subscription' });
+      const b = await readBody(req);
+      return json(res, 200, board.updateSubscription(db, id, { enabled: b.enabled }));
+    }
+    if (method === 'DELETE') {
+      if (!board.deleteSubscription(db, id)) return json(res, 404, { error: 'no such subscription' });
+      return json(res, 200, { deleted: id });
+    }
+  }
+
   if (method === 'POST' && pathname === '/task') {
     const b = await readBody(req);
     if (!b.project_id || !b.title) return json(res, 400, { error: 'project_id and title required' });
