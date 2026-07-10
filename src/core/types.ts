@@ -177,6 +177,21 @@ export interface Subscription {
   created_at: number;
 }
 
+/** One delivery attempt-state row: an outbox event fanned out to a subscription.
+ *  Pure read shape for the observability listing (deliveries table row). */
+export interface Delivery {
+  id: number;
+  outbox_id: number;
+  subscription_id: string;
+  status: string; // pending|delivered|failed|dead
+  attempts: number;
+  last_status_code: number | null; // HTTP status of last attempt
+  last_error: string | null;
+  next_attempt_at: number | null; // when a retry is due (backoff)
+  created_at: number;
+  updated_at: number;
+}
+
 /** Public/redacted subscription — every field EXCEPT the raw secret, which is
  *  collapsed to has_secret. This is the ONLY shape board.ts hands to callers. */
 export interface SubscriptionView {
