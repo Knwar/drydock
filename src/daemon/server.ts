@@ -533,6 +533,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return json(res, 200, board.createSubscription(db, b));
     }
   }
+  // ── deliveries: read-only observability (listing + DLQ via ?status=dead) ──
+  if (method === 'GET' && pathname === '/deliveries') {
+    const subscription_id = url.searchParams.get('subscription_id');
+    const status = url.searchParams.get('status');
+    const limitParam = url.searchParams.get('limit');
+    return json(res, 200, board.listDeliveries(db, {
+      subscription_id: subscription_id ?? undefined,
+      status: status ?? undefined,
+      limit: limitParam != null ? Number(limitParam) : undefined,
+    }));
+  }
+
   const subMatch = pathname.match(/^\/subscriptions\/([^/]+)$/);
   if (subMatch) {
     const id = subMatch[1];

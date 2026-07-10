@@ -26,6 +26,7 @@ import {
   getStats,
   getSubscription,
   getSubscriptionSecret,
+  listDeliveries,
   listSubscriptions,
   listTeam,
   moveTask,
@@ -796,5 +797,82 @@ describe('subscriptions (CRUD + redaction)', () => {
     );
     // a real EventType list is accepted
     assert.ok(createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: 'create,move,phase_done', target: 'x' }).id);
+  });
+});
+
+describe('deliveries (read-only listing + DLQ)', () => {
+  // No write API for deliveries (the dispatcher owns that) — insert rows directly.
+  const insertDelivery = (
+    db: ReturnType<typeof openDb>,
+    d: { outbox_id: number; subscription_id: string; status?: string; attempts?: number },
+  ) =>
+    db
+      .prepare(
+        `INSERT INTO deliveries (outbox_id, subscription_id, status, attempts, last_status_code, last_error, next_attempt_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+      )
+      .run(d.outbox_id, d.subscription_id, d.status ?? 'pending', d.attempts ?? 0, Date.now(), Date.now());
+
+  it('filters by subscription_id', () => {
+    const { db } = setup();
+    insertDelivery(db, { outbox_id: 1, subscription_id: 'sub-a' });
+    insertDelivery(db, { outbox_id: 2, subscription_id: 'sub-b' });
+    insertDelivery(db, { outbox_id: 3, subscription_id: 'sub-a' });
+    const rows = listDeliveries(db, { subscription_id: 'sub-a' });
+    assert.equal(rows.length, 2);
+    assert.ok(rows.every((r) => r.subscription_id === 'sub-a'));
+  });
+
+  it('filters by status, including the DLQ (status=dead)', () => {
+    const { db } = setup();
+    insertDelivery(db, { outbox_id: 1, subscription_id: 'sub-a', status: 'pending' });
+    insertDelivery(db, { outbox_id: 2, subscription_id: 'sub-a', status: 'dead' });
+    insertDelivery(db, { outbox_id: 3, subscription_id: 'sub-a', status: 'delivered' });
+    insertDelivery(db, { outbox_id: 4, subscription_id: 'sub-a', status: 'dead' });
+    const dead = listDeliveries(db, { status: 'dead' });
+    assert.equal(dead.length, 2);
+    assert.ok(dead.every((r) => r.status === 'dead'));
+    // combined filters narrow further
+    insertDelivery(db, { outbox_id: 5, subscription_id: 'sub-b', status: 'dead' });
+    assert.equal(listDeliveries(db, { subscription_id: 'sub-b', status: 'dead' }).length, 1);
+  });
+
+  it('returns rows newest-first (id DESC) with the mapped columns', () => {
+    const { db } = setup();
+    insertDelivery(db, { outbox_id: 1, subscription_id: 'sub-a' }); // id 1
+    insertDelivery(db, { outbox_id: 2, subscription_id: 'sub-a' }); // id 2
+    insertDelivery(db, { outbox_id: 3, subscription_id: 'sub-a' }); // id 3
+    const rows = listDeliveries(db, {});
+    assert.deepEqual(
+      rows.map((r) => r.id),
+      [3, 2, 1],
+    );
+    assert.deepEqual(Object.keys(rows[0]).sort(), [
+      'attempts',
+      'created_at',
+      'id',
+      'last_error',
+      'last_status_code',
+      'next_attempt_at',
+      'outbox_id',
+      'status',
+      'subscription_id',
+      'updated_at',
+    ]);
+  });
+
+  it('defaults the limit to 100 and caps it at 500', () => {
+    const { db } = setup();
+    for (let i = 1; i <= 120; i++) insertDelivery(db, { outbox_id: i, subscription_id: 'sub-a' });
+    // default caps the listing at 100
+    assert.equal(listDeliveries(db, {}).length, 100);
+    // an explicit limit under the max is honored
+    assert.equal(listDeliveries(db, { limit: 10 }).length, 10);
+    // an over-max limit is clamped to 500 (only 120 rows exist, so we assert the
+    // clamp via a request larger than the row count would return everything)
+    assert.equal(listDeliveries(db, { limit: 9999 }).length, 120);
+    // seed past the cap to prove the 500 ceiling is enforced
+    for (let i = 121; i <= 600; i++) insertDelivery(db, { outbox_id: i, subscription_id: 'sub-a' });
+    assert.equal(listDeliveries(db, { limit: 9999 }).length, 500);
   });
 });

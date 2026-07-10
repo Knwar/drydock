@@ -10,6 +10,7 @@ import {
   type AttentionSeverity,
   type CardSummary,
   type CardTotals,
+  type Delivery,
   type ProjectStats,
   type EventType,
   type Lane,
@@ -984,4 +985,39 @@ export function getSubscriptionSecret(db: DB, id: string): string | null {
     | { secret: string | null }
     | undefined;
   return row?.secret ?? null;
+}
+
+// ── deliveries: read-only observability over the fan-out state machine ──
+
+const DELIVERY_LIMIT_DEFAULT = 100;
+const DELIVERY_LIMIT_MAX = 500;
+
+/**
+ * List delivery rows (per outbox-event × subscription attempt state), newest
+ * first (id DESC). Optional filters — applied only when provided — narrow by
+ * subscription_id and/or status ('dead' is the DLQ view). The limit defaults to
+ * 100 and is capped at 500. Pure read (a prepared SELECT, no writes).
+ */
+export function listDeliveries(
+  db: DB,
+  opts: { subscription_id?: string; status?: string; limit?: number } = {},
+): Delivery[] {
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  if (opts.subscription_id !== undefined) {
+    where.push('subscription_id = ?');
+    params.push(opts.subscription_id);
+  }
+  if (opts.status !== undefined) {
+    where.push('status = ?');
+    params.push(opts.status);
+  }
+  const limit = Math.min(Math.max(1, opts.limit ?? DELIVERY_LIMIT_DEFAULT), DELIVERY_LIMIT_MAX);
+  const clause = where.length ? `WHERE ${where.join(' AND ')} ` : '';
+  return db
+    .prepare(
+      `SELECT id, outbox_id, subscription_id, status, attempts, last_status_code, last_error, next_attempt_at, created_at, updated_at
+       FROM deliveries ${clause}ORDER BY id DESC LIMIT ?`,
+    )
+    .all(...params, limit) as Delivery[];
 }
