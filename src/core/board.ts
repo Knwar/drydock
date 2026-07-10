@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import type { DB } from './db.js';
+import { assertSafeTarget } from './target-safety.js';
 import {
   EVENT_TYPES,
   LANES,
@@ -958,6 +959,9 @@ export function createSubscription(db: DB, input: CreateSubscriptionInput): Subs
   }
   if (!input.target) throw new Error('subscription target is required');
   assertEventFilter(input.event_filter);
+  // SSRF defense: reject dangerous targets (bad scheme, cloud-metadata, and —
+  // in strict mode — internal ranges) at creation, before the row is stored.
+  assertSafeTarget(input.target);
   const sub: Subscription = {
     id: shortId(),
     project_id: input.project_id ?? null,

@@ -894,9 +894,9 @@ describe('subscriptions (CRUD + redaction)', () => {
   it('list returns project-scoped subs plus globals; get returns null for missing', () => {
     const { db, project } = setup();
     const other = getOrCreateProject(db, '/tmp/other-sub-app');
-    const global = createSubscription(db, { project_id: null, kind: 'webhook', event_filter: '*', target: 'g' });
-    const mine = createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: '*', target: 'm' });
-    const theirs = createSubscription(db, { project_id: other.id, kind: 'webhook', event_filter: '*', target: 't' });
+    const global = createSubscription(db, { project_id: null, kind: 'webhook', event_filter: '*', target: 'https://example.com/g' });
+    const mine = createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: '*', target: 'https://example.com/m' });
+    const theirs = createSubscription(db, { project_id: other.id, kind: 'webhook', event_filter: '*', target: 'https://example.com/t' });
 
     const scoped = listSubscriptions(db, project.id).map((s) => s.id).sort();
     assert.deepEqual(scoped, [global.id, mine.id].sort()); // mine + global, not theirs
@@ -906,7 +906,7 @@ describe('subscriptions (CRUD + redaction)', () => {
 
   it('update toggles enabled and returns the redacted view', () => {
     const { db, project } = setup();
-    const sub = createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: '*', target: 'x', secret: 'k' });
+    const sub = createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: '*', target: 'https://example.com/x', secret: 'k' });
     assert.equal(sub.enabled, 1);
     const off = updateSubscription(db, sub.id, { enabled: false });
     assert.equal(off.enabled, 0);
@@ -918,7 +918,7 @@ describe('subscriptions (CRUD + redaction)', () => {
 
   it('delete removes the row and reports whether one was deleted', () => {
     const { db, project } = setup();
-    const sub = createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: '*', target: 'x' });
+    const sub = createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: '*', target: 'https://example.com/x' });
     assert.equal(deleteSubscription(db, sub.id), true);
     assert.equal(getSubscription(db, sub.id), null);
     assert.equal(deleteSubscription(db, sub.id), false); // already gone
@@ -927,15 +927,25 @@ describe('subscriptions (CRUD + redaction)', () => {
   it('validation throws on bad kind and on a bogus event_filter token', () => {
     const { db, project } = setup();
     assert.throws(
-      () => createSubscription(db, { project_id: project.id, kind: 'email' as never, event_filter: '*', target: 'x' }),
+      () => createSubscription(db, { project_id: project.id, kind: 'email' as never, event_filter: '*', target: 'https://example.com/x' }),
       /invalid subscription kind/,
     );
     assert.throws(
-      () => createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: 'create,bogus', target: 'x' }),
+      () => createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: 'create,bogus', target: 'https://example.com/x' }),
       /invalid event_filter token/,
     );
     // a real EventType list is accepted
-    assert.ok(createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: 'create,move,phase_done', target: 'x' }).id);
+    assert.ok(createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: 'create,move,phase_done', target: 'https://example.com/x' }).id);
+  });
+
+  it('rejects a cloud-metadata target at creation (SSRF defense → would be HTTP 400)', () => {
+    const { db, project } = setup();
+    assert.throws(
+      () => createSubscription(db, { project_id: project.id, kind: 'webhook', event_filter: '*', target: 'http://169.254.169.254/latest/meta-data/' }),
+      /metadata/i,
+    );
+    // and it stored nothing
+    assert.equal(listSubscriptions(db, project.id).length, 0);
   });
 });
 

@@ -421,12 +421,13 @@ describe('Dispatcher connector delivery', () => {
 
   it('connector sub with an unknown scheme → dead with last_error, transport NOT called', async () => {
     const { db, project } = setup();
-    createSubscription(db, {
-      project_id: project.id,
-      kind: 'connector',
-      event_filter: 'block',
-      target: 'foo:bar',
-    });
+    // Insert directly: `foo:bar` is a deliberately unsafe target (unknown scheme)
+    // that createSubscription now rejects at creation (SSRF defense). This test
+    // exercises the dispatcher's delivery-time fallback for such a target.
+    db.prepare(
+      `INSERT INTO subscriptions (id, project_id, kind, event_filter, target, secret, scopes, enabled, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('unsafe-sub', project.id, 'connector', 'block', 'foo:bar', null, null, 1, Date.now());
     appendEvent(db, {
       project_id: project.id,
       task_id: 'card-3',
