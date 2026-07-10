@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { appendEvent, createSubscription, getOrCreateProject } from '../core/board.js';
+import { appendEvent, getOrCreateProject } from '../core/board.js';
+import { createSubscription } from '../core/subscriptions.js';
 import { openDb, type DB } from '../core/db.js';
 import {
   BASE_BACKOFF_MS,

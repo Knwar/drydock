@@ -8,11 +8,9 @@ import {
   cardTotals,
   checkSubtask,
   createPhase,
-  createSubscription,
   createSyncLink,
   createTask,
   createTeamMember,
-  deleteSubscription,
   deleteTask,
   deleteTeamMember,
   detectSyncConflicts,
@@ -30,10 +28,6 @@ import {
   getPhases,
   getRecentEvents,
   getStats,
-  getSubscription,
-  getSubscriptionSecret,
-  listDeliveries,
-  listSubscriptions,
   listSyncLinks,
   listTeam,
   moveTask,
@@ -44,13 +38,21 @@ import {
   resolveBlocker,
   resolveSyncConflict,
   setSubtasks,
-  subscriptionMatches,
   taskContentHash,
-  updateSubscription,
   updateSyncLink,
   updateTask,
   updateTeamMember,
 } from './board.js';
+import {
+  createSubscription,
+  deleteSubscription,
+  getSubscription,
+  getSubscriptionSecret,
+  listDeliveries,
+  listSubscriptions,
+  subscriptionMatches,
+  updateSubscription,
+} from './subscriptions.js';
 import { migrate, openDb } from './db.js';
 import type { TaskEvent } from './types.js';
 
