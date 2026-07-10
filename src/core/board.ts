@@ -3,7 +3,6 @@ import { basename } from 'node:path';
 import type { DB } from './db.js';
 import { buildWhere } from './sql-util.js';
 import {
-  EVENT_TYPES,
   LANES,
   type AgentStat,
   type AttentionItem,
