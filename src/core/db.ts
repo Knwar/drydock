@@ -27,7 +27,8 @@ export function migrate(db: DB): void {
   if (!cols.includes('blocked_at')) db.exec('ALTER TABLE tasks ADD COLUMN blocked_at INTEGER');
   if (!cols.includes('blocked_reason')) db.exec('ALTER TABLE tasks ADD COLUMN blocked_reason TEXT');
   // Outbox event backbone (Phase 1): durable log the Phase 3 dispatcher will drain.
-  // status/attempts/last_attempt_at are written by Phase 3 — Phase 1 only creates the table.
+  // status is a FAN-OUT marker: pending (not yet fanned out) -> processed (delivery rows created).
+  // Per-target delivered/failed/dead lives in the deliveries table, not on the outbox row.
   db.exec(`CREATE TABLE IF NOT EXISTS outbox (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id      TEXT NOT NULL,
@@ -52,4 +53,20 @@ export function migrate(db: DB): void {
     enabled      INTEGER NOT NULL DEFAULT 1,
     created_at   INTEGER NOT NULL
   )`);
+  // Deliveries (Phase 3): per-(outbox event x subscription) delivery state machine + attempt log.
+  // The UNIQUE (outbox_id, subscription_id) makes fan-out idempotent; the dispatcher lands in later cards.
+  db.exec(`CREATE TABLE IF NOT EXISTS deliveries (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    outbox_id        INTEGER NOT NULL,
+    subscription_id  TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    last_status_code INTEGER,
+    last_error       TEXT,
+    next_attempt_at  INTEGER,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    UNIQUE (outbox_id, subscription_id)
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(status, next_attempt_at)');
 }
