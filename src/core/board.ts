@@ -870,6 +870,24 @@ export function getAttention(db: DB, projectId: string): AttentionItem[] {
     }
   }
 
+  // sync conflicts: derived purely from sync_link hash state (no remote fetch).
+  // One blocker item per conflicted link, keyed to its local card. detectSyncConflicts
+  // already skips links whose local card is gone, so getTask below is safe.
+  for (const { link, reason } of detectSyncConflicts(db, projectId)) {
+    const card = getTask(db, link.local_id);
+    items.push({
+      card_id: link.local_id,
+      title: card.title,
+      kind: 'sync_conflict',
+      severity: 'blocker',
+      reason,
+      since: link.last_synced_at ?? link.updated_at,
+      blocking: blocking.get(link.local_id) ?? 0,
+      agent: card.assigned_agent,
+      phase_id: card.phase_id,
+    });
+  }
+
   // a builder-raised blocker is an explicit "I need you" — it outranks other
   // same-severity (derived) signals, then most-depended-on, then oldest.
   const blockedFirst = (i: AttentionItem) => (i.kind === 'blocked' ? 0 : 1);
@@ -1179,4 +1197,48 @@ export function updateSyncLink(
   const link = getSyncLink(db, id);
   if (!link) throw new Error(`no such sync_link: ${id}`);
   return link;
+}
+
+/** A sync link whose local and remote both diverged from the last synced state. */
+export interface SyncConflict {
+  link: SyncLink;
+  reason: string; // human sentence for the Attention row
+}
+
+/**
+ * The project's CONFLICTED sync links — derived PURELY from stored hash state
+ * (no HTTP, no remote fetch). A link conflicts when ALL hold:
+ *   - it's been synced: local_hash != null AND last_synced_at != null
+ *   - local moved: taskContentHash(getTask(link.local_id)) != link.local_hash
+ *   - remote moved: remote_hash != null AND remote_hash != link.local_hash
+ *   - they disagree: currentLocalHash != remote_hash
+ * A link whose local card is gone (getTask throws) is skipped, not crashed —
+ * mirroring detectChanges in src/daemon/sync.ts.
+ */
+export function detectSyncConflicts(db: DB, projectId: string): SyncConflict[] {
+  const conflicts: SyncConflict[] = [];
+  for (const link of listSyncLinks(db, { project_id: projectId })) {
+    // never synced → not a conflict
+    if (link.local_hash == null || link.last_synced_at == null) continue;
+    // remote never moved (or unknown) → a plain local change, not a conflict
+    if (link.remote_hash == null || link.remote_hash === link.local_hash) continue;
+
+    let task: Task;
+    try {
+      task = getTask(db, link.local_id);
+    } catch {
+      // local card is gone — skip this link, don't crash the sweep.
+      continue;
+    }
+    const currentLocalHash = taskContentHash(task);
+    // local must have moved since last sync, and now disagree with remote
+    if (currentLocalHash === link.local_hash) continue;
+    if (currentLocalHash === link.remote_hash) continue;
+
+    conflicts.push({
+      link,
+      reason: `Sync conflict with ${link.provider}: local and remote both changed since last sync`,
+    });
+  }
+  return conflicts;
 }

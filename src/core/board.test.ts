@@ -17,6 +17,7 @@ import {
   deleteTeamMember,
   getSyncLink,
   getSyncLinkByLocal,
+  getTask,
   getActiveCards,
   getActivePhase,
   getAttention,
@@ -1103,5 +1104,63 @@ describe('sync_links (CRUD)', () => {
     const link = createSyncLink(db, { project_id: project.id, local_id: 'card-5', provider: 'jira' });
     migrate(db); // re-run: CREATE TABLE IF NOT EXISTS is a no-op, row survives
     assert.deepEqual(getSyncLink(db, link.id), link);
+  });
+});
+
+describe('sync_conflict attention', () => {
+  // Wire a link into a synced state, then mutate the card + remote hash to
+  // reach the requested state. `localHash` is the hash STORED on the link
+  // (== the card's content at last sync); `remoteHash` is the stored remote.
+  const link = (
+    db: ReturnType<typeof openDb>,
+    projectId: string,
+    localId: string,
+    patch: { local_hash?: string | null; remote_hash?: string | null; last_synced_at?: number | null },
+  ) => {
+    const l = createSyncLink(db, { project_id: projectId, local_id: localId, provider: 'jira' });
+    return updateSyncLink(db, l.id, patch);
+  };
+
+  it('flags a divergent link (local moved, remote moved, disagree) as a blocker', () => {
+    const { db, project } = setup();
+    const t = createTask(db, project.id, 'Both changed', { requirements: 'x' });
+    const synced = taskContentHash(getTask(db, t.id)); // content at last sync
+    link(db, project.id, t.id, { local_hash: synced, remote_hash: 'remote-moved', last_synced_at: 1000 });
+    // local moves after sync → current hash != synced != remote
+    updateTask(db, t.id, { requirements: 'y' });
+    const item = getAttention(db, project.id).find((i) => i.kind === 'sync_conflict');
+    assert.ok(item, 'expected a sync_conflict item');
+    assert.equal(item!.severity, 'blocker');
+    assert.equal(item!.card_id, t.id);
+    assert.match(item!.reason, /Sync conflict with jira/);
+  });
+
+  it('does not flag a converged link (current local hash == remote hash)', () => {
+    const { db, project } = setup();
+    const t = createTask(db, project.id, 'Converged', { requirements: 'x' });
+    const synced = taskContentHash(getTask(db, t.id));
+    updateTask(db, t.id, { requirements: 'agreed' });
+    const current = taskContentHash(getTask(db, t.id));
+    // remote landed on the SAME content the local moved to → no disagreement
+    link(db, project.id, t.id, { local_hash: synced, remote_hash: current, last_synced_at: 1000 });
+    assert.equal(getAttention(db, project.id).filter((i) => i.kind === 'sync_conflict').length, 0);
+  });
+
+  it('does not flag an unsynced link (local_hash / last_synced_at null)', () => {
+    const { db, project } = setup();
+    const t = createTask(db, project.id, 'Never synced', { requirements: 'x' });
+    // remote_hash set but no local_hash + no last_synced_at → never synced
+    link(db, project.id, t.id, { remote_hash: 'remote-moved' });
+    assert.equal(getAttention(db, project.id).filter((i) => i.kind === 'sync_conflict').length, 0);
+  });
+
+  it('does not flag a local-only change (remote unchanged)', () => {
+    const { db, project } = setup();
+    const t = createTask(db, project.id, 'Local only', { requirements: 'x' });
+    const synced = taskContentHash(getTask(db, t.id));
+    // remote never moved: remote_hash == local_hash
+    link(db, project.id, t.id, { local_hash: synced, remote_hash: synced, last_synced_at: 1000 });
+    updateTask(db, t.id, { requirements: 'y' }); // a normal local edit
+    assert.equal(getAttention(db, project.id).filter((i) => i.kind === 'sync_conflict').length, 0);
   });
 });
