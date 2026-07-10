@@ -1,5 +1,5 @@
 import type { DB } from '../core/db.js';
-import { getSubscriptionSecret, subscriptionMatches } from '../core/board.js';
+import { getSubscriptionSecret, subscriptionMatches } from '../core/subscriptions.js';
 import { LocalHTTPTransport, signDelivery, type DeliveryTransport } from './transport.js';
 import { resolveConnector, type ConnectorEvent } from './connectors.js';
 

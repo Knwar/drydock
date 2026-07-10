@@ -9,6 +9,7 @@ import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import * as board from '../core/board.js';
+import * as subscriptions from '../core/subscriptions.js';
 import { openDb } from '../core/db.js';
 import type { Project, Task } from '../core/types.js';
 import { Broadcaster } from './broadcast.js';
@@ -585,11 +586,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (pathname === '/subscriptions') {
     if (method === 'GET') {
       const projectId = url.searchParams.get('project_id');
-      return json(res, 200, board.listSubscriptions(db, projectId ?? undefined));
+      return json(res, 200, subscriptions.listSubscriptions(db, projectId ?? undefined));
     }
     if (method === 'POST') {
       const b = await readBody(req);
-      return json(res, 200, board.createSubscription(db, b));
+      return json(res, 200, subscriptions.createSubscription(db, b));
     }
   }
   // ── deliveries: read-only observability (listing + DLQ via ?status=dead) ──
@@ -597,7 +598,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const subscription_id = url.searchParams.get('subscription_id');
     const status = url.searchParams.get('status');
     const limitParam = url.searchParams.get('limit');
-    return json(res, 200, board.listDeliveries(db, {
+    return json(res, 200, subscriptions.listDeliveries(db, {
       subscription_id: subscription_id ?? undefined,
       status: status ?? undefined,
       limit: limitParam != null ? Number(limitParam) : undefined,
@@ -608,17 +609,17 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (subMatch) {
     const id = subMatch[1];
     if (method === 'GET') {
-      const sub = board.getSubscription(db, id);
+      const sub = subscriptions.getSubscription(db, id);
       if (!sub) return json(res, 404, { error: 'no such subscription' });
       return json(res, 200, sub);
     }
     if (method === 'PATCH') {
-      if (!board.getSubscription(db, id)) return json(res, 404, { error: 'no such subscription' });
+      if (!subscriptions.getSubscription(db, id)) return json(res, 404, { error: 'no such subscription' });
       const b = await readBody(req);
-      return json(res, 200, board.updateSubscription(db, id, { enabled: b.enabled }));
+      return json(res, 200, subscriptions.updateSubscription(db, id, { enabled: b.enabled }));
     }
     if (method === 'DELETE') {
-      if (!board.deleteSubscription(db, id)) return json(res, 404, { error: 'no such subscription' });
+      if (!subscriptions.deleteSubscription(db, id)) return json(res, 404, { error: 'no such subscription' });
       return json(res, 200, { deleted: id });
     }
   }
