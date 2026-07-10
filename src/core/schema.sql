@@ -92,6 +92,18 @@ CREATE TABLE IF NOT EXISTS outbox (  -- durable event log for fan-out delivery (
   last_attempt_at INTEGER                     -- Phase 3 dispatcher updates; null until first delivery attempt
 );
 
+CREATE TABLE IF NOT EXISTS subscriptions (  -- registry of "who wants which events" (Phase 3 dispatcher reads it)
+  id           TEXT PRIMARY KEY,           -- short id (same shortId convention as tasks/phases/team_members)
+  project_id   TEXT,                       -- nullable: null = applies to all projects
+  kind         TEXT NOT NULL CHECK (kind IN ('webhook','connector','bridge')),
+  event_filter TEXT NOT NULL,              -- comma-separated EventType values (create|move|assign|...) or '*'
+  target       TEXT NOT NULL,              -- where events are delivered (e.g. a URL for webhooks)
+  secret       TEXT,                       -- nullable: signing/auth secret (stored here for now)
+  scopes       TEXT,                       -- nullable: comma-separated scope tokens (consumed by the inbound API)
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  created_at   INTEGER NOT NULL            -- epoch ms
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_project_lane ON tasks(project_id, lane, position);
 CREATE INDEX IF NOT EXISTS idx_phases_project ON phases(project_id, position);
 CREATE INDEX IF NOT EXISTS idx_events_recent ON task_events(project_id, created_at);
