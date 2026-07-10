@@ -76,24 +76,29 @@ export interface CardSummary {
   subs: { done: number; total: number } | null;
 }
 
-export type EventType =
-  | 'create'
-  | 'move'
-  | 'assign'
-  | 'note'
-  | 'tool'
-  | 'build_start'
-  | 'build_end'
-  | 'review'
-  | 'subtasks'
-  | 'check'
-  | 'delete'
-  | 'redirect'
-  | 'block'
-  | 'unblock'
-  | 'phase_create'
-  | 'phase_activate'
-  | 'phase_done';
+/** The canonical set of event types, the single source of truth for the union
+ *  below and for runtime validation (e.g. subscription event_filter tokens). */
+export const EVENT_TYPES = [
+  'create',
+  'move',
+  'assign',
+  'note',
+  'tool',
+  'build_start',
+  'build_end',
+  'review',
+  'subtasks',
+  'check',
+  'delete',
+  'redirect',
+  'block',
+  'unblock',
+  'phase_create',
+  'phase_activate',
+  'phase_done',
+] as const;
+
+export type EventType = (typeof EVENT_TYPES)[number];
 
 export interface TaskEvent {
   id: number;
@@ -154,6 +159,37 @@ export type AttentionKind =
   | 'awaiting_review'
   | 'needs_spec';
 export type AttentionSeverity = 'blocker' | 'warn' | 'info';
+
+export const SUBSCRIPTION_KINDS = ['webhook', 'connector', 'bridge'] as const;
+export type SubscriptionKind = (typeof SUBSCRIPTION_KINDS)[number];
+
+/** Full internal subscription row — includes the raw secret. Never returned
+ *  over any HTTP/MCP API; use SubscriptionView for public reads. */
+export interface Subscription {
+  id: string;
+  project_id: string | null; // null = applies to all projects
+  kind: SubscriptionKind;
+  event_filter: string; // '*' or comma-separated EventType list
+  target: string; // delivery target (e.g. a webhook URL)
+  secret: string | null; // signing/auth secret — redacted in the view
+  scopes: string | null; // comma-separated scope tokens (enforced in a later phase)
+  enabled: number; // 0 | 1
+  created_at: number;
+}
+
+/** Public/redacted subscription — every field EXCEPT the raw secret, which is
+ *  collapsed to has_secret. This is the ONLY shape board.ts hands to callers. */
+export interface SubscriptionView {
+  id: string;
+  project_id: string | null;
+  kind: SubscriptionKind;
+  event_filter: string;
+  target: string;
+  has_secret: boolean; // whether a secret is set (the value itself is never exposed)
+  scopes: string | null;
+  enabled: number;
+  created_at: number;
+}
 
 /** One card that needs a human decision, for the overlay's Attention queue. */
 export interface AttentionItem {
