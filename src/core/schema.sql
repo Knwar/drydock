@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS projects (
   id          TEXT PRIMARY KEY,           -- uuid
   name        TEXT NOT NULL,
   root_path   TEXT NOT NULL UNIQUE,       -- absolute cwd, for get_or_create
+  parent_id   TEXT REFERENCES projects(id),  -- workspace this vertical belongs to, or null (top-level)
   created_at  INTEGER NOT NULL
 );
 

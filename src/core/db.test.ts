@@ -67,6 +67,23 @@ describe('migrate', () => {
     db.close();
   });
 
+  it('adds parent_id and its index to a legacy projects table', () => {
+    const db = new Database(':memory:');
+    // The projects table as it existed before workspaces (no parent_id).
+    db.exec(`CREATE TABLE projects (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL
+    )`);
+    migrate(db);
+    const cols = (db.pragma('table_info(projects)') as { name: string }[]).map((c) => c.name);
+    assert.ok(cols.includes('parent_id'));
+    const idx = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_projects_parent'")
+      .get();
+    assert.ok(idx, 'migrate() should create idx_projects_parent');
+    assert.doesNotThrow(() => migrate(db)); // idempotent
+    db.close();
+  });
+
   it('is a no-op when the newer columns already exist', () => {
     const db = new Database(':memory:');
     // A DB already carrying subtasks: migrate()'s guards must skip re-adding it.

@@ -27,6 +27,11 @@ export function migrate(db: DB): void {
   if (!cols.includes('skill')) db.exec('ALTER TABLE tasks ADD COLUMN skill TEXT');
   if (!cols.includes('blocked_at')) db.exec('ALTER TABLE tasks ADD COLUMN blocked_at INTEGER');
   if (!cols.includes('blocked_reason')) db.exec('ALTER TABLE tasks ADD COLUMN blocked_reason TEXT');
+  // Workspace verticals: parent_id on projects created before it existed.
+  const projectCols = (db.pragma('table_info(projects)') as { name: string }[]).map((c) => c.name);
+  if (!projectCols.includes('parent_id')) db.exec('ALTER TABLE projects ADD COLUMN parent_id TEXT');
+  // Index lives here, not schema.sql: on a legacy DB schema.sql runs before the ALTER above.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_id)');
   // Loop-prevention origin tag (Phase 5): add to outbox tables created before it existed.
   const outboxCols = (db.pragma('table_info(outbox)') as { name: string }[]).map((c) => c.name);
   if (!outboxCols.includes('origin'))
