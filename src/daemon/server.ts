@@ -731,6 +731,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         card_id: removed.id,
       });
       flushEvents();
+      for (const id of removed.unblocked) announce(board.getTask(db, id));
       return json(res, 200, { deleted: removed.id });
     }
     const b = await readBody(req);

@@ -1458,4 +1458,29 @@ describe('cross-board depends_on', () => {
     assert.equal(ghost.position < free.position, true);
     cleanup();
   });
+
+  it('deleting a card on A strips it from a B dependent so B becomes next', () => {
+    const { db, a, b, cleanup } = xbSetup();
+    const auth = createTask(db, a.id, 'API auth');
+    const login = createTask(db, b.id, 'Mobile login', { depends_on: [auth.id] });
+    assert.equal(getNextCard(db, b.id), null);
+    deleteTask(db, auth.id);
+    assert.equal(getTask(db, login.id).depends_on, null);
+    assert.equal(getNextCard(db, b.id)!.id, login.id);
+    cleanup();
+  });
+
+  it('deleteTask reports every changed dependent (all boards) in unblocked', () => {
+    const { db, a, b, cleanup } = xbSetup();
+    const auth = createTask(db, a.id, 'API auth');
+    const other = createTask(db, a.id, 'API other');
+    const sameBoard = createTask(db, a.id, 'API tokens', { depends_on: [auth.id, other.id] });
+    const login = createTask(db, b.id, 'Mobile login', { depends_on: [auth.id] });
+    const unrelated = createTask(db, b.id, 'Mobile unrelated', { depends_on: [other.id] });
+    const removed = deleteTask(db, auth.id);
+    assert.deepEqual([...removed.unblocked].sort(), [sameBoard.id, login.id].sort());
+    assert.equal(getTask(db, sameBoard.id).depends_on, JSON.stringify([other.id]));
+    assert.equal(getTask(db, unrelated.id).depends_on, JSON.stringify([other.id]));
+    cleanup();
+  });
 });
