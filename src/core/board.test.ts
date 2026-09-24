@@ -70,6 +70,15 @@ describe('projects', () => {
     assert.equal(again.name, 'Demo App');
   });
 
+  it('dedups a root_path that differs only by a trailing slash (UI picker vs init script)', () => {
+    // The macOS folder picker hands back a trailing slash; init-project.sh strips
+    // it via `cd … && pwd`. Both must map to the same project, not register twice.
+    const { db, project } = setup(); // registered '/tmp/demo-app'
+    const again = getOrCreateProject(db, '/tmp/demo-app/');
+    assert.equal(again.id, project.id);
+    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM projects').get() as { n: number }).n, 1);
+  });
+
   it('derives name from path when omitted', () => {
     const { db } = setup();
     const p = getOrCreateProject(db, '/tmp/other-app');

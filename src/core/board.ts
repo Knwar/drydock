@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
 import type { DB } from './db.js';
 import { buildWhere } from './sql-util.js';
 import {
@@ -114,15 +114,24 @@ export function appendEvent(
   };
 }
 
+/** Canonical form of a project's root path — the dedup key. Strips trailing
+ *  slashes and collapses `.`/`..` so the SAME folder registered via the UI
+ *  folder picker (macOS hands back a trailing slash) and via init-project.sh
+ *  (`cd … && pwd`) map to one row instead of two. */
+function normalizeRoot(rootPath: string): string {
+  return resolve(rootPath);
+}
+
 export function getOrCreateProject(db: DB, rootPath: string, name?: string): Project {
-  const existing = db.prepare('SELECT * FROM projects WHERE root_path = ?').get(rootPath) as
+  const root = normalizeRoot(rootPath);
+  const existing = db.prepare('SELECT * FROM projects WHERE root_path = ?').get(root) as
     | Project
     | undefined;
   if (existing) return existing;
   const project: Project = {
     id: randomUUID(),
-    name: name ?? basename(rootPath),
-    root_path: rootPath,
+    name: name ?? basename(root),
+    root_path: root,
     created_at: now(),
   };
   db.prepare('INSERT INTO projects (id, name, root_path, created_at) VALUES (?, ?, ?, ?)').run(
@@ -136,7 +145,7 @@ export function getOrCreateProject(db: DB, rootPath: string, name?: string): Pro
 
 /** Read-only lookup by root path — never creates (for hooks/transient cwds). */
 export function findProject(db: DB, rootPath: string): Project | undefined {
-  return db.prepare('SELECT * FROM projects WHERE root_path = ?').get(rootPath) as
+  return db.prepare('SELECT * FROM projects WHERE root_path = ?').get(normalizeRoot(rootPath)) as
     | Project
     | undefined;
 }
