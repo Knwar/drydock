@@ -816,6 +816,7 @@ export function createTeamMember(
     name,
     skill: opts.skill ?? null,
     color: opts.color ?? null,
+    avatar: null,
     created_at: now(),
   };
   db.prepare('INSERT INTO team_members (id, name, skill, color, created_at) VALUES (?, ?, ?, ?, ?)').run(
@@ -835,14 +836,39 @@ export function updateTeamMember(
   id: string,
   patch: Partial<Pick<TeamMember, 'name' | 'skill' | 'color'>>,
 ): TeamMember {
-  const sets: string[] = [];
-  const values: (string | null)[] = [];
-  for (const field of TEAM_FIELDS) {
-    if (!(field in patch)) continue;
-    sets.push(`${field} = ?`);
-    values.push(patch[field] ?? null);
-  }
-  if (sets.length) db.prepare(`UPDATE team_members SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);
+  return db.transaction(() => {
+    const before = db.prepare('SELECT * FROM team_members WHERE id = ?').get(id) as TeamMember | undefined;
+    if (!before) throw new Error(`no such team member: ${id}`);
+    const next = { ...patch };
+    if ('name' in next) {
+      const name = String(next.name ?? '').trim();
+      if (!name) throw new Error('name must not be empty');
+      if (db.prepare('SELECT 1 FROM team_members WHERE name = ? AND id != ?').get(name, id))
+        throw new Error(`a team member named "${name}" already exists`);
+      next.name = name;
+    }
+    const sets: string[] = [];
+    const values: (string | null)[] = [];
+    for (const field of TEAM_FIELDS) {
+      if (!(field in next)) continue;
+      sets.push(`${field} = ?`);
+      values.push(next[field] ?? null);
+    }
+    if (sets.length) db.prepare(`UPDATE team_members SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);
+    // A rename carries the agent's history over: every place that records the
+    // agent by label (= member name), across all projects.
+    if (next.name !== undefined && next.name !== before.name) {
+      db.prepare('UPDATE card_activity SET agent = ? WHERE agent = ?').run(next.name, before.name);
+      db.prepare('UPDATE tasks SET assigned_agent = ? WHERE assigned_agent = ?').run(next.name, before.name);
+      db.prepare('UPDATE task_events SET agent = ? WHERE agent = ?').run(next.name, before.name);
+    }
+    return db.prepare('SELECT * FROM team_members WHERE id = ?').get(id) as TeamMember;
+  })();
+}
+
+/** Set (or clear, with null) a member's avatar image file name. */
+export function setTeamAvatar(db: DB, id: string, fileName: string | null): TeamMember {
+  db.prepare('UPDATE team_members SET avatar = ? WHERE id = ?').run(fileName, id);
   const member = db.prepare('SELECT * FROM team_members WHERE id = ?').get(id) as TeamMember | undefined;
   if (!member) throw new Error(`no such team member: ${id}`);
   return member;

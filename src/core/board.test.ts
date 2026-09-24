@@ -48,6 +48,7 @@ import {
   resolveSyncConflict,
   setAutopilot,
   setSubtasks,
+  setTeamAvatar,
   updatePhase,
   taskContentHash,
   updateSyncLink,
@@ -1145,6 +1146,65 @@ describe('team roster', () => {
     assert.equal(team.length, 1);
     assert.equal(team[0].name, 'Turing');
     assert.equal(team[0].skill, null);
+  });
+
+  it('rename carries history over: card_activity / tasks / task_events, across projects', (t) => {
+    const { db, project } = setup();
+    t.after(() => db.close());
+    const other = getOrCreateProject(db, '/tmp/other-app', 'Other');
+    const ada = createTeamMember(db, 'Ada');
+    createTeamMember(db, 'Turing');
+    for (const p of [project, other]) {
+      const task = createTask(db, p.id, 'card', { requirements: 'x' });
+      assignCard(db, task.id, 'Ada', `.trees/${task.id}`, `card/${task.id}`);
+      appendEvent(db, { project_id: p.id, task_id: task.id, type: 'note', agent: 'Ada' });
+      recordActivity(db, { project_id: p.id, task_id: task.id, agent: 'Ada', tokens: 100, tokens_out: 10, lines_added: 1, lines_removed: 0, ms: 1 });
+      recordActivity(db, { project_id: p.id, task_id: task.id, agent: 'Turing', tokens: 50, tokens_out: 5, lines_added: 1, lines_removed: 0, ms: 1 });
+    }
+
+    const renamed = updateTeamMember(db, ada.id, { name: '  Grace  ' });
+    assert.equal(renamed.name, 'Grace'); // trimmed
+    const count = (sql: string, name: string) => (db.prepare(sql).get(name) as { n: number }).n;
+    for (const [sql, expected] of [
+      ['SELECT COUNT(*) AS n FROM card_activity WHERE agent = ?', 2],
+      ['SELECT COUNT(*) AS n FROM tasks WHERE assigned_agent = ?', 2],
+      ['SELECT COUNT(*) AS n FROM task_events WHERE agent = ?', 2],
+    ] as const) {
+      assert.equal(count(sql, 'Ada'), 0, sql);
+      assert.ok(count(sql, 'Grace') >= expected, sql);
+    }
+    assert.equal(count('SELECT COUNT(*) AS n FROM card_activity WHERE agent = ?', 'Turing'), 2); // others untouched
+    for (const p of [project, other]) {
+      const agents = getStats(db, p.id).agents.map((a) => a.agent).sort();
+      assert.deepEqual(agents, ['Grace', 'Turing']);
+    }
+  });
+
+  it('rejects duplicate and empty names without changing anything', (t) => {
+    const { db, project } = setup();
+    t.after(() => db.close());
+    const ada = createTeamMember(db, 'Ada');
+    createTeamMember(db, 'Turing');
+    const task = createTask(db, project.id, 'card', { requirements: 'x' });
+    recordActivity(db, { project_id: project.id, task_id: task.id, agent: 'Ada', tokens: 1, tokens_out: 0, lines_added: 0, lines_removed: 0, ms: 1 });
+    assert.throws(() => updateTeamMember(db, ada.id, { name: 'Turing' }), /already exists/);
+    assert.throws(() => updateTeamMember(db, ada.id, { name: '  Turing ' }), /already exists/);
+    assert.throws(() => updateTeamMember(db, ada.id, { name: '   ' }), /empty/);
+    assert.throws(() => updateTeamMember(db, ada.id, { name: '' }), /empty/);
+    assert.equal(listTeam(db).find((m) => m.id === ada.id)!.name, 'Ada');
+    assert.equal(getStats(db, project.id).agents[0].agent, 'Ada');
+    assert.equal(updateTeamMember(db, ada.id, { name: 'Ada' }).name, 'Ada'); // own name is fine
+  });
+
+  it('setTeamAvatar persists and clears the avatar file name', (t) => {
+    const { db } = setup();
+    t.after(() => db.close());
+    const ada = createTeamMember(db, 'Ada');
+    assert.equal(ada.avatar, null);
+    assert.equal(setTeamAvatar(db, ada.id, `${ada.id}-abc.png`).avatar, `${ada.id}-abc.png`);
+    assert.equal(listTeam(db)[0].avatar, `${ada.id}-abc.png`);
+    assert.equal(setTeamAvatar(db, ada.id, null).avatar, null);
+    assert.throws(() => setTeamAvatar(db, 'nope', null), /no such team member/);
   });
 });
 

@@ -40,4 +40,7 @@ export function migrate(db: DB): void {
   const outboxCols = (db.pragma('table_info(outbox)') as { name: string }[]).map((c) => c.name);
   if (!outboxCols.includes('origin'))
     db.exec("ALTER TABLE outbox ADD COLUMN origin TEXT NOT NULL DEFAULT 'local'");
+  // Agent profile avatars: image file name on team members created before it existed.
+  const teamCols = (db.pragma('table_info(team_members)') as { name: string }[]).map((c) => c.name);
+  if (!teamCols.includes('avatar')) db.exec('ALTER TABLE team_members ADD COLUMN avatar TEXT');
 }

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
@@ -535,6 +535,40 @@ async function readBody(req: IncomingMessage): Promise<any> {
   return raw ? JSON.parse(raw) : {};
 }
 
+/** Raw request bytes, capped at `max` (PayloadTooLargeError → 413, like readBody). */
+async function readRawBody(req: IncomingMessage, max: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of req) {
+    bytes += (chunk as Buffer).length;
+    if (bytes > max) throw new PayloadTooLargeError();
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+// ── agent avatars: uploaded images stored beside the DB ─────────────
+const AVATAR_DIR = join(dirname(DB_PATH), 'avatars');
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024; // 2 MB
+const AVATAR_NAME = /^[A-Za-z0-9_-]+\.(png|jpg|webp)$/;
+const AVATAR_TYPES: Record<string, { ext: string; matches: (b: Buffer) => boolean }> = {
+  'image/png': {
+    ext: 'png',
+    matches: (b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  },
+  'image/jpeg': { ext: 'jpg', matches: (b) => b.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) },
+  'image/webp': {
+    ext: 'webp',
+    matches: (b) => b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP',
+  },
+};
+const AVATAR_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' };
+
+/** Delete an avatar file by stored name (ignores missing / malformed names). */
+function removeAvatarFile(name: string | null | undefined): void {
+  if (name && AVATAR_NAME.test(name)) rmSync(join(AVATAR_DIR, name), { force: true });
+}
+
 const MIME: Record<string, string> = {
   '.html': 'text/html',
   '.js': 'text/javascript',
@@ -810,12 +844,53 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (teamMatch) {
     const id = teamMatch[1];
     if (method === 'DELETE') {
+      const member = board.listTeam(db).find((m) => m.id === id);
       board.deleteTeamMember(db, id);
+      removeAvatarFile(member?.avatar);
       return json(res, 200, { deleted: id });
     }
     if (method === 'PATCH') {
       const b = await readBody(req);
-      return json(res, 200, board.updateTeamMember(db, id, b));
+      try {
+        return json(res, 200, board.updateTeamMember(db, id, b));
+      } catch (err) {
+        const msg = (err as Error).message;
+        return json(res, msg.startsWith('no such team member') ? 404 : 400, { error: msg });
+      }
+    }
+  }
+  const avatarMatch = pathname.match(/^\/team\/([^/]+)\/avatar$/);
+  if (avatarMatch && (method === 'POST' || method === 'DELETE')) {
+    if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+    const id = avatarMatch[1];
+    const member = board.listTeam(db).find((m) => m.id === id);
+    if (!member) return json(res, 404, { error: `no such team member: ${id}` });
+    if (method === 'DELETE') {
+      removeAvatarFile(member.avatar);
+      return json(res, 200, board.setTeamAvatar(db, id, null));
+    }
+    const type = AVATAR_TYPES[String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase()];
+    if (!type) return json(res, 400, { error: 'content-type must be image/png, image/jpeg or image/webp' });
+    const bytes = await readRawBody(req, MAX_AVATAR_BYTES);
+    if (!type.matches(bytes)) return json(res, 400, { error: 'image bytes do not match content-type' });
+    const fileName = `${id}-${randomBytes(8).toString('hex')}.${type.ext}`;
+    if (!AVATAR_NAME.test(fileName)) return json(res, 400, { error: 'invalid member id' });
+    mkdirSync(AVATAR_DIR, { recursive: true });
+    writeFileSync(join(AVATAR_DIR, fileName), bytes);
+    removeAvatarFile(member.avatar);
+    return json(res, 200, board.setTeamAvatar(db, id, fileName));
+  }
+  if (method === 'GET' && pathname.startsWith('/avatars/')) {
+    const name = pathname.slice('/avatars/'.length);
+    const m = name.match(AVATAR_NAME);
+    if (!m) return json(res, 404, { error: 'not found' });
+    try {
+      const content = await readFile(join(AVATAR_DIR, name));
+      res.writeHead(200, { 'content-type': AVATAR_MIME[m[1]], 'cache-control': 'no-cache' });
+      res.end(content);
+      return;
+    } catch {
+      return json(res, 404, { error: 'not found' });
     }
   }
 
