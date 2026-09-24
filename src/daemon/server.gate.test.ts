@@ -1,31 +1,12 @@
 import assert from 'node:assert/strict';
-import { type ChildProcess, spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { createServer } from 'node:http';
-import { networkInterfaces, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { networkInterfaces } from 'node:os';
 import { after, before, describe, it } from 'node:test';
+import { startDaemon, type TestDaemon } from './test-daemon.js';
 
 // End-to-end coverage for the daemon's network boundary: the loopback-OR-token
 // gate on the new /subscriptions* + /deliveries routes, and the readBody size
 // cap. We spawn the REAL server (server.ts runs its bootstrap on import) on a
 // random port so the assertions exercise the shipped code path.
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const SERVER = join(HERE, 'server.ts');
-
-/** A free TCP port (bind :0, read it back, release it). */
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const s = createServer();
-    s.listen(0, '127.0.0.1', () => {
-      const { port } = s.address() as { port: number };
-      s.close(() => resolve(port));
-    });
-    s.on('error', reject);
-  });
-}
 
 /** First non-internal IPv4 address, if the box has one (lets us drive a real
  *  NON-loopback connection). Null on hosts with only loopback. */
@@ -38,51 +19,26 @@ function nonLoopbackIPv4(): string | null {
   return null;
 }
 
-function waitForUp(base: string, timeoutMs = 8000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const tick = async () => {
-      try {
-        const res = await fetch(`${base}/config`, { signal: AbortSignal.timeout(500) });
-        if (res.ok) return resolve();
-      } catch {
-        /* not up yet */
-      }
-      if (Date.now() > deadline) return reject(new Error('daemon did not start in time'));
-      setTimeout(tick, 100);
-    };
-    tick();
-  });
-}
-
 describe('daemon network boundary', () => {
-  let proc: ChildProcess;
-  let dir: string;
+  let daemon: TestDaemon | undefined;
   let port: number;
   const loopbackBase = () => `http://127.0.0.1:${port}`;
 
   before(async () => {
-    port = await freePort();
-    dir = mkdtempSync(join(tmpdir(), 'kankan-gate-'));
-    proc = spawn('npx', ['tsx', SERVER], {
+    daemon = await startDaemon({
       env: {
-        ...process.env,
-        PORT: String(port),
         // Bind all interfaces so the non-loopback 401 test can actually connect
         // from a LAN IP; the gate must still deny it.
         HOST: '0.0.0.0',
-        DB_PATH: join(dir, 'board.db'),
         KANKAN_DISPATCHER: '0',
         KANKAN_TERMINAL: '', // no per-start token → non-loopback callers are token-less
       },
-      stdio: 'ignore',
     });
-    await waitForUp(loopbackBase());
+    port = daemon.port;
   });
 
   after(async () => {
-    proc.kill('SIGKILL');
-    rmSync(dir, { recursive: true, force: true });
+    await daemon?.stop();
   });
 
   it('allows loopback callers on /subscriptions (how the MCP tools + hooks reach it, tokenless)', async () => {

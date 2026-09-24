@@ -1,51 +1,17 @@
 import assert from 'node:assert/strict';
-import { type ChildProcess, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
+import { startDaemon, type TestDaemon } from './test-daemon.js';
 
 // End-to-end coverage for the workspace/vertical HTTP routes (+ the /phase/:id
 // position guard). Spawns the REAL daemon on a random port with a temp DB,
-// same pattern as server.gate.test.ts.
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const SERVER = join(HERE, 'server.ts');
-
-/** A free TCP port (bind :0, read it back, release it). */
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const s = createServer();
-    s.listen(0, '127.0.0.1', () => {
-      const { port } = s.address() as { port: number };
-      s.close(() => resolve(port));
-    });
-    s.on('error', reject);
-  });
-}
-
-function waitForUp(base: string, timeoutMs = 8000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const tick = async () => {
-      try {
-        const res = await fetch(`${base}/config`, { signal: AbortSignal.timeout(500) });
-        if (res.ok) return resolve();
-      } catch {
-        /* not up yet */
-      }
-      if (Date.now() > deadline) return reject(new Error('daemon did not start in time'));
-      setTimeout(tick, 100);
-    };
-    tick();
-  });
-}
+// via the shared test-daemon helper (same as server.gate.test.ts).
 
 describe('daemon workspace/vertical routes', () => {
-  let proc: ChildProcess;
+  let daemon: TestDaemon | undefined;
+  const sockets: WebSocket[] = [];
   let dir: string;
   let port: number;
   let wsRoot: string;
@@ -62,36 +28,28 @@ describe('daemon workspace/vertical routes', () => {
     });
 
   before(async () => {
-    port = await freePort();
-    dir = mkdtempSync(join(tmpdir(), 'kankan-ws-'));
+    daemon = await startDaemon({
+      env: { HOST: '127.0.0.1', KANKAN_DISPATCHER: '0', KANKAN_TERMINAL: '' },
+    });
+    port = daemon.port;
+    dir = daemon.dbDir;
     wsRoot = join(dir, 'workspace');
     vRoot = join(wsRoot, 'api');
     mkdirSync(vRoot, { recursive: true });
     // a set-up workspace (what `kankan init` writes) → visible in /projects
     writeFileSync(join(wsRoot, '.mcp.json'), '{}');
-    proc = spawn('npx', ['tsx', SERVER], {
-      env: {
-        ...process.env,
-        PORT: String(port),
-        HOST: '127.0.0.1',
-        DB_PATH: join(dir, 'board.db'),
-        KANKAN_DISPATCHER: '0',
-        KANKAN_TERMINAL: '',
-      },
-      stdio: 'ignore',
-    });
-    await waitForUp(base());
     const res = await get(`/project?root=${encodeURIComponent(wsRoot)}`);
     workspaceId = ((await res.json()) as { project_id: string }).project_id;
   });
 
   after(async () => {
-    proc.kill('SIGKILL');
-    rmSync(dir, { recursive: true, force: true });
+    for (const ws of sockets) ws.terminate();
+    await daemon?.stop();
   });
 
   it('POST /vertical creates a vertical and broadcasts verticals to the workspace', async () => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?project=${workspaceId}`);
+    sockets.push(ws);
     const got = new Promise<any>((resolve) =>
       ws.on('message', (raw) => {
         const msg = JSON.parse(raw.toString());
@@ -191,6 +149,7 @@ describe('daemon workspace/vertical routes', () => {
     const v2 = ((await v.json()) as { project_id: string }).project_id;
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?project=${ws2}`);
+    sockets.push(ws);
     const got = new Promise<any>((resolve) =>
       ws.on('message', (raw) => {
         const msg = JSON.parse(raw.toString());
