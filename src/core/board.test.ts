@@ -52,6 +52,7 @@ import {
   setAutopilot,
   setSubtasks,
   setTeamAvatar,
+  suggestCardPlacement,
   updatePhase,
   taskContentHash,
   updateSyncLink,
@@ -1950,5 +1951,88 @@ describe('home view reads', () => {
     assert.equal(mobileOnly.lines_added, 20);
     assert.equal(mobileOnly.cards, 1);
     assert.equal(mobileOnly.hours, 0.1);
+  });
+});
+
+describe('suggestCardPlacement', () => {
+  const targets = [
+    { key: 'web', folder: 'apps/web' },
+    { key: 'mobile', folder: 'apps/mobile' },
+    { key: 'hooks', folder: 'apps/webhooks' },
+  ];
+
+  function withEdits(db: ReturnType<typeof setup>['db'], projectId: string, title: string, files: string[], tool = 'Edit') {
+    const card = createTask(db, projectId, title);
+    for (const file of files) appendEvent(db, { project_id: projectId, task_id: card.id, type: 'tool', payload: { tool, file } });
+    return card;
+  }
+
+  it('suggests by edited folders, ignoring Bash and bad payloads, over open cards only', (t) => {
+    const { db, project } = setup();
+    t.after(() => db.close());
+    const p = project.id;
+    const web = withEdits(db, p, 'Checkout', ['apps/web/checkout/a.ts', 'apps/web/checkout/b.ts', 'apps/web/checkout/a.ts']);
+    appendEvent(db, { project_id: p, task_id: web.id, type: 'tool', payload: { tool: 'Bash', file: 'apps/mobile/x npm test' } });
+    db.prepare(`INSERT INTO task_events (project_id, task_id, type, payload, created_at) VALUES (?, ?, 'tool', '{not json', 0)`).run(p, web.id);
+    const mobile = withEdits(db, p, 'Push', ['apps/mobile/push.ts'], 'Write');
+    const mixed = withEdits(db, p, 'Mixed', ['apps/web/1', 'apps/web/2', 'apps/web/3', 'apps/mobile/1', 'apps/mobile/2']);
+    const bash = withEdits(db, p, 'Bash only', ['npm test'], 'Bash');
+    const none = createTask(db, p, 'Untouched');
+    const root = withEdits(db, p, 'Root', ['package.json', 'README.md', 'package-lock.json', 'apps/web/x.ts'], 'MultiEdit');
+    const done = withEdits(db, p, 'Shipped', ['apps/web/done.ts']);
+    moveTask(db, done.id, 'done');
+    const inProgress = withEdits(db, p, 'Hooks', ['apps/webhooks/stripe.ts', 'apps/web/page.ts'], 'NotebookEdit');
+    moveTask(db, inProgress.id, 'in_progress');
+
+    const out = suggestCardPlacement(db, p, targets);
+    const by = new Map(out.map((r) => [r.card.id, r]));
+    assert.ok(!by.has(done.id));
+    assert.deepEqual(
+      out.map((r) => r.card.id),
+      [web.id, mobile.id, mixed.id, bash.id, none.id, root.id, inProgress.id],
+    );
+    assert.deepEqual(by.get(web.id), {
+      card: { id: web.id, title: 'Checkout', lane: 'backlog' },
+      suggestion: 'web',
+      confidence: 'strong',
+      evidence: 'apps/web',
+      files: 2,
+    });
+    assert.equal(by.get(mobile.id)!.suggestion, 'mobile');
+    assert.equal(by.get(mobile.id)!.confidence, 'strong');
+    assert.deepEqual(
+      { s: by.get(mixed.id)!.suggestion, c: by.get(mixed.id)!.confidence, f: by.get(mixed.id)!.files },
+      { s: 'web', c: 'mixed', f: 5 },
+    );
+    for (const id of [bash.id, none.id]) {
+      const r = by.get(id)!;
+      assert.deepEqual([r.suggestion, r.confidence, r.evidence, r.files], [null, 'none', 'no file history', 0]);
+    }
+    const r = by.get(root.id)!;
+    assert.deepEqual([r.suggestion, r.confidence, r.evidence], [null, 'mixed', 'touches shared files (package.json)']);
+    // segment-aware: apps/webhooks is not apps/web, so a 1/1 tie goes to the earlier target
+    const h = by.get(inProgress.id)!;
+    assert.deepEqual([h.suggestion, h.confidence, h.files], ['web', 'mixed', 2]);
+    assert.equal(suggestCardPlacement(db, p, [targets[2], targets[0]]).find((x) => x.card.id === inProgress.id)!.suggestion, 'hooks');
+  });
+
+  it('matches the longest prefix, root target lowest, and truncated 80-char paths', (t) => {
+    const { db, project } = setup();
+    t.after(() => db.close());
+    const p = project.id;
+    const long = ('apps/web/' + 'deeply/nested/'.repeat(10)).slice(0, 80);
+    assert.equal(long.length, 80);
+    const card = withEdits(db, p, 'Long', [long, 'apps/web/checkout/pay.ts', 'package.json']);
+    const out = suggestCardPlacement(db, p, [
+      { key: 'root', folder: '' },
+      { key: 'web', folder: 'apps/web' },
+      { key: 'checkout', folder: 'apps/web/checkout' },
+    ]);
+    assert.equal(out[0].card.id, card.id);
+    // long → web, pay.ts → checkout, package.json → root: 1/1/1 tie → earliest target
+    assert.deepEqual([out[0].suggestion, out[0].confidence], ['root', 'mixed']);
+    const [only] = suggestCardPlacement(db, p, [{ key: 'web', folder: 'apps/web' }]);
+    assert.deepEqual([only.suggestion, only.evidence, only.files], ['web', 'apps/web', 3]);
+    assert.equal(only.confidence, 'mixed'); // 2/3 < 75%
   });
 });
