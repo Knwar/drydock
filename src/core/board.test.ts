@@ -2035,4 +2035,23 @@ describe('suggestCardPlacement', () => {
     assert.deepEqual([only.suggestion, only.evidence, only.files], ['web', 'apps/web', 3]);
     assert.equal(only.confidence, 'mixed'); // 2/3 < 75%
   });
+
+  it('normalises target folders and ignores absolute paths', (t) => {
+    const { db, project } = setup();
+    t.after(() => db.close());
+    const p = project.id;
+    const card = withEdits(db, p, 'Scratch', [
+      'apps/web/a.ts',
+      '/private/tmp/scratch1.md',
+      '/private/tmp/scratch2.md',
+      '/Users/me/.claude/memory/x.md',
+    ]);
+    const [r] = suggestCardPlacement(db, p, [{ key: 'web', folder: 'apps/web/' }]);
+    assert.equal(r.card.id, card.id);
+    assert.deepEqual([r.suggestion, r.confidence, r.files], ['web', 'strong', 1]);
+    assert.equal(suggestCardPlacement(db, p, [{ key: 'web', folder: './apps/web' }])[0].suggestion, 'web');
+    withEdits(db, p, 'Root', ['package.json']);
+    const out = suggestCardPlacement(db, p, [{ key: 'root', folder: '.' }]);
+    assert.deepEqual(out.map((x) => x.suggestion), ['root', 'root']);
+  });
 });

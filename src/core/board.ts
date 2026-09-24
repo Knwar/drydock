@@ -769,8 +769,6 @@ export function getBoard(db: DB, projectId: string): CardSummary[] {
   ).map(toSummary);
 }
 
-const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
-
 /** First two path segments, e.g. 'apps/web/src/x.ts' → 'apps/web'. */
 function topFolder(file: string): string {
   return file.split('/').slice(0, 2).join('/');
@@ -811,7 +809,18 @@ export function suggestCardPlacement(
     .prepare(`SELECT id, title, lane FROM tasks WHERE project_id = ? AND lane != 'done' ORDER BY position`)
     .all(projectId) as { id: string; title: string; lane: Lane }[];
   cards.sort((a, b) => LANES.indexOf(a.lane) - LANES.indexOf(b.lane));
-  const eventsStmt = db.prepare(`SELECT payload FROM task_events WHERE task_id = ? AND type = 'tool' ORDER BY id`);
+  // Normalise folders once: './x' → 'x', '.' → '' (root), no trailing slashes.
+  targets = targets.map((t) => {
+    const folder = t.folder.replace(/^\.\//, '').replace(/\/+$/, '');
+    return { ...t, folder: folder === '.' ? '' : folder };
+  });
+  // json_valid guard: json_extract throws on malformed JSON.
+  const eventsStmt = db.prepare(
+    `SELECT payload FROM task_events WHERE task_id = ? AND type = 'tool'
+       AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.tool') END
+           IN ('Edit', 'Write', 'MultiEdit', 'NotebookEdit')
+     ORDER BY id`,
+  );
   return cards.map((card) => {
     const files = new Set<string>();
     for (const { payload } of eventsStmt.all(card.id) as { payload: string | null }[]) {
@@ -822,8 +831,9 @@ export function suggestCardPlacement(
         continue;
       }
       if (!p || typeof p !== 'object') continue;
-      const { tool, file } = p as { tool?: unknown; file?: unknown };
-      if (typeof tool === 'string' && EDIT_TOOLS.has(tool) && typeof file === 'string' && file) files.add(file);
+      const { file } = p as { file?: unknown };
+      // Absolute paths are scratch files outside the repo (/private/tmp, ~/.claude) — ignore.
+      if (typeof file === 'string' && file && !file.startsWith('/')) files.add(file);
     }
     if (files.size === 0) return { card, suggestion: null, confidence: 'none', evidence: 'no file history', files: 0 };
     const byTarget: string[][] = targets.map(() => []);
