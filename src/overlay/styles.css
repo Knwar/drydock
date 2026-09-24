@@ -1660,6 +1660,7 @@ body.reduce-motion .home-dot { animation: none !important; }
   opacity: 0; pointer-events: none; transition: opacity 0.2s;
 }
 .sv-flash.on { opacity: 1; }
+.sv-flash.fixed { position: fixed; z-index: 40; } /* no .view host (Kanban, first paint) */
 .sv-flash:empty { display: none; }
 
 .sv-backdrop { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, 0.6); }

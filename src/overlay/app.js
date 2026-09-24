@@ -225,8 +225,11 @@ function applyEvent(msg) {
     if (msg.card_id === openCardId) closeCardModal();
   } else if (msg.type === 'project_removed') {
     // the project we're viewing is gone — merged away → land on the merged board
-    if (msg.project_id === projectId)
-      location.search = mergeRedirect?.from === projectId ? mvRedirectSearch(mergeRedirect.into) : '';
+    if (msg.project_id === projectId) {
+      const merged = mergeRedirect?.from === projectId;
+      if (merged) svFlashAfterReload(mergeRedirect.flash);
+      location.search = merged ? mvRedirectSearch(mergeRedirect.into) : '';
+    }
 
   } else if (msg.type === 'event') {
     pushHeadline(msg.event);
@@ -3012,14 +3015,15 @@ async function loadSuggestions(force = false) {
   const pid = home.data?.project.id;
   if (!pid || (!force && home.suggestFor === pid)) return;
   home.suggestFor = pid;
-  let list = [];
+  let list = null;
   try {
     const res = await fetch(`/project/${encodeURIComponent(pid)}/vertical-suggestions`);
     if (res.ok) list = (await res.json()).suggestions ?? [];
   } catch {
     /* no toast this time */
   }
-  if (home.data?.project.id !== pid) return;
+  if (list === null && home.suggestFor === pid) home.suggestFor = null; // failed → retry on the next Home render
+  if (home.data?.project.id !== pid || list === null) return;
   home.suggestions = list;
   renderHomeSplit();
 }
@@ -3062,8 +3066,10 @@ function renderHomeSplit() {
 
 function svFlash(text) {
   const el = $('sv-flash');
-  const view = document.querySelector('.view:not(.hidden)') ?? document.body; // Merge can confirm from any view
+  // Merge can confirm from any view; Kanban isn't a .view → pin it to the viewport
+  const view = document.querySelector('.view:not(.hidden)') ?? document.body;
   if (el.parentElement !== view) view.append(el);
+  el.classList.toggle('fixed', view === document.body);
   el.textContent = text;
   el.classList.add('on');
   clearTimeout(home.flashTimer);
@@ -3073,12 +3079,34 @@ function svFlash(text) {
   }, SV_FLASH_MS);
 }
 
+// A confirmation that must survive a navigation (merging away the viewed vertical).
+const SV_FLASH_KEY = 'kankan.flash.pending';
+function svFlashAfterReload(text) {
+  try {
+    sessionStorage.setItem(SV_FLASH_KEY, text);
+  } catch {
+    /* storage unavailable — the confirmation is lost with the page */
+  }
+}
+function svFlashPending() {
+  let text = null;
+  try {
+    text = sessionStorage.getItem(SV_FLASH_KEY);
+    sessionStorage.removeItem(SV_FLASH_KEY);
+  } catch {
+    return;
+  }
+  if (text) svFlash(text);
+}
+
 $('home-split').onclick = () => openSplitDialog(home.suggestFor === home.data?.project.id ? home.suggestions ?? [] : []);
 
 // Shared chrome for the vertical dialogs (Split, Merge): backdrop, focus trap,
 // Esc/backdrop-click to close unless busy(), focus back to the opener. close()
 // removes every listener it added; onClose clears the dialog's own timers.
+let svModal = false; // a vertical dialog is open or opening (Merge claims it before its first read)
 function openModal({ labelledBy, describedBy, busy, onClose, fallbackFocus }) {
+  svModal = true;
   const opener = document.activeElement;
   const backdrop = node('div', 'sv-backdrop');
   const dlg = node('div', 'sv-dialog');
@@ -3092,6 +3120,7 @@ function openModal({ labelledBy, describedBy, busy, onClose, fallbackFocus }) {
   function close() {
     if (closed) return;
     closed = true;
+    svModal = false;
     onClose?.();
     document.removeEventListener('keydown', onKey, true);
     backdrop.remove();
@@ -3135,7 +3164,7 @@ function openModal({ labelledBy, describedBy, busy, onClose, fallbackFocus }) {
 let svUid = 0;
 function openSplitDialog(prefill) {
   const d = home.data;
-  if (!d || document.querySelector('.sv-backdrop')) return;
+  if (!d || svModal) return;
   const pid = d.project.id;
   const standalone = !d.project.parent_id;
   const stayLabel = standalone ? 'Main (shared)' : `Stay on ${d.project.name}`;
@@ -3270,9 +3299,9 @@ function openSplitDialog(prefill) {
         ? 'Add a vertical to see where each open card goes.'
         : st.status === 'ok'
           ? 'No open cards — nothing to move.'
-          : st.status === 'pending' || !st.preview
+          : st.status === 'pending'
             ? 'Working out where cards go…'
-            : '';
+            : ''; // failed or incomplete: the error/hint above says why
       rowsEl.replaceChildren(node('div', 'sv-empty', msg));
     } else {
       rowsEl.replaceChildren(
@@ -3318,6 +3347,7 @@ function openSplitDialog(prefill) {
     create.textContent = st.creating ? 'Creating…' : k ? `Create ${k} vertical${k === 1 ? '' : 's'}` : 'Create verticals';
     create.disabled = st.creating || st.status !== 'ok' || n > 0;
     cancel.disabled = st.creating;
+    for (const el of [add, ...targetsEl.querySelectorAll('input, button'), ...rowsEl.querySelectorAll('select')]) el.disabled = st.creating;
     previewErr.textContent =
       st.status === 'error' ? st.error : st.status === 'incomplete' ? 'Give each vertical a name and a folder.' : '';
     previewErr.classList.toggle('hint', st.status === 'incomplete');
@@ -3334,7 +3364,7 @@ function openSplitDialog(prefill) {
       st.timer = setTimeout(runPreview, delay);
     }
     renderMeta();
-    renderFoot();
+    renderRows(); // the empty-list message follows the status
   }
 
   async function runPreview() {
@@ -3488,7 +3518,8 @@ const mvCount = (b) => DASH_LANES.reduce((n, [lane]) => n + (b.lanes?.[lane] ?? 
 const mvPlural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 async function openMergeDialog(pre = {}) {
-  if (EMBED || mergeDlg || document.querySelector('.sv-backdrop')) return;
+  if (EMBED || svModal) return;
+  svModal = true;
   mergeDlg = { refresh: () => {} }; // claim the slot while the first read is in flight
   const project = dash.workspace ?? currentProject();
   const read = async () => {
@@ -3501,15 +3532,19 @@ async function openMergeDialog(pre = {}) {
     summary = await read();
   } catch {
     mergeDlg = null;
+    svModal = false;
     return svFlash('Couldn’t load the workspace — try again.');
   }
   const verticalsOf = (s) => s.boards.filter((b) => b.project.parent_id);
   let vs = verticalsOf(summary);
   if (vs.length < 2) {
     mergeDlg = null;
+    svModal = false;
     return svFlash('Merging needs two verticals.');
   }
-  const wsRoot = summary.boards.find((b) => !b.project.parent_id)?.project.root_path;
+  const wsRoot = summary.boards.find((b) => !b.project.parent_id)?.project.root_path?.replace(/\/+$/, '');
+  const inWs = (p) => !!wsRoot && (p === wsRoot || p.startsWith(`${wsRoot}/`));
+  const shown = (p) => (!inWs(p) ? p : p === wsRoot ? '.' : p.slice(wsRoot.length + 1)); // display only
   const has = (id) => vs.some((b) => b.project.id === id);
   const fromId = has(pre.from) ? pre.from : has(currentProject()) ? currentProject() : vs[0].project.id;
   const st = {
@@ -3626,12 +3661,14 @@ async function openMergeDialog(pre = {}) {
   function folderOptions() {
     const f = board(st.from).project;
     const i = board(st.into).project;
-    const shared = mvSharedParent(f.root_path, i.root_path);
+    // only inside the workspace (separate repos → the server rejects it), and the
+    // workspace's own root is never a valid vertical root either
+    const both = inWs(f.root_path) && inWs(i.root_path);
+    const shared = both ? mvSharedParent(f.root_path, i.root_path) : null;
     const opts = [];
-    // the workspace's own root is never a valid vertical root (the server rejects it)
-    if (shared && shared !== wsRoot) opts.push([shared, `Shared parent (${shared})`]);
+    if (shared && shared !== wsRoot) opts.push([shared, `Shared parent (${shown(shared)})`]);
     opts.push([f.root_path, `Keep ${f.name}’s`], [i.root_path, `Keep ${i.name}’s`]);
-    return opts;
+    return { opts, fallback: opts.length === 3 ? shared : i.root_path };
   }
 
   function render() {
@@ -3646,15 +3683,15 @@ async function openMergeDialog(pre = {}) {
     if (!st.nameTouched) st.name = i.project.name;
     if (nameIn.value !== st.name) nameIn.value = st.name;
 
-    const opts = folderOptions();
-    if (!opts.some(([v]) => v === st.folder)) st.folder = opts[0][0];
+    const { opts, fallback } = folderOptions();
+    if (!opts.some(([v]) => v === st.folder)) st.folder = fallback;
     folderSel.replaceChildren(...opts.map(([value, textContent]) => Object.assign(document.createElement('option'), { value, textContent })));
     folderSel.value = st.folder;
 
     const n = mvCount(f);
-    fromRoot.textContent = f.project.root_path;
+    fromRoot.textContent = shown(f.project.root_path);
     fromMeta.textContent = mvPlural(n, 'card');
-    intoRoot.textContent = st.folder;
+    intoRoot.textContent = shown(st.folder);
     intoMeta.textContent = `${st.name.trim() || i.project.name} · ${mvPlural(n + mvCount(i), 'card')}`;
 
     radios[0].textContent = `Keep ${i.project.name}’s phases, append ${f.project.name}’s after them`;
@@ -3757,7 +3794,8 @@ async function openMergeDialog(pre = {}) {
     st.merging = true;
     clearError();
     render();
-    mergeRedirect = { from: f.id, into };
+    // project_removed(from) can reload the page before the response lands
+    mergeRedirect = { from: f.id, into, flash: `Merged ${f.name} into ${name || board(into).project.name}` };
     let res, out;
     try {
       res = await fetch('/verticals/merge', {
@@ -3772,8 +3810,12 @@ async function openMergeDialog(pre = {}) {
     st.merging = false;
     if (res?.ok) {
       close();
-      svFlash(`Merged ${f.name} into ${out.name ?? name}`);
-      if (currentProject() === f.id || projectId === f.id) return void (location.search = mvRedirectSearch(into));
+      const done = `Merged ${f.name} into ${out.name ?? (name || board(into).project.name)}`;
+      if (currentProject() === f.id || projectId === f.id) {
+        svFlashAfterReload(done);
+        return void (location.search = mvRedirectSearch(into));
+      }
+      svFlash(done);
       mergeRedirect = null;
       loadProjects();
       if (term.enabled) refreshTermTabs();
@@ -3822,6 +3864,7 @@ function mergeButton(pid, name, verticalCount) {
 const EARLY_VIEW = URL_VIEW === 'dashboard' ? null : URL_VIEWS.includes(URL_VIEW) ? URL_VIEW : SETTINGS.defaultView === 'home' ? 'home' : null;
 if (EARLY_VIEW && EARLY_VIEW !== 'scm') setView(EARLY_VIEW);
 
+svFlashPending();
 connect();
 teamCacheLoad = loadTeamCache();
 teamCacheLoad.then(() => {
