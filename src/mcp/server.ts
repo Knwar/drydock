@@ -292,6 +292,16 @@ server.registerTool(
 );
 
 server.registerTool(
+  'set_autopilot',
+  {
+    description:
+      'Turn autopilot on/off for a vertical: when its Claude session is idle and it has queued cards, the daemon prompts it to work the next card. Off by default; pauses while 5-hour usage ≥ 80%.',
+    inputSchema: { project_id: z.string(), on: z.boolean() },
+  },
+  ({ project_id, on }) => api('POST', `/project/${encodeURIComponent(project_id)}/autopilot`, { on }),
+);
+
+server.registerTool(
   'list_verticals',
   {
     description: 'The verticals (child boards) of a workspace project.',

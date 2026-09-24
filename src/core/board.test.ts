@@ -46,6 +46,7 @@ import {
   redirectTask,
   resolveBlocker,
   resolveSyncConflict,
+  setAutopilot,
   setSubtasks,
   updatePhase,
   taskContentHash,
@@ -197,6 +198,34 @@ describe('projects', () => {
     const { db } = setup();
     const p = getOrCreateProject(db, '/tmp/other-app');
     assert.equal(p.name, 'other-app');
+  });
+});
+
+describe('autopilot', () => {
+  it('defaults to 0 for new projects and verticals', () => {
+    const { db, project } = setup();
+    assert.equal(project.autopilot, 0);
+    assert.equal(getOrCreateProject(db, '/tmp/demo-app').autopilot, 0); // read back from the row
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-ap-'));
+    mkdirSync(join(dir, 'web'));
+    const ws = getOrCreateProject(db, dir);
+    assert.equal(createVertical(db, ws.id, 'Web', join(dir, 'web')).autopilot, 0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('setAutopilot persists and logs an autopilot event', () => {
+    const { db, project } = setup();
+    assert.equal(setAutopilot(db, project.id, true).autopilot, 1);
+    assert.equal(getOrCreateProject(db, '/tmp/demo-app').autopilot, 1);
+    const ev = getRecentEvents(db, project.id).find((e) => e.type === 'autopilot');
+    assert.deepEqual(JSON.parse(ev!.payload!), { on: true });
+    assert.equal(setAutopilot(db, project.id, false).autopilot, 0);
+    assert.equal(getOrCreateProject(db, '/tmp/demo-app').autopilot, 0);
+  });
+
+  it('unknown project throws', () => {
+    const { db } = setup();
+    assert.throws(() => setAutopilot(db, 'nope', true), /no such project/);
   });
 });
 
@@ -853,7 +882,7 @@ describe('workspace summary', () => {
     }
     const sum = getWorkspaceSummary(db, ws.id);
     const [wsB, mB, webB] = sum.boards;
-    assert.deepEqual(mB.project, { id: mobile.id, name: 'Mobile', root_path: mobile.root_path, parent_id: ws.id });
+    assert.deepEqual(mB.project, { id: mobile.id, name: 'Mobile', root_path: mobile.root_path, parent_id: ws.id, autopilot: 0 });
     assert.deepEqual(mB.lanes, { backlog: 1, queued: 1, in_progress: 2, in_review: 1, done: 1 });
     assert.deepEqual(mB.active, [
       { id: a.id, title: 'Building A', lane: 'in_progress', agent: 'Ada', blocked: false },

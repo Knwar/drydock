@@ -32,6 +32,8 @@ export function migrate(db: DB): void {
   // Workspace verticals: parent_id on projects created before it existed.
   const projectCols = (db.pragma('table_info(projects)') as { name: string }[]).map((c) => c.name);
   if (!projectCols.includes('parent_id')) db.exec('ALTER TABLE projects ADD COLUMN parent_id TEXT');
+  if (!projectCols.includes('autopilot'))
+    db.exec('ALTER TABLE projects ADD COLUMN autopilot INTEGER NOT NULL DEFAULT 0');
   // Index lives here, not schema.sql: on a legacy DB schema.sql runs before the ALTER above.
   db.exec('CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_id)');
   // Loop-prevention origin tag (Phase 5): add to outbox tables created before it existed.

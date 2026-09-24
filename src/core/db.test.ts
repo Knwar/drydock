@@ -101,6 +101,27 @@ describe('migrate', () => {
     db.close();
   });
 
+  it('adds autopilot (default 0) to a legacy projects table, keeping existing rows', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE projects (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL
+    )`);
+    db.prepare('INSERT INTO projects (id, name, root_path, created_at) VALUES (?, ?, ?, ?)').run('p1', 'P', '/tmp/p', 1);
+    migrate(db);
+    const row = db.prepare('SELECT autopilot FROM projects WHERE id = ?').get('p1') as { autopilot: number };
+    assert.equal(row.autopilot, 0);
+    assert.doesNotThrow(() => migrate(db)); // idempotent
+    db.close();
+  });
+
+  it('fresh db: projects.autopilot defaults to 0', () => {
+    const db = openDb();
+    db.prepare('INSERT INTO projects (id, name, root_path, created_at) VALUES (?, ?, ?, ?)').run('p1', 'P', '/tmp/p', 1);
+    const row = db.prepare('SELECT autopilot FROM projects WHERE id = ?').get('p1') as { autopilot: number };
+    assert.equal(row.autopilot, 0);
+    db.close();
+  });
+
   it('creates idx_tasks_phase on a legacy tasks table without phase_id', () => {
     const db = new Database(':memory:');
     db.exec(LEGACY_TASKS_DDL);
