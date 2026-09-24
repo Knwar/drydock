@@ -31,7 +31,11 @@ function freePort(): Promise<number> {
   });
 }
 
-function waitForUp(base: string, exited: () => boolean, timeoutMs = 8000): Promise<void> {
+// Generous by default: under load (parallel suites, busy machine) a cold
+// `node --import tsx` start can take well over 8s. Early exit still fails fast.
+const START_TIMEOUT_MS = Number(process.env.KANKAN_TEST_DAEMON_TIMEOUT_MS) || 30_000;
+
+function waitForUp(base: string, exited: () => boolean, timeoutMs = START_TIMEOUT_MS): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const tick = async () => {
