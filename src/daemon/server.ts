@@ -589,6 +589,17 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
     return json(res, 200, board.getWorkspace(db, project));
   }
+  if (method === 'GET' && pathname === '/workspace/summary') {
+    const project = url.searchParams.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const summary = board.getWorkspaceSummary(db, project);
+    const now = Date.now();
+    return json(res, 200, {
+      ...summary,
+      boards: summary.boards.map((b) => ({ ...b, session: states.view(b.project.id, now) })),
+    });
+  }
 
   const projMatch = pathname.match(/^\/project\/([^/]+)(?:\/(repo))?$/);
   if (projMatch && projMatch[1] !== 'new' && projMatch[1] !== 'pick') {
