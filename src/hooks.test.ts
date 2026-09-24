@@ -165,3 +165,85 @@ console.log(JSON.stringify(await contextFor(${JSON.stringify(join(wsRoot, '.tree
     assert.deepEqual(JSON.parse(r.stdout), { projectId: verticalId, cardId: 'abc123' });
   });
 });
+
+describe('init-project.sh: first commit + registration', { timeout: 180_000 }, () => {
+  let daemon: TestDaemon | undefined;
+  let tmp: string;
+  const script = join(HOOKS, '..', '..', 'scripts', 'init-project.sh');
+  const init = (target: string) =>
+    spawnSync('sh', [script, target, 'init-test'], {
+      env: {
+        ...process.env,
+        DAEMON_URL: daemon!.base,
+        KANKAN_UPDATE: '',
+        GIT_AUTHOR_NAME: 't',
+        GIT_AUTHOR_EMAIL: 't@t',
+        GIT_COMMITTER_NAME: 't',
+        GIT_COMMITTER_EMAIL: 't@t',
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'commit.gpgsign',
+        GIT_CONFIG_VALUE_0: 'false',
+      },
+      encoding: 'utf8',
+    });
+
+  before(async () => {
+    daemon = await startDaemon();
+    tmp = mkdtempSync(join(tmpdir(), 'kankan-init-'));
+  });
+
+  after(async () => {
+    await daemon?.stop();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('a non-git folder gets a minimal .gitignore so .env and node_modules stay out of the first commit', () => {
+    const target = join(tmp, 'fresh');
+    mkdirSync(join(target, 'node_modules'), { recursive: true });
+    writeFileSync(join(target, 'node_modules', 'x'), 'x');
+    writeFileSync(join(target, '.env'), 'SECRET=1');
+    writeFileSync(join(target, 'index.js'), '');
+    const r = init(target);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(existsSync(join(target, '.gitignore')));
+    assert.match(r.stdout, /installed:.* \.gitignore/);
+    const files = spawnSync('git', ['-C', target, 'ls-files'], { encoding: 'utf8' }).stdout.split('\n');
+    assert.ok(files.includes('index.js'));
+    assert.ok(files.includes('.gitignore'));
+    assert.ok(!files.includes('.env'));
+    assert.ok(!files.some((f) => f.startsWith('node_modules')));
+  });
+
+  it('an existing git repo with no commits also gets the .gitignore before the first commit', () => {
+    const target = join(tmp, 'empty-repo');
+    mkdirSync(target);
+    assert.equal(spawnSync('git', ['init', '-q', target]).status, 0);
+    writeFileSync(join(target, '.env'), 'SECRET=1');
+    const r = init(target);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(existsSync(join(target, '.gitignore')));
+    const files = spawnSync('git', ['-C', target, 'ls-files'], { encoding: 'utf8' }).stdout.split('\n');
+    assert.ok(files.includes('.gitignore'));
+    assert.ok(!files.includes('.env'));
+  });
+
+  it('an existing .gitignore is left untouched', () => {
+    const target = join(tmp, 'own-ignore');
+    mkdirSync(target);
+    const custom = '# mine\n*.log\n';
+    writeFileSync(join(target, '.gitignore'), custom);
+    const r = init(target);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readFileSync(join(target, '.gitignore'), 'utf8'), custom);
+  });
+
+  it('a path with & and a space registers under the right root', async () => {
+    const target = join(tmp, 'a&b c');
+    mkdirSync(target);
+    const r = init(target);
+    assert.equal(r.status, 0, r.stderr);
+    const res = await fetch(`${daemon!.base}/project?root=${encodeURIComponent(target)}&create=0`);
+    const body = (await res.json()) as { project_id?: string };
+    assert.ok(body.project_id, JSON.stringify(body));
+  });
+});
