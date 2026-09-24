@@ -292,6 +292,63 @@ server.registerTool(
 );
 
 server.registerTool(
+  'suggest_verticals',
+  {
+    description:
+      'Suggest verticals for a standalone project from its folder layout (monorepo sides with a manifest). Returns {suggestions:[{name, folder, stack}]} — [] once the project already has verticals.',
+    inputSchema: { project_id: z.string() },
+  },
+  ({ project_id }) => api('GET', `/project/${encodeURIComponent(project_id)}/vertical-suggestions`),
+);
+
+server.registerTool(
+  'split_vertical',
+  {
+    description:
+      "Split a project (or a vertical) into verticals and move its open cards onto them. targets: [{name, folder}] — folder relative to the repo root (monorepo side, kit shared) or an absolute path (separate repo, kit installed). Runs a preview first: each target's resolved root + kit, and a per-card placement suggestion from the files the card edited. assignments ({card_id: target index | 'stay'}) default to those suggestions; cards with no suggestion stay. Done cards always stay; refuses while a card to be moved is in progress or in review. Returns {verticals, moved}.",
+    inputSchema: {
+      project_id: z.string(),
+      targets: z.array(z.object({ name: z.string(), folder: z.string() })).min(1),
+      assignments: z.record(z.string(), z.union([z.number().int().min(0), z.literal('stay')])).optional(),
+    },
+  },
+  async ({ project_id, targets, assignments }) => {
+    const id = encodeURIComponent(project_id);
+    const preview = await api('POST', `/project/${id}/split-preview`, { targets });
+    if (preview.isError) return preview;
+    const plan = JSON.parse(preview.content[0].text) as {
+      targets: { name: string; root: string }[];
+      placement: { card: { id: string }; suggestion: string | null }[];
+    };
+    const chosen =
+      assignments ??
+      Object.fromEntries(
+        plan.placement.map((p) => [p.card.id, p.suggestion === null ? 'stay' : Number(p.suggestion)] as const),
+      );
+    return api('POST', `/project/${id}/split`, {
+      targets: plan.targets.map((t) => ({ name: t.name, root: t.root })),
+      assignments: chosen,
+    });
+  },
+);
+
+server.registerTool(
+  'merge_verticals',
+  {
+    description:
+      "Merge vertical `from` into sibling vertical `into`: all of from's cards (with history) move to into and from is removed (its terminal session closed). phases: 'append' adds from's roadmap after into's; 'fold' puts from's open cards into into's active phase. Optional name renames into; optional root re-roots it (from's or into's root, or a shared ancestor of both in the same repo). Refuses while any card of either vertical is in progress or in review.",
+    inputSchema: {
+      from: z.string(),
+      into: z.string(),
+      name: z.string().optional(),
+      root: z.string().optional(),
+      phases: z.enum(['append', 'fold']),
+    },
+  },
+  (input) => api('POST', '/verticals/merge', input),
+);
+
+server.registerTool(
   'set_autopilot',
   {
     description:

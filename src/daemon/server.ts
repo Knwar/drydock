@@ -1,11 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
-import { dirname, extname, join, resolve } from 'node:path';
+import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import * as board from '../core/board.js';
@@ -373,6 +373,64 @@ function classifyVertical(root: string, wsRoot: string): { kind: 'shared' | 'ins
   return { kind: 'skip', top };
 }
 
+/** `a` is `b` or one of its ancestors (segment-aware). */
+const isAncestorOrSelf = (a: string, b: string): boolean => a === b || b.startsWith(a.endsWith('/') ? a : a + '/');
+
+/** Canonical spelling of an incoming root, matching how stored projects spell
+ *  it, so the board's plain string comparisons (workspace root, collisions) hold
+ *  for any alias (/var ↔ /private/var, symlinks): a stored root_path that
+ *  resolves to the same realpath is used as-is; else a path under a stored root
+ *  keeps that root's spelling (the deepest one); else the realpath. */
+function canonicalRoot(p: string): string {
+  const real = realOrResolved(p);
+  const rows = db.prepare('SELECT root_path FROM projects').all() as { root_path: string }[];
+  let best: { stored: string; real: string } | null = null;
+  for (const { root_path } of rows) {
+    const r = realOrResolved(root_path);
+    if (r === real) return root_path;
+    if (isAncestorOrSelf(r, real) && (!best || r.length > best.real.length)) best = { stored: root_path, real: r };
+  }
+  return best ? join(best.stored, relative(best.real, real)) : real;
+}
+
+interface SplitTarget {
+  name: string;
+  root: string;
+  folder: string;
+  kit: 'shared' | 'install' | `skipped: ${string}`;
+}
+
+/** Resolve + validate split targets for `source`, side-effect free (throws → 400).
+ *  `folder` (or `root`): relative → under the source's git toplevel; absolute → as-is. */
+function resolveSplitTargets(source: Project, raw: unknown): SplitTarget[] {
+  if (!Array.isArray(raw) || raw.length === 0) throw new Error('targets required (a non-empty array)');
+  const workspaceId = source.parent_id ?? source.id;
+  const wsRoot = projectRoot(workspaceId)!;
+  const realSource = realOrResolved(source.root_path);
+  const top = realOrResolved(sessionCwd(source.root_path));
+  const seen = new Set<string>();
+  return raw.map((t: { name?: unknown; folder?: unknown; root?: unknown }) => {
+    const name = typeof t?.name === 'string' ? t.name.trim() : '';
+    const given = typeof t?.folder === 'string' ? t.folder.trim() : typeof t?.root === 'string' ? t.root.trim() : '';
+    if (!name || !given) throw new Error('each target needs a name and a folder');
+    const root = canonicalRoot(isAbsolute(given) ? given : join(top, given));
+    const real = realOrResolved(root);
+    if (real === realSource) throw new Error(`target "${name}": folder must differ from the source's own root`);
+    if (seen.has(real)) throw new Error(`duplicate target folder: ${root}`);
+    seen.add(real);
+    try {
+      board.validateVertical(db, workspaceId, root); // existing dir, not the workspace root, no collision
+    } catch (err) {
+      throw new Error(`target "${name}": ${(err as Error).message}`);
+    }
+    const c = classifyVertical(root, wsRoot);
+    const kit = c.kind === 'skip' ? (`skipped: folder is inside another repo (${c.top})` as const) : c.kind;
+    const rel = relative(top, real);
+    const folder = rel === '' ? '.' : rel.startsWith('..') || isAbsolute(rel) ? root : rel;
+    return { name, root, folder, kit };
+  });
+}
+
 // ── skills: scan .claude/skills for SKILL.md name+description frontmatter ──
 function parseSkill(file: string): { name: string; description: string } | null {
   try {
@@ -702,9 +760,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   // ── workspaces / verticals ──────────────────────────────────────────
   if (method === 'POST' && pathname === '/vertical') {
+    if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' }); // may install the kit into a folder
     const b = await readBody(req);
-    if (!b.workspace_id || !b.name || !b.root)
+    if (!b.workspace_id || !b.name || typeof b.root !== 'string' || !b.root)
       return json(res, 400, { error: 'workspace_id, name and root required' });
+    b.root = canonicalRoot(b.root);
     // Validate BEFORE any side effect (init writes into the folder): throws → 400.
     const { workspace, root } = board.validateVertical(db, b.workspace_id, b.root);
     let kit = 'shared';
@@ -821,6 +881,138 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const { workspace, verticals } = board.getWorkspace(db, pid);
     if (workspace.id !== pid || verticals.length > 0) return json(res, 200, { suggestions: [] });
     return json(res, 200, { suggestions: suggestVerticals(root) });
+  }
+
+  // ── split / merge verticals ─────────────────────────────────────────
+  const kitLabel = (kit: SplitTarget['kit']) => (kit === 'install' ? 'installed' : kit);
+  const splitMatch = pathname.match(/^\/project\/([^/]+)\/(split-preview|split)$/);
+  if (method === 'POST' && splitMatch) {
+    const [, pid, action] = splitMatch;
+    // both loopback-only: preview probes paths and runs git in arbitrary folders
+    if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+    const source = db.prepare('SELECT * FROM projects WHERE id = ?').get(pid) as Project | undefined;
+    if (!source) return json(res, 404, { error: 'unknown project' });
+    const b = await readBody(req);
+    const targets = resolveSplitTargets(source, b.targets);
+    if (action === 'split-preview') {
+      const placement = board.suggestCardPlacement(
+        db,
+        pid,
+        targets.map((t, i) => ({ key: String(i), folder: t.folder })),
+      );
+      return json(res, 200, {
+        targets: targets.map((t) => ({ name: t.name, root: t.root, folder: t.folder, kit: kitLabel(t.kit) })),
+        placement,
+      });
+    }
+    if (!b.assignments || typeof b.assignments !== 'object' || Array.isArray(b.assignments))
+      return json(res, 400, { error: 'assignments required' });
+    const opts = { targets: targets.map((t) => ({ name: t.name, root: t.root })), assignments: b.assignments };
+    const installs = targets.filter((t) => t.kit === 'install');
+    if (installs.length) {
+      // Dry-run the split (rolled back) so a SplitError surfaces BEFORE the kit is
+      // written into any folder; init must run outside the DB transaction.
+      const DRY_RUN = Symbol('dry-run');
+      try {
+        db.transaction(() => {
+          board.splitIntoVerticals(db, pid, opts);
+          throw DRY_RUN;
+        })();
+      } catch (err) {
+        if (err !== DRY_RUN) {
+          if (err instanceof board.SplitError) return json(res, 400, { error: err.message, cardIds: err.cardIds });
+          throw err;
+        }
+      }
+      for (const t of installs) {
+        try {
+          await runInit(t.root);
+        } catch (err) {
+          const stderr = String((err as { stderr?: string }).stderr ?? (err as Error).message);
+          return json(res, 500, { error: `kit install failed for ${t.name}`, detail: stderr.slice(-500) });
+        }
+      }
+    }
+    let result;
+    try {
+      result = board.splitIntoVerticals(db, pid, opts);
+    } catch (err) {
+      if (err instanceof board.SplitError) return json(res, 400, { error: err.message, cardIds: err.cardIds });
+      throw err;
+    }
+    // existing client contract: moved cards leave the source board and upsert on their target
+    for (const cardId of Object.keys(result.moved)) {
+      broadcaster.send(pid, { type: 'card_removed', project_id: pid, card_id: cardId });
+      announce(board.getTask(db, cardId));
+    }
+    for (const v of result.verticals) announcePhases(v.id);
+    announceVerticals(source.parent_id ?? source.id);
+    return json(res, 200, {
+      verticals: result.verticals.map((v, i) => ({ ...v, kit: kitLabel(targets[i].kit) })),
+      moved: result.moved,
+    });
+  }
+
+  if (method === 'POST' && pathname === '/verticals/merge') {
+    if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+    const b = await readBody(req);
+    if (typeof b.from !== 'string' || typeof b.into !== 'string')
+      return json(res, 400, { error: 'from and into required' });
+    if (b.phases !== 'append' && b.phases !== 'fold')
+      return json(res, 400, { error: "phases must be 'append' or 'fold'" });
+    if (b.name !== undefined && (typeof b.name !== 'string' || !b.name.trim()))
+      return json(res, 400, { error: 'name must be a non-empty string' });
+    const fromRoot = projectRoot(b.from);
+    const intoRoot = projectRoot(b.into);
+    let root: string | undefined;
+    if (b.root !== undefined) {
+      if (typeof b.root !== 'string' || !b.root.trim()) return json(res, 400, { error: 'root must be a path' });
+      root = canonicalRoot(b.root);
+      let isDir = false;
+      try {
+        isDir = statSync(root).isDirectory();
+      } catch {
+        /* missing → not a directory */
+      }
+      if (!isDir) return json(res, 400, { error: `not an existing directory: ${root}` });
+      if (fromRoot && intoRoot) {
+        const [r, f, i] = [root, fromRoot, intoRoot].map(realOrResolved);
+        const top = realOrResolved(sessionCwd(fromRoot));
+        const sharedAncestor =
+          isAncestorOrSelf(r, f) &&
+          isAncestorOrSelf(r, i) &&
+          top === realOrResolved(sessionCwd(intoRoot)) &&
+          isAncestorOrSelf(top, r);
+        if (r !== f && r !== i && !sharedAncestor)
+          return json(res, 400, {
+            error: "root must be from's or into's root, or a shared ancestor of both inside the same git repo",
+          });
+      }
+    }
+    const fromCards = (
+      db.prepare('SELECT id FROM tasks WHERE project_id = ? ORDER BY position, rowid').all(b.from) as { id: string }[]
+    ).map((r) => r.id);
+    let into: Project;
+    try {
+      into = board.mergeVerticals(db, b.from, b.into, { name: b.name?.trim(), root, phases: b.phases });
+    } catch (err) {
+      if (err instanceof board.MergeError) return json(res, 400, { error: err.message, cardIds: err.cardIds });
+      throw err;
+    }
+    // `from` is gone: close its terminal (its own process groups only) and drop its memory-only state
+    const session = ptySessions.get(b.from);
+    if (session) {
+      ptySessions.delete(b.from);
+      await killSessions([session]);
+    }
+    states.forget(b.from);
+    lastNudgedIdleAt.delete(b.from);
+    mainIdleStart.delete(b.from);
+    broadcaster.send(b.from, { type: 'project_removed', project_id: b.from });
+    for (const cardId of fromCards) announce(board.getTask(db, cardId));
+    announcePhases(into.id);
+    announceVerticals(into.parent_id!);
+    return json(res, 200, into);
   }
 
   const projMatch = pathname.match(/^\/project\/([^/]+)(?:\/(repo|autopilot))?$/);
@@ -1510,13 +1702,9 @@ async function sessionGroups(shellPid: number): Promise<{ shellPid: number; tty:
   return { shellPid, tty: info?.tty ?? null, groups: ptyGroups(shellPid, info, onTty, await daemonPgid()) };
 }
 
-async function shutdown() {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  setTimeout(() => process.exit(0), SHUTDOWN_DEADLINE_MS).unref();
-
-  const sessions = [...ptySessions.values()];
-  console.log(`closing ${sessions.length} terminal session(s)`);
+/** SIGHUP every process group of these sessions' verified shells, then SIGKILL
+ *  whatever is still verifiably ours after a grace period. */
+async function killSessions(sessions: PtySession[]): Promise<void> {
   const targets = await Promise.all(sessions.map((s) => sessionGroups(s.proc.pid as number)));
   for (const t of targets) for (const g of t.groups) killGroup(g, 'SIGHUP');
   if (targets.some((t) => t.groups.length > 0)) {
@@ -1529,6 +1717,16 @@ async function shutdown() {
       for (const g of stillOurs(t.groups, current)) killGroup(g, 'SIGKILL');
     }
   }
+}
+
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  setTimeout(() => process.exit(0), SHUTDOWN_DEADLINE_MS).unref();
+
+  const sessions = [...ptySessions.values()];
+  console.log(`closing ${sessions.length} terminal session(s)`);
+  await killSessions(sessions);
 
   for (const t of intervals) clearInterval(t);
   for (const w of [wss, ptyWss]) {
