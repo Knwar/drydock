@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name        TEXT NOT NULL,
   root_path   TEXT NOT NULL UNIQUE,       -- absolute cwd, for get_or_create
   parent_id   TEXT REFERENCES projects(id),  -- workspace this vertical belongs to, or null (top-level)
+  autopilot   INTEGER NOT NULL DEFAULT 0, -- 1 = daemon nudges an idle session that has queued cards
   created_at  INTEGER NOT NULL
 );
 

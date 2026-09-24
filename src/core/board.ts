@@ -139,6 +139,7 @@ export function getOrCreateProject(db: DB, rootPath: string, name?: string): Pro
     name: name ?? basename(root),
     root_path: root,
     parent_id: null,
+    autopilot: 0,
     created_at: now(),
   };
   db.prepare('INSERT INTO projects (id, name, root_path, created_at) VALUES (?, ?, ?, ?)').run(
@@ -210,7 +211,7 @@ export function createVertical(db: DB, workspaceId: string, name: string, rootPa
       );
       vertical = { ...existing, parent_id: workspace.id, name };
     } else {
-      vertical = { id: randomUUID(), name, root_path: root, parent_id: workspace.id, created_at: now() };
+      vertical = { id: randomUUID(), name, root_path: root, parent_id: workspace.id, autopilot: 0, created_at: now() };
       db.prepare(
         'INSERT INTO projects (id, name, root_path, parent_id, created_at) VALUES (?, ?, ?, ?, ?)',
       ).run(vertical.id, vertical.name, vertical.root_path, vertical.parent_id, vertical.created_at);
@@ -235,6 +236,16 @@ export function getWorkspace(db: DB, projectId: string): WorkspaceView {
   const project = getProject(db, projectId);
   const workspace = project.parent_id === null ? project : getProject(db, project.parent_id);
   return { workspace, verticals: listVerticals(db, workspace.id) };
+}
+
+/** Turn autopilot on/off for a project (the daemon nudges its idle session when it has queued cards). */
+export function setAutopilot(db: DB, projectId: string, on: boolean): Project {
+  return db.transaction(() => {
+    const project = getProject(db, projectId);
+    db.prepare('UPDATE projects SET autopilot = ? WHERE id = ?').run(on ? 1 : 0, projectId);
+    appendEvent(db, { project_id: projectId, type: 'autopilot', payload: { on } });
+    return { ...project, autopilot: on ? 1 : 0 };
+  })();
 }
 
 /** Unregister a project and everything it owns from the board. The folder on disk is left untouched. */
@@ -1080,7 +1091,7 @@ function boardSummary(db: DB, p: Project): BoardSummary {
         .get(ap.id) as { total: number; done: number | null })
     : null;
   return {
-    project: { id: p.id, name: p.name, root_path: p.root_path, parent_id: p.parent_id },
+    project: { id: p.id, name: p.name, root_path: p.root_path, parent_id: p.parent_id, autopilot: p.autopilot },
     lanes,
     active,
     blocked,

@@ -12,6 +12,7 @@ import * as board from '../core/board.js';
 import * as subscriptions from '../core/subscriptions.js';
 import { openDb } from '../core/db.js';
 import type { Project, Task } from '../core/types.js';
+import { NUDGE_PROMPT, resetsAtMs, shouldNudge } from './autopilot.js';
 import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
 import { sessionCwd, sessionEnv } from './pty-env.js';
@@ -184,6 +185,66 @@ const STARTED_AT = Date.now();
 
 interface LimitWindow { used_percentage: number; resets_at: number }
 let usage: { five_hour: LimitWindow | null; seven_day: LimitWindow | null } | null = null;
+
+// ── autopilot: prompt an idle session that has queued cards ─────────
+// Engine on by default; KANKAN_AUTOPILOT=0 disables it (the test helper does).
+// Per-project opt-in is projects.autopilot. Memory-only bookkeeping.
+const AUTOPILOT_ENGINE = process.env.KANKAN_AUTOPILOT !== '0';
+const AUTOPILOT_INTERVAL_MS = 30_000;
+const lastNudgedIdleAt = new Map<string, number>(); // project → the idle period (its start) we nudged
+// project → when the main session's current idle period began. Consecutive idle
+// pings (Stop, then the idle_prompt notification) extend one period, so they
+// don't re-nudge; a non-idle ping in between starts a new one.
+const mainIdleStart = new Map<string, number>();
+const autopilotInFlight = new Set<string>();
+
+async function evaluateAutopilot(projectId: string): Promise<void> {
+  if (autopilotInFlight.has(projectId)) return;
+  autopilotInFlight.add(projectId);
+  try {
+    const row = db.prepare('SELECT autopilot FROM projects WHERE id = ?').get(projectId) as
+      | { autopilot: number }
+      | undefined;
+    if (!row) return;
+    const now = Date.now();
+    const view = states.view(projectId, now);
+    const { n: queued } = db
+      .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE project_id = ? AND lane = 'queued'`)
+      .get(projectId) as { n: number };
+    const session = ptySessions.get(projectId);
+    let claudeForeground = false;
+    if (session) {
+      const fg = await foregroundPgid(session);
+      claudeForeground = fg > 0 && fg !== session.proc.pid;
+    }
+    const five = usage?.five_hour;
+    const decision = shouldNudge({
+      autopilot: row.autopilot === 1,
+      sessionState: view.state,
+      mainIdleSince: view.main?.verb === 'idle' ? (mainIdleStart.get(projectId) ?? view.main.at) : null,
+      lastNudgedIdleAt: lastNudgedIdleAt.get(projectId) ?? null,
+      queued,
+      claudeForeground,
+      fivePct: typeof five?.used_percentage === 'number' ? five.used_percentage : null,
+      fiveResetsAt: resetsAtMs(five?.resets_at),
+      now,
+    });
+    if (!decision.nudge || !session || view.main === null) return;
+    lastNudgedIdleAt.set(projectId, mainIdleStart.get(projectId) ?? view.main.at);
+    // typed into Claude Code's input (not a shell) → no Ctrl-U line-kill. The
+    // short gap keeps the Enter from being read as part of a paste.
+    session.proc.write(NUDGE_PROMPT);
+    await new Promise((r) => setTimeout(r, 100));
+    session.proc.write('\r');
+    broadcaster.send(projectId, { type: 'autopilot_nudge', project_id: projectId, at: now });
+    board.appendEvent(db, { project_id: projectId, type: 'autopilot', payload: { nudged: true } });
+    flushEvents();
+  } catch (err) {
+    console.error(`autopilot evaluation failed: ${(err as Error).message}`);
+  } finally {
+    autopilotInFlight.delete(projectId);
+  }
+}
 
 function projectStats(projectId: string) {
   const rows = db
@@ -601,7 +662,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     });
   }
 
-  const projMatch = pathname.match(/^\/project\/([^/]+)(?:\/(repo))?$/);
+  const projMatch = pathname.match(/^\/project\/([^/]+)(?:\/(repo|autopilot))?$/);
   if (projMatch && projMatch[1] !== 'new' && projMatch[1] !== 'pick') {
     const [, pid, action] = projMatch;
     if (method === 'DELETE' && !action) {
@@ -610,6 +671,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         | undefined;
       board.deleteProject(db, pid);
       states.forget(pid);
+      lastNudgedIdleAt.delete(pid);
+      mainIdleStart.delete(pid);
       broadcaster.send(pid, { type: 'project_removed', project_id: pid });
       if (parent?.parent_id) announceVerticals(parent.parent_id); // a vertical left its workspace
       return json(res, 200, { deleted: pid });
@@ -620,6 +683,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const root = projectRoot(pid);
       if (!root) return json(res, 404, { error: 'unknown project' });
       return json(res, 200, await attachRepo(root, String(b.url)));
+    }
+    if (method === 'POST' && action === 'autopilot') {
+      const b = await readBody(req);
+      if (typeof b.on !== 'boolean') return json(res, 400, { error: 'on (boolean) required' });
+      if (!projectRoot(pid)) return json(res, 404, { error: 'unknown project' });
+      const project = board.setAutopilot(db, pid, b.on);
+      broadcaster.send(pid, { type: 'autopilot', project_id: pid, on: b.on });
+      if (project.parent_id) announceVerticals(project.parent_id);
+      else flushEvents();
+      return json(res, 200, { project_id: pid, autopilot: project.autopilot });
     }
   }
 
@@ -977,6 +1050,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       task_id: b.task_id ?? null,
     };
     const now = Date.now();
+    if (status.agent === 'orchestrator') {
+      const wasIdle = states.view(b.project_id, now).main?.verb === 'idle';
+      if (status.verb !== 'idle') mainIdleStart.delete(b.project_id);
+      else if (!wasIdle || !mainIdleStart.has(b.project_id)) mainIdleStart.set(b.project_id, now);
+    }
     states.record(b.project_id, { ...status, agent_id: b.agent_id ?? null, at: now });
     broadcaster.send(b.project_id, {
       type: 'status',
@@ -984,6 +1062,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       status,
       session: states.view(b.project_id, now),
     });
+    if (AUTOPILOT_ENGINE && status.agent === 'orchestrator' && status.verb === 'idle') void evaluateAutopilot(b.project_id);
     return json(res, 200, { ok: true });
   }
 
@@ -1106,4 +1185,14 @@ if (process.env.KANKAN_DISPATCHER !== '0') {
   setInterval(() => {
     dispatcher.runOnce().catch((err) => console.error(`dispatcher tick failed: ${(err as Error).message}`));
   }, 1000).unref();
+}
+
+// ── autopilot sweep ─────────────────────────────────────────────────
+// Every 30s, re-evaluate projects that opted in (catches idle sessions whose
+// idle ping arrived before a card was queued or before usage dropped).
+if (AUTOPILOT_ENGINE) {
+  setInterval(() => {
+    const rows = db.prepare('SELECT id FROM projects WHERE autopilot = 1').all() as { id: string }[];
+    for (const { id } of rows) void evaluateAutopilot(id);
+  }, AUTOPILOT_INTERVAL_MS).unref();
 }

@@ -58,6 +58,7 @@ export async function startDaemon(opts: { env?: Record<string, string> } = {}): 
       HOST: '127.0.0.1',
       KANKAN_DISPATCHER: '0',
       KANKAN_TERMINAL: '',
+      KANKAN_AUTOPILOT: '0', // never type into a pty unless a test opts in
       ...opts.env,
       PORT: String(port),
       DB_PATH: join(dbDir, 'board.db'),

@@ -6,6 +6,7 @@ export interface Project {
   name: string;
   root_path: string;
   parent_id: string | null; // workspace this vertical belongs to, or null (top-level)
+  autopilot: number; // 1 = daemon nudges an idle session that has queued cards (default 0)
   created_at: number;
 }
 
@@ -105,6 +106,7 @@ export const EVENT_TYPES = [
   'phase_done',
   'phase_park',
   'vertical_create',
+  'autopilot',
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -247,7 +249,7 @@ export interface AttentionItem {
 
 /** One board (workspace or vertical) in a workspace summary. */
 export interface BoardSummary {
-  project: { id: string; name: string; root_path: string; parent_id: string | null };
+  project: { id: string; name: string; root_path: string; parent_id: string | null; autopilot: number };
   lanes: Record<Lane, number>;
   active: { id: string; title: string; lane: Lane; agent: string | null; blocked: boolean }[];
   blocked: number; // open cards with a raised blocker
