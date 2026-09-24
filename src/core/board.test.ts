@@ -1400,3 +1400,62 @@ describe('sync_conflict attention', () => {
     assert.throws(() => resolveSyncConflict(db, 'nope', 'local'), /no such sync_link/);
   });
 });
+
+describe('cross-board depends_on', () => {
+  function xbSetup() {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-xb-'));
+    for (const sub of ['api', 'mobile']) mkdirSync(join(dir, sub));
+    const db = openDb();
+    const workspace = getOrCreateProject(db, dir, 'Shop');
+    const a = createVertical(db, workspace.id, 'API', join(dir, 'api'));
+    const b = createVertical(db, workspace.id, 'Mobile', join(dir, 'mobile'));
+    const cleanup = () => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    };
+    return { db, workspace, a, b, cleanup };
+  }
+
+  it('gates a card on vertical B while its dependency on vertical A is not done', () => {
+    const { db, a, b, cleanup } = xbSetup();
+    const auth = createTask(db, a.id, 'API auth');
+    createTask(db, b.id, 'Mobile login', { depends_on: [auth.id] });
+    assert.equal(getNextCard(db, b.id), null);
+    moveTask(db, auth.id, 'in_progress');
+    assert.equal(getNextCard(db, b.id), null);
+    cleanup();
+  });
+
+  it('makes the B card next once its A dependency is done', () => {
+    const { db, a, b, cleanup } = xbSetup();
+    const auth = createTask(db, a.id, 'API auth');
+    const login = createTask(db, b.id, 'Mobile login', { depends_on: [auth.id] });
+    assert.equal(getNextCard(db, b.id), null);
+    moveTask(db, auth.id, 'done');
+    assert.equal(getNextCard(db, b.id)!.id, login.id);
+    cleanup();
+  });
+
+  it('gating holds inside an active phase on B', () => {
+    const { db, a, b, cleanup } = xbSetup();
+    const auth = createTask(db, a.id, 'API auth');
+    const phase = createPhase(db, b.id, 'Login');
+    const login = createTask(db, b.id, 'Mobile login', { depends_on: [auth.id], phase_id: phase.id });
+    advancePhase(db, b.id); // phase active
+    assert.equal(getActivePhase(db, b.id)!.id, phase.id);
+    assert.equal(getNextCard(db, b.id), null);
+    moveTask(db, auth.id, 'done');
+    assert.equal(getNextCard(db, b.id)!.id, login.id);
+    cleanup();
+  });
+
+  it('a dependency id on no board blocks the card forever (never eligible)', () => {
+    const { db, b, cleanup } = xbSetup();
+    const ghost = createTask(db, b.id, 'Waits on ghost', { depends_on: ['no-such-card'] });
+    assert.equal(getNextCard(db, b.id), null);
+    const free = createTask(db, b.id, 'Free');
+    assert.equal(getNextCard(db, b.id)!.id, free.id);
+    assert.equal(ghost.position < free.position, true);
+    cleanup();
+  });
+});
