@@ -16,7 +16,7 @@ import { looksLikeClaude, NUDGE_PROMPT, resetsAtMs, shouldNudge, type NudgeInput
 import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
 import { sessionCwd, sessionEnv } from './pty-env.js';
-import { isPtyName, ptyGroups } from './pty-groups.js';
+import { ptyGroups, shellInfo, stillOurs, ttyGroups, type ShellInfo } from './pty-groups.js';
 import { SessionStates } from './session-state.js';
 
 const PORT = Number(process.env.PORT ?? 7890);
@@ -1231,23 +1231,45 @@ function killGroup(pid: number, signal: NodeJS.Signals) {
   }
 }
 
-/** Every process group with a process on the shell's tty (the shell's own included). */
 let ownPgid: number | undefined;
-async function sessionGroups(shellPid: number): Promise<number[]> {
-  let tty = '';
-  let psOutput = '';
-  try {
-    if (ownPgid === undefined) {
+async function daemonPgid(): Promise<number> {
+  if (ownPgid === undefined) {
+    try {
       const g = Number((await execFileAsync('ps', ['-o', 'pgid=', '-p', String(process.pid)])).stdout.trim());
       if (g > 1) ownPgid = g;
+    } catch {
+      /* fall back below */
     }
-    tty = (await execFileAsync('ps', ['-o', 'tty=', '-p', String(shellPid)])).stdout.trim();
-    // only query a real pty name: `ps -t ??` could list terminal-less processes machine-wide
-    if (isPtyName(tty)) psOutput = (await execFileAsync('ps', ['-o', 'pgid=,tty=', '-t', tty])).stdout;
-  } catch {
-    /* shell already gone, or ps failed: fall back to the shell's group */
   }
-  return ptyGroups(shellPid, tty, psOutput, ownPgid ?? process.pid);
+  return ownPgid ?? process.pid;
+}
+
+/** The session's shell, verified to still be ours (null → signal nothing for it). */
+async function verifyShell(shellPid: number): Promise<ShellInfo> {
+  try {
+    const { stdout } = await execFileAsync('ps', ['-o', 'ppid=,pgid=,tty=', '-p', String(shellPid)]);
+    return shellInfo(shellPid, stdout, process.pid);
+  } catch {
+    return null; // gone (or ps failed): don't guess
+  }
+}
+
+/** Groups currently on `tty` — only ever queried for a real pty name, since
+ *  `ps -t ??` could list terminal-less processes machine-wide. */
+async function groupsOnTty(tty: string): Promise<number[]> {
+  try {
+    const { stdout } = await execFileAsync('ps', ['-o', 'pgid=,tty=', '-t', tty]);
+    return ttyGroups(tty, stdout, await daemonPgid());
+  } catch {
+    return [];
+  }
+}
+
+/** Every process group on the shell's tty (the shell's own included); [] if the pid isn't verifiably our shell. */
+async function sessionGroups(shellPid: number): Promise<{ shellPid: number; tty: string | null; groups: number[] }> {
+  const info = await verifyShell(shellPid);
+  const onTty = info?.tty ? await groupsOnTty(info.tty) : [];
+  return { shellPid, tty: info?.tty ?? null, groups: ptyGroups(shellPid, info, onTty, await daemonPgid()) };
 }
 
 async function shutdown() {
@@ -1257,11 +1279,17 @@ async function shutdown() {
 
   const sessions = [...ptySessions.values()];
   console.log(`closing ${sessions.length} terminal session(s)`);
-  const groups = (await Promise.all(sessions.map((s) => sessionGroups(s.proc.pid as number)))).flat();
-  for (const g of groups) killGroup(g, 'SIGHUP');
-  if (groups.length > 0) {
+  const targets = await Promise.all(sessions.map((s) => sessionGroups(s.proc.pid as number)));
+  for (const t of targets) for (const g of t.groups) killGroup(g, 'SIGHUP');
+  if (targets.some((t) => t.groups.length > 0)) {
     await new Promise((r) => setTimeout(r, PTY_KILL_GRACE_MS));
-    for (const g of groups) killGroup(g, 'SIGKILL');
+    for (const t of targets) {
+      if (t.groups.length === 0) continue;
+      // re-enumerate: only still-alive members of our tty (or our still-verified shell) get SIGKILL
+      const current = t.tty ? await groupsOnTty(t.tty) : [];
+      if ((await verifyShell(t.shellPid)) !== null) current.push(t.shellPid);
+      for (const g of stillOurs(t.groups, current)) killGroup(g, 'SIGKILL');
+    }
   }
 
   for (const t of intervals) clearInterval(t);
