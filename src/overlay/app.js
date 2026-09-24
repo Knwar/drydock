@@ -998,7 +998,7 @@ function openCardFromUrl() {
   const url = new URL(location.href);
   url.searchParams.delete('card');
   history.replaceState(null, '', url);
-  openCardModal(id);
+  if (cards.has(id)) openCardModal(id); // only this board's cards; anything else is dropped
 }
 
 async function openCardModal(cardId) {
@@ -1761,7 +1761,7 @@ $('team-add-btn').onclick = addTeamMember;
 // Every user-controlled string goes in via textContent (node() below) — never innerHTML.
 const URL_VIEW = new URLSearchParams(location.search).get('view');
 const EMBED = new URLSearchParams(location.search).get('embed') === '1';
-const dash = { checked: false, workspace: null, summary: null, failed: false, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null, skipOpenFetch: false };
+const dash = { checked: false, workspace: null, summary: null, failed: false, fetchRetry: 1000, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null, skipOpenFetch: false };
 const DASH_LANES = [['backlog', 'backlog'], ['queued', 'queued'], ['in_progress', 'in prog'], ['in_review', 'review'], ['done', 'done']];
 const DASH_STATE = { working: 'working', idle: 'idle', needs_you: '⚠ needs you', offline: 'offline' };
 const DASH_MAX_CARDS = 5;
@@ -1811,11 +1811,17 @@ async function loadDashboard() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     dash.summary = await res.json();
   } catch {
-    dash.failed = true; // retried on the next socket open
-    if (activeView === 'dashboard' && !dash.summary) renderDashboard(); // else keep the last good summary
+    dash.failed = true;
+    if (activeView !== 'dashboard') return;
+    if (dash.summary) renderDashHead(); // keep the stale tiles; flag "reconnecting…"
+    else renderDashboard(); // "retrying…"
+    clearTimeout(dash.refetchTimer);
+    dash.refetchTimer = setTimeout(loadDashboard, dash.fetchRetry);
+    dash.fetchRetry = Math.min(dash.fetchRetry * 2, 10000);
     return;
   }
   dash.failed = false;
+  dash.fetchRetry = 1000;
   dash.workspace = dash.summary.workspace.id;
   dash.ids = new Set(dash.summary.boards.map((b) => b.project.id));
   if (activeView === 'dashboard') renderDashboard();
@@ -1876,6 +1882,7 @@ function closeDashboard() {
   clearTimeout(dash.refetchTimer);
   dash.retryTimer = null;
   dash.retry = 1000;
+  dash.fetchRetry = 1000;
   const ws = dash.ws;
   dash.ws = null;
   ws?.close();
@@ -1892,6 +1899,7 @@ function renderDashHead() {
   stats.append(node('span', '', `${boards.length} board${boards.length === 1 ? '' : 's'}`));
   if (working) stats.append(node('span', 'dh-working', `${working} working`));
   if (needs) stats.append(node('span', 'dh-needs', `⚠ ${needs} need${needs === 1 ? 's' : ''} you`));
+  if (dash.failed) stats.append(node('span', 'dh-reconnecting', 'reconnecting…'));
   head.replaceChildren(node('span', 'dash-head-name', dash.summary.workspace.name), stats);
 }
 

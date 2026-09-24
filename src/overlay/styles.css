@@ -1177,6 +1177,7 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 .dash-head-stats { display: flex; gap: 14px; font-size: 12px; color: var(--dim); white-space: nowrap; }
 .dash-head-stats .dh-working { color: var(--accent); }
 .dash-head-stats .dh-needs { color: #e06c75; font-weight: 700; }
+.dash-head-stats .dh-reconnecting { color: #e5c07b; font-style: italic; }
 
 .dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-items: start; }
 
