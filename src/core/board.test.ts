@@ -86,14 +86,15 @@ describe('workspaces', () => {
     return { db, dir, workspace, cleanup };
   }
 
-  it('new projects are top-level (parent_id null)', () => {
+  it('new projects are top-level (parent_id null)', (t) => {
     const { workspace, cleanup } = wsSetup();
+    t.after(cleanup);
     assert.equal(workspace.parent_id, null);
-    cleanup();
   });
 
-  it('creates a vertical that cwd lookup resolves to, and logs vertical_create', () => {
+  it('creates a vertical that cwd lookup resolves to, and logs vertical_create', (t) => {
     const { db, dir, workspace, cleanup } = wsSetup();
+    t.after(cleanup);
     const v = createVertical(db, workspace.id, 'Mobile', join(dir, 'mobile') + '/');
     assert.equal(v.parent_id, workspace.id);
     assert.equal(v.name, 'Mobile');
@@ -101,41 +102,41 @@ describe('workspaces', () => {
     assert.equal(findProject(db, join(dir, 'mobile'))?.id, v.id);
     const ev = getRecentEvents(db, workspace.id).find((e) => e.type === 'vertical_create');
     assert.deepEqual(JSON.parse(ev!.payload!), { vertical_id: v.id, name: 'Mobile' });
-    cleanup();
   });
 
-  it('rejects a vertical as parent, a missing dir, the workspace root, and an unknown workspace', () => {
+  it('rejects a vertical as parent, a missing dir, the workspace root, and an unknown workspace', (t) => {
     const { db, dir, workspace, cleanup } = wsSetup();
+    t.after(cleanup);
     const v = createVertical(db, workspace.id, 'Mobile', join(dir, 'mobile'));
     assert.throws(() => createVertical(db, v.id, 'Web', join(dir, 'web')), /vertical/);
     assert.throws(() => createVertical(db, workspace.id, 'X', join(dir, 'nope')), /not an existing directory/);
     assert.throws(() => createVertical(db, workspace.id, 'Root', dir + '/'), /differ/);
     assert.throws(() => createVertical(db, 'no-such-id', 'Web', join(dir, 'web')), /no such project/);
-    cleanup();
   });
 
-  it('adopts an existing childless top-level project at that path', () => {
+  it('adopts an existing childless top-level project at that path', (t) => {
     const { db, dir, workspace, cleanup } = wsSetup();
+    t.after(cleanup);
     const api = getOrCreateProject(db, join(dir, 'api'), 'old-api');
     const v = createVertical(db, workspace.id, 'API', join(dir, 'api'));
     assert.equal(v.id, api.id);
     assert.equal(v.parent_id, workspace.id);
     assert.equal(findProject(db, join(dir, 'api'))?.name, 'API');
-    cleanup();
   });
 
-  it('refuses to adopt an existing project that has children (or is already a vertical)', () => {
+  it('refuses to adopt an existing project that has children (or is already a vertical)', (t) => {
     const { db, dir, workspace, cleanup } = wsSetup();
+    t.after(cleanup);
     const other = getOrCreateProject(db, join(dir, 'web'), 'Other WS');
     createVertical(db, other.id, 'Api', join(dir, 'api'));
     assert.throws(() => createVertical(db, workspace.id, 'Web', join(dir, 'web')), /cannot be adopted/);
     assert.throws(() => createVertical(db, workspace.id, 'Api', join(dir, 'api')), /cannot be adopted/);
     assert.equal(findProject(db, join(dir, 'web'))?.parent_id, null);
-    cleanup();
   });
 
-  it('validateVertical throws for every case createVertical rejects, and writes nothing', () => {
+  it('validateVertical throws for every case createVertical rejects, and writes nothing', (t) => {
     const { db, dir, workspace, cleanup } = wsSetup();
+    t.after(cleanup);
     const v = createVertical(db, workspace.id, 'Mobile', join(dir, 'mobile'));
     const other = getOrCreateProject(db, join(dir, 'web'), 'Other WS');
     createVertical(db, other.id, 'Api', join(dir, 'api'));
@@ -153,11 +154,11 @@ describe('workspaces', () => {
     const ok = validateVertical(db, workspace.id, join(dir, 'mobile2'));
     assert.equal(ok.workspace.id, workspace.id);
     assert.equal(listVerticals(db, workspace.id).length, before);
-    cleanup();
   });
 
-  it('lists verticals and resolves the workspace from either id', () => {
+  it('lists verticals and resolves the workspace from either id', (t) => {
     const { db, dir, workspace, cleanup } = wsSetup();
+    t.after(cleanup);
     const m = createVertical(db, workspace.id, 'Mobile', join(dir, 'mobile'));
     const w = createVertical(db, workspace.id, 'Web', join(dir, 'web'));
     assert.deepEqual(listVerticals(db, workspace.id).map((p) => p.id), [m.id, w.id]);
@@ -166,7 +167,6 @@ describe('workspaces', () => {
       assert.equal(view.workspace.id, workspace.id);
       assert.deepEqual(view.verticals.map((p) => p.id), [m.id, w.id]);
     }
-    cleanup();
   });
 
   it('getWorkspace: standalone project has no verticals; unknown id throws', () => {
@@ -202,15 +202,15 @@ describe('projects', () => {
 });
 
 describe('autopilot', () => {
-  it('defaults to 0 for new projects and verticals', () => {
+  it('defaults to 0 for new projects and verticals', (t) => {
     const { db, project } = setup();
     assert.equal(project.autopilot, 0);
     assert.equal(getOrCreateProject(db, '/tmp/demo-app').autopilot, 0); // read back from the row
     const dir = mkdtempSync(join(tmpdir(), 'kankan-ap-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
     mkdirSync(join(dir, 'web'));
     const ws = getOrCreateProject(db, dir);
     assert.equal(createVertical(db, ws.id, 'Web', join(dir, 'web')).autopilot, 0);
-    rmSync(dir, { recursive: true, force: true });
   });
 
   it('setAutopilot persists and logs an autopilot event', () => {
@@ -848,8 +848,9 @@ describe('workspace summary', () => {
     return { db, ws, mobile, web, cleanup };
   }
 
-  it('summarizes each board and merges attention, most severe board first', () => {
+  it('summarizes each board and merges attention, most severe board first', (t) => {
     const { db, ws, mobile, web, cleanup } = build();
+    t.after(cleanup);
     // workspace board: one spec-less backlog card → a 'warn' attention item
     createTask(db, ws.id, 'Unspecced');
     // mobile: cards across lanes, a blocker, an active phase at 1/2
@@ -909,7 +910,6 @@ describe('workspace summary', () => {
       ],
     );
     assert.equal(sum.attention[0].card_id, b.id);
-    cleanup();
   });
 
   it('a standalone project has exactly one board; unknown ids throw', () => {
@@ -961,8 +961,9 @@ describe('workspace summary cost', () => {
     }
   });
 
-  it('active-phase progress query uses idx_tasks_phase', () => {
+  it('active-phase progress query uses idx_tasks_phase', (t) => {
     const db = openDb();
+    t.after(() => db.close());
     const plan = db
       .prepare(`EXPLAIN QUERY PLAN SELECT COUNT(*) AS total, SUM(lane = 'done') AS done FROM tasks WHERE phase_id = ?`)
       .all('x') as { detail: string }[];
@@ -970,7 +971,6 @@ describe('workspace summary cost', () => {
       plan.some((r) => /USING (COVERING )?INDEX idx_tasks_phase/.test(r.detail)),
       JSON.stringify(plan),
     );
-    db.close();
   });
 });
 
@@ -1610,28 +1610,29 @@ describe('cross-board depends_on', () => {
     return { db, workspace, a, b, cleanup };
   }
 
-  it('gates a card on vertical B while its dependency on vertical A is not done', () => {
+  it('gates a card on vertical B while its dependency on vertical A is not done', (t) => {
     const { db, a, b, cleanup } = xbSetup();
+    t.after(cleanup);
     const auth = createTask(db, a.id, 'API auth');
     createTask(db, b.id, 'Mobile login', { depends_on: [auth.id] });
     assert.equal(getNextCard(db, b.id), null);
     moveTask(db, auth.id, 'in_progress');
     assert.equal(getNextCard(db, b.id), null);
-    cleanup();
   });
 
-  it('makes the B card next once its A dependency is done', () => {
+  it('makes the B card next once its A dependency is done', (t) => {
     const { db, a, b, cleanup } = xbSetup();
+    t.after(cleanup);
     const auth = createTask(db, a.id, 'API auth');
     const login = createTask(db, b.id, 'Mobile login', { depends_on: [auth.id] });
     assert.equal(getNextCard(db, b.id), null);
     moveTask(db, auth.id, 'done');
     assert.equal(getNextCard(db, b.id)!.id, login.id);
-    cleanup();
   });
 
-  it('gating holds inside an active phase on B', () => {
+  it('gating holds inside an active phase on B', (t) => {
     const { db, a, b, cleanup } = xbSetup();
+    t.after(cleanup);
     const auth = createTask(db, a.id, 'API auth');
     const phase = createPhase(db, b.id, 'Login');
     const login = createTask(db, b.id, 'Mobile login', { depends_on: [auth.id], phase_id: phase.id });
@@ -1640,32 +1641,32 @@ describe('cross-board depends_on', () => {
     assert.equal(getNextCard(db, b.id), null);
     moveTask(db, auth.id, 'done');
     assert.equal(getNextCard(db, b.id)!.id, login.id);
-    cleanup();
   });
 
-  it('a dependency id on no board blocks the card forever (never eligible)', () => {
+  it('a dependency id on no board blocks the card forever (never eligible)', (t) => {
     const { db, b, cleanup } = xbSetup();
+    t.after(cleanup);
     const ghost = createTask(db, b.id, 'Waits on ghost', { depends_on: ['no-such-card'] });
     assert.equal(getNextCard(db, b.id), null);
     const free = createTask(db, b.id, 'Free');
     assert.equal(getNextCard(db, b.id)!.id, free.id);
     assert.equal(ghost.position < free.position, true);
-    cleanup();
   });
 
-  it('deleting a card on A strips it from a B dependent so B becomes next', () => {
+  it('deleting a card on A strips it from a B dependent so B becomes next', (t) => {
     const { db, a, b, cleanup } = xbSetup();
+    t.after(cleanup);
     const auth = createTask(db, a.id, 'API auth');
     const login = createTask(db, b.id, 'Mobile login', { depends_on: [auth.id] });
     assert.equal(getNextCard(db, b.id), null);
     deleteTask(db, auth.id);
     assert.equal(getTask(db, login.id).depends_on, null);
     assert.equal(getNextCard(db, b.id)!.id, login.id);
-    cleanup();
   });
 
-  it('deleteTask reports every changed dependent (all boards) in unblocked', () => {
+  it('deleteTask reports every changed dependent (all boards) in unblocked', (t) => {
     const { db, a, b, cleanup } = xbSetup();
+    t.after(cleanup);
     const auth = createTask(db, a.id, 'API auth');
     const other = createTask(db, a.id, 'API other');
     const sameBoard = createTask(db, a.id, 'API tokens', { depends_on: [auth.id, other.id] });
@@ -1675,16 +1676,15 @@ describe('cross-board depends_on', () => {
     assert.deepEqual([...removed.unblocked].sort(), [sameBoard.id, login.id].sort());
     assert.equal(getTask(db, sameBoard.id).depends_on, JSON.stringify([other.id]));
     assert.equal(getTask(db, unrelated.id).depends_on, JSON.stringify([other.id]));
-    cleanup();
   });
 
-  it('deleteTask never lists the deleted card itself in unblocked (self-dependency)', () => {
+  it('deleteTask never lists the deleted card itself in unblocked (self-dependency)', (t) => {
     const { db, a, b, cleanup } = xbSetup();
+    t.after(cleanup);
     const self = createTask(db, a.id, 'API self');
     db.prepare('UPDATE tasks SET depends_on = ? WHERE id = ?').run(JSON.stringify([self.id]), self.id);
     const login = createTask(db, b.id, 'Mobile login', { depends_on: [self.id] });
     const removed = deleteTask(db, self.id);
     assert.deepEqual(removed.unblocked, [login.id]);
-    cleanup();
   });
 });

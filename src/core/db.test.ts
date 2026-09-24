@@ -28,19 +28,20 @@ const LEGACY_TASKS_DDL = `CREATE TABLE tasks (
 )`;
 
 describe('openDb', () => {
-  it('opens an in-memory db with the schema applied', () => {
+  it('opens an in-memory db with the schema applied', (t) => {
     const db = openDb();
+    t.after(() => db.close());
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as {
       name: string;
     }[]).map((r) => r.name);
     assert.ok(tables.includes('projects'));
     assert.ok(tables.includes('tasks'));
     assert.ok(tables.includes('task_events'));
-    db.close();
   });
 
-  it('creates the summary-query indexes on a fresh db', () => {
+  it('creates the summary-query indexes on a fresh db', (t) => {
     const db = openDb();
+    t.after(() => db.close());
     const names = (db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as { name: string }[]).map(
       (r) => r.name,
     );
@@ -53,22 +54,22 @@ describe('openDb', () => {
     ]) {
       assert.ok(names.includes(idx), `missing ${idx}`);
     }
-    db.close();
   });
 
-  it('creates the parent directory for a file-backed db', () => {
+  it('creates the parent directory for a file-backed db', (t) => {
     const dir = mkdtempSync(join(tmpdir(), 'kankan-db-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
     const path = join(dir, 'nested', 'board.db'); // parent does not exist yet
     const db = openDb(path);
+    t.after(() => db.close());
     assert.ok(existsSync(path));
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
   });
 });
 
 describe('migrate', () => {
-  it('adds the newer columns to a legacy tasks table', () => {
+  it('adds the newer columns to a legacy tasks table', (t) => {
     const db = new Database(':memory:');
+    t.after(() => db.close());
     // A realistic pre-migrate legacy tasks table: the original columns the app
     // always had, WITHOUT the newer ALTER-added ones (subtasks/phase_id/skill/
     // blocked_at/blocked_reason). This exercises migrate()'s add-column path.
@@ -81,11 +82,11 @@ describe('migrate', () => {
     for (const added of ['subtasks', 'phase_id', 'skill', 'blocked_at', 'blocked_reason']) {
       assert.ok(cols.includes(added), `migrate() should add ${added}`);
     }
-    db.close();
   });
 
-  it('adds parent_id and its index to a legacy projects table', () => {
+  it('adds parent_id and its index to a legacy projects table', (t) => {
     const db = new Database(':memory:');
+    t.after(() => db.close());
     // The projects table as it existed before workspaces (no parent_id).
     db.exec(`CREATE TABLE projects (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL
@@ -98,11 +99,11 @@ describe('migrate', () => {
       .get();
     assert.ok(idx, 'migrate() should create idx_projects_parent');
     assert.doesNotThrow(() => migrate(db)); // idempotent
-    db.close();
   });
 
-  it('adds autopilot (default 0) to a legacy projects table, keeping existing rows', () => {
+  it('adds autopilot (default 0) to a legacy projects table, keeping existing rows', (t) => {
     const db = new Database(':memory:');
+    t.after(() => db.close());
     db.exec(`CREATE TABLE projects (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL
     )`);
@@ -111,31 +112,30 @@ describe('migrate', () => {
     const row = db.prepare('SELECT autopilot FROM projects WHERE id = ?').get('p1') as { autopilot: number };
     assert.equal(row.autopilot, 0);
     assert.doesNotThrow(() => migrate(db)); // idempotent
-    db.close();
   });
 
-  it('fresh db: projects.autopilot defaults to 0', () => {
+  it('fresh db: projects.autopilot defaults to 0', (t) => {
     const db = openDb();
+    t.after(() => db.close());
     db.prepare('INSERT INTO projects (id, name, root_path, created_at) VALUES (?, ?, ?, ?)').run('p1', 'P', '/tmp/p', 1);
     const row = db.prepare('SELECT autopilot FROM projects WHERE id = ?').get('p1') as { autopilot: number };
     assert.equal(row.autopilot, 0);
-    db.close();
   });
 
-  it('creates idx_tasks_phase on a legacy tasks table without phase_id', () => {
+  it('creates idx_tasks_phase on a legacy tasks table without phase_id', (t) => {
     const db = new Database(':memory:');
+    t.after(() => db.close());
     db.exec(LEGACY_TASKS_DDL);
     assert.doesNotThrow(() => migrate(db));
     const idx = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_phase'").get();
     assert.ok(idx, 'migrate() should create idx_tasks_phase');
-    db.close();
   });
 
-  it('is a no-op when the newer columns already exist', () => {
+  it('is a no-op when the newer columns already exist', (t) => {
     const db = new Database(':memory:');
+    t.after(() => db.close());
     // A DB already carrying subtasks: migrate()'s guards must skip re-adding it.
     db.exec(LEGACY_TASKS_DDL.replace(')', ', subtasks TEXT)'));
     assert.doesNotThrow(() => migrate(db));
-    db.close();
   });
 });
