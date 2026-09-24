@@ -46,6 +46,42 @@ Any card touching shared/central files (package manifests, routing, DI container
    - Hard cap: 2 review rounds. After a second fail, stop and surface the findings to the user. Abandoning a card: `kankan worktree remove <id> --force`.
 6. **Blockers**: a builder that hits a decision it can't make (ambiguous/contradictory spec, a destructive action to confirm, a missing secret, an unresolved architectural fork) calls `raise_blocker` and stops — the card stays put but jumps to the top of Attention flagged `blocked`. Get the human's decision, then clear it: `resolve_blocker` after folding the answer into the card's `requirements`, or `redirect_task` for a new direction, or just re-dispatch the builder (`assign_card`) — the last two clear the flag automatically.
 
+## Workspace mode (projects with verticals)
+
+Applies when `get_workspace` returns verticals. SessionStart tells you which role you have.
+
+**Roles**
+- **Main session** (bound to the workspace): PM + tech lead. Plans across verticals,
+  writes cards onto vertical boards, builds ONLY cross-cutting cards itself (API
+  contracts, shared types, root manifests/lockfiles, CI), answers blockers.
+- **Vertical session** (SessionStart prints `vertical "<name>" of workspace …`): runs
+  *Working a card* on ITS OWN board only. Never creates or moves cards on other
+  boards. Needs something cross-cutting → `raise_blocker` stating the need; main
+  turns it into a card.
+
+**Setup (once, main)**: `manager` proposes verticals alongside phases. After the user
+agrees: `create_vertical` per vertical (root = its folder; a separate repo gets the
+kit installed). Each vertical gets its own roadmap: `create_phase` with the
+vertical's project_id, then `planner` with that project_id + phase.
+
+**Where a card goes**: to the board of the vertical whose folder it changes. It
+touches 2+ verticals or shared root files → the workspace board (main builds it).
+Sequence with cross-board `depends_on` (e.g. api contract card on main → mobile
+and web cards depend on it).
+
+**Handoff**: write the full spec + acceptance criteria, then `move_task → queued`.
+Queued is the signal. A vertical picks queued cards up when prompted: by the user
+in its terminal tab, or by autopilot (`set_autopilot`, off by default) which
+prompts an idle vertical that has queued cards and pauses while shared usage is
+high.
+
+**Monitoring**: `get_workspace_summary` (not `get_board` per vertical). A board in
+`needs_you` has a session waiting on the human: tell the user which vertical.
+
+**Merging**: each vertical merges its own cards (`kankan worktree merge`; merges are
+serialized by a lock). While verticals are active, nobody edits files directly in
+the main checkout: all changes go through worktrees.
+
 ## Rules
 
 - The `in_progress` / `in_review` transitions are fired automatically: by lifecycle hooks, and by the daemon when a builder checks the last acceptance criterion. `assign_card` also forces the card to `in_progress` (an assigned card is never left in `backlog`/`queued`, even when several are dispatched at once). Your `move_task` calls are for judgment moves only: `queued`, `done`, and fail→`in_progress` routing. Phase transitions (`create_phase`, `advance_phase`) are likewise your judgment — advance only when the active phase is genuinely complete.

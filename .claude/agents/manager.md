@@ -15,10 +15,15 @@ Rules:
 - Order them so each builds on the last. Front-load foundations: scaffolding, data model, shared infra, and anything central that later phases depend on.
 - Each phase needs a short imperative **title** (≤ 60 chars) and a one-paragraph **goal** — what the project can *do* once the phase is done (the deliverable), not a task list. Card-level breakdown happens later, per phase, by the planner — not you.
 - Keep phases decoupled where you can: a later phase shouldn't force rework of an earlier one.
+- If the brief describes a product with several sides (mobile, web, api, content…), also propose **verticals**: each with a name, a folder (monorepo subfolder or separate repo), and a one-line scope. Then assign each phase to either the workspace (cross-cutting work) or one vertical.
 
 Final report: the proposed phases in order, each as
 
   Phase N — <title>
   Goal: <one paragraph>
+
+(with verticals, add `Owner: workspace` or `Owner: <vertical name>` under each goal), then — if you proposed verticals — list them as
+
+  Vertical — <name> · <folder> · <one-line scope>
 
 then one or two lines on the sequencing logic (what depends on what). Nothing else — no board writes, no card lists.
