@@ -1301,6 +1301,69 @@ body.reduce-motion .dash-tile, body.reduce-motion .dt-dot { animation: none !imp
 .dt-foot .dt-blocked { margin-left: auto; }
 .dt-foot .dt-blocked.on { color: #e06c75; font-weight: 700; }
 
+/* dashboard attention: one "needs you" queue across every board */
+.dash-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; align-items: start; }
+.dash-attn {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--lane-bg);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.da-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+.da-title { flex: 1; font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); }
+.da-count { min-width: 20px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; text-align: center; color: #0d0f14; background: #e5c07b; font-variant-numeric: tabular-nums; }
+.da-count.hot { color: #fff; background: #e06c75; }
+.da-list { display: flex; flex-direction: column; }
+.dash-attn .da-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+.dash-attn .da-row:first-child { border-top: none; }
+.dash-attn button.da-row { cursor: pointer; }
+.dash-attn button.da-row:hover { background: rgba(255, 255, 255, 0.05); }
+.dash-attn div.da-row { cursor: default; }
+.dash-attn .att-row.blocker { box-shadow: inset 3px 0 0 #e06c75; }
+.da-waiting { background: linear-gradient(90deg, rgba(224, 108, 117, 0.2), rgba(224, 108, 117, 0.04)) !important; box-shadow: inset 3px 0 0 #e06c75; }
+.da-waiting .att-title { color: #e06c75; }
+.da-warn { flex: none; width: 12px; text-align: center; color: #e06c75; font-size: 13px; }
+.da-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.da-chip {
+  flex: none;
+  max-width: 45%;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.da-top .att-title { flex: 1; min-width: 0; }
+.da-empty { padding: 26px 14px; text-align: center; font-size: 12.5px; color: var(--dim); }
+
+@media (max-width: 1100px) {
+  .dash-layout { grid-template-columns: minmax(0, 1fr); }
+  .dash-attn { position: static; }
+}
+
 /* ?embed=1 — OBS browser source: the dashboard fills the page, no app chrome */
 body.embed > header, body.embed > footer, body.embed #activity-rail, body.embed #terminal-panel, body.embed #term-btn, body.embed #teams-peek { display: none !important; }
 body.embed .dash-head-name { font-size: 20px; }
