@@ -270,3 +270,58 @@ export interface WorkspaceSummary {
   boards: BoardSummary[];
   attention: WorkspaceAttentionItem[];
 }
+
+/** A board reference on Home-view items. */
+export interface BoardRef {
+  id: string;
+  name: string;
+}
+
+/** An unfinished (or unknown) dependency a card is waiting on. */
+export interface WaitingOn {
+  id: string;
+  title: string | null; // null = unknown card id
+  board_name: string | null; // null = unknown card id
+}
+
+/** One card in the Home view's "up next" list. */
+export interface UpNextItem {
+  id: string;
+  title: string;
+  lane: Lane;
+  tag: string | null;
+  board: BoardRef;
+  ready: boolean; // no waiting_on
+  waiting_on: WaitingOn[];
+}
+
+export interface UpNext {
+  items: UpNextItem[];
+  total_pending: number; // queued + pickable backlog in scope
+}
+
+/** One in_progress / in_review card in the Home view's "now building" list. */
+export interface NowBuildingItem {
+  id: string;
+  title: string;
+  lane: Lane;
+  board: BoardRef;
+  agent: string | null;
+  subtasks: { done: number; total: number };
+  next_criterion: string | null; // first unchecked subtask text
+  since: number; // epoch ms the card entered its current lane
+  blocked: boolean;
+}
+
+/** A team member with their activity on a project (or workspace). */
+export interface AgentBoardEntry {
+  id: string;
+  name: string;
+  skill: string | null;
+  color: string | null;
+  avatar: string | null;
+  lines_added: number;
+  lines_removed: number;
+  hours: number; // build time, 1 decimal
+  cards: number;
+}
