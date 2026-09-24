@@ -376,6 +376,23 @@ function classifyVertical(root: string, wsRoot: string): { kind: 'shared' | 'ins
 /** `a` is `b` or one of its ancestors (segment-aware). */
 const isAncestorOrSelf = (a: string, b: string): boolean => a === b || b.startsWith(a.endsWith('/') ? a : a + '/');
 
+/** Canonical spelling of an incoming root, matching how stored projects spell
+ *  it, so the board's plain string comparisons (workspace root, collisions) hold
+ *  for any alias (/var ↔ /private/var, symlinks): a stored root_path that
+ *  resolves to the same realpath is used as-is; else a path under a stored root
+ *  keeps that root's spelling (the deepest one); else the realpath. */
+function canonicalRoot(p: string): string {
+  const real = realOrResolved(p);
+  const rows = db.prepare('SELECT root_path FROM projects').all() as { root_path: string }[];
+  let best: { stored: string; real: string } | null = null;
+  for (const { root_path } of rows) {
+    const r = realOrResolved(root_path);
+    if (r === real) return root_path;
+    if (isAncestorOrSelf(r, real) && (!best || r.length > best.real.length)) best = { stored: root_path, real: r };
+  }
+  return best ? join(best.stored, relative(best.real, real)) : real;
+}
+
 interface SplitTarget {
   name: string;
   root: string;
@@ -390,15 +407,13 @@ function resolveSplitTargets(source: Project, raw: unknown): SplitTarget[] {
   const workspaceId = source.parent_id ?? source.id;
   const wsRoot = projectRoot(workspaceId)!;
   const realSource = realOrResolved(source.root_path);
-  // git reports the toplevel with symlinks resolved; re-spell it the way the
-  // source's root is stored so project root_path lookups/comparisons line up
-  const top = resolve(source.root_path, relative(realSource, realOrResolved(sessionCwd(source.root_path))));
+  const top = realOrResolved(sessionCwd(source.root_path));
   const seen = new Set<string>();
   return raw.map((t: { name?: unknown; folder?: unknown; root?: unknown }) => {
     const name = typeof t?.name === 'string' ? t.name.trim() : '';
     const given = typeof t?.folder === 'string' ? t.folder.trim() : typeof t?.root === 'string' ? t.root.trim() : '';
     if (!name || !given) throw new Error('each target needs a name and a folder');
-    const root = resolve(isAbsolute(given) ? given : join(top, given));
+    const root = canonicalRoot(isAbsolute(given) ? given : join(top, given));
     const real = realOrResolved(root);
     if (real === realSource) throw new Error(`target "${name}": folder must differ from the source's own root`);
     if (seen.has(real)) throw new Error(`duplicate target folder: ${root}`);
@@ -410,7 +425,7 @@ function resolveSplitTargets(source: Project, raw: unknown): SplitTarget[] {
     }
     const c = classifyVertical(root, wsRoot);
     const kit = c.kind === 'skip' ? (`skipped: folder is inside another repo (${c.top})` as const) : c.kind;
-    const rel = relative(top, root);
+    const rel = relative(top, real);
     const folder = rel === '' ? '.' : rel.startsWith('..') || isAbsolute(rel) ? root : rel;
     return { name, root, folder, kit };
   });
@@ -745,9 +760,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   // ── workspaces / verticals ──────────────────────────────────────────
   if (method === 'POST' && pathname === '/vertical') {
+    if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' }); // may install the kit into a folder
     const b = await readBody(req);
-    if (!b.workspace_id || !b.name || !b.root)
+    if (!b.workspace_id || !b.name || typeof b.root !== 'string' || !b.root)
       return json(res, 400, { error: 'workspace_id, name and root required' });
+    b.root = canonicalRoot(b.root);
     // Validate BEFORE any side effect (init writes into the folder): throws → 400.
     const { workspace, root } = board.validateVertical(db, b.workspace_id, b.root);
     let kit = 'shared';
@@ -871,7 +888,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const splitMatch = pathname.match(/^\/project\/([^/]+)\/(split-preview|split)$/);
   if (method === 'POST' && splitMatch) {
     const [, pid, action] = splitMatch;
-    if (action === 'split' && !isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+    // both loopback-only: preview probes paths and runs git in arbitrary folders
+    if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
     const source = db.prepare('SELECT * FROM projects WHERE id = ?').get(pid) as Project | undefined;
     if (!source) return json(res, 404, { error: 'unknown project' });
     const b = await readBody(req);
@@ -949,7 +967,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let root: string | undefined;
     if (b.root !== undefined) {
       if (typeof b.root !== 'string' || !b.root.trim()) return json(res, 400, { error: 'root must be a path' });
-      root = resolve(b.root);
+      root = canonicalRoot(b.root);
       let isDir = false;
       try {
         isDir = statSync(root).isDirectory();

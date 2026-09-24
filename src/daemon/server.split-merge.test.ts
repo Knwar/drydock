@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -252,11 +252,14 @@ describe('split / merge routes', () => {
 
   describe('POST /verticals/merge', () => {
     let ws: string;
+    let alias: string; // another spelling of ws (like /var ↔ /private/var)
     let wsId: string;
 
     before(async () => {
       ws = join(tmp, 'merge-ws');
-      makeRepo(ws, ['apps/web', 'apps/api', 'apps/busy', 'apps/idle']);
+      makeRepo(ws, ['apps/web', 'apps/api', 'apps/busy', 'apps/idle', 'apps/extra', 'apps/p', 'apps/q']);
+      alias = join(tmp, 'merge-ws-alias');
+      symlinkSync(ws, alias);
       wsId = await c.project(ws);
     });
 
@@ -278,7 +281,7 @@ describe('split / merge routes', () => {
           from: api,
           into: web,
           name: 'app',
-          root: join(ws, 'apps'),
+          root: join(alias, 'apps'), // alternate spelling → stored in the canonical one
           phases: 'append',
         });
         assert.equal(res.status, 200, await res.clone().text());
@@ -322,6 +325,56 @@ describe('split / merge routes', () => {
       // nothing changed
       const ids = (await c.getJson<{ id: string }[]>(`/verticals?project=${wsId}`)).map((v) => v.id);
       assert.ok(ids.includes(busy) && ids.includes(idle));
+    });
+
+    it('an alternate spelling of the workspace root is rejected for merge root, split target and /vertical', async () => {
+      const p = await c.vertical(wsId, 'p', join(ws, 'apps/p'));
+      const q = await c.vertical(wsId, 'q', join(ws, 'apps/q'));
+      const merge = await c.post('/verticals/merge', { from: p, into: q, root: alias, phases: 'append' });
+      assert.equal(merge.status, 400);
+      assert.match(((await merge.json()) as { error: string }).error, /workspace/);
+
+      const split = await c.post(`/project/${p}/split-preview`, { targets: [{ name: 'x', folder: alias }] });
+      assert.equal(split.status, 400);
+      assert.match(((await split.json()) as { error: string }).error, /workspace/);
+
+      const vertical = await c.post('/vertical', { workspace_id: wsId, name: 'x', root: `${alias}/` });
+      assert.equal(vertical.status, 400);
+      assert.match(((await vertical.json()) as { error: string }).error, /workspace/);
+      assert.equal((await c.getJson<unknown[]>(`/verticals?project=${wsId}`)).length, 5);
+    });
+
+    it('a valid alternate spelling is stored in the canonical spelling (/vertical, split target)', async () => {
+      const res = await c.post('/vertical', { workspace_id: wsId, name: 'extra', root: join(alias, 'apps/extra') });
+      assert.equal(res.status, 200);
+      assert.equal(((await res.json()) as { root_path: string }).root_path, join(ws, 'apps/extra'));
+
+      const mono = join(tmp, 'split-alias');
+      makeRepo(mono, ['apps/web']);
+      const monoAlias = join(tmp, 'split-alias-link');
+      symlinkSync(mono, monoAlias);
+      const pid = await c.project(mono);
+      const split = await c.post(`/project/${pid}/split`, {
+        targets: [{ name: 'web', root: join(monoAlias, 'apps/web') }],
+        assignments: {},
+      });
+      assert.equal(split.status, 200, await split.clone().text());
+      const body = (await split.json()) as { verticals: { root_path: string }[] };
+      assert.equal(body.verticals[0].root_path, join(mono, 'apps/web'));
+      // reverse direction: a workspace STORED under the alias spelling
+      const inv = join(tmp, 'inv-real');
+      makeRepo(inv, ['apps/web']);
+      const invAlias = join(tmp, 'inv-alias');
+      symlinkSync(inv, invAlias);
+      const invId = await c.project(invAlias);
+      const atRoot = await c.post('/vertical', { workspace_id: invId, name: 'x', root: inv });
+      assert.equal(atRoot.status, 400);
+      const under = await c.post('/vertical', { workspace_id: invId, name: 'web', root: join(inv, 'apps/web') });
+      assert.equal(under.status, 200);
+      assert.equal(((await under.json()) as { root_path: string }).root_path, join(invAlias, 'apps/web'));
+      // and the workspace root itself, spelled via the alias, is rejected as a split target
+      const self = await c.post(`/project/${pid}/split`, { targets: [{ name: 'x', root: monoAlias }], assignments: {} });
+      assert.equal(self.status, 400);
     });
 
     it('bad input → 400', async () => {
@@ -424,13 +477,15 @@ describe('split / merge write routes are loopback-only', () => {
     await daemon?.stop();
   });
 
-  it('a non-loopback caller gets 403 on split and merge', async (t) => {
+  it('a non-loopback caller gets 403 on split-preview, split, merge and /vertical', async (t) => {
     const ip = nonLoopbackIPv4();
     if (!ip) return t.skip('no non-loopback IPv4 interface on this host');
     const lan = `http://${ip}:${daemon!.port}`;
     const post = (path: string, body: unknown) =>
       fetch(`${lan}${path}`, { method: 'POST', body: JSON.stringify(body) });
+    assert.equal((await post('/project/any/split-preview', { targets: [] })).status, 403);
     assert.equal((await post('/project/any/split', { targets: [], assignments: {} })).status, 403);
+    assert.equal((await post('/vertical', { workspace_id: 'a', name: 'b', root: '/tmp' })).status, 403);
     assert.equal((await post('/verticals/merge', { from: 'a', into: 'b', phases: 'append' })).status, 403);
   });
 });
