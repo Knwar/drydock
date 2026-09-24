@@ -268,6 +268,20 @@ describe('POST /vertical kit install (monorepo vs separate repo)', () => {
     assert.equal(existsSync(join(sub, '.mcp.json')), false);
   });
 
+  it('a vertical as workspace_id → 400 before any kit is written (validation precedes init)', async () => {
+    const sub = join(wsRoot, 'svc');
+    mkdirSync(sub);
+    const vRes = await post('/vertical', { workspace_id: workspaceId, name: 'svc', root: sub });
+    const verticalId = ((await vRes.json()) as { project_id: string }).project_id;
+    const sep = join(tmp, 'mobile');
+    makeRepo(sep);
+    const res = await post('/vertical', { workspace_id: verticalId, name: 'mobile', root: sep });
+    assert.equal(res.status, 400);
+    assert.match(((await res.json()) as { error: string }).error, /verticals cannot have verticals/);
+    assert.equal(existsSync(join(sep, '.mcp.json')), false);
+    assert.equal(existsSync(join(sep, '.claude')), false);
+  });
+
   it('init failure → 500 with stderr tail, no vertical created', { timeout: INIT_TIMEOUT }, async () => {
     // The kankan checkout is its own git toplevel, and init refuses to bootstrap
     // kankan into itself — a portable, guaranteed init failure.

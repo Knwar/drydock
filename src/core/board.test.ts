@@ -37,6 +37,7 @@ import {
   listSyncLinks,
   listTeam,
   listVerticals,
+  validateVertical,
   moveTask,
   raiseBlocker,
   recordActivity,
@@ -128,6 +129,28 @@ describe('workspaces', () => {
     assert.throws(() => createVertical(db, workspace.id, 'Web', join(dir, 'web')), /cannot be adopted/);
     assert.throws(() => createVertical(db, workspace.id, 'Api', join(dir, 'api')), /cannot be adopted/);
     assert.equal(findProject(db, join(dir, 'web'))?.parent_id, null);
+    cleanup();
+  });
+
+  it('validateVertical throws for every case createVertical rejects, and writes nothing', () => {
+    const { db, dir, workspace, cleanup } = wsSetup();
+    const v = createVertical(db, workspace.id, 'Mobile', join(dir, 'mobile'));
+    const other = getOrCreateProject(db, join(dir, 'web'), 'Other WS');
+    createVertical(db, other.id, 'Api', join(dir, 'api'));
+    const cases: [string, string, RegExp][] = [
+      [v.id, join(dir, 'web'), /verticals cannot have verticals/],
+      ['no-such-id', join(dir, 'web'), /no such project/],
+      [workspace.id, join(dir, 'nope'), /not an existing directory/],
+      [workspace.id, dir + '/', /differ/],
+      [workspace.id, join(dir, 'web'), /cannot be adopted/], // has children
+      [workspace.id, join(dir, 'api'), /cannot be adopted/], // already a vertical
+    ];
+    for (const [ws, root, err] of cases) assert.throws(() => validateVertical(db, ws, root), err);
+    mkdirSync(join(dir, 'mobile2'));
+    const before = listVerticals(db, workspace.id).length;
+    const ok = validateVertical(db, workspace.id, join(dir, 'mobile2'));
+    assert.equal(ok.workspace.id, workspace.id);
+    assert.equal(listVerticals(db, workspace.id).length, before);
     cleanup();
   });
 

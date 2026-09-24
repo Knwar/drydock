@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
@@ -553,31 +553,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const b = await readBody(req);
     if (!b.workspace_id || !b.name || !b.root)
       return json(res, 400, { error: 'workspace_id, name and root required' });
-    const root = resolve(b.root);
-    const wsRoot = projectRoot(b.workspace_id);
-    let isDir = false;
-    try {
-      isDir = statSync(root).isDirectory();
-    } catch {
-      // missing → createVertical reports it
-    }
-    // Unknown workspace / missing folder: nothing to classify — createVertical throws the 400.
+    // Validate BEFORE any side effect (init writes into the folder): throws → 400.
+    const { workspace, root } = board.validateVertical(db, b.workspace_id, b.root);
     let kit = 'shared';
-    if (wsRoot && isDir) {
-      const c = classifyVertical(root, wsRoot);
-      if (c.kind === 'skip') kit = `skipped: folder is inside another repo (${c.top})`;
-      else if (c.kind === 'install') {
-        // Separate repo → install the kit like `kankan init`. init registers the
-        // folder as a top-level project, which createVertical then adopts. If it
-        // fails partway it may leave that stray top-level project behind.
-        try {
-          await runInit(root);
-        } catch (err) {
-          const stderr = String((err as { stderr?: string }).stderr ?? (err as Error).message);
-          return json(res, 500, { error: 'kit install failed', detail: stderr.slice(-500) });
-        }
-        kit = 'installed';
+    const c = classifyVertical(root, workspace.root_path);
+    if (c.kind === 'skip') kit = `skipped: folder is inside another repo (${c.top})`;
+    else if (c.kind === 'install') {
+      // Separate repo → install the kit like `kankan init`. init registers the
+      // folder as a top-level project, which createVertical then adopts. If it
+      // fails partway it may leave that stray top-level project behind.
+      try {
+        await runInit(root);
+      } catch (err) {
+        const stderr = String((err as { stderr?: string }).stderr ?? (err as Error).message);
+        return json(res, 500, { error: 'kit install failed', detail: stderr.slice(-500) });
       }
+      kit = 'installed';
     }
     const v = board.createVertical(db, b.workspace_id, b.name, b.root);
     announceVerticals(b.workspace_id);
