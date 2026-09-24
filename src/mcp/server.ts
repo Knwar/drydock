@@ -281,6 +281,36 @@ server.registerTool(
 );
 
 server.registerTool(
+  'create_vertical',
+  {
+    description:
+      "Create a vertical (its own board) under a workspace project. `root` = the vertical's folder: a monorepo subfolder or a separate repo (absolute path). An existing childless project at that folder is adopted. Returns {project_id, name, root_path, parent_id}.",
+    inputSchema: { workspace_project_id: z.string(), name: z.string(), root: z.string() },
+  },
+  ({ workspace_project_id, name, root }) =>
+    api('POST', '/vertical', { workspace_id: workspace_project_id, name, root }),
+);
+
+server.registerTool(
+  'list_verticals',
+  {
+    description: 'The verticals (child boards) of a workspace project.',
+    inputSchema: { project_id: z.string() },
+  },
+  ({ project_id }) => api('GET', `/verticals?project=${encodeURIComponent(project_id)}`),
+);
+
+server.registerTool(
+  'get_workspace',
+  {
+    description:
+      'The workspace and all its verticals, given a workspace OR vertical project id. A standalone project returns verticals: [].',
+    inputSchema: { project_id: z.string() },
+  },
+  ({ project_id }) => api('GET', `/workspace?project=${encodeURIComponent(project_id)}`),
+);
+
+server.registerTool(
   'create_subscription',
   {
     description:
