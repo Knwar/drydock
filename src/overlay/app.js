@@ -212,6 +212,8 @@ function applyEvent(msg) {
     setStatus(msg.status);
   } else if (msg.type === 'usage') {
     renderUsage(msg.usage);
+  } else if (msg.type === 'verticals') {
+    onVerticals(msg);
   }
 }
 
@@ -1161,16 +1163,42 @@ $('scm-attach-btn').onclick = async () => {
 };
 
 // ── embedded terminal (opt-in; VS Code-style bottom panel) ──────────
-const term = { enabled: false, token: null, xterm: null, fit: null, ws: null, open: false };
+// One xterm + /pty socket per tab, created lazily and kept alive (hidden) when
+// switching. A standalone project has a single tab rendered straight into
+// #term-host; a workspace gets a tab strip — Main + one per vertical — with each
+// tab in its own pane.
+const term = { enabled: false, token: null, open: false, tabs: new Map(), active: null, workspace: null };
 const termPanel = $('terminal-panel');
 const termBtn = $('term-btn');
 
 const currentProject = () => new URLSearchParams(location.search).get('project') || projectId;
+const activeTab = () => term.tabs.get(term.active) ?? null;
+const ptyQuery = (project) => `project=${encodeURIComponent(project)}&token=${encodeURIComponent(term.token)}`;
 
-function setTermConn(text, cls = '') {
+let connFlash = null; // timer while a transient message (Start agent result) owns #term-conn
+
+function renderTermConn() {
+  if (connFlash) return;
+  const tab = activeTab();
+  const el = $('term-conn');
+  el.textContent = tab ? tab.conn.text : 'waiting for project…';
+  el.className = `term-conn ${tab ? tab.conn.cls : ''}`;
+}
+
+function setTermConn(tab, text, cls = '') {
+  tab.conn = { text, cls };
+  if (tab.id === term.active) renderTermConn();
+}
+
+function flashTermConn(text, cls = '') {
+  clearTimeout(connFlash);
   const el = $('term-conn');
   el.textContent = text;
   el.className = `term-conn ${cls}`;
+  connFlash = setTimeout(() => {
+    connFlash = null;
+    renderTermConn();
+  }, 4000);
 }
 
 async function initTerminal() {
@@ -1189,8 +1217,24 @@ async function initTerminal() {
   if (localStorage.getItem('term.open') === '1') openTerm();
 }
 
-function ensureXterm() {
-  if (term.xterm) return;
+function makeTab(id, name) {
+  return { id, name, xterm: null, fit: null, ws: null, pane: null, btn: null, conn: { text: 'connecting…', cls: '' }, dead: false };
+}
+
+// A tab's own pane inside #term-host (workspace mode only). Moves an xterm that
+// was opened standalone into it, for when a project gains its first vertical.
+function ensurePane(tab) {
+  if (!tab.pane) {
+    tab.pane = document.createElement('div');
+    tab.pane.className = 'term-pane';
+    $('term-host').appendChild(tab.pane);
+    if (tab.xterm?.element) tab.pane.appendChild(tab.xterm.element);
+  }
+  return tab.pane;
+}
+
+function ensureXterm(tab) {
+  if (tab.xterm) return;
   const xterm = new Terminal({
     fontFamily: '"SF Mono", ui-monospace, Menlo, monospace',
     fontSize: 13,
@@ -1199,57 +1243,165 @@ function ensureXterm() {
   });
   const fit = new FitAddon.FitAddon();
   xterm.loadAddon(fit);
-  xterm.open($('term-host'));
-  xterm.onData((d) => term.ws?.readyState === 1 && term.ws.send(JSON.stringify({ t: 'i', d })));
-  term.xterm = xterm;
-  term.fit = fit;
+  xterm.open(term.workspace ? ensurePane(tab) : $('term-host'));
+  xterm.onData((d) => tab.ws?.readyState === 1 && tab.ws.send(JSON.stringify({ t: 'i', d })));
+  tab.xterm = xterm;
+  tab.fit = fit;
 }
 
+function disposeTab(tab) {
+  tab.dead = true;
+  tab.ws?.close();
+  tab.xterm?.dispose();
+  tab.pane?.remove();
+  tab.btn?.remove();
+}
+
+// fit + resize frame apply to the visible (active) tab only
 function fitAndResize() {
-  if (!term.fit || termPanel.classList.contains('hidden')) return;
+  const tab = activeTab();
+  if (!tab?.fit || termPanel.classList.contains('hidden')) return;
   try {
-    term.fit.fit();
+    tab.fit.fit();
   } catch {
     return;
   }
-  if (term.ws?.readyState === 1) term.ws.send(JSON.stringify({ t: 'r', c: term.xterm.cols, r: term.xterm.rows }));
+  if (tab.ws?.readyState === 1) tab.ws.send(JSON.stringify({ t: 'r', c: tab.xterm.cols, r: tab.xterm.rows }));
 }
 
-function termConnect() {
-  const project = currentProject();
-  if (!project) {
-    setTermConn('waiting for project…');
-    if (term.open) setTimeout(termConnect, 1000); // init WS hasn't landed yet
-    return;
-  }
-  const ws = new WebSocket(`ws://${location.host}/pty?project=${encodeURIComponent(project)}&token=${encodeURIComponent(term.token)}`);
-  term.ws = ws;
-  setTermConn('connecting…');
-  ws.onopen = () => { setTermConn('live', 'live'); fitAndResize(); };
+function termConnect(tab) {
+  if (tab.dead) return;
+  const ws = new WebSocket(`ws://${location.host}/pty?${ptyQuery(tab.id)}`);
+  tab.ws = ws;
+  setTermConn(tab, 'connecting…');
+  ws.onopen = () => {
+    setTermConn(tab, 'live', 'live');
+    if (tab.id === term.active) fitAndResize();
+  };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
-    if (msg.t === 'o') term.xterm.write(msg.d);
-    else if (msg.t === 'x') term.xterm.write('\r\n\x1b[90m[session ended]\x1b[0m\r\n');
+    if (msg.t === 'o') tab.xterm.write(msg.d);
+    else if (msg.t === 'x') tab.xterm.write('\r\n\x1b[90m[session ended]\x1b[0m\r\n');
   };
   ws.onclose = () => {
-    setTermConn('disconnected', 'dead');
-    term.ws = null;
-    if (term.open) setTimeout(termConnect, 1500); // resume the shared session
+    if (tab.ws === ws) tab.ws = null;
+    if (tab.dead) return;
+    setTermConn(tab, 'disconnected', 'dead');
+    if (term.open) setTimeout(() => !tab.ws && termConnect(tab), 1500); // resume the shared session
   };
 }
 
-function openTerm() {
-  ensureXterm();
+function renderTermTabs() {
+  const strip = $('term-tabs');
+  for (const tab of term.tabs.values()) tab.btn = null;
+  strip.replaceChildren();
+  strip.classList.toggle('hidden', !term.workspace);
+  if (!term.workspace) return;
+  for (const tab of term.tabs.values()) {
+    const b = document.createElement('button');
+    b.className = `term-tab${tab.id === term.active ? ' active' : ''}`;
+    b.textContent = tab.name;
+    b.title = tab.name === 'Main' ? 'Workspace shell' : `${tab.name} shell`;
+    b.onclick = () => showTab(tab.id);
+    tab.btn = b;
+    strip.appendChild(b);
+  }
+  term.tabs.get(term.active)?.btn?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+// Sync tabs to a workspace's verticals: Main (the workspace) + one per vertical.
+// No verticals → a single untabbed terminal (standalone behavior).
+function setTermTabs(workspaceId, verticals) {
+  const want = [{ id: workspaceId, name: 'Main' }, ...verticals.map((v) => ({ id: v.id, name: v.name }))];
+  for (const [id, tab] of term.tabs) if (!want.some((w) => w.id === id)) disposeTab(tab); // vertical removed
+  const next = new Map();
+  for (const w of want) {
+    const tab = term.tabs.get(w.id) ?? makeTab(w.id, w.name);
+    tab.name = w.name;
+    next.set(w.id, tab);
+  }
+  term.tabs = next;
+  term.workspace = verticals.length ? workspaceId : null;
+  if (term.workspace) for (const tab of term.tabs.values()) if (tab.xterm) ensurePane(tab);
+  let remembered = null;
+  if (term.workspace) {
+    try {
+      remembered = localStorage.getItem(`term.tab.${term.workspace}`);
+    } catch {
+      /* storage unavailable — fall back to the current project */
+    }
+  }
+  const prev = term.active;
+  term.active = [prev, remembered, currentProject(), workspaceId].find((id) => id && term.tabs.has(id));
+  renderTermTabs();
+  if (term.open && prev && term.active !== prev) showTab(term.active); // the active vertical went away
+}
+
+async function refreshTermTabs() {
+  const project = currentProject();
+  if (!project) return;
+  let view = null;
+  try {
+    const res = await fetch(`/workspace?project=${encodeURIComponent(project)}`);
+    if (res.ok) view = await res.json();
+  } catch {
+    // daemon hiccup — keep whatever tabs we have
+  }
+  if (view) setTermTabs(view.workspace.id, view.verticals);
+  else if (!term.tabs.size) setTermTabs(project, []);
+}
+
+function showTab(id) {
+  const tab = term.tabs.get(id);
+  if (!tab) return;
+  term.active = id;
+  if (term.workspace) {
+    try {
+      localStorage.setItem(`term.tab.${term.workspace}`, id);
+    } catch {
+      /* storage unavailable — just don't remember */
+    }
+  }
+  ensureXterm(tab);
+  for (const t of term.tabs.values()) {
+    t.pane?.classList.toggle('hidden', t !== tab);
+    t.btn?.classList.toggle('active', t === tab);
+  }
+  tab.btn?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  clearTimeout(connFlash);
+  connFlash = null;
+  renderTermConn();
+  if (!tab.ws) termConnect(tab);
+  requestAnimationFrame(() => {
+    if (tab.id !== term.active) return;
+    fitAndResize(); // refit on switch — the pane was hidden, so the shell may be stale-sized
+    tab.xterm.focus();
+  });
+}
+
+// board WS: a vertical was created/deleted in this workspace
+function onVerticals(msg) {
+  if (!term.enabled || msg.project_id !== (term.workspace ?? currentProject())) return;
+  setTermTabs(msg.project_id, msg.verticals ?? []);
+}
+
+async function openTerm() {
   termPanel.classList.remove('hidden');
   termBtn.classList.add('on');
   term.open = true;
   localStorage.setItem('term.open', '1');
-  if (!term.ws) termConnect();
-  requestAnimationFrame(() => { fitAndResize(); term.xterm.focus(); });
+  await refreshTermTabs(); // also catches verticals added while the board WS watched a vertical's channel
+  if (!term.open) return;
+  if (!term.active) {
+    renderTermConn();
+    setTimeout(() => term.open && !term.active && openTerm(), 1000); // init WS hasn't landed yet
+    return;
+  }
+  showTab(term.active);
 }
 
 function closeTerm() {
-  // detach the view but keep the shared shell (and its ws) alive server-side
+  // detach the view but keep the shared shells (and their ws) alive server-side
   termPanel.classList.add('hidden');
   termBtn.classList.remove('on');
   term.open = false;
@@ -1261,22 +1413,46 @@ function toggleTerm() {
   termPanel.classList.contains('hidden') ? openTerm() : closeTerm();
 }
 
-// Kill the shared shell and reattach to a fresh one (deliberate reset).
+// Kill the active tab's shell and reattach to a fresh one (deliberate reset).
 async function newTermSession() {
-  const project = currentProject();
-  if (!project) return;
+  const tab = activeTab();
+  if (!tab) return;
   try {
-    await fetch(`/pty/reset?project=${encodeURIComponent(project)}&token=${encodeURIComponent(term.token)}`, { method: 'POST' });
+    await fetch(`/pty/reset?${ptyQuery(tab.id)}`, { method: 'POST' });
   } catch {
     // ignore — reconnecting still spawns a fresh shell if the old one is gone
   }
-  term.xterm?.reset();
-  if (term.ws?.readyState === 1) term.ws.close(); // onclose auto-reconnects → fresh session
-  else termConnect();
+  tab.xterm?.reset();
+  if (tab.ws?.readyState === 1) tab.ws.close(); // onclose auto-reconnects → fresh session
+  else termConnect(tab);
+}
+
+// Launch `claude` in the active tab's shell (the daemon only types into an idle shell).
+async function startTermAgent() {
+  const tab = activeTab();
+  if (!tab) return;
+  const btn = $('term-agent');
+  btn.disabled = true;
+  let text;
+  let cls = 'dead';
+  try {
+    const res = await fetch(`/pty/agent?${ptyQuery(tab.id)}`, { method: 'POST' });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) text = out.error || `error ${res.status}`;
+    else if (out.started) [text, cls] = ['agent started', 'live'];
+    else text = `busy: ${out.foreground || out.reason || 'shell'}`;
+  } catch {
+    text = 'agent start failed';
+  }
+  btn.disabled = false;
+  if (tab.id !== term.active) return; // switched away meanwhile
+  flashTermConn(text, cls);
+  tab.xterm?.focus();
 }
 
 termBtn.onclick = toggleTerm;
 $('term-new').onclick = newTermSession;
+$('term-agent').onclick = startTermAgent;
 $('term-hide').onclick = closeTerm;
 document.addEventListener('keydown', (e) => {
   if (e.ctrlKey && e.key === '`') { e.preventDefault(); toggleTerm(); }
@@ -1286,7 +1462,7 @@ window.addEventListener('resize', fitAndResize);
 // Guard against dropping a live terminal session by an accidental close/reload.
 // (The shell survives server-side, but the tab loses its view — so confirm.)
 window.addEventListener('beforeunload', (e) => {
-  if (term.open && term.ws?.readyState === 1) {
+  if (term.open && [...term.tabs.values()].some((t) => t.ws?.readyState === 1)) {
     e.preventDefault();
     e.returnValue = '';
   }

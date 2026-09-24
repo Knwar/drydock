@@ -870,6 +870,51 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
   padding: 0 4px;
 }
 #term-hide:hover { color: var(--text); }
+#term-agent {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+  padding: 0 4px;
+}
+#term-agent:hover { color: var(--accent); }
+#term-agent:disabled { opacity: 0.5; cursor: default; }
+
+/* workspace tabs: Main + one per vertical; scroll (never wrap) when narrow */
+.term-bar > :not(.term-tabs) { flex: none; white-space: nowrap; }
+.term-bar > .term-conn { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.term-tabs {
+  flex: 0 1 auto;
+  min-width: 64px;
+  margin: -2px 0; /* tabs are 4px taller than the bar's text; don't grow the bar (→ same xterm rows as standalone) */
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.term-tabs::-webkit-scrollbar { display: none; }
+.term-tab {
+  flex: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--dim);
+  font: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: nowrap;
+  cursor: pointer;
+  padding: 1px 8px;
+}
+.term-tab:hover { color: var(--text); }
+.term-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.term-pane { height: 100%; }
+@media (max-width: 720px) {
+  .term-agent-label { display: none; } /* icon-only so the tab strip keeps room */
+}
 
 #term-host { flex: 1; min-height: 0; padding: 2px 6px 6px; }
 #term-host .xterm { height: 100%; }
