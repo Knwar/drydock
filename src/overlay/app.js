@@ -177,6 +177,7 @@ function applyEvent(msg) {
     renderBoard();
     renderPhaseList();
     refreshAttention();
+    openCardFromUrl();
   } else if (msg.type === 'phases') {
     phases = msg.phases;
     renderBoard(); // active phase may have changed → board scope shifts
@@ -508,8 +509,11 @@ async function refreshAttention() {
   railAttention.dataset.count = blockers || warns || '';
   railAttention.dataset.sev = blockers ? 'blocker' : warns ? 'warn' : '';
   if (activeView === 'attention') renderAttention();
-  // default view on first load, honoring the user's Settings choice.
+  // default view on first load, honoring the user's Settings choice — unless
+  // ?view=dashboard is pending the workspace probe (it wins if the dashboard opens).
   if (!initialViewSet) {
+    if (URL_VIEW === 'dashboard') await dashProbe;
+    if (initialViewSet) return;
     initialViewSet = true;
     const dv = SETTINGS.defaultView;
     if (dv === 'attention' || (dv === 'smart' && blockers)) setView('attention');
@@ -983,6 +987,19 @@ function renderMarkdown(src) {
 let openCardId = null;
 
 const LANE_NAME = (l) => ({ backlog: 'Backlog', queued: 'Queued', in_progress: 'In Progress', in_review: 'In Review', done: 'Done' })[l] ?? l;
+
+// One-shot ?card=<id> (e.g. from the dashboard's cross-board attention list):
+// open that card once the board init has arrived, then drop the param.
+let pendingCardParam = new URLSearchParams(location.search).get('card');
+function openCardFromUrl() {
+  if (!pendingCardParam) return;
+  const id = pendingCardParam;
+  pendingCardParam = null;
+  const url = new URL(location.href);
+  url.searchParams.delete('card');
+  history.replaceState(null, '', url);
+  if (cards.has(id)) openCardModal(id); // only this board's cards; anything else is dropped
+}
 
 async function openCardModal(cardId) {
   openCardId = cardId;
@@ -1744,13 +1761,16 @@ $('team-add-btn').onclick = addTeamMember;
 // Every user-controlled string goes in via textContent (node() below) — never innerHTML.
 const URL_VIEW = new URLSearchParams(location.search).get('view');
 const EMBED = new URLSearchParams(location.search).get('embed') === '1';
-const dash = { checked: false, workspace: null, summary: null, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null };
+const dash = { checked: false, workspace: null, summary: null, failed: false, fetchRetry: 1000, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null, skipOpenFetch: false };
 const DASH_LANES = [['backlog', 'backlog'], ['queued', 'queued'], ['in_progress', 'in prog'], ['in_review', 'review'], ['done', 'done']];
 const DASH_STATE = { working: 'working', idle: 'idle', needs_you: '⚠ needs you', offline: 'offline' };
 const DASH_MAX_CARDS = 5;
 
 if (EMBED) document.body.classList.add('embed');
-if (URL_VIEW === 'dashboard') initialViewSet = true; // the URL wins over the default-view setting
+// Resolves once initDashboard's /workspace probe has settled; refreshAttention
+// waits on it before applying the default view when ?view=dashboard is set.
+let dashProbeDone;
+const dashProbe = new Promise((r) => (dashProbeDone = r));
 
 function node(tag, cls, text) {
   const el = document.createElement(tag);
@@ -1764,7 +1784,7 @@ function node(tag, cls, text) {
 async function initDashboard() {
   if (dash.checked) return;
   const project = currentProject();
-  if (!project) return;
+  if (!project) return dashProbeDone();
   dash.checked = true;
   let view = null;
   try {
@@ -1776,7 +1796,11 @@ async function initDashboard() {
   const inWorkspace = !!view && (view.verticals.length > 0 || view.workspace.id !== project);
   if (view) dash.workspace = view.workspace.id;
   railDashboard.classList.toggle('hidden', !inWorkspace);
-  if (URL_VIEW === 'dashboard' && view) setView('dashboard');
+  if (URL_VIEW === 'dashboard' && inWorkspace && !initialViewSet) {
+    initialViewSet = true; // the URL wins over the default-view setting
+    setView('dashboard');
+  }
+  dashProbeDone();
 }
 
 async function loadDashboard() {
@@ -1784,11 +1808,20 @@ async function loadDashboard() {
   if (!project) return;
   try {
     const res = await fetch(`/workspace/summary?project=${encodeURIComponent(project)}`);
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     dash.summary = await res.json();
   } catch {
-    return; // keep the last good summary on screen
+    dash.failed = true;
+    if (activeView !== 'dashboard') return;
+    if (dash.summary) renderDashHead(); // keep the stale tiles; flag "reconnecting…"
+    else renderDashboard(); // "retrying…"
+    clearTimeout(dash.refetchTimer);
+    dash.refetchTimer = setTimeout(loadDashboard, dash.fetchRetry);
+    dash.fetchRetry = Math.min(dash.fetchRetry * 2, 10000);
+    return;
   }
+  dash.failed = false;
+  dash.fetchRetry = 1000;
   dash.workspace = dash.summary.workspace.id;
   dash.ids = new Set(dash.summary.boards.map((b) => b.project.id));
   if (activeView === 'dashboard') renderDashboard();
@@ -1804,7 +1837,11 @@ function dashConnect() {
   dash.ws = ws;
   ws.onopen = () => {
     dash.retry = 1000;
-    loadDashboard(); // catch anything missed while disconnected
+    // openDashboard() already fetched on entry; refetch on RE-connects (catch
+    // anything missed while disconnected) or when that fetch failed.
+    const skip = dash.skipOpenFetch && !dash.failed;
+    dash.skipOpenFetch = false;
+    if (!skip) loadDashboard();
   };
   ws.onmessage = (e) => onDashboardMessage(JSON.parse(e.data));
   ws.onclose = () => {
@@ -1825,14 +1862,19 @@ function onDashboardMessage(msg) {
     const old = $('dashboard-body').querySelector(`.dash-tile[data-id="${CSS.escape(pid)}"]`);
     if (old) old.replaceWith(dashTile(b, dash.summary.boards.indexOf(b) === 0));
     renderDashHead();
+    renderDashAttn();
   } else if (['card', 'card_removed', 'phases', 'verticals', 'event'].includes(msg.type)) {
     scheduleDashboardRefetch();
   }
 }
 
 function openDashboard() {
+  renderDashboard(); // last good summary, or the loading state
   loadDashboard();
-  if (!dash.ws && !dash.retryTimer) dashConnect();
+  if (!dash.ws && !dash.retryTimer) {
+    dash.skipOpenFetch = true;
+    dashConnect();
+  }
 }
 
 function closeDashboard() {
@@ -1840,6 +1882,7 @@ function closeDashboard() {
   clearTimeout(dash.refetchTimer);
   dash.retryTimer = null;
   dash.retry = 1000;
+  dash.fetchRetry = 1000;
   const ws = dash.ws;
   dash.ws = null;
   ws?.close();
@@ -1856,19 +1899,91 @@ function renderDashHead() {
   stats.append(node('span', '', `${boards.length} board${boards.length === 1 ? '' : 's'}`));
   if (working) stats.append(node('span', 'dh-working', `${working} working`));
   if (needs) stats.append(node('span', 'dh-needs', `⚠ ${needs} need${needs === 1 ? 's' : ''} you`));
+  if (dash.failed) stats.append(node('span', 'dh-reconnecting', 'reconnecting…'));
   head.replaceChildren(node('span', 'dash-head-name', dash.summary.workspace.name), stats);
 }
 
 function renderDashboard() {
   const host = $('dashboard-body');
   if (!dash.summary) {
-    host.replaceChildren(node('div', 'att-empty', 'Loading workspace…'));
+    host.replaceChildren(node('div', 'att-empty', dash.failed ? 'Couldn’t load workspace — retrying…' : 'Loading workspace…'));
     return;
   }
   const grid = node('div', 'dash-grid');
   grid.append(...dash.summary.boards.map((b, i) => dashTile(b, i === 0)));
-  host.replaceChildren(node('div', 'dash-head'), grid);
+  const layout = node('div', 'dash-layout');
+  layout.append(grid, node('aside', 'dash-attn'));
+  host.replaceChildren(node('div', 'dash-head'), layout);
   renderDashHead();
+  renderDashAttn();
+}
+
+const dashBoardName = (pid, name) => (pid === dash.summary?.workspace.id ? 'Main' : name);
+
+// Point the workspace terminal at a board's tab and open the panel (tile ❯_ + needs-you rows).
+function openBoardTerminal(pid) {
+  try {
+    localStorage.setItem(`term.tab.${dash.workspace}`, pid);
+  } catch {
+    /* storage unavailable */
+  }
+  if (term.tabs.has(pid)) term.active = pid;
+  openTerm();
+}
+
+// The one "needs a human" queue across every board: waiting sessions first,
+// then the summary's attention items (already ordered blocker > warn > info).
+function renderDashAttn() {
+  const panel = $('dashboard-body').querySelector('.dash-attn');
+  if (!panel || !dash.summary) return;
+  const clickable = !EMBED;
+  const waiting = dash.summary.boards.filter((b) => b.session?.state === 'needs_you');
+  const items = dash.summary.attention ?? [];
+  const total = waiting.length + items.length;
+
+  const head = node('div', 'da-head');
+  head.append(node('span', 'da-title', 'Needs you'));
+  if (total) head.append(node('span', `da-count${waiting.length || items.some((i) => i.severity === 'blocker') ? ' hot' : ''}`, total));
+  const list = node('div', 'da-list');
+
+  for (const b of waiting) {
+    const name = dashBoardName(b.project.id, b.project.name);
+    const detail = b.session.main?.detail;
+    const canOpen = clickable && term.enabled;
+    const row = node(canOpen ? 'button' : 'div', 'da-row da-waiting');
+    row.append(node('span', 'da-warn', '⚠'));
+    const main = node('span', 'att-main');
+    main.append(node('span', 'att-title', `${name} is waiting for you`));
+    if (detail) main.append(node('span', 'att-reason', detail));
+    row.append(main);
+    if (canOpen) {
+      row.append(node('span', 'att-arrow', '❯_'));
+      row.title = `Open ${name}’s terminal tab`;
+      row.onclick = () => openBoardTerminal(b.project.id);
+    }
+    list.append(row);
+  }
+
+  for (const i of items) {
+    const row = node(clickable ? 'button' : 'div', `da-row att-row ${i.severity}`);
+    row.append(node('span', 'att-dot'));
+    const main = node('span', 'att-main');
+    const top = node('span', 'da-top');
+    top.append(node('span', 'da-chip', dashBoardName(i.project_id, i.project_name)), node('span', 'att-title', i.title));
+    main.append(top, node('span', 'att-reason', i.reason));
+    row.append(main);
+    if (clickable) {
+      row.append(node('span', 'att-arrow', '→'));
+      row.onclick = () => {
+        if (i.project_id === projectId) openCardModal(i.card_id);
+        else location.search = `?project=${encodeURIComponent(i.project_id)}&card=${encodeURIComponent(i.card_id)}`;
+      };
+    }
+    list.append(row);
+  }
+
+  if (!total) list.append(node('div', 'da-empty', 'Nothing needs you.'));
+  panel.replaceChildren(head, list);
 }
 
 function dashTile(b, isMain) {
@@ -1891,13 +2006,7 @@ function dashTile(b, isMain) {
     tb.title = 'Open this board’s terminal tab';
     tb.onclick = (e) => {
       e.stopPropagation();
-      try {
-        localStorage.setItem(`term.tab.${dash.workspace}`, b.project.id);
-      } catch {
-        /* storage unavailable */
-      }
-      if (term.tabs.has(b.project.id)) term.active = b.project.id;
-      openTerm();
+      openBoardTerminal(b.project.id);
     };
     head.append(tb);
   }
