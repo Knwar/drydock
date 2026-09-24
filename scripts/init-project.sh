@@ -97,6 +97,11 @@ cd "$TARGET"
 if [ ! -d .git ]; then
   git init -qb main
   installed="$installed .git"
+  # never sweep secrets/deps/build output into the first commit
+  if [ ! -e .gitignore ]; then
+    printf '%s\n' 'node_modules/' '.env' '.env.*' 'dist/' 'build/' '.DS_Store' '.trees/' > .gitignore
+    installed="$installed .gitignore"
+  fi
 fi
 if ! git rev-parse HEAD > /dev/null 2>&1; then
   git add -A
@@ -106,8 +111,9 @@ fi
 
 # 6. register with the daemon (best-effort)
 PROJECT_LINE=""
+urlenc() { node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$1"; }
 if command -v curl > /dev/null; then
-  RESP=$(curl -s --max-time 2 "$DAEMON_URL/project?root=$TARGET&name=$(printf %s "$NAME" | sed 's/ /%20/g')" 2>/dev/null || true)
+  RESP=$(curl -s --max-time 2 "$DAEMON_URL/project?root=$(urlenc "$TARGET")&name=$(urlenc "$NAME")" 2>/dev/null || true)
   PROJECT_ID=$(printf %s "$RESP" | sed -nE 's/.*"project_id":"([^"]+)".*/\1/p')
   if [ -n "$PROJECT_ID" ]; then
     PROJECT_LINE="overlay:   $DAEMON_URL/?project=$PROJECT_ID"
