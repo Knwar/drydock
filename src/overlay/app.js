@@ -1030,7 +1030,8 @@ async function refreshCardModal() {
   const res = await fetch(`/task/${openCardId}`);
   if (!res.ok) return closeCardModal();
   const task = await res.json();
-  await teamCacheLoad;
+  // never block the modal on a slow /team: fall back to plain "● name" chips
+  await Promise.race([teamCacheLoad, new Promise((r) => setTimeout(r, 1500))]);
   document.getElementById('card-title').textContent = task.title;
   const meta = [
     task.tag && `${team(task.tag).name} team`,
@@ -1750,7 +1751,7 @@ async function loadTeam() {
       main.append(node('div', 'm-name', m.name), node('div', 'm-id', m.id));
       const del = node('button', 'm-del', '✕');
       del.title = 'Remove';
-      el.append(avatarEl(m, 32), main, node('span', `m-skill${m.skill ? '' : ' none'}`, m.skill ?? 'no skill'), del);
+      el.append(avatarEl(m, 32), main, node('span', `m-skill${m.skill ? '' : ' none'}`, m.skill || 'no skill'), del);
       del.onclick = async () => {
         await fetch(`/team/${m.id}`, { method: 'DELETE' });
         loadTeam();
@@ -2208,6 +2209,7 @@ async function loadHome() {
   home.failed = false;
   dash.fetchRetry = 1000;
   home.data = data;
+  setTeamCache(data.agents); // /home carries the roster: keeps chips fresh after outside edits
   if (activeView !== 'home') return;
   renderHome();
   // in a workspace, the other boards' traffic arrives on the all-projects socket
