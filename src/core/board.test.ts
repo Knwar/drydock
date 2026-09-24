@@ -45,6 +45,7 @@ import {
   MergeError,
   validateVertical,
   moveTask,
+  placePhaselessCards,
   raiseBlocker,
   recordActivity,
   recordReview,
@@ -2375,6 +2376,117 @@ describe('splitIntoVerticals', () => {
       /boom/,
     );
     assert.deepEqual(snapshot(), before);
+  });
+});
+
+describe('placePhaselessCards', () => {
+  it('no phases → 0; active phase wins, else first planned; all done → 0; open cards only; idempotent', (t) => {
+    const db = openDb();
+    t.after(() => db.close());
+    const project = getOrCreateProject(db, '/tmp/place-phaseless', 'P');
+    const open = createTask(db, project.id, 'open');
+    const done = createTask(db, project.id, 'done');
+    moveTask(db, done.id, 'done');
+    assert.equal(placePhaselessCards(db, project.id), 0); // no phases
+    assert.equal(getTask(db, open.id).phase_id, null);
+
+    const p1 = createPhase(db, project.id, 'One');
+    const p2 = createPhase(db, project.id, 'Two');
+    assert.equal(placePhaselessCards(db, project.id), 1); // only planned → first planned
+    assert.equal(getTask(db, open.id).phase_id, p1.id);
+    assert.equal(getTask(db, done.id).phase_id, null); // done untouched
+    assert.equal(placePhaselessCards(db, project.id), 0); // idempotent
+
+    advancePhase(db, project.id); // p1 active
+    advancePhase(db, project.id); // p1 done, p2 active
+    const later = createTask(db, project.id, 'later');
+    assert.equal(placePhaselessCards(db, project.id), 1); // active wins over planned
+    assert.equal(getTask(db, later.id).phase_id, p2.id);
+    assert.equal(getTask(db, done.id).phase_id, null);
+
+    advancePhase(db, project.id); // all done
+    const orphan = createTask(db, project.id, 'orphan');
+    assert.equal(placePhaselessCards(db, project.id), 0);
+    assert.equal(getTask(db, orphan.id).phase_id, null);
+  });
+});
+
+describe('splitIntoVerticals: no stranded phaseless cards', () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-split-place-'));
+    for (const sub of ['mobile', 'web']) mkdirSync(join(dir, sub));
+    const db = openDb();
+    const source = getOrCreateProject(db, dir, 'Shop');
+    const cleanup = () => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    };
+    return { db, dir, source, cleanup };
+  }
+
+  it('a phaseless card split onto an adopted target with an active phase joins it and is pickable', (t) => {
+    const { db, dir, source, cleanup } = setup();
+    t.after(cleanup);
+    const webProj = getOrCreateProject(db, join(dir, 'web'), 'old-web');
+    const own = createPhase(db, webProj.id, 'Own');
+    advancePhase(db, webProj.id);
+    const a = createTask(db, source.id, 'a');
+    const res = splitIntoVerticals(db, source.id, {
+      targets: [{ name: 'Web', root: join(dir, 'web') }],
+      assignments: { [a.id]: 0 },
+    });
+    assert.equal(res.verticals[0].id, webProj.id);
+    assert.equal(getTask(db, a.id).phase_id, own.id);
+    assert.equal(getNextCard(db, webProj.id)?.id, a.id);
+  });
+
+  it('a target receiving an ACTIVE phase copy: the phaseless card joins the copy; both pickable', (t) => {
+    const { db, dir, source, cleanup } = setup();
+    t.after(cleanup);
+    const p1 = createPhase(db, source.id, 'P1');
+    advancePhase(db, source.id); // P1 active
+    const phased = createTask(db, source.id, 'phased', { phase_id: p1.id });
+    const bare = createTask(db, source.id, 'bare');
+    const res = splitIntoVerticals(db, source.id, {
+      targets: [{ name: 'Web', root: join(dir, 'web') }],
+      assignments: { [phased.id]: 0, [bare.id]: 0 },
+    });
+    const w = res.verticals[0];
+    const copy = getActivePhase(db, w.id)!;
+    assert.equal(copy.title, 'P1');
+    assert.equal(getTask(db, phased.id).phase_id, copy.id);
+    assert.equal(getTask(db, bare.id).phase_id, copy.id);
+    assert.equal(getNextCard(db, w.id)?.id, phased.id);
+    moveTask(db, phased.id, 'done');
+    assert.equal(getNextCard(db, w.id)?.id, bare.id);
+  });
+
+  it('a target receiving only PLANNED copies: phaseless cards (moved + pre-existing) join the first planned', (t) => {
+    const { db, dir, source, cleanup } = setup();
+    t.after(cleanup);
+    const webProj = getOrCreateProject(db, join(dir, 'web'), 'old-web');
+    const existing = createTask(db, webProj.id, 'existing'); // phaseless, already on the target
+    const p1 = createPhase(db, source.id, 'P1');
+    const p2 = createPhase(db, source.id, 'P2');
+    const phased = createTask(db, source.id, 'phased', { phase_id: p2.id });
+    const bare = createTask(db, source.id, 'bare');
+    const other = createTask(db, source.id, 'other', { phase_id: p1.id });
+    const res = splitIntoVerticals(db, source.id, {
+      targets: [{ name: 'Web', root: join(dir, 'web') }],
+      assignments: { [phased.id]: 0, [bare.id]: 0, [other.id]: 'stay' },
+    });
+    const w = res.verticals[0];
+    const [copy] = getPhases(db, w.id);
+    assert.deepEqual([copy.title, copy.status], ['P2', 'planned']);
+    for (const c of [phased, bare, existing]) assert.equal(getTask(db, c.id).phase_id, copy.id);
+    advancePhase(db, w.id);
+    const picked = new Set<string>();
+    for (let i = 0; i < 3; i++) {
+      const next = getNextCard(db, w.id)!;
+      picked.add(next.id);
+      moveTask(db, next.id, 'done');
+    }
+    assert.deepEqual(picked, new Set([phased.id, bare.id, existing.id]));
   });
 });
 

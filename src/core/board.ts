@@ -238,6 +238,23 @@ export function listVerticals(db: DB, workspaceId: string): Project[] {
     .all(workspaceId) as Project[];
 }
 
+/**
+ * On a phased board a phaseless open card is never picked: give every open
+ * (lane != 'done') card with no phase the project's active phase, else its
+ * first planned phase by position. No phases, or all done → no-op. Idempotent.
+ * Returns how many cards were placed.
+ */
+export function placePhaselessCards(db: DB, projectId: string): number {
+  const home = (getActivePhase(db, projectId) ??
+    db
+      .prepare(`SELECT * FROM phases WHERE project_id = ? AND status = 'planned' ORDER BY position LIMIT 1`)
+      .get(projectId)) as Phase | undefined;
+  if (!home) return 0;
+  return db
+    .prepare(`UPDATE tasks SET phase_id = ? WHERE project_id = ? AND phase_id IS NULL AND lane != 'done'`)
+    .run(home.id, projectId).changes;
+}
+
 /** A split precondition failed; nothing was changed. `cardIds` are the offending cards. */
 export class SplitError extends Error {
   cardIds: string[];
@@ -342,6 +359,10 @@ export function splitIntoVerticals(
       db.prepare(`UPDATE outbox SET project_id = ? WHERE task_id = ? AND status = 'pending'`).run(target, c.id);
       moved[c.id] = target;
     }
+
+    // A phaseless card on a phased board is never picked: home them on every changed board.
+    for (const v of verticals) placePhaselessCards(db, v.id);
+    if (moving.length) placePhaselessCards(db, source.id);
 
     const payload = { targets: targets.map((t) => t.name), moved: moving.length };
     for (const p of [source, ...verticals])
@@ -459,16 +480,7 @@ export function mergeVerticals(
       .all(fromId) as { id: string }[];
     for (const c of cards)
       db.prepare('UPDATE tasks SET project_id = ?, position = ? WHERE id = ?').run(intoId, ++pos, c.id);
-    // On a phased board a phaseless open card is never picked: give every open
-    // phaseless card on into the active phase, else the first planned one.
-    const home = (getActivePhase(db, intoId) ??
-      db
-        .prepare(`SELECT * FROM phases WHERE project_id = ? AND status = 'planned' ORDER BY position LIMIT 1`)
-        .get(intoId)) as Phase | undefined;
-    if (home)
-      db.prepare(
-        `UPDATE tasks SET phase_id = ? WHERE project_id = ? AND phase_id IS NULL AND lane != 'done'`,
-      ).run(home.id, intoId);
+    placePhaselessCards(db, intoId);
     db.prepare('UPDATE card_activity SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
     db.prepare('UPDATE task_events SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
     db.prepare('UPDATE sync_links SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
