@@ -98,6 +98,27 @@ async function loadProjects() {
           `<div class="pm-item${p.id === projectId ? ' current' : ''}" data-id="${esc(p.id)}"><span class="pm-name">${esc(p.name)}</span><button class="pm-del" data-del="${esc(p.id)}" title="Remove from board">✕</button></div>`,
       )
       .join('') + '<div class="pm-new">+ New Project</div>';
+  if (!EMBED) {
+    const merge = node('div', 'pm-merge hidden', 'Merge verticals…');
+    projectMenu.insertBefore(merge, projectMenu.querySelector('.pm-new'));
+    refreshMergeMenuItem();
+  }
+}
+
+// "Merge verticals…" shows only while the current project's workspace has 2+ verticals.
+async function refreshMergeMenuItem() {
+  const item = projectMenu.querySelector('.pm-merge');
+  const project = currentProject();
+  if (!item || !project) return;
+  let n = 0;
+  try {
+    const res = await fetch(`/workspace?project=${encodeURIComponent(project)}`);
+    if (res.ok) n = (await res.json()).verticals.length;
+  } catch {
+    /* daemon hiccup — leave it as it was */
+    return;
+  }
+  item.classList.toggle('hidden', n < 2);
 }
 
 // Add a project from the UI: pick a folder (native dialog / typed path), optionally
@@ -142,6 +163,7 @@ projectBtn.onclick = (e) => {
   if (!projectBtn.classList.contains('multi')) return;
   e.stopPropagation();
   projectMenu.classList.toggle('hidden');
+  if (!projectMenu.classList.contains('hidden')) refreshMergeMenuItem();
 };
 projectMenu.onclick = (e) => {
   const del = e.target.closest('.pm-del');
@@ -150,6 +172,10 @@ projectMenu.onclick = (e) => {
     return removeProject(del.dataset.del);
   }
   if (e.target.closest('.pm-new')) return newProject();
+  if (e.target.closest('.pm-merge')) {
+    projectMenu.classList.add('hidden');
+    return openMergeDialog();
+  }
   const item = e.target.closest('.pm-item');
   if (item) location.search = `?project=${item.dataset.id}`;
 };
@@ -198,7 +224,9 @@ function applyEvent(msg) {
     refreshAttention();
     if (msg.card_id === openCardId) closeCardModal();
   } else if (msg.type === 'project_removed') {
-    if (msg.project_id === projectId) location.search = ''; // the project we're viewing is gone
+    // the project we're viewing is gone — merged away → land on the merged board
+    if (msg.project_id === projectId)
+      location.search = mergeRedirect?.from === projectId ? mvRedirectSearch(mergeRedirect.into) : '';
 
   } else if (msg.type === 'event') {
     pushHeadline(msg.event);
@@ -218,6 +246,7 @@ function applyEvent(msg) {
     onVerticals(msg);
   }
   if (activeView === 'home') onHomeMessage(msg);
+  if (mergeDlg && MV_REFRESH_ON.includes(msg.type)) mergeDlg.refresh();
 }
 
 // ── subscription usage bars (fed by the statusline script) ─────────
@@ -1896,6 +1925,7 @@ function dashConnect() {
 function onDashboardMessage(msg) {
   const pid = msg.type === 'event' ? msg.event?.project_id : msg.project_id;
   if (!pid || !dash.ids.has(pid)) return;
+  if (mergeDlg && MV_REFRESH_ON.includes(msg.type)) mergeDlg.refresh();
   // the current project's messages come in on the board socket already
   if (activeView === 'home') return void (pid !== projectId && onHomeMessage(msg));
   if (msg.type === 'status') {
@@ -2066,6 +2096,10 @@ function dashTile(b, isMain) {
   const pill = node('span', 'dt-pill');
   pill.append(node('span', 'dt-dot'), node('span', '', DASH_STATE[s.state] ?? s.state));
   head.append(name, pill);
+  if (!isMain) {
+    const mb = mergeButton(b.project.id, b.project.name, dash.summary.boards.length - 1);
+    if (mb) head.append(mb);
+  }
   if (b.project.autopilot) {
     const ap = node('span', 'dt-autopilot', 'autopilot');
     ap.title = 'Autopilot on — prompts this board when idle with queued cards; pauses at 80% usage';
@@ -2776,6 +2810,9 @@ function renderHomeVerticals() {
     const pill = node('span', 'dt-pill');
     pill.append(node('span', 'dt-dot'), node('span', '', DASH_STATE[s.state] ?? s.state));
     head.append(node('span', 'home-vname', homeBoardName(v.project)), pill);
+    const wsv = d.workspace?.verticals ?? [];
+    const mb = wsv.some((x) => x.id === v.project.id) ? mergeButton(v.project.id, v.project.name, wsv.length) : null;
+    if (mb) head.append(mb);
     const lanes = DASH_LANES.map(([lane, label]) => `${v.lanes?.[lane] ?? 0} ${label}`).join(' · ');
     row.append(head, node('div', 'home-vlanes', lanes));
     list.append(row);
@@ -3025,6 +3062,8 @@ function renderHomeSplit() {
 
 function svFlash(text) {
   const el = $('sv-flash');
+  const view = document.querySelector('.view:not(.hidden)') ?? document.body; // Merge can confirm from any view
+  if (el.parentElement !== view) view.append(el);
   el.textContent = text;
   el.classList.add('on');
   clearTimeout(home.flashTimer);
@@ -3036,6 +3075,63 @@ function svFlash(text) {
 
 $('home-split').onclick = () => openSplitDialog(home.suggestFor === home.data?.project.id ? home.suggestions ?? [] : []);
 
+// Shared chrome for the vertical dialogs (Split, Merge): backdrop, focus trap,
+// Esc/backdrop-click to close unless busy(), focus back to the opener. close()
+// removes every listener it added; onClose clears the dialog's own timers.
+function openModal({ labelledBy, describedBy, busy, onClose, fallbackFocus }) {
+  const opener = document.activeElement;
+  const backdrop = node('div', 'sv-backdrop');
+  const dlg = node('div', 'sv-dialog');
+  dlg.setAttribute('role', 'dialog');
+  dlg.setAttribute('aria-modal', 'true');
+  dlg.setAttribute('aria-labelledby', labelledBy);
+  dlg.setAttribute('aria-describedby', describedBy);
+  backdrop.append(dlg);
+  let closed = false;
+
+  function close() {
+    if (closed) return;
+    closed = true;
+    onClose?.();
+    document.removeEventListener('keydown', onKey, true);
+    backdrop.remove();
+    if (opener && opener.isConnected && opener !== document.body) opener.focus();
+    else fallbackFocus?.()?.focus();
+  }
+
+  function onKey(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!busy()) close();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const f = [...dlg.querySelectorAll('button, input, select, [tabindex]')].filter(
+      (el) => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length && !el.closest('[hidden]'),
+    );
+    if (!f.length) return;
+    const first = f[0];
+    const last = f[f.length - 1];
+    if (!dlg.contains(document.activeElement)) {
+      e.preventDefault();
+      first.focus();
+    } else if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  backdrop.onmousedown = (e) => {
+    if (e.target === backdrop && !busy()) close();
+  };
+  document.addEventListener('keydown', onKey, true);
+  return { backdrop, dlg, close, mount: () => document.body.append(backdrop) };
+}
+
 let svUid = 0;
 function openSplitDialog(prefill) {
   const d = home.data;
@@ -3043,7 +3139,6 @@ function openSplitDialog(prefill) {
   const pid = d.project.id;
   const standalone = !d.project.parent_id;
   const stayLabel = standalone ? 'Main (shared)' : `Stay on ${d.project.name}`;
-  const opener = document.activeElement;
   const st = {
     targets: prefill.map((x) => ({ uid: ++svUid, name: x.name, folder: x.folder })),
     preview: null, // last good preview: { uids, targets, placement }
@@ -3056,13 +3151,17 @@ function openSplitDialog(prefill) {
     creating: false,
   };
 
-  const backdrop = node('div', 'sv-backdrop');
-  const dlg = node('div', 'sv-dialog');
-  dlg.setAttribute('role', 'dialog');
-  dlg.setAttribute('aria-modal', 'true');
-  dlg.setAttribute('aria-labelledby', 'sv-title');
-  dlg.setAttribute('aria-describedby', 'sv-sub');
-  backdrop.append(dlg);
+  const modal = openModal({
+    labelledBy: 'sv-title',
+    describedBy: 'sv-sub',
+    busy: () => st.creating,
+    onClose: () => {
+      clearTimeout(st.timer);
+      st.seq++;
+    },
+    fallbackFocus: () => $('home-split'),
+  });
+  const { dlg, close } = modal;
 
   const title = node('h2', 'sv-title', `Split ${d.project.name} into verticals`);
   title.id = 'sv-title';
@@ -3355,53 +3454,366 @@ function openSplitDialog(prefill) {
     renderFoot();
   }
 
-  function close() {
-    clearTimeout(st.timer);
-    st.seq++;
-    document.removeEventListener('keydown', onKey, true);
-    backdrop.remove();
-    if (opener && opener.isConnected) opener.focus();
-    else $('home-split').focus();
-  }
-
-  function onKey(e) {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      if (!st.creating) close();
-      return;
-    }
-    if (e.key !== 'Tab') return;
-    const f = [...dlg.querySelectorAll('button, input, select, [tabindex]')].filter(
-      (el) => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length && !el.closest('[hidden]'),
-    );
-    if (!f.length) return;
-    const first = f[0];
-    const last = f[f.length - 1];
-    if (!dlg.contains(document.activeElement)) {
-      e.preventDefault();
-      first.focus();
-    } else if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  }
-
   cancel.onclick = close;
   create.onclick = doCreate;
-  backdrop.onmousedown = (e) => {
-    if (e.target === backdrop && !st.creating) close();
-  };
-  document.addEventListener('keydown', onKey, true);
 
   renderTargets();
   renderRows();
   schedulePreview(0);
-  document.body.append(backdrop);
+  modal.mount();
   (targetsEl.querySelector('.sv-name') ?? add).focus();
+}
+
+// ── Merge verticals dialog ──
+// Entry points: "Merge…" on Dashboard tiles and Home's verticals panel, and
+// "Merge verticals…" in the workspace menu. Reads GET /workspace/summary (roots,
+// lane counts, in-flight cards), POSTs /verticals/merge. Every string via node().
+const MV_REFRESH_MS = 300;
+const MV_REFRESH_ON = ['card', 'card_removed', 'verticals', 'project_removed'];
+let mergeDlg = null; // the open dialog's { refresh } (live board traffic re-reads the summary)
+let mergeRedirect = null; // { from, into } while a merge is in flight: project_removed(from) → go to into
+
+// Absolute path → segments; the deepest common ancestor that is a strict
+// ancestor of both roots (segment-wise, so apps/web vs apps/webhooks → apps).
+const mvSegs = (p) => p.replace(/\/+$/, '').split('/');
+function mvSharedParent(a, b) {
+  const x = mvSegs(a);
+  const y = mvSegs(b);
+  let n = 0;
+  while (n < x.length && n < y.length && x[n] === y[n]) n++;
+  if (n < 2 || n >= x.length || n >= y.length) return null; // '/' alone, or one root contains the other
+  return x.slice(0, n).join('/');
+}
+const mvCount = (b) => DASH_LANES.reduce((n, [lane]) => n + (b.lanes?.[lane] ?? 0), 0);
+const mvPlural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+async function openMergeDialog(pre = {}) {
+  if (EMBED || mergeDlg || document.querySelector('.sv-backdrop')) return;
+  mergeDlg = { refresh: () => {} }; // claim the slot while the first read is in flight
+  const project = dash.workspace ?? currentProject();
+  const read = async () => {
+    const res = await fetch(`/workspace/summary?project=${encodeURIComponent(project)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  };
+  let summary;
+  try {
+    summary = await read();
+  } catch {
+    mergeDlg = null;
+    return svFlash('Couldn’t load the workspace — try again.');
+  }
+  const verticalsOf = (s) => s.boards.filter((b) => b.project.parent_id);
+  let vs = verticalsOf(summary);
+  if (vs.length < 2) {
+    mergeDlg = null;
+    return svFlash('Merging needs two verticals.');
+  }
+  const wsRoot = summary.boards.find((b) => !b.project.parent_id)?.project.root_path;
+  const has = (id) => vs.some((b) => b.project.id === id);
+  const fromId = has(pre.from) ? pre.from : has(currentProject()) ? currentProject() : vs[0].project.id;
+  const st = {
+    from: fromId,
+    into: has(pre.into) && pre.into !== fromId ? pre.into : vs.find((b) => b.project.id !== fromId).project.id,
+    name: '',
+    nameTouched: false,
+    folder: null, // chosen absolute root
+    phases: 'append',
+    merging: false,
+    error: '',
+    errorCards: [],
+    timer: null,
+    seq: 0,
+  };
+  const board = (id) => vs.find((b) => b.project.id === id);
+
+  const modal = openModal({
+    labelledBy: 'mv-title',
+    describedBy: 'mv-sub',
+    busy: () => st.merging,
+    onClose: () => {
+      clearTimeout(st.timer);
+      st.seq++;
+      mergeDlg = null;
+    },
+    fallbackFocus: () => $('project-btn'),
+  });
+  const { dlg, close } = modal;
+  dlg.classList.add('mv-dialog');
+
+  const title = node('h2', 'sv-title', 'Merge verticals');
+  title.id = 'mv-title';
+  const sub = node('p', 'sv-sub', 'One board, one agent, one roadmap. Nothing on disk moves.');
+  sub.id = 'mv-sub';
+
+  const vSelect = (label) => {
+    const sel = document.createElement('select');
+    sel.className = 'st-select mv-select';
+    sel.setAttribute('aria-label', label);
+    return sel;
+  };
+  const fromSel = vSelect('Merge from');
+  const intoSel = vSelect('Merge into');
+  const fromCard = node('div', 'mv-card');
+  const fromRoot = node('div', 'sv-mono mv-root');
+  const fromMeta = node('div', 'mv-meta');
+  fromCard.append(node('div', 'sv-label', 'From'), fromSel, fromRoot, fromMeta);
+  const arrow = node('div', 'mv-arrow');
+  arrow.setAttribute('aria-hidden', 'true');
+  arrow.append(node('span', 'mv-arrow-glyph', '→'), node('span', 'mv-arrow-word', 'into'));
+  const intoCard = node('div', 'mv-card mv-result');
+  const intoRoot = node('div', 'sv-mono mv-root');
+  const intoMeta = node('div', 'mv-meta');
+  intoCard.append(node('div', 'sv-label', 'Into'), intoSel, intoRoot, intoMeta);
+  const pair = node('div', 'mv-pair');
+  pair.append(fromCard, arrow, intoCard);
+
+  const nameIn = document.createElement('input');
+  nameIn.id = 'mv-name';
+  nameIn.className = 'sv-input sv-name';
+  nameIn.type = 'text';
+  nameIn.autocomplete = 'off';
+  nameIn.spellcheck = false;
+  const nameLabel = node('label', 'sv-label', 'Name');
+  nameLabel.htmlFor = 'mv-name';
+  const folderSel = document.createElement('select');
+  folderSel.id = 'mv-folder';
+  folderSel.className = 'st-select mv-folder';
+  const folderLabel = node('label', 'sv-label', 'Folder');
+  folderLabel.htmlFor = 'mv-folder';
+  const nameField = node('div', 'mv-field');
+  nameField.append(nameLabel, nameIn);
+  const folderField = node('div', 'mv-field');
+  folderField.append(folderLabel, folderSel);
+  const fields = node('div', 'mv-fields');
+  fields.append(nameField, folderField);
+
+  const roadmap = node('fieldset', 'mv-roadmap');
+  roadmap.append(node('legend', 'sv-label', 'Roadmaps'));
+  const radios = ['append', 'fold'].map((value) => {
+    const label = node('label', 'mv-radio');
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = 'mv-phases';
+    input.value = value;
+    input.checked = value === st.phases;
+    input.onchange = () => {
+      if (input.checked) st.phases = value;
+    };
+    const text = node('span', 'mv-radio-text');
+    label.append(input, text);
+    roadmap.append(label);
+    return text;
+  });
+
+  const warn = node('div', 'mv-warn');
+  warn.setAttribute('role', 'alert');
+  const err = node('div', 'sv-error');
+  err.setAttribute('role', 'alert');
+  const termNote = node('div', 'mv-note');
+  const foot = node('div', 'sv-foot');
+  const summaryLine = node('span', 'sv-foot-note');
+  const cancel = node('button', 'home-btn', 'Cancel');
+  cancel.type = 'button';
+  const merge = node('button', 'home-btn primary', 'Merge verticals');
+  merge.type = 'button';
+  foot.append(summaryLine, cancel, merge);
+  dlg.append(title, sub, pair, fields, roadmap, warn, termNote, err, foot);
+
+  const inFlight = () =>
+    [board(st.from), board(st.into)].flatMap((b) => (b.active ?? []).map((c) => ({ ...c, board: b.project.name })));
+
+  function folderOptions() {
+    const f = board(st.from).project;
+    const i = board(st.into).project;
+    const shared = mvSharedParent(f.root_path, i.root_path);
+    const opts = [];
+    // the workspace's own root is never a valid vertical root (the server rejects it)
+    if (shared && shared !== wsRoot) opts.push([shared, `Shared parent (${shared})`]);
+    opts.push([f.root_path, `Keep ${f.name}’s`], [i.root_path, `Keep ${i.name}’s`]);
+    return opts;
+  }
+
+  function render() {
+    const f = board(st.from);
+    const i = board(st.into);
+    const opt = (b, other) =>
+      Object.assign(document.createElement('option'), { value: b.project.id, textContent: b.project.name, disabled: b.project.id === other });
+    fromSel.replaceChildren(...vs.map((b) => opt(b, st.into)));
+    intoSel.replaceChildren(...vs.map((b) => opt(b, st.from)));
+    fromSel.value = st.from;
+    intoSel.value = st.into;
+    if (!st.nameTouched) st.name = i.project.name;
+    if (nameIn.value !== st.name) nameIn.value = st.name;
+
+    const opts = folderOptions();
+    if (!opts.some(([v]) => v === st.folder)) st.folder = opts[0][0];
+    folderSel.replaceChildren(...opts.map(([value, textContent]) => Object.assign(document.createElement('option'), { value, textContent })));
+    folderSel.value = st.folder;
+
+    const n = mvCount(f);
+    fromRoot.textContent = f.project.root_path;
+    fromMeta.textContent = mvPlural(n, 'card');
+    intoRoot.textContent = st.folder;
+    intoMeta.textContent = `${st.name.trim() || i.project.name} · ${mvPlural(n + mvCount(i), 'card')}`;
+
+    radios[0].textContent = `Keep ${i.project.name}’s phases, append ${f.project.name}’s after them`;
+    radios[1].textContent = `Keep ${i.project.name}’s phases, file ${f.project.name}’s cards under ${i.project.name}’s active phase`;
+
+    const busy = inFlight();
+    warn.classList.toggle('hidden', !busy.length);
+    if (busy.length) {
+      const list = node('ul', 'mv-warn-list');
+      for (const c of busy) {
+        const li = node('li', '');
+        li.append(node('span', 'mv-warn-title', c.title), node('span', 'mv-warn-where', ` · ${c.board} · ${LANE_NAME(c.lane)}`));
+        list.append(li);
+      }
+      warn.replaceChildren(
+        node('div', 'mv-warn-head', `⚠ ${busy.length === 1 ? 'A card is' : `${busy.length} cards are`} in progress or in review`),
+        list,
+        node('div', 'mv-warn-hint', 'Merge it or send it back first.'),
+      );
+    } else warn.replaceChildren();
+    termNote.textContent = `${f.project.name}’s terminal session will be closed.`;
+
+    summaryLine.textContent = `moves ${mvPlural(n, 'card')} · stats and history kept`;
+    err.replaceChildren();
+    if (st.error) {
+      err.append(node('div', '', st.error));
+      if (st.errorCards.length) {
+        const list = node('ul', 'mv-err-list');
+        list.append(...st.errorCards.map((t) => node('li', '', t)));
+        err.append(list);
+      }
+    }
+    merge.textContent = st.merging ? 'Merging…' : 'Merge verticals';
+    merge.disabled = st.merging || busy.length > 0;
+    cancel.disabled = st.merging;
+    for (const el of [fromSel, intoSel, nameIn, folderSel, ...roadmap.querySelectorAll('input')]) el.disabled = st.merging;
+  }
+
+  const clearError = () => {
+    st.error = '';
+    st.errorCards = [];
+  };
+  fromSel.onchange = () => {
+    if (fromSel.value === st.into) st.into = st.from; // swap rather than allow from = into
+    st.from = fromSel.value;
+    clearError();
+    render();
+  };
+  intoSel.onchange = () => {
+    if (intoSel.value === st.from) st.from = st.into;
+    st.into = intoSel.value;
+    clearError();
+    render();
+  };
+  nameIn.oninput = () => {
+    st.name = nameIn.value;
+    st.nameTouched = true;
+    intoMeta.textContent = `${st.name.trim() || board(st.into).project.name} · ${mvPlural(mvCount(board(st.from)) + mvCount(board(st.into)), 'card')}`;
+  };
+  folderSel.onchange = () => {
+    st.folder = folderSel.value;
+    clearError();
+    render();
+  };
+
+  // Live board traffic (a card leaving review, a vertical renamed/removed) → re-read, debounced.
+  async function refresh() {
+    const seq = ++st.seq;
+    let next;
+    try {
+      next = await read();
+    } catch {
+      return; // keep the last good read
+    }
+    if (seq !== st.seq) return;
+    const nv = verticalsOf(next);
+    const ok = (id) => nv.some((b) => b.project.id === id);
+    if (nv.length < 2 || !ok(st.from) || !ok(st.into)) {
+      if (st.merging) return; // our own merge removed `from`; doMerge closes the dialog
+      close();
+      return svFlash('The workspace changed — reopen Merge to continue.');
+    }
+    vs = nv;
+    render();
+  }
+  mergeDlg = {
+    refresh: () => {
+      clearTimeout(st.timer);
+      st.timer = setTimeout(refresh, MV_REFRESH_MS);
+    },
+  };
+
+  async function doMerge() {
+    if (st.merging || merge.disabled) return;
+    const f = board(st.from).project;
+    const into = st.into;
+    const body = { from: f.id, into, phases: st.phases, root: st.folder };
+    const name = st.name.trim();
+    if (name) body.name = name;
+    st.merging = true;
+    clearError();
+    render();
+    mergeRedirect = { from: f.id, into };
+    let res, out;
+    try {
+      res = await fetch('/verticals/merge', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      out = await res.json().catch(() => ({}));
+    } catch {
+      out = { error: 'Couldn’t reach the daemon — try again.' };
+    }
+    st.merging = false;
+    if (res?.ok) {
+      close();
+      svFlash(`Merged ${f.name} into ${out.name ?? name}`);
+      if (currentProject() === f.id || projectId === f.id) return void (location.search = mvRedirectSearch(into));
+      mergeRedirect = null;
+      loadProjects();
+      if (term.enabled) refreshTermTabs();
+      if (activeView === 'dashboard') loadDashboard();
+      else if (activeView === 'home') loadHome();
+      return;
+    }
+    mergeRedirect = null;
+    st.error = typeof out.error === 'string' && out.error ? out.error : `Couldn’t merge (HTTP ${res?.status}).`;
+    const titles = new Map(vs.flatMap((b) => (b.active ?? []).map((c) => [c.id, c.title])));
+    st.errorCards = (Array.isArray(out.cardIds) ? out.cardIds : []).map((id) => titles.get(id) ?? id);
+    render();
+    mergeDlg.refresh(); // the board may have changed under us
+  }
+
+  cancel.onclick = close;
+  merge.onclick = doMerge;
+  render();
+  modal.mount();
+  fromSel.focus();
+}
+
+// Where to land when the vertical we're viewing was merged away: the merged board, same view.
+function mvRedirectSearch(into) {
+  const view = activeView === 'dashboard' || URL_VIEWS.includes(activeView) ? `&view=${activeView}` : '';
+  return `?project=${encodeURIComponent(into)}${view}`;
+}
+
+// "Merge…" button for a vertical's tile/row (Dashboard, Home); null when merging isn't possible.
+function mergeButton(pid, name, verticalCount) {
+  if (EMBED || verticalCount < 2) return null;
+  const b = node('button', 'mv-open', 'Merge…');
+  b.type = 'button';
+  b.title = `Merge ${name} into another vertical`;
+  b.setAttribute('aria-label', `Merge ${name} into another vertical`);
+  b.onclick = (e) => {
+    e.stopPropagation();
+    openMergeDialog({ from: pid });
+  };
+  return b;
 }
 
 // Show the landing view at once — no Kanban flash while the first board data and
