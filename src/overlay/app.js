@@ -211,7 +211,8 @@ function applyEvent(msg) {
   } else if (msg.type === 'status') {
     setStatus(msg.status);
   } else if (msg.type === 'usage') {
-    renderUsage(msg.usage);  } else if (msg.type === 'verticals') {
+    renderUsage(msg.usage);
+  } else if (msg.type === 'verticals') {
     onVerticals(msg);
   }
 }

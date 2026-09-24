@@ -889,6 +889,7 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 .term-tabs {
   flex: 0 1 auto;
   min-width: 64px;
+  margin: -2px 0; /* tabs are 4px taller than the bar's text; don't grow the bar (→ same xterm rows as standalone) */
   display: flex;
   gap: 2px;
   overflow-x: auto;
