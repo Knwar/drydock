@@ -3,8 +3,9 @@ import { describe, it } from 'node:test';
 import { OFFLINE_MS, RECENT_AGENT_MS, SessionStates, type StatusEntry } from './session-state.js';
 
 const T = 1_000_000_000;
-const entry = (agent: string, verb: string, at: number): StatusEntry => ({
+const entry = (agent: string, verb: string, at: number, agent_id: string | null = null): StatusEntry => ({
   agent,
+  agent_id,
   verb,
   detail: '',
   task_id: null,
@@ -80,6 +81,42 @@ describe('SessionStates', () => {
     );
     assert.equal(v.main, null);
     assert.equal(v.state, 'working');
+  });
+
+  it('keys subagents by agent_id so parallel agents of one type stay distinct', () => {
+    const s = new SessionStates();
+    s.record('p', entry('builder', 'Bash', T - 200, 'id-1'));
+    s.record('p', entry('builder', 'Edit', T - 100, 'id-2'));
+    assert.deepEqual(
+      s.view('p', T).agents.map((a) => [a.agent, a.agent_id, a.verb]),
+      [
+        ['builder', 'id-2', 'Edit'],
+        ['builder', 'id-1', 'Bash'],
+      ],
+    );
+  });
+
+  it("'finished' removes the subagent entry (idle immediately)", () => {
+    const s = new SessionStates();
+    s.record('p', entry('builder', 'Bash', T - 500, 'id-1'));
+    s.record('p', entry('orchestrator', 'idle', T - 400));
+    assert.equal(s.view('p', T).state, 'working');
+    s.record('p', entry('builder', 'finished', T - 300, 'id-1'));
+    const v = s.view('p', T);
+    assert.equal(v.state, 'idle');
+    assert.deepEqual(v.agents, []);
+  });
+
+  it('prunes stale agent entries on the next record', () => {
+    const s = new SessionStates();
+    s.record('p', entry('builder', 'Bash', T - OFFLINE_MS, 'old'));
+    s.record('p', entry('builder', 'Bash', T, 'new'));
+    // viewed from just after 'old' was recorded, it would still be live —
+    // so its absence proves record() pruned it
+    assert.deepEqual(
+      s.view('p', T - OFFLINE_MS + 1).agents.map((a) => a.agent_id),
+      ['new'],
+    );
   });
 
   it('forget drops a project', () => {

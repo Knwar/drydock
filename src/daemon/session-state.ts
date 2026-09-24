@@ -8,7 +8,8 @@ export const OFFLINE_MS = 10 * 60 * 1000;
 export const RECENT_AGENT_MS = 2 * 60 * 1000;
 
 export interface StatusEntry {
-  agent: string;
+  agent: string; // agent type, for display
+  agent_id: string | null; // distinguishes parallel subagents of one type
   verb: string;
   detail: string;
   task_id: string | null;
@@ -34,14 +35,18 @@ interface ProjectSession {
 export class SessionStates {
   private projects = new Map<string, ProjectSession>();
 
+  /** Record a ping. A subagent's 'finished' (SubagentStop) removes its entry
+   *  instead; stale agent entries are pruned on every record. */
   record(projectId: string, entry: StatusEntry): void {
     let s = this.projects.get(projectId);
     if (!s) {
       s = { agents: new Map() };
       this.projects.set(projectId, s);
     }
+    for (const [key, a] of s.agents) if (entry.at - a.at >= OFFLINE_MS) s.agents.delete(key);
     if (entry.agent === MAIN_AGENT) s.main = entry;
-    else s.agents.set(entry.agent, entry);
+    else if (entry.verb === 'finished') s.agents.delete(entry.agent_id ?? entry.agent);
+    else s.agents.set(entry.agent_id ?? entry.agent, entry);
   }
 
   view(projectId: string, now: number): SessionView {

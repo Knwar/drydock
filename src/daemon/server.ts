@@ -966,7 +966,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       task_id: b.task_id ?? null,
     };
     const now = Date.now();
-    states.record(b.project_id, { ...status, at: now });
+    states.record(b.project_id, { ...status, agent_id: b.agent_id ?? null, at: now });
     broadcaster.send(b.project_id, {
       type: 'status',
       project_id: b.project_id,

@@ -69,13 +69,15 @@ describe('daemon session state (/status, /session)', () => {
 
   it('GET /session reflects recorded statuses', async () => {
     await post('/status', { project_id: projectId, agent: 'orchestrator', verb: 'needs you' });
-    await post('/status', { project_id: projectId, agent: 'builder', verb: 'Bash', task_id: 't1' });
+    await post('/status', { project_id: projectId, agent: 'builder', agent_id: 'b1', verb: 'Bash', task_id: 't1' });
+    await post('/status', { project_id: projectId, agent: 'builder', agent_id: 'b2', verb: 'Read' });
+    await post('/status', { project_id: projectId, agent: 'builder', agent_id: 'b2', verb: 'finished' });
     const view = (await (await fetch(`${base}/session?project=${projectId}`)).json()) as any;
     assert.equal(view.state, 'needs_you');
     assert.equal(view.main.verb, 'needs you');
     assert.deepEqual(
-      view.agents.map((a: any) => [a.agent, a.verb, a.task_id]),
-      [['builder', 'Bash', 't1']],
+      view.agents.map((a: any) => [a.agent, a.agent_id, a.verb, a.task_id]),
+      [['builder', 'b1', 'Bash', 't1']],
     );
   });
 

@@ -1,5 +1,5 @@
 // Live agent status for the stream overlay. Ephemeral: POST /status is
-// broadcast-only, never stored. Registered on PreToolUse (all tools),
+// broadcast and cached in memory by the daemon, never persisted. Registered on PreToolUse (all tools),
 // UserPromptSubmit, Stop, SubagentStart and SubagentStop.
 import { api, cardIdFrom, contextFor, readStdin } from './lib.js';
 
@@ -55,6 +55,7 @@ switch (data.hook_event_name) {
 await api('POST', '/status', {
   project_id: projectId,
   agent,
+  agent_id: data.agent_id ?? null,
   verb,
   detail,
   task_id: cardId ?? cardIdFrom(JSON.stringify(data.tool_input ?? data)),
