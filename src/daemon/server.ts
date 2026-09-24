@@ -16,6 +16,7 @@ import { looksLikeClaude, NUDGE_PROMPT, resetsAtMs, shouldNudge, type NudgeInput
 import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
 import { sessionCwd, sessionEnv } from './pty-env.js';
+import { ptyGroups, shellInfo, stillOurs, ttyGroups, type ShellInfo } from './pty-groups.js';
 import { SessionStates } from './session-state.js';
 
 const PORT = Number(process.env.PORT ?? 7890);
@@ -1194,19 +1195,117 @@ server.listen(PORT, HOST, onListening);
 // DEFAULT (so the webhook/Slack demo works out of the box); set KANKAN_DISPATCHER=0
 // to disable it. A bad tick is swallowed so a delivery hiccup can't kill the
 // daemon; runOnce is fire-and-forget so a slow send never blocks the interval.
+const intervals: NodeJS.Timeout[] = [];
 if (process.env.KANKAN_DISPATCHER !== '0') {
   const dispatcher = new Dispatcher(db);
-  setInterval(() => {
+  intervals.push(setInterval(() => {
     dispatcher.runOnce().catch((err) => console.error(`dispatcher tick failed: ${(err as Error).message}`));
-  }, 1000).unref();
+  }, 1000).unref());
 }
 
 // ── autopilot sweep ─────────────────────────────────────────────────
 // Every 30s, re-evaluate projects that opted in (catches idle sessions whose
 // idle ping arrived before a card was queued or before usage dropped).
 if (AUTOPILOT_ENGINE) {
-  setInterval(() => {
+  intervals.push(setInterval(() => {
     const rows = db.prepare('SELECT id FROM projects WHERE autopilot = 1').all() as { id: string }[];
     for (const { id } of rows) void evaluateAutopilot(id);
-  }, AUTOPILOT_INTERVAL_MS).unref();
+  }, AUTOPILOT_INTERVAL_MS).unref());
 }
+
+// ── shutdown ────────────────────────────────────────────────────────
+// Without this, a stopped daemon orphans every pty shell (and whatever runs
+// in it, e.g. claude) — they get re-parented to PID 1 and live on invisibly.
+// node-pty makes each shell a session/process-group leader; with job control
+// the shell puts each job (e.g. claude) in its OWN process group, so we signal
+// every process group on the shell's tty, not just the shell's.
+const PTY_KILL_GRACE_MS = 500;
+const SHUTDOWN_DEADLINE_MS = 3000;
+let shuttingDown = false;
+
+function killGroup(pid: number, signal: NodeJS.Signals) {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    /* ESRCH: already gone */
+  }
+}
+
+let ownPgid: number | undefined;
+async function daemonPgid(): Promise<number> {
+  if (ownPgid === undefined) {
+    try {
+      const g = Number((await execFileAsync('ps', ['-o', 'pgid=', '-p', String(process.pid)])).stdout.trim());
+      if (g > 1) ownPgid = g;
+    } catch {
+      /* fall back below */
+    }
+  }
+  return ownPgid ?? process.pid;
+}
+
+/** The session's shell, verified to still be ours (null → signal nothing for it). */
+async function verifyShell(shellPid: number): Promise<ShellInfo> {
+  try {
+    const { stdout } = await execFileAsync('ps', ['-o', 'ppid=,pgid=,tty=', '-p', String(shellPid)]);
+    return shellInfo(shellPid, stdout, process.pid);
+  } catch {
+    return null; // gone (or ps failed): don't guess
+  }
+}
+
+/** Groups currently on `tty` — only ever queried for a real pty name, since
+ *  `ps -t ??` could list terminal-less processes machine-wide. */
+async function groupsOnTty(tty: string): Promise<number[]> {
+  try {
+    const { stdout } = await execFileAsync('ps', ['-o', 'pgid=,tty=', '-t', tty]);
+    return ttyGroups(tty, stdout, await daemonPgid());
+  } catch {
+    return [];
+  }
+}
+
+/** Every process group on the shell's tty (the shell's own included); [] if the pid isn't verifiably our shell. */
+async function sessionGroups(shellPid: number): Promise<{ shellPid: number; tty: string | null; groups: number[] }> {
+  const info = await verifyShell(shellPid);
+  const onTty = info?.tty ? await groupsOnTty(info.tty) : [];
+  return { shellPid, tty: info?.tty ?? null, groups: ptyGroups(shellPid, info, onTty, await daemonPgid()) };
+}
+
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  setTimeout(() => process.exit(0), SHUTDOWN_DEADLINE_MS).unref();
+
+  const sessions = [...ptySessions.values()];
+  console.log(`closing ${sessions.length} terminal session(s)`);
+  const targets = await Promise.all(sessions.map((s) => sessionGroups(s.proc.pid as number)));
+  for (const t of targets) for (const g of t.groups) killGroup(g, 'SIGHUP');
+  if (targets.some((t) => t.groups.length > 0)) {
+    await new Promise((r) => setTimeout(r, PTY_KILL_GRACE_MS));
+    for (const t of targets) {
+      if (t.groups.length === 0) continue;
+      // re-enumerate: only still-alive members of our tty (or our still-verified shell) get SIGKILL
+      const current = t.tty ? await groupsOnTty(t.tty) : [];
+      if ((await verifyShell(t.shellPid)) !== null) current.push(t.shellPid);
+      for (const g of stillOurs(t.groups, current)) killGroup(g, 'SIGKILL');
+    }
+  }
+
+  for (const t of intervals) clearInterval(t);
+  for (const w of [wss, ptyWss]) {
+    for (const client of w.clients) client.terminate();
+    w.close();
+  }
+  server.closeAllConnections();
+  await new Promise<void>((r) => server.close(() => r()));
+  try {
+    db.close();
+  } catch {
+    /* already closed */
+  }
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => void shutdown());
+process.on('SIGINT', () => void shutdown());

@@ -65,7 +65,8 @@ async function start() {
 
 function pidsOnPort() {
   try {
-    return execFileSync('lsof', ['-ti', `:${PORT}`]).toString().trim().split('\n').filter(Boolean);
+    // listeners only: a browser/client merely connected to the port must never be signalled
+    return execFileSync('lsof', ['-ti', `tcp:${PORT}`, '-sTCP:LISTEN']).toString().trim().split('\n').filter(Boolean);
   } catch {
     return []; // nothing listening
   }
@@ -77,13 +78,33 @@ async function stop() {
     pids.add(readFileSync(PID_FILE, 'utf8').trim());
     rmSync(PID_FILE, { force: true });
   }
+  const alive = (pid) => {
+    try {
+      process.kill(Number(pid), 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   let stopped = false;
   for (const pid of pids) {
     try {
-      process.kill(Number(pid), 'SIGTERM');
+      process.kill(Number(pid), 'SIGTERM'); // graceful: the daemon closes its terminal sessions
       stopped = true;
     } catch {
       /* already gone */
+    }
+  }
+  // wait for the graceful shutdown (it takes up to ~3s); SIGKILL only as the fallback
+  for (const deadline = Date.now() + 4000; [...pids].some(alive) && Date.now() < deadline; ) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  for (const pid of pids) {
+    if (!alive(pid)) continue;
+    try {
+      process.kill(Number(pid), 'SIGKILL');
+    } catch {
+      /* gone meanwhile */
     }
   }
   console.log(stopped ? 'daemon stopped' : 'daemon was not running');
