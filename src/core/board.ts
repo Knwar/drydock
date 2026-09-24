@@ -238,6 +238,99 @@ export function listVerticals(db: DB, workspaceId: string): Project[] {
     .all(workspaceId) as Project[];
 }
 
+/** A split precondition failed; nothing was changed. `cardIds` are the offending cards. */
+export class SplitError extends Error {
+  cardIds: string[];
+  constructor(message: string, cardIds: string[] = []) {
+    super(message);
+    this.name = 'SplitError';
+    this.cardIds = cardIds;
+  }
+}
+
+/**
+ * Split a project (standalone/workspace) or a vertical into verticals, moving
+ * open cards per `assignments` (target index, or 'stay' on the source). A
+ * top-level source becomes the workspace of the new verticals; a vertical's
+ * targets become its siblings. Moved cards carry their card_activity,
+ * task_events and sync_links; their phase is copied onto the target (one copy
+ * per phase+target). Done cards always stay. One transaction — all or nothing.
+ */
+export function splitIntoVerticals(
+  db: DB,
+  sourceId: string,
+  opts: {
+    targets: Array<{ name: string; root: string }>;
+    assignments: Record<string, number | 'stay'>;
+  },
+): { verticals: Project[]; moved: Record<string, string> } {
+  const { targets, assignments } = opts;
+  return db.transaction(() => {
+    const source = getProject(db, sourceId);
+    if (targets.length === 0) throw new SplitError('at least one target is required');
+    const cards = db
+      .prepare('SELECT id, lane, phase_id FROM tasks WHERE project_id = ?')
+      .all(sourceId) as Pick<Task, 'id' | 'lane' | 'phase_id'>[];
+    const open = cards.filter((c) => c.lane !== 'done');
+    const onSource = new Set(cards.map((c) => c.id));
+
+    const missing = open.filter((c) => !(c.id in assignments)).map((c) => c.id);
+    if (missing.length) throw new SplitError('every open card needs an assignment', missing);
+    const unknown = Object.keys(assignments).filter((id) => !onSource.has(id));
+    if (unknown.length) throw new SplitError('assigned cards are not on the source board', unknown);
+    const invalid = open
+      .filter((c) => {
+        const a = assignments[c.id];
+        return a !== 'stay' && !(Number.isInteger(a) && a >= 0 && a < targets.length);
+      })
+      .map((c) => c.id);
+    if (invalid.length) throw new SplitError('invalid target index', invalid);
+    const moving = open.filter((c) => assignments[c.id] !== 'stay');
+    const inFlight = moving.filter((c) => c.lane === 'in_progress' || c.lane === 'in_review').map((c) => c.id);
+    if (inFlight.length) throw new SplitError('cards in progress or in review cannot be moved', inFlight);
+
+    const workspaceId = source.parent_id ?? source.id;
+    const verticals = targets.map((t) => createVertical(db, workspaceId, t.name, t.root));
+
+    const phaseCopies = new Map<string, string>(); // `${phaseId}|${projectId}` → copy id
+    const copyPhase = (phaseId: string, projectId: string): string => {
+      const key = `${phaseId}|${projectId}`;
+      const hit = phaseCopies.get(key);
+      if (hit) return hit;
+      const src = getPhase(db, phaseId);
+      const status: PhaseStatus =
+        src.status === 'active' && getActivePhase(db, projectId) ? 'planned' : src.status;
+      const max = db
+        .prepare('SELECT MAX(position) AS max FROM phases WHERE project_id = ?')
+        .get(projectId) as { max: number | null };
+      const id = shortId();
+      const ts = now();
+      db.prepare(
+        `INSERT INTO phases (id, project_id, title, goal, plan, status, position, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(id, projectId, src.title, src.goal, src.plan, status, (max.max ?? 0) + 1, ts, ts);
+      phaseCopies.set(key, id);
+      return id;
+    };
+
+    const moved: Record<string, string> = {};
+    for (const c of moving) {
+      const target = verticals[assignments[c.id] as number].id;
+      const phaseId = c.phase_id ? copyPhase(c.phase_id, target) : null;
+      db.prepare('UPDATE tasks SET project_id = ?, phase_id = ? WHERE id = ?').run(target, phaseId, c.id);
+      db.prepare('UPDATE card_activity SET project_id = ? WHERE task_id = ?').run(target, c.id);
+      db.prepare('UPDATE task_events SET project_id = ? WHERE task_id = ?').run(target, c.id);
+      db.prepare('UPDATE sync_links SET project_id = ? WHERE local_id = ?').run(target, c.id);
+      moved[c.id] = target;
+    }
+
+    const payload = { targets: targets.map((t) => t.name), moved: moving.length };
+    for (const p of [source, ...verticals])
+      appendEvent(db, { project_id: p.id, type: 'vertical_split', payload });
+    return { verticals, moved };
+  })();
+}
+
 /** The top-level workspace + its verticals, given either a workspace or a vertical id. */
 export function getWorkspace(db: DB, projectId: string): WorkspaceView {
   const project = getProject(db, projectId);

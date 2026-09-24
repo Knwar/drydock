@@ -52,6 +52,8 @@ import {
   setAutopilot,
   setSubtasks,
   setTeamAvatar,
+  splitIntoVerticals,
+  SplitError,
   suggestCardPlacement,
   updatePhase,
   taskContentHash,
@@ -2053,5 +2055,232 @@ describe('suggestCardPlacement', () => {
     withEdits(db, p, 'Root', ['package.json']);
     const out = suggestCardPlacement(db, p, [{ key: 'root', folder: '.' }]);
     assert.deepEqual(out.map((x) => x.suggestion), ['root', 'root']);
+  });
+});
+
+describe('splitIntoVerticals', () => {
+  function splitSetup() {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-split-'));
+    for (const sub of ['mobile', 'web', 'api', 'infra']) mkdirSync(join(dir, sub));
+    const db = openDb();
+    const source = getOrCreateProject(db, dir, 'Shop');
+    const cleanup = () => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    };
+    return { db, dir, source, cleanup };
+  }
+  const count = (db: Database.Database, table: string, col: string, id: string) =>
+    (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${col} = ?`).get(id) as { n: number }).n;
+
+  it('standalone → verticals; moved cards carry activity/events/sync links; stay + done remain', (t) => {
+    const { db, dir, source, cleanup } = splitSetup();
+    t.after(cleanup);
+    const a = createTask(db, source.id, 'A');
+    const b = createTask(db, source.id, 'B', { depends_on: [a.id] });
+    const c = createTask(db, source.id, 'C');
+    const stay = createTask(db, source.id, 'Stay');
+    const done = createTask(db, source.id, 'Done');
+    moveTask(db, done.id, 'done');
+    recordActivity(db, { project_id: source.id, task_id: a.id, tokens: 5, tokens_out: 1, lines_added: 2, lines_removed: 0, ms: 10 });
+    createSyncLink(db, { project_id: source.id, local_id: a.id, provider: 'github' });
+    createSyncLink(db, { project_id: source.id, local_id: stay.id, provider: 'github' });
+
+    const res = splitIntoVerticals(db, source.id, {
+      targets: [
+        { name: 'Mobile', root: join(dir, 'mobile') },
+        { name: 'Web', root: join(dir, 'web') },
+        { name: 'API', root: join(dir, 'api') },
+      ],
+      assignments: { [a.id]: 0, [b.id]: 1, [c.id]: 2, [stay.id]: 'stay' },
+    });
+    const [m, w, api] = res.verticals;
+    assert.deepEqual(res.verticals.map((v) => v.name), ['Mobile', 'Web', 'API']);
+    for (const v of res.verticals) assert.equal(v.parent_id, source.id);
+    assert.deepEqual(getWorkspace(db, m.id).verticals.map((v) => v.id), [m.id, w.id, api.id]);
+    assert.deepEqual(res.moved, { [a.id]: m.id, [b.id]: w.id, [c.id]: api.id });
+
+    assert.equal(getTask(db, a.id).project_id, m.id);
+    assert.equal(getTask(db, b.id).project_id, w.id);
+    assert.equal(getTask(db, b.id).depends_on, JSON.stringify([a.id])); // untouched
+    assert.equal(getTask(db, stay.id).project_id, source.id);
+    assert.equal(getTask(db, done.id).project_id, source.id);
+
+    assert.equal(count(db, 'card_activity', 'project_id', m.id), 1);
+    assert.equal(count(db, 'card_activity', 'project_id', source.id), 0);
+    const aEvents = db.prepare('SELECT DISTINCT project_id FROM task_events WHERE task_id = ?').all(a.id);
+    assert.deepEqual(aEvents, [{ project_id: m.id }]);
+    const doneEvents = db.prepare('SELECT DISTINCT project_id FROM task_events WHERE task_id = ?').all(done.id);
+    assert.deepEqual(doneEvents, [{ project_id: source.id }]);
+    assert.equal(getSyncLinkByLocal(db, 'github', a.id)?.project_id, m.id);
+    assert.equal(getSyncLinkByLocal(db, 'github', stay.id)?.project_id, source.id);
+
+    for (const p of [source, m, w, api]) {
+      const ev = getRecentEvents(db, p.id, 50).find((e) => e.type === 'vertical_split');
+      assert.deepEqual(JSON.parse(ev!.payload!), { targets: ['Mobile', 'Web', 'API'], moved: 3 });
+    }
+  });
+
+  it('source is a vertical → targets become siblings under the same workspace', (t) => {
+    const { db, dir, source, cleanup } = splitSetup();
+    t.after(cleanup);
+    const mobile = createVertical(db, source.id, 'Mobile', join(dir, 'mobile'));
+    const x = createTask(db, mobile.id, 'X');
+    const y = createTask(db, mobile.id, 'Y');
+    const res = splitIntoVerticals(db, mobile.id, {
+      targets: [{ name: 'Web', root: join(dir, 'web') }],
+      assignments: { [x.id]: 0, [y.id]: 'stay' },
+    });
+    assert.equal(res.verticals[0].parent_id, source.id);
+    assert.deepEqual(listVerticals(db, source.id).map((v) => v.name), ['Mobile', 'Web']);
+    assert.equal(getTask(db, x.id).project_id, res.verticals[0].id);
+    assert.equal(getTask(db, y.id).project_id, mobile.id);
+  });
+
+  it('an in-flight moved card → SplitError listing it, and nothing changed', (t) => {
+    const { db, dir, source, cleanup } = splitSetup();
+    t.after(cleanup);
+    const a = createTask(db, source.id, 'A');
+    const busy = createTask(db, source.id, 'Busy');
+    moveTask(db, busy.id, 'in_progress');
+    const review = createTask(db, source.id, 'Review');
+    moveTask(db, review.id, 'in_review');
+    const snapshot = () => ({
+      projects: db.prepare('SELECT * FROM projects ORDER BY id').all(),
+      tasks: db.prepare('SELECT * FROM tasks ORDER BY id').all(),
+      events: count(db, 'task_events', 'project_id', source.id),
+      phases: db.prepare('SELECT * FROM phases').all(),
+    });
+    const before = snapshot();
+    assert.throws(
+      () =>
+        splitIntoVerticals(db, source.id, {
+          targets: [{ name: 'Web', root: join(dir, 'web') }],
+          assignments: { [a.id]: 0, [busy.id]: 0, [review.id]: 0 },
+        }),
+      (err: unknown) =>
+        err instanceof SplitError && err.cardIds.sort().join() === [busy.id, review.id].sort().join(),
+    );
+    assert.deepEqual(snapshot(), before);
+    // an in-flight card that STAYS is fine
+    splitIntoVerticals(db, source.id, {
+      targets: [{ name: 'Web', root: join(dir, 'web') }],
+      assignments: { [a.id]: 0, [busy.id]: 'stay', [review.id]: 'stay' },
+    });
+    assert.equal(getTask(db, busy.id).project_id, source.id);
+  });
+
+  it('rolls back created verticals when a later step fails', (t) => {
+    const { db, dir, source, cleanup } = splitSetup();
+    t.after(cleanup);
+    const a = createTask(db, source.id, 'A');
+    const projects = (db.prepare('SELECT COUNT(*) AS n FROM projects').get() as { n: number }).n;
+    assert.throws(() =>
+      splitIntoVerticals(db, source.id, {
+        targets: [
+          { name: 'Web', root: join(dir, 'web') },
+          { name: 'Nope', root: join(dir, 'nope') }, // not a directory → createVertical throws
+        ],
+        assignments: { [a.id]: 0 },
+      }),
+    );
+    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM projects').get() as { n: number }).n, projects);
+    assert.equal(findProject(db, join(dir, 'web')), undefined);
+    assert.equal(getTask(db, a.id).project_id, source.id);
+  });
+
+  it('missing assignment for an open card or an invalid index → SplitError', (t) => {
+    const { db, dir, source, cleanup } = splitSetup();
+    t.after(cleanup);
+    const a = createTask(db, source.id, 'A');
+    const b = createTask(db, source.id, 'B');
+    const targets = [{ name: 'Web', root: join(dir, 'web') }];
+    assert.throws(
+      () => splitIntoVerticals(db, source.id, { targets, assignments: { [a.id]: 0 } }),
+      (err: unknown) => err instanceof SplitError && err.cardIds.join() === b.id,
+    );
+    assert.throws(
+      () => splitIntoVerticals(db, source.id, { targets, assignments: { [a.id]: 0, [b.id]: 1 } }),
+      (err: unknown) => err instanceof SplitError && err.cardIds.join() === b.id,
+    );
+    assert.equal(listVerticals(db, source.id).length, 0);
+  });
+
+  it('phase copies: one per (phase, target); active only when target has none; done stays done', (t) => {
+    const { db, dir, source, cleanup } = splitSetup();
+    t.after(cleanup);
+    const p1 = createPhase(db, source.id, 'P1', { goal: 'g1', plan: 'plan1' });
+    const p2 = createPhase(db, source.id, 'P2', { goal: 'g2' });
+    const p3 = createPhase(db, source.id, 'P3');
+    advancePhase(db, source.id); // P1 active
+    advancePhase(db, source.id); // P1 done, P2 active; P3 planned
+    // the Web target is an adopted project that already has an active phase
+    const webProj = getOrCreateProject(db, join(dir, 'web'), 'old-web');
+    const own = createPhase(db, webProj.id, 'Own');
+    advancePhase(db, webProj.id);
+
+    const c1 = createTask(db, source.id, 'c1', { phase_id: p1.id });
+    const c2 = createTask(db, source.id, 'c2', { phase_id: p2.id });
+    const c2b = createTask(db, source.id, 'c2b', { phase_id: p2.id });
+    const c3 = createTask(db, source.id, 'c3', { phase_id: p3.id });
+    const w2 = createTask(db, source.id, 'w2', { phase_id: p2.id });
+    const w3 = createTask(db, source.id, 'w3', { phase_id: p3.id });
+    const res = splitIntoVerticals(db, source.id, {
+      targets: [
+        { name: 'Mobile', root: join(dir, 'mobile') },
+        { name: 'Web', root: join(dir, 'web') },
+      ],
+      assignments: { [c1.id]: 0, [c2.id]: 0, [c2b.id]: 0, [c3.id]: 0, [w2.id]: 1, [w3.id]: 1 },
+    });
+    const [m, w] = res.verticals;
+    assert.equal(w.id, webProj.id);
+
+    const mPhases = db.prepare('SELECT * FROM phases WHERE project_id = ? ORDER BY position').all(m.id) as {
+      id: string; title: string; goal: string | null; plan: string | null; status: string; position: number;
+    }[];
+    assert.deepEqual(
+      mPhases.map((p) => [p.title, p.goal, p.plan, p.status, p.position]),
+      [
+        ['P1', 'g1', 'plan1', 'done', 1],
+        ['P2', 'g2', null, 'active', 2],
+        ['P3', null, null, 'planned', 3],
+      ],
+    );
+    assert.equal(getTask(db, c2.id).phase_id, getTask(db, c2b.id).phase_id); // one copy shared
+    assert.equal(getTask(db, c2.id).phase_id, mPhases[1].id);
+    assert.equal(getTask(db, c1.id).phase_id, mPhases[0].id);
+
+    const wPhases = db.prepare('SELECT * FROM phases WHERE project_id = ? ORDER BY position').all(w.id) as {
+      id: string; title: string; status: string; position: number;
+    }[];
+    assert.deepEqual(
+      wPhases.map((p) => [p.title, p.status, p.position]),
+      [['Own', 'active', 1], ['P2', 'planned', 2], ['P3', 'planned', 3]],
+    );
+    assert.equal(getActivePhase(db, w.id)?.id, own.id);
+    // source phases untouched
+    assert.deepEqual(
+      getPhases(db, source.id).map((p) => [p.id, p.status]),
+      [[p1.id, 'done'], [p2.id, 'active'], [p3.id, 'planned']],
+    );
+  });
+
+  it('cross-board depends_on survives the split: getNextCard gates until the other board\'s card is done', (t) => {
+    const { db, dir, source, cleanup } = splitSetup();
+    t.after(cleanup);
+    const dep = createTask(db, source.id, 'Dep');
+    const gated = createTask(db, source.id, 'Gated', { depends_on: [dep.id] });
+    const res = splitIntoVerticals(db, source.id, {
+      targets: [
+        { name: 'A', root: join(dir, 'mobile') },
+        { name: 'B', root: join(dir, 'web') },
+      ],
+      assignments: { [gated.id]: 0, [dep.id]: 1 },
+    });
+    const [a, b] = res.verticals;
+    assert.equal(getNextCard(db, a.id), null);
+    assert.equal(getNextCard(db, b.id)?.id, dep.id);
+    moveTask(db, dep.id, 'done');
+    assert.equal(getNextCard(db, a.id)?.id, gated.id);
   });
 });
