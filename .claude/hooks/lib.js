@@ -28,24 +28,40 @@ export async function api(method, path, body) {
   }
 }
 
+/**
+ * The one project resolver for every hook → { id, name } or null.
+ * A KANKAN_PROJECT_ID env binding wins when the daemon knows it (several
+ * sessions can share one cwd); an unknown id or a down daemon falls back to
+ * the cwd lookup. create=0: hooks must never create a project — only the
+ * orchestrator / `kankan init` do.
+ */
+export async function resolveProject(cwd) {
+  const envId = process.env.KANKAN_PROJECT_ID;
+  if (envId) {
+    const view = await api('GET', `/workspace?project=${encodeURIComponent(envId)}`);
+    const match = view && [view.workspace, ...(view.verticals ?? [])].find((p) => p?.id === envId);
+    if (match) return { id: match.id, name: match.name };
+  }
+  const project = await api('GET', `/project?root=${encodeURIComponent(String(cwd ?? ''))}&create=0`);
+  return project?.project_id ? { id: project.project_id, name: project.name } : null;
+}
+
 export async function projectIdFor(cwd) {
-  // create=0: hooks must never create a project — only the orchestrator / `kankan init` do.
-  const project = await api('GET', `/project?root=${encodeURIComponent(cwd)}&create=0`);
-  return project?.project_id ?? null;
+  return (await resolveProject(cwd))?.id ?? null;
 }
 
 /**
  * Resolve { projectId, cardId } for a cwd, mapping a kankan worktree back to
- * its parent project. Inside .../.trees/<id>/... the project is the parent
- * repo and the card is <id>; otherwise the project owns the cwd directly.
- * Never creates a project — so builder activity surfaces on the real board.
+ * its parent project. Inside .../.trees/<id>/... the card is <id> and (absent
+ * an env binding) the project is the parent repo; otherwise the project owns
+ * the cwd directly. Never creates a project — so builder activity surfaces on
+ * the real board.
  */
 export async function contextFor(cwd) {
   const m = String(cwd ?? '').match(/^(.*?)\/\.trees\/([^/]+)/);
   const root = m ? m[1] : String(cwd ?? '');
   const cardId = m ? m[2] : null;
-  const project = await api('GET', `/project?root=${encodeURIComponent(root)}&create=0`);
-  return { projectId: project?.project_id ?? null, cardId };
+  return { projectId: await projectIdFor(root), cardId };
 }
 
 /** Worktree path is the agent↔card correlation key: .trees/<id> → <id>. */
