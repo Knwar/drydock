@@ -9,6 +9,7 @@ import {
   type AgentStat,
   type AttentionItem,
   type AttentionSeverity,
+  type BoardSummary,
   type CardSummary,
   type CardTotals,
   type ProjectStats,
@@ -25,6 +26,8 @@ import {
   type TaskEvent,
   type TeamMember,
   type Verdict,
+  type WorkspaceAttentionItem,
+  type WorkspaceSummary,
   type WorkspaceView,
 } from './types.js';
 
@@ -1043,6 +1046,60 @@ export function getAttention(db: DB, projectId: string): AttentionItem[] {
       a.since - b.since,
   );
   return items;
+}
+
+// ── workspace summary: one cross-board read for the whole workspace ──
+function boardSummary(db: DB, p: Project): BoardSummary {
+  const lanes = Object.fromEntries(LANES.map((l) => [l, 0])) as Record<Lane, number>;
+  const counts = db
+    .prepare('SELECT lane, COUNT(*) AS n FROM tasks WHERE project_id = ? GROUP BY lane')
+    .all(p.id) as { lane: Lane; n: number }[];
+  for (const { lane, n } of counts) lanes[lane] = n;
+  const active = (
+    db
+      .prepare(
+        `SELECT id, title, lane, assigned_agent, blocked_at FROM tasks
+         WHERE project_id = ? AND lane IN ('in_progress', 'in_review')
+         ORDER BY CASE lane WHEN 'in_progress' THEN 0 ELSE 1 END, position`,
+      )
+      .all(p.id) as Pick<Task, 'id' | 'title' | 'lane' | 'assigned_agent' | 'blocked_at'>[]
+  ).map((t) => ({ id: t.id, title: t.title, lane: t.lane, agent: t.assigned_agent, blocked: t.blocked_at != null }));
+  const { n: blocked } = db
+    .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE project_id = ? AND blocked_at IS NOT NULL AND lane != 'done'`)
+    .get(p.id) as { n: number };
+  const ap = getPhases(db, p.id).find((ph) => ph.status === 'active');
+  return {
+    project: { id: p.id, name: p.name, root_path: p.root_path, parent_id: p.parent_id },
+    lanes,
+    active,
+    blocked,
+    phase: ap ? { id: ap.id, title: ap.title, done: ap.progress.done, total: ap.progress.total } : null,
+    totals: getStats(db, p.id).totals,
+  };
+}
+
+/**
+ * Cross-board status for a workspace (given a workspace OR vertical id): the
+ * workspace board first, then each vertical, plus one combined attention list —
+ * boards ordered by their most severe item, each keeping its own ordering.
+ */
+export function getWorkspaceSummary(db: DB, projectId: string): WorkspaceSummary {
+  const { workspace, verticals } = getWorkspace(db, projectId);
+  const projects = [workspace, ...verticals];
+  const perBoard = projects.map((p) =>
+    getAttention(db, p.id).map((i): WorkspaceAttentionItem => ({ ...i, project_id: p.id, project_name: p.name })),
+  );
+  const worst = (items: WorkspaceAttentionItem[]) =>
+    Math.min(Object.keys(SEV_RANK).length, ...items.map((i) => SEV_RANK[i.severity]));
+  const attention = perBoard
+    .map((items, idx) => ({ items, idx, rank: worst(items) }))
+    .sort((a, b) => a.rank - b.rank || a.idx - b.idx)
+    .flatMap((b) => b.items);
+  return {
+    workspace: { id: workspace.id, name: workspace.name },
+    boards: projects.map((p) => boardSummary(db, p)),
+    attention,
+  };
 }
 
 // ── sync_links: local<->remote link state for the bridge (Phase 5 foundations) ──

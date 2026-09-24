@@ -311,6 +311,16 @@ server.registerTool(
 );
 
 server.registerTool(
+  'get_workspace_summary',
+  {
+    description:
+      "Cross-board status for a whole workspace (given a workspace or vertical id): per board lane counts, active cards + agents, blockers, active phase progress, token/line totals, live session state (working/idle/needs_you/offline), and one combined attention list. The main orchestrator's 'where is everyone' read — cheaper than get_board per vertical.",
+    inputSchema: { project_id: z.string() },
+  },
+  ({ project_id }) => api('GET', `/workspace/summary?project=${encodeURIComponent(project_id)}`),
+);
+
+server.registerTool(
   'create_subscription',
   {
     description:

@@ -244,3 +244,26 @@ export interface AttentionItem {
   agent: string | null;
   phase_id: string | null;
 }
+
+/** One board (workspace or vertical) in a workspace summary. */
+export interface BoardSummary {
+  project: { id: string; name: string; root_path: string; parent_id: string | null };
+  lanes: Record<Lane, number>;
+  active: { id: string; title: string; lane: Lane; agent: string | null; blocked: boolean }[];
+  blocked: number; // open cards with a raised blocker
+  phase: { id: string; title: string; done: number; total: number } | null; // the active phase
+  totals: CardTotals & { cards: number };
+}
+
+/** An attention item tagged with the board it came from. */
+export interface WorkspaceAttentionItem extends AttentionItem {
+  project_id: string;
+  project_name: string;
+}
+
+/** Cross-board status for a whole workspace: the workspace first, then its verticals. */
+export interface WorkspaceSummary {
+  workspace: { id: string; name: string };
+  boards: BoardSummary[];
+  attention: WorkspaceAttentionItem[];
+}

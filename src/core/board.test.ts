@@ -26,6 +26,7 @@ import {
   getAttention,
   findProject,
   getWorkspace,
+  getWorkspaceSummary,
   getBoard,
   getNextCard,
   getNextPhase,
@@ -800,6 +801,95 @@ describe('attention', () => {
     agedEvents(db, base.id, 20 * 60_000);
     const item = getAttention(db, project.id).find((i) => i.card_id === base.id);
     assert.equal(item!.blocking, 2);
+  });
+});
+
+describe('workspace summary', () => {
+  function build() {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-sum-'));
+    for (const sub of ['mobile', 'web']) mkdirSync(join(dir, sub));
+    const db = openDb();
+    const ws = getOrCreateProject(db, dir, 'Shop');
+    const mobile = createVertical(db, ws.id, 'Mobile', join(dir, 'mobile'));
+    const web = createVertical(db, ws.id, 'Web', join(dir, 'web'));
+    const cleanup = () => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    };
+    return { db, ws, mobile, web, cleanup };
+  }
+
+  it('summarizes each board and merges attention, most severe board first', () => {
+    const { db, ws, mobile, web, cleanup } = build();
+    // workspace board: one spec-less backlog card → a 'warn' attention item
+    createTask(db, ws.id, 'Unspecced');
+    // mobile: cards across lanes, a blocker, an active phase at 1/2
+    const phase = createPhase(db, mobile.id, 'Launch');
+    advancePhase(db, mobile.id);
+    createTask(db, mobile.id, 'Backlog', { requirements: 'x' });
+    const q = createTask(db, mobile.id, 'Queued', { requirements: 'x' });
+    moveTask(db, q.id, 'queued');
+    const rev = createTask(db, mobile.id, 'Reviewing', { requirements: 'x' });
+    moveTask(db, rev.id, 'in_review');
+    const a = createTask(db, mobile.id, 'Building A', { requirements: 'x', phase_id: phase.id });
+    assignCard(db, a.id, 'Ada', '.trees/a', 'card/a');
+    const b = createTask(db, mobile.id, 'Building B', { requirements: 'x' });
+    moveTask(db, b.id, 'in_progress');
+    raiseBlocker(db, b.id, 'which db?');
+    const d = createTask(db, mobile.id, 'Shipped', { requirements: 'x', phase_id: phase.id });
+    moveTask(db, d.id, 'done');
+    recordActivity(db, { project_id: mobile.id, task_id: a.id, agent: 'Ada', tokens: 1000, tokens_out: 200, lines_added: 30, lines_removed: 5, ms: 60000 });
+    recordActivity(db, { project_id: mobile.id, task_id: d.id, agent: 'Ada', tokens: 500, tokens_out: 100, lines_added: 10, lines_removed: 2, ms: 30000 });
+    // web: quiet, fully specced
+    createTask(db, web.id, 'Later', { requirements: 'x' });
+
+    for (const id of [ws.id, mobile.id]) {
+      const sum = getWorkspaceSummary(db, id);
+      assert.deepEqual(sum.workspace, { id: ws.id, name: 'Shop' });
+      assert.deepEqual(
+        sum.boards.map((bd) => bd.project.id),
+        [ws.id, mobile.id, web.id],
+      );
+    }
+    const sum = getWorkspaceSummary(db, ws.id);
+    const [wsB, mB, webB] = sum.boards;
+    assert.deepEqual(mB.project, { id: mobile.id, name: 'Mobile', root_path: mobile.root_path, parent_id: ws.id });
+    assert.deepEqual(mB.lanes, { backlog: 1, queued: 1, in_progress: 2, in_review: 1, done: 1 });
+    assert.deepEqual(mB.active, [
+      { id: a.id, title: 'Building A', lane: 'in_progress', agent: 'Ada', blocked: false },
+      { id: b.id, title: 'Building B', lane: 'in_progress', agent: null, blocked: true },
+      { id: rev.id, title: 'Reviewing', lane: 'in_review', agent: null, blocked: false },
+    ]);
+    assert.equal(mB.blocked, 1);
+    assert.deepEqual(mB.phase, { id: phase.id, title: 'Launch', done: 1, total: 2 });
+    assert.deepEqual(mB.totals, { cards: 2, tokens: 1500, tokens_out: 300, lines_added: 40, lines_removed: 7, ms: 90000 });
+
+    assert.deepEqual(wsB.lanes, { backlog: 1, queued: 0, in_progress: 0, in_review: 0, done: 0 });
+    assert.deepEqual(wsB.active, []);
+    assert.equal(wsB.blocked, 0);
+    assert.equal(wsB.phase, null);
+    assert.deepEqual(wsB.totals, { cards: 0, tokens: 0, tokens_out: 0, lines_added: 0, lines_removed: 0, ms: 0 });
+    assert.equal(webB.lanes.backlog, 1);
+
+    // attention: mobile (holds the blocker) before the workspace (warn only); web has none
+    assert.deepEqual(
+      sum.attention.map((i) => [i.project_id, i.project_name, i.kind, i.severity]),
+      [
+        [mobile.id, 'Mobile', 'blocked', 'blocker'],
+        [ws.id, 'Shop', 'needs_spec', 'warn'],
+      ],
+    );
+    assert.equal(sum.attention[0].card_id, b.id);
+    cleanup();
+  });
+
+  it('a standalone project has exactly one board; unknown ids throw', () => {
+    const { db, project } = setup();
+    const sum = getWorkspaceSummary(db, project.id);
+    assert.equal(sum.boards.length, 1);
+    assert.equal(sum.boards[0].project.id, project.id);
+    assert.deepEqual(sum.attention, []);
+    assert.throws(() => getWorkspaceSummary(db, 'nope'), /no such project/);
   });
 });
 
