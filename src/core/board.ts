@@ -392,8 +392,8 @@ export function deleteTask(
   db.transaction(() => {
     // unblock dependents on every board (depends_on may cross boards): drop this id from their depends_on arrays
     const dependents = db
-      .prepare(`SELECT id, depends_on FROM tasks WHERE depends_on LIKE ?`)
-      .all(`%"${taskId}"%`) as { id: string; depends_on: string }[];
+      .prepare(`SELECT id, depends_on FROM tasks WHERE depends_on LIKE ? AND id != ?`)
+      .all(`%"${taskId}"%`, taskId) as { id: string; depends_on: string }[];
     for (const d of dependents) {
       const before = JSON.parse(d.depends_on) as string[];
       const deps = before.filter((x) => x !== taskId);

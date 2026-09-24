@@ -1483,4 +1483,14 @@ describe('cross-board depends_on', () => {
     assert.equal(getTask(db, unrelated.id).depends_on, JSON.stringify([other.id]));
     cleanup();
   });
+
+  it('deleteTask never lists the deleted card itself in unblocked (self-dependency)', () => {
+    const { db, a, b, cleanup } = xbSetup();
+    const self = createTask(db, a.id, 'API self');
+    db.prepare('UPDATE tasks SET depends_on = ? WHERE id = ?').run(JSON.stringify([self.id]), self.id);
+    const login = createTask(db, b.id, 'Mobile login', { depends_on: [self.id] });
+    const removed = deleteTask(db, self.id);
+    assert.deepEqual(removed.unblocked, [login.id]);
+    cleanup();
+  });
 });
