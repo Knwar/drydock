@@ -25,6 +25,9 @@ const GIT_ENV: Record<string, string> = {
   GIT_CONFIG_COUNT: '1',
   GIT_CONFIG_KEY_0: 'commit.gpgsign',
   GIT_CONFIG_VALUE_0: 'false',
+  // the user's global/system config (hooks, templates, merge settings) stays out
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
 };
 const env = { ...process.env, ...GIT_ENV };
 
@@ -41,12 +44,27 @@ describe('workspace mode end-to-end', { timeout: 180_000 }, () => {
 
   const git = (cwd: string, ...args: string[]) =>
     execFileSync('git', args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
-  const commit = (cwd: string, msg: string) => git(cwd, '-c', 'commit.gpgsign=false', 'commit', '-m', msg);
+  const commit = (cwd: string, msg: string) => git(cwd, 'commit', '-m', msg);
   const wt = (...args: string[]) =>
     new Promise<number | null>((done) => {
       const child = spawn(process.execPath, [WORKTREE_JS, ...args], { cwd: repo, env, stdio: 'ignore' });
       child.on('close', done);
     });
+  /** spawn worktree.js with stdout captured; `exited` flips on close */
+  const wtWatched = (...args: string[]) => {
+    const child = spawn(process.execPath, [WORKTREE_JS, ...args], { cwd: repo, env, stdio: ['ignore', 'pipe', 'ignore'] });
+    const run = { out: '', exited: false, code: new Promise<number | null>((done) => child.on('close', done)) };
+    child.stdout.on('data', (c) => (run.out += c));
+    run.code.then(() => (run.exited = true));
+    return run;
+  };
+  async function until(cond: () => boolean, what: string, timeoutMs = 20_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (!cond()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
 
   async function api<T = any>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
     const res = await fetch(`${daemon.base}${path}`, {
@@ -115,7 +133,20 @@ describe('workspace mode end-to-end', { timeout: 180_000 }, () => {
     git(contractTree, 'add', '.');
     commit(contractTree, 'contract');
 
-    const codes = await Promise.all([wt('merge', apiCard), wt('merge', contractCard)]);
+    // Hold the lock ourselves (owner = this live pid → never stale) so both
+    // merges provably contend for it, then release it.
+    const common = resolve(repo, git(repo, 'rev-parse', '--git-common-dir'));
+    const lock = join(common, 'kankan-merge.lock');
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'owner'), `${process.pid}\nholder\n`);
+    const runs = [wtWatched('merge', apiCard), wtWatched('merge', contractCard)];
+    try {
+      await until(() => runs.every((r) => r.out.includes('waiting for another merge to finish') || r.exited), 'both merges to wait');
+      assert.deepEqual(runs.map((r) => r.exited), [false, false], `a merge exited while the lock was held: ${runs.map((r) => r.out).join(' | ')}`);
+    } finally {
+      rmSync(lock, { recursive: true, force: true });
+    }
+    const codes = await Promise.all(runs.map((r) => r.code));
     assert.deepEqual(codes, [0, 0]);
 
     assert.equal(git(repo, 'rev-parse', '--abbrev-ref', 'HEAD'), mainBranch);
@@ -125,8 +156,7 @@ describe('workspace mode end-to-end', { timeout: 180_000 }, () => {
     assert.match(log, new RegExp(`Merge card/${apiCard}`));
     assert.match(log, new RegExp(`Merge card/${contractCard}`));
     assert.equal(git(repo, 'status', '--porcelain'), '');
-    const common = resolve(repo, git(repo, 'rev-parse', '--git-common-dir'));
-    assert.equal(existsSync(join(common, 'kankan-merge.lock')), false);
+    assert.equal(existsSync(lock), false);
     assert.equal(existsSync(apiTree), false);
     assert.equal(existsSync(contractTree), false);
 
