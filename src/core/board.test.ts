@@ -893,6 +893,52 @@ describe('workspace summary', () => {
   });
 });
 
+describe('workspace summary cost', () => {
+  it('stays fast on a large workspace (3 verticals x 300 cards x 30 phases)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-perf-'));
+    const db = openDb();
+    const ws = getOrCreateProject(db, dir, 'Big');
+    const lanes = ['backlog', 'queued', 'in_progress', 'in_review', 'done'];
+    const insert = db.prepare(
+      `INSERT INTO tasks (id, project_id, phase_id, title, lane, requirements, position, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'x', ?, ?, ?)`,
+    );
+    db.transaction(() => {
+      for (let v = 0; v < 3; v++) {
+        mkdirSync(join(dir, `v${v}`));
+        const vert = createVertical(db, ws.id, `V${v}`, join(dir, `v${v}`));
+        const phases = Array.from({ length: 30 }, (_, i) => createPhase(db, vert.id, `P${i}`));
+        advancePhase(db, vert.id);
+        const ts = Date.now();
+        for (let i = 0; i < 300; i++) {
+          insert.run(`v${v}t${i}`, vert.id, phases[i % 30].id, `Card ${i}`, lanes[i % 5], i, ts, ts);
+        }
+      }
+    })();
+
+    const start = performance.now();
+    const summary = getWorkspaceSummary(db, ws.id);
+    const elapsed = performance.now() - start;
+    assert.equal(summary.boards.length, 4);
+    assert.equal(summary.boards[1].phase?.total, 10);
+    assert.ok(elapsed < 250, `getWorkspaceSummary took ${elapsed.toFixed(1)}ms`);
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('active-phase progress query uses idx_tasks_phase', () => {
+    const db = openDb();
+    const plan = db
+      .prepare(`EXPLAIN QUERY PLAN SELECT COUNT(*) AS total, SUM(lane = 'done') AS done FROM tasks WHERE phase_id = ?`)
+      .all('x') as { detail: string }[];
+    assert.ok(
+      plan.some((r) => /USING (COVERING )?INDEX idx_tasks_phase/.test(r.detail)),
+      JSON.stringify(plan),
+    );
+    db.close();
+  });
+});
+
 describe('activity stats', () => {
   it('aggregates tokens/lines/time per card and per agent', () => {
     const { db, project } = setup();

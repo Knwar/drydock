@@ -140,3 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_lane ON tasks(project_id, lane, pos
 CREATE INDEX IF NOT EXISTS idx_phases_project ON phases(project_id, position);
 CREATE INDEX IF NOT EXISTS idx_events_recent ON task_events(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_card_activity_project ON card_activity(project_id);
+CREATE INDEX IF NOT EXISTS idx_card_activity_task ON card_activity(task_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_task ON reviews(task_id);
+CREATE INDEX IF NOT EXISTS idx_events_task ON task_events(task_id, created_at);
