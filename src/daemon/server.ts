@@ -1,11 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
-import { dirname, extname, join } from 'node:path';
+import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import * as board from '../core/board.js';
@@ -223,6 +223,36 @@ function projectRoot(projectId: string): string | null {
     | { root_path: string }
     | undefined;
   return row?.root_path ?? null;
+}
+
+/** Run the kit installer (`kankan init`) on a folder, registering it with THIS
+ *  daemon (DAEMON_URL from our own PORT). Shared by /project/new and /vertical. */
+function runInit(root: string) {
+  return execFileAsync('sh', [INIT_SCRIPT, root], { env: { ...process.env, DAEMON_URL: `http://localhost:${PORT}` } });
+}
+
+/** Canonical path for comparisons: git reports toplevels with symlinks resolved
+ *  (e.g. macOS /var → /private/var), so compare realpaths when they exist. */
+function realOrResolved(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+/** Where a new vertical's kit comes from: 'shared' (monorepo — it lives at the
+ *  workspace/repo root), 'install' (the folder is its own repo, or in no repo),
+ *  or 'skip' (a subfolder of some other repo — init there would register a stray
+ *  project at that repo's root). */
+function classifyVertical(root: string, wsRoot: string): { kind: 'shared' | 'install' } | { kind: 'skip'; top: string } {
+  const r = realOrResolved(root);
+  const w = realOrResolved(wsRoot);
+  if (r === w || r.startsWith(w + '/')) return { kind: 'shared' };
+  const top = realOrResolved(sessionCwd(root));
+  if (top === realOrResolved(sessionCwd(wsRoot))) return { kind: 'shared' };
+  if (top === r) return { kind: 'install' }; // own git toplevel, or not in any repo
+  return { kind: 'skip', top };
 }
 
 // ── skills: scan .claude/skills for SKILL.md name+description frontmatter ──
@@ -509,7 +539,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       }
     }
     try {
-      await execFileAsync('sh', [INIT_SCRIPT, root], { env: { ...process.env, DAEMON_URL: `http://localhost:${PORT}` } });
+      await runInit(root);
     } catch (err) {
       return json(res, 500, { error: `setup failed: ${(err as Error).message}` });
     }
@@ -523,9 +553,35 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const b = await readBody(req);
     if (!b.workspace_id || !b.name || !b.root)
       return json(res, 400, { error: 'workspace_id, name and root required' });
+    const root = resolve(b.root);
+    const wsRoot = projectRoot(b.workspace_id);
+    let isDir = false;
+    try {
+      isDir = statSync(root).isDirectory();
+    } catch {
+      // missing → createVertical reports it
+    }
+    // Unknown workspace / missing folder: nothing to classify — createVertical throws the 400.
+    let kit = 'shared';
+    if (wsRoot && isDir) {
+      const c = classifyVertical(root, wsRoot);
+      if (c.kind === 'skip') kit = `skipped: folder is inside another repo (${c.top})`;
+      else if (c.kind === 'install') {
+        // Separate repo → install the kit like `kankan init`. init registers the
+        // folder as a top-level project, which createVertical then adopts. If it
+        // fails partway it may leave that stray top-level project behind.
+        try {
+          await runInit(root);
+        } catch (err) {
+          const stderr = String((err as { stderr?: string }).stderr ?? (err as Error).message);
+          return json(res, 500, { error: 'kit install failed', detail: stderr.slice(-500) });
+        }
+        kit = 'installed';
+      }
+    }
     const v = board.createVertical(db, b.workspace_id, b.name, b.root);
     announceVerticals(b.workspace_id);
-    return json(res, 200, { project_id: v.id, name: v.name, root_path: v.root_path, parent_id: v.parent_id });
+    return json(res, 200, { project_id: v.id, name: v.name, root_path: v.root_path, parent_id: v.parent_id, kit });
   }
   if (method === 'GET' && pathname === '/verticals') {
     const project = url.searchParams.get('project');
