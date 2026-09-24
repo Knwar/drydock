@@ -53,6 +53,7 @@ describe('daemon team profiles', () => {
     assert.equal(img.status, 200);
     assert.equal(img.headers.get('content-type'), 'image/png');
     assert.equal(img.headers.get('cache-control'), 'no-cache');
+    assert.equal(img.headers.get('x-content-type-options'), 'nosniff');
     assert.ok(Buffer.from(await img.arrayBuffer()).equals(PNG));
 
     // re-upload replaces: the previous file is gone
@@ -105,11 +106,17 @@ describe('daemon team profiles', () => {
     assert.equal(dup.status, 400);
     assert.match(((await dup.json()) as { error: string }).error, /already exists/);
     assert.equal((await send('PATCH', `/team/${turing.id}`, { name: '  ' })).status, 400);
+    assert.equal((await send('PATCH', '/team/nope', { name: 'X' })).status, 404);
+    // a label that exists only in history (an ex-member) can't be taken over
+    assert.equal((await send('POST', `/task/${task}/activity`, { agent: 'Ghost', tokens: 1 })).status, 200);
+    const hist = await send('PATCH', `/team/${turing.id}`, { name: 'Ghost' });
+    assert.equal(hist.status, 400);
+    assert.match(((await hist.json()) as { error: string }).error, /already used in this board's history/);
 
     const ren = await send('PATCH', `/team/${turing.id}`, { name: 'Alan' });
     assert.equal(ren.status, 200);
     assert.equal(((await ren.json()) as { name: string }).name, 'Alan');
     const stats = (await (await fetch(`${base}/stats?project=${project}`)).json()) as { agents: { agent: string; tokens: number }[] };
-    assert.deepEqual(stats.agents.map((a) => [a.agent, a.tokens]), [['Alan', 123]]);
+    assert.deepEqual(stats.agents.map((a) => [a.agent, a.tokens]), [['Alan', 123], ['Ghost', 1]]);
   });
 });

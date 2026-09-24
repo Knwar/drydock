@@ -855,7 +855,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         return json(res, 200, board.updateTeamMember(db, id, b));
       } catch (err) {
         const msg = (err as Error).message;
-        return json(res, msg.startsWith('no such team member') ? 404 : 400, { error: msg });
+        if (err instanceof board.TeamNameError) return json(res, 400, { error: msg });
+        if (msg.startsWith('no such team member')) return json(res, 404, { error: msg });
+        return json(res, 500, { error: msg });
       }
     }
   }
@@ -873,12 +875,23 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!type) return json(res, 400, { error: 'content-type must be image/png, image/jpeg or image/webp' });
     const bytes = await readRawBody(req, MAX_AVATAR_BYTES);
     if (!type.matches(bytes)) return json(res, 400, { error: 'image bytes do not match content-type' });
+    // Re-read after the (async) body read: the member may have been deleted or
+    // given another avatar meanwhile.
+    const current = board.listTeam(db).find((m) => m.id === id);
+    if (!current) return json(res, 404, { error: `no such team member: ${id}` });
     const fileName = `${id}-${randomBytes(8).toString('hex')}.${type.ext}`;
     if (!AVATAR_NAME.test(fileName)) return json(res, 400, { error: 'invalid member id' });
     mkdirSync(AVATAR_DIR, { recursive: true });
     writeFileSync(join(AVATAR_DIR, fileName), bytes);
-    removeAvatarFile(member.avatar);
-    return json(res, 200, board.setTeamAvatar(db, id, fileName));
+    let updated;
+    try {
+      updated = board.setTeamAvatar(db, id, fileName);
+    } catch (err) {
+      removeAvatarFile(fileName); // no orphaned file
+      throw err;
+    }
+    removeAvatarFile(current.avatar);
+    return json(res, 200, updated);
   }
   if (method === 'GET' && pathname.startsWith('/avatars/')) {
     const name = pathname.slice('/avatars/'.length);
@@ -886,7 +899,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!m) return json(res, 404, { error: 'not found' });
     try {
       const content = await readFile(join(AVATAR_DIR, name));
-      res.writeHead(200, { 'content-type': AVATAR_MIME[m[1]], 'cache-control': 'no-cache' });
+      res.writeHead(200, {
+        'content-type': AVATAR_MIME[m[1]],
+        'cache-control': 'no-cache',
+        'x-content-type-options': 'nosniff',
+      });
       res.end(content);
       return;
     } catch {

@@ -831,6 +831,9 @@ export function createTeamMember(
 
 const TEAM_FIELDS = ['name', 'skill', 'color'] as const;
 
+/** A rejected team-member name (empty, taken, or already in history) — a client error. */
+export class TeamNameError extends Error {}
+
 export function updateTeamMember(
   db: DB,
   id: string,
@@ -842,9 +845,20 @@ export function updateTeamMember(
     const next = { ...patch };
     if ('name' in next) {
       const name = String(next.name ?? '').trim();
-      if (!name) throw new Error('name must not be empty');
+      if (!name) throw new TeamNameError('name must not be empty');
       if (db.prepare('SELECT 1 FROM team_members WHERE name = ? AND id != ?').get(name, id))
-        throw new Error(`a team member named "${name}" already exists`);
+        throw new TeamNameError(`a team member named "${name}" already exists`);
+      // Renaming onto a label that already has history would silently merge two agents' records.
+      const inHistory =
+        name !== before.name &&
+        db
+          .prepare(
+            `SELECT 1 FROM card_activity WHERE agent = ?
+             UNION ALL SELECT 1 FROM tasks WHERE assigned_agent = ?
+             UNION ALL SELECT 1 FROM task_events WHERE agent = ? LIMIT 1`,
+          )
+          .get(name, name, name);
+      if (inHistory) throw new TeamNameError("that name is already used in this board's history");
       next.name = name;
     }
     const sets: string[] = [];

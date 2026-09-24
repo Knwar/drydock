@@ -1196,6 +1196,26 @@ describe('team roster', () => {
     assert.equal(updateTeamMember(db, ada.id, { name: 'Ada' }).name, 'Ada'); // own name is fine
   });
 
+  it('rejects a rename onto a name already in history; renaming back still works', (t) => {
+    const { db, project } = setup();
+    t.after(() => db.close());
+    const ada = createTeamMember(db, 'Ada');
+    const task = createTask(db, project.id, 'card', { requirements: 'x' });
+    const act = (agent: string) =>
+      recordActivity(db, { project_id: project.id, task_id: task.id, agent, tokens: 1, tokens_out: 0, lines_added: 0, lines_removed: 0, ms: 1 });
+    act('Ada');
+    act('Ghost'); // an ex-member label that only lives in card_activity
+    assert.throws(() => updateTeamMember(db, ada.id, { name: 'Ghost' }), /already used in this board's history/);
+    const t2 = createTask(db, project.id, 'card 2', { requirements: 'x' });
+    assignCard(db, t2.id, 'Phantom', '.trees/x', 'card/x'); // tasks.assigned_agent + task_events.agent
+    assert.throws(() => updateTeamMember(db, ada.id, { name: 'Phantom' }), /history/);
+    appendEvent(db, { project_id: project.id, type: 'note', agent: 'Echo' }); // task_events only
+    assert.throws(() => updateTeamMember(db, ada.id, { name: 'Echo' }), /history/);
+    assert.equal(updateTeamMember(db, ada.id, { name: 'Grace' }).name, 'Grace');
+    assert.equal(updateTeamMember(db, ada.id, { name: 'Ada' }).name, 'Ada'); // back to the previous name
+    assert.equal(getStats(db, project.id).agents.find((a) => a.agent === 'Ada')!.tokens, 1);
+  });
+
   it('setTeamAvatar persists and clears the avatar file name', (t) => {
     const { db } = setup();
     t.after(() => db.close());
