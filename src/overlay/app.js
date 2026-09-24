@@ -2212,6 +2212,7 @@ async function loadHome() {
   setTeamCache(data.agents); // /home carries the roster: keeps chips fresh after outside edits
   if (activeView !== 'home') return;
   renderHome();
+  loadSuggestions();
   // in a workspace, the other boards' traffic arrives on the all-projects socket
   if (data.verticals.length) {
     dash.ids = new Set(data.verticals.map((v) => v.project.id));
@@ -2649,6 +2650,7 @@ function renderHome() {
     for (const id of ['home-now', 'home-verticals', 'home-agents', 'home-upnext']) $(id).replaceChildren();
     $('home-verticals').classList.add('hidden');
     $('home-send').classList.add('hidden');
+    renderHomeSplit();
     return;
   }
   renderHomeHead();
@@ -2657,6 +2659,7 @@ function renderHome() {
   renderHomeAgents();
   renderHomeUpNext();
   renderHomeSend();
+  renderHomeSplit();
 }
 
 function renderHomeHead() {
@@ -2944,6 +2947,462 @@ for (const chip of document.querySelectorAll('#home-send .home-chip')) {
   };
 }
 $('home-send-btn').onclick = homeSend;
+
+// ── Verticals: suggestion toast (Home) + Split dialog ──
+// GET /project/:id/vertical-suggestions feeds the toast; the dialog drives
+// POST split-preview (debounced) and POST split. Every string goes in via node().
+const SV_PREVIEW_DEBOUNCE_MS = 300;
+const SV_FLASH_MS = 4000;
+const svDismissKey = (pid) => `verticals.toast.dismissed.${pid}`;
+function svDismissed(pid) {
+  try {
+    return localStorage.getItem(svDismissKey(pid)) === '1';
+  } catch {
+    return false;
+  }
+}
+function svDismiss(pid) {
+  try {
+    localStorage.setItem(svDismissKey(pid), '1');
+  } catch {
+    /* private mode — dismissed for this page only */
+  }
+  home.suggestDismissed = pid;
+  renderHomeSplit();
+}
+
+async function loadSuggestions(force = false) {
+  const pid = home.data?.project.id;
+  if (!pid || (!force && home.suggestFor === pid)) return;
+  home.suggestFor = pid;
+  let list = [];
+  try {
+    const res = await fetch(`/project/${encodeURIComponent(pid)}/vertical-suggestions`);
+    if (res.ok) list = (await res.json()).suggestions ?? [];
+  } catch {
+    /* no toast this time */
+  }
+  if (home.data?.project.id !== pid) return;
+  home.suggestions = list;
+  renderHomeSplit();
+}
+
+// "Split into verticals…" (standalone boards and verticals) + the suggestion toast.
+function renderHomeSplit() {
+  const d = home.data;
+  const canSplit = !EMBED && !!d && (!d.workspace || !!d.project.parent_id);
+  $('home-split').classList.toggle('hidden', !canSplit);
+  const host = $('sv-toast');
+  const s = canSplit && home.suggestFor === d.project.id ? home.suggestions ?? [] : [];
+  const on = s.length >= 2 && home.suggestDismissed !== d.project.id && !svDismissed(d.project.id);
+  host.classList.toggle('hidden', !on);
+  if (!on) return host.replaceChildren();
+  const shown = s.slice(0, 3);
+  const text = node('div', 'sv-toast-text');
+  text.append('Found ');
+  shown.forEach((x, i) => {
+    if (i > 0) text.append(i === shown.length - 1 && s.length === shown.length ? ' and ' : ', ');
+    text.append(node('span', 'sv-mono', x.folder));
+  });
+  if (s.length > shown.length) text.append(` and ${s.length - shown.length} more`);
+  text.append('. Give each its own board and agent?');
+  const close = node('button', 'sv-toast-x', '✕');
+  close.type = 'button';
+  close.setAttribute('aria-label', 'Dismiss vertical suggestion');
+  close.onclick = () => svDismiss(d.project.id);
+  const head = node('div', 'sv-toast-head');
+  head.append(node('div', 'sv-toast-title', 'This repo has several sides'), close);
+  const review = node('button', 'home-btn primary', 'Review verticals');
+  review.type = 'button';
+  review.onclick = () => openSplitDialog(s);
+  const later = node('button', 'home-btn', 'Not now');
+  later.type = 'button';
+  later.onclick = () => svDismiss(d.project.id);
+  const actions = node('div', 'sv-toast-actions');
+  actions.append(review, later);
+  host.replaceChildren(head, text, actions);
+}
+
+function svFlash(text) {
+  const el = $('sv-flash');
+  el.textContent = text;
+  el.classList.add('on');
+  clearTimeout(home.flashTimer);
+  home.flashTimer = setTimeout(() => {
+    el.classList.remove('on');
+    el.textContent = '';
+  }, SV_FLASH_MS);
+}
+
+$('home-split').onclick = () => openSplitDialog(home.suggestFor === home.data?.project.id ? home.suggestions ?? [] : []);
+
+let svUid = 0;
+function openSplitDialog(prefill) {
+  const d = home.data;
+  if (!d || document.querySelector('.sv-backdrop')) return;
+  const pid = d.project.id;
+  const standalone = !d.project.parent_id;
+  const stayLabel = standalone ? 'Main (shared)' : `Stay on ${d.project.name}`;
+  const opener = document.activeElement;
+  const st = {
+    targets: prefill.map((x) => ({ uid: ++svUid, name: x.name, folder: x.folder })),
+    preview: null, // last good preview: { uids, targets, placement }
+    status: 'empty', // 'empty' | 'incomplete' | 'pending' | 'error' | 'ok'
+    error: '',
+    seq: 0,
+    timer: null,
+    choices: new Map(), // cardId → target uid | 'stay'
+    touched: new Set(), // cards the user picked by hand (a new preview won't override them)
+    creating: false,
+  };
+
+  const backdrop = node('div', 'sv-backdrop');
+  const dlg = node('div', 'sv-dialog');
+  dlg.setAttribute('role', 'dialog');
+  dlg.setAttribute('aria-modal', 'true');
+  dlg.setAttribute('aria-labelledby', 'sv-title');
+  dlg.setAttribute('aria-describedby', 'sv-sub');
+  backdrop.append(dlg);
+
+  const title = node('h2', 'sv-title', `Split ${d.project.name} into verticals`);
+  title.id = 'sv-title';
+  const sub = node('p', 'sv-sub', 'Each vertical gets its own board, terminal and agent. Cards go where their files live.');
+  sub.id = 'sv-sub';
+
+  const targetsEl = node('div', 'sv-targets');
+  const add = node('button', 'sv-add', '+ Add a vertical');
+  add.type = 'button';
+  const targetsWrap = node('div', 'sv-targets-wrap');
+  targetsWrap.append(targetsEl, add);
+  const previewErr = node('div', 'sv-error');
+  previewErr.setAttribute('role', 'alert');
+
+  const listHead = node('div', 'sv-list-head');
+  const listTitle = node('h3', 'sv-list-title', 'Where each open card goes');
+  listTitle.id = 'sv-list-title';
+  listHead.append(listTitle, node('span', 'sv-list-hint', 'suggested from the files each card touched'));
+  const rowsEl = node('div', 'sv-rows');
+  rowsEl.setAttribute('role', 'list');
+  rowsEl.setAttribute('aria-labelledby', 'sv-list-title');
+
+  const createErr = node('div', 'sv-error');
+  createErr.setAttribute('role', 'alert');
+  const foot = node('div', 'sv-foot');
+  const note = node('span', 'sv-foot-note');
+  const cancel = node('button', 'home-btn', 'Cancel');
+  cancel.type = 'button';
+  const create = node('button', 'home-btn primary', 'Create verticals');
+  create.type = 'button';
+  foot.append(note, cancel, create);
+
+  dlg.append(title, sub, targetsWrap, previewErr, listHead, rowsEl, createErr, foot);
+
+  const targetLabel = (t) => t.name.trim() || t.folder.trim() || 'Untitled vertical';
+  const openCards = () => st.preview?.placement ?? [];
+  const unplaced = () => openCards().filter((p) => !st.choices.has(p.card.id)).length;
+
+  // Target cards are rebuilt only on add/remove, so typing never loses focus;
+  // chips and kit notes are refreshed in place by renderMeta().
+  function renderTargets() {
+    targetsEl.replaceChildren(
+      ...st.targets.map((t) => {
+        const card = node('div', 'sv-target');
+        card.dataset.uid = t.uid;
+        const top = node('div', 'sv-target-top');
+        const chip = node('span', 'home-pill sv-count');
+        const rm = node('button', 'sv-remove', '✕');
+        rm.type = 'button';
+        rm.onclick = () => removeTarget(t.uid);
+        top.append(chip, rm);
+        const field = (key, label, cls) => {
+          const id = `sv-${key}-${t.uid}`;
+          const l = node('label', 'sv-label', label);
+          l.htmlFor = id;
+          const input = document.createElement('input');
+          input.id = id;
+          input.className = `sv-input ${cls}`;
+          input.type = 'text';
+          input.autocomplete = 'off';
+          input.spellcheck = false;
+          input.value = t[key];
+          input.placeholder = key === 'name' ? 'web' : 'apps/web';
+          input.oninput = () => {
+            t[key] = input.value;
+            renderMeta();
+            renderRows();
+            schedulePreview();
+          };
+          return [l, input];
+        };
+        card.append(top, ...field('name', 'Name', 'sv-name'), ...field('folder', 'Folder', 'sv-folder'), node('div', 'sv-kit'));
+        return card;
+      }),
+    );
+    renderMeta();
+  }
+
+  function renderMeta() {
+    const counts = new Map();
+    for (const c of st.choices.values()) counts.set(c, (counts.get(c) ?? 0) + 1);
+    const kits = new Map(st.preview ? st.preview.uids.map((u, i) => [u, st.preview.targets[i].kit]) : []);
+    for (const card of targetsEl.children) {
+      const t = st.targets.find((x) => x.uid === Number(card.dataset.uid));
+      card.style.setProperty('--chip', accentFor(targetLabel(t)));
+      const n = counts.get(t.uid) ?? 0;
+      card.querySelector('.sv-count').textContent = `${n} card${n === 1 ? '' : 's'}`;
+      card.querySelector('.sv-remove').setAttribute('aria-label', `Remove vertical ${targetLabel(t)}`);
+      const kit = kits.get(t.uid);
+      const k = card.querySelector('.sv-kit');
+      k.classList.toggle('warn', typeof kit === 'string' && kit.startsWith('skipped'));
+      k.textContent =
+        kit === 'installed'
+          ? 'separate repo — kankan will be set up there'
+          : typeof kit === 'string' && kit.startsWith('skipped')
+            ? `⚠ ${kit.replace(/^skipped:\s*/, 'kankan setup skipped: ')}`
+            : '';
+    }
+  }
+
+  function renderRows() {
+    const focused = document.activeElement?.dataset?.card;
+    const rows = openCards();
+    if (!rows.length) {
+      const msg = !st.targets.length
+        ? 'Add a vertical to see where each open card goes.'
+        : st.status === 'ok'
+          ? 'No open cards — nothing to move.'
+          : st.status === 'pending' || !st.preview
+            ? 'Working out where cards go…'
+            : '';
+      rowsEl.replaceChildren(node('div', 'sv-empty', msg));
+    } else {
+      rowsEl.replaceChildren(
+        ...rows.map((p) => {
+          const row = node('div', 'sv-row');
+          row.setAttribute('role', 'listitem');
+          const main = node('div', 'sv-row-main');
+          main.append(node('div', 'sv-row-title', p.card.title), node('div', 'sv-mono sv-evidence', p.evidence));
+          const sel = document.createElement('select');
+          sel.className = 'st-select sv-select';
+          sel.dataset.card = p.card.id;
+          sel.setAttribute('aria-label', `Destination for ${p.card.title}`);
+          const opt = (value, label, disabled) => Object.assign(document.createElement('option'), { value, textContent: label, disabled: !!disabled });
+          sel.append(opt('', 'Choose…', true), ...st.targets.map((t) => opt(`t${t.uid}`, targetLabel(t))), opt('stay', stayLabel));
+          const c = st.choices.get(p.card.id);
+          sel.value = c === undefined ? '' : c === 'stay' ? 'stay' : `t${c}`;
+          sel.classList.toggle('unplaced', c === undefined);
+          sel.onchange = () => {
+            st.choices.set(p.card.id, sel.value === 'stay' ? 'stay' : Number(sel.value.slice(1)));
+            st.touched.add(p.card.id);
+            sel.classList.remove('unplaced');
+            renderMeta();
+            renderFoot();
+          };
+          row.append(main, sel);
+          return row;
+        }),
+      );
+      if (focused) rowsEl.querySelector(`select[data-card="${CSS.escape(focused)}"]`)?.focus();
+    }
+    renderFoot();
+  }
+
+  function renderFoot() {
+    const n = unplaced();
+    const doneNote = `done cards stay on ${standalone ? 'Main' : d.project.name}`;
+    note.textContent = n
+      ? `${n} card${n === 1 ? ' needs' : 's need'} a choice · ${doneNote}`
+      : st.status === 'ok' && openCards().length
+        ? `Every open card has a destination · ${doneNote}`
+        : `D${doneNote.slice(1)}`;
+    const k = st.targets.length;
+    create.textContent = st.creating ? 'Creating…' : k ? `Create ${k} vertical${k === 1 ? '' : 's'}` : 'Create verticals';
+    create.disabled = st.creating || st.status !== 'ok' || n > 0;
+    cancel.disabled = st.creating;
+    previewErr.textContent =
+      st.status === 'error' ? st.error : st.status === 'incomplete' ? 'Give each vertical a name and a folder.' : '';
+    previewErr.classList.toggle('hint', st.status === 'incomplete');
+  }
+
+  function schedulePreview(delay = SV_PREVIEW_DEBOUNCE_MS) {
+    clearTimeout(st.timer);
+    st.seq++; // any in-flight preview is now stale
+    createErr.textContent = '';
+    if (!st.targets.length) st.status = 'empty';
+    else if (st.targets.some((t) => !t.name.trim() || !t.folder.trim())) st.status = 'incomplete';
+    else {
+      st.status = 'pending';
+      st.timer = setTimeout(runPreview, delay);
+    }
+    renderMeta();
+    renderFoot();
+  }
+
+  async function runPreview() {
+    const seq = st.seq;
+    const uids = st.targets.map((t) => t.uid);
+    const body = { targets: st.targets.map((t) => ({ name: t.name.trim(), folder: t.folder.trim() })) };
+    let res, out;
+    try {
+      res = await fetch(`/project/${encodeURIComponent(pid)}/split-preview`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      out = await res.json().catch(() => ({}));
+    } catch {
+      if (seq !== st.seq) return;
+      st.status = 'error';
+      st.error = 'Couldn’t reach the daemon — try again.';
+      return renderRows();
+    }
+    if (seq !== st.seq) return;
+    if (!res.ok) {
+      st.status = 'error';
+      st.error = typeof out.error === 'string' && out.error ? out.error : `Couldn’t preview the split (HTTP ${res.status}).`;
+      renderMeta();
+      return renderRows();
+    }
+    st.status = 'ok';
+    st.preview = { uids, targets: out.targets, placement: out.placement };
+    const live = new Set(st.targets.map((t) => t.uid));
+    for (const p of out.placement) {
+      const id = p.card.id;
+      const c = st.choices.get(id);
+      if (st.touched.has(id) && (c === 'stay' || live.has(c))) continue;
+      st.touched.delete(id);
+      if (p.suggestion == null) st.choices.delete(id);
+      else st.choices.set(id, uids[Number(p.suggestion)]);
+    }
+    const ids = new Set(out.placement.map((p) => p.card.id));
+    for (const id of [...st.choices.keys()]) if (!ids.has(id)) st.choices.delete(id);
+    renderMeta();
+    renderRows();
+  }
+
+  function removeTarget(uid) {
+    const i = st.targets.findIndex((t) => t.uid === uid);
+    st.targets.splice(i, 1);
+    for (const [id, c] of st.choices) {
+      if (c !== uid) continue;
+      st.choices.delete(id);
+      st.touched.delete(id);
+    }
+    renderTargets();
+    renderRows();
+    schedulePreview();
+    const cards = targetsEl.querySelectorAll('.sv-target');
+    (cards[Math.min(i, cards.length - 1)]?.querySelector('.sv-remove') ?? add).focus();
+  }
+
+  add.onclick = () => {
+    st.targets.push({ uid: ++svUid, name: '', folder: '' });
+    renderTargets();
+    renderRows();
+    schedulePreview();
+    targetsEl.lastElementChild.querySelector('.sv-name').focus();
+  };
+
+  async function doCreate() {
+    const p = st.preview;
+    if (!p || create.disabled) return;
+    const assignments = {};
+    for (const pl of p.placement) {
+      const c = st.choices.get(pl.card.id);
+      assignments[pl.card.id] = c === 'stay' ? 'stay' : p.uids.indexOf(c);
+    }
+    st.creating = true;
+    createErr.textContent = '';
+    renderFoot();
+    let res, out;
+    try {
+      res = await fetch(`/project/${encodeURIComponent(pid)}/split`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ targets: p.targets.map((t) => ({ name: t.name, root: t.root })), assignments }),
+      });
+      out = await res.json().catch(() => ({}));
+    } catch {
+      out = { error: 'Couldn’t reach the daemon — try again.' };
+    }
+    st.creating = false;
+    if (res?.ok) {
+      const n = out.verticals?.length ?? p.targets.length;
+      close();
+      home.suggestions = [];
+      renderHomeSplit();
+      svFlash(`Created ${n} vertical${n === 1 ? '' : 's'}`);
+      loadHome();
+      loadSuggestions(true);
+      dash.checked = false;
+      initDashboard(); // the rail's Dashboard button appears once there are verticals
+      return;
+    }
+    const msg = typeof out.error === 'string' && out.error ? out.error : `Couldn’t create the verticals (HTTP ${res?.status}).`;
+    const ids = Array.isArray(out.cardIds) ? out.cardIds : [];
+    const byId = new Map(p.placement.map((pl) => [pl.card.id, pl.card]));
+    const blocking = ids.map((id) => byId.get(id)).filter(Boolean);
+    if (res?.status === 400 && blocking.length) {
+      const inFlight = blocking.every((c) => c.lane === 'in_progress' || c.lane === 'in_review');
+      const names = blocking.map((c) => `“${c.title}”`).join(', ');
+      createErr.textContent = inFlight
+        ? `${names} ${blocking.length === 1 ? 'is' : 'are'} in progress or in review — finish or send back first, or keep ${blocking.length === 1 ? 'it' : 'them'} on ${standalone ? 'Main' : d.project.name}.`
+        : `${msg}: ${names}`;
+    } else {
+      if (res?.status === 400) schedulePreview(0); // the board changed under us — refresh the card list
+      createErr.textContent = msg;
+    }
+    renderFoot();
+  }
+
+  function close() {
+    clearTimeout(st.timer);
+    st.seq++;
+    document.removeEventListener('keydown', onKey, true);
+    backdrop.remove();
+    if (opener && opener.isConnected) opener.focus();
+    else $('home-split').focus();
+  }
+
+  function onKey(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!st.creating) close();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const f = [...dlg.querySelectorAll('button, input, select, [tabindex]')].filter(
+      (el) => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length && !el.closest('[hidden]'),
+    );
+    if (!f.length) return;
+    const first = f[0];
+    const last = f[f.length - 1];
+    if (!dlg.contains(document.activeElement)) {
+      e.preventDefault();
+      first.focus();
+    } else if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  cancel.onclick = close;
+  create.onclick = doCreate;
+  backdrop.onmousedown = (e) => {
+    if (e.target === backdrop && !st.creating) close();
+  };
+  document.addEventListener('keydown', onKey, true);
+
+  renderTargets();
+  renderRows();
+  schedulePreview(0);
+  document.body.append(backdrop);
+  (targetsEl.querySelector('.sv-name') ?? add).focus();
+}
 
 // Show the landing view at once — no Kanban flash while the first board data and
 // attention fetch are in flight. 'smart' and ?view=dashboard still wait for data;
