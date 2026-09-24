@@ -62,7 +62,9 @@ Applies when `get_workspace` returns verticals. SessionStart tells you which rol
 **Setup (once, main)**: `manager` proposes verticals alongside phases. After the user
 agrees: `create_vertical` per vertical (root = its folder; a separate repo gets the
 kit installed). Each vertical gets its own roadmap: `create_phase` with the
-vertical's project_id, then `planner` with that project_id + phase.
+vertical's project_id. From then on each vertical session runs the *Phase loop* on
+its own board (plans its active phase with `planner`, advances it); main only owns
+the workspace board's phases.
 
 **Where a card goes**: to the board of the vertical whose folder it changes. It
 touches 2+ verticals or shared root files → the workspace board (main builds it).
@@ -74,6 +76,9 @@ Queued is the signal. A vertical picks queued cards up when prompted: by the use
 in its terminal tab, or by autopilot (`set_autopilot`, off by default) which
 prompts an idle vertical that has queued cards and pauses while shared usage is
 high.
+A vertical picking up a card main already queued with spec + criteria skips step
+1's discussion and dispatches it directly; if the spec is unclear it raises a
+blocker instead of guessing.
 
 **Monitoring**: `get_workspace_summary` (not `get_board` per vertical). A board in
 `needs_you` has a session waiting on the human: tell the user which vertical.
@@ -81,6 +86,8 @@ high.
 **Merging**: each vertical merges its own cards (`kankan worktree merge`; merges are
 serialized by a lock). While verticals are active, nobody edits files directly in
 the main checkout: all changes go through worktrees.
+A merge conflict is resolved in the card's own worktree: merge the current main
+branch into `card/<id>` there, fix, commit, then re-run `kankan worktree merge`.
 
 ## Rules
 
