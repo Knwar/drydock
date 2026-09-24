@@ -46,7 +46,7 @@ if (process.env.KANKAN_TERMINAL === '1') {
 }
 const terminalReady = (): boolean => ptySpawn !== null && terminalToken !== null;
 
-interface PtySession { proc: any; buffer: string; clients: Set<WebSocket> }
+interface PtySession { proc: any; buffer: string; clients: Set<WebSocket>; agentLaunch?: Promise<unknown> }
 const PTY_BUFFER_CAP = 200_000; // scrollback replayed to (re)attaching clients
 const ptySessions = new Map<string, PtySession>();
 
@@ -75,6 +75,36 @@ function getPtySession(projectId: string, root: string): PtySession {
     ptySessions.delete(projectId);
   });
   return session;
+}
+
+/** The terminal's foreground process group (0 before the shell has taken the
+ *  tty, -1 if unknown). The shell is idle iff this is its own pid. */
+async function foregroundPgid(session: PtySession): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync('ps', ['-o', 'tpgid=', '-p', String(session.proc.pid)]);
+    return Number(stdout.trim());
+  } catch {
+    return -1;
+  }
+}
+
+/** Type `claude` if the shell is idle, then wait (≤3s) until the typed command
+ *  holds the foreground, so a follow-up request sees it as busy instead of
+ *  typing it twice. `fresh` = the caller just spawned this shell → idle. */
+async function launchAgent(session: PtySession, fresh: boolean) {
+  const pid = session.proc.pid;
+  if (!fresh && (await foregroundPgid(session)) !== pid) {
+    return { started: false, reason: 'busy', foreground: session.proc.process };
+  }
+  // Ctrl-U first: kill any half-typed input at the prompt, else it would be
+  // glued onto the command ("rm -rf build" + "claude" → "rm -rf buildclaude").
+  session.proc.write('\x15claude\r');
+  for (const deadline = Date.now() + 3000; Date.now() < deadline; ) {
+    const fg = await foregroundPgid(session);
+    if (fg > 0 && fg !== pid) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return { started: true };
 }
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -546,9 +576,30 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return json(res, 200, board.getAttention(db, project));
   }
 
+  if (method === 'POST' && pathname === '/pty/agent') {
+    // launch `claude` in the project's shell — command execution, so gated
+    // exactly like the /pty upgrade.
+    if (!terminalReady()) return json(res, 409, { error: 'terminal disabled' });
+    if (!authTerminal(req, url)) return json(res, 403, { error: 'forbidden' });
+    const project = url.searchParams.get('project');
+    const root = project ? projectRoot(project) : null;
+    if (!project || !root) return json(res, 404, { error: 'unknown project' });
+    const fresh = !ptySessions.has(project);
+    const session = getPtySession(project, root);
+    // Only type into an idle shell (foreground process group = the shell's pid;
+    // name matching is unreliable — macOS /bin/sh reports as 'bash'). Launches
+    // are serialized per session so a double-click can't type twice.
+    const prev = session.agentLaunch ?? Promise.resolve();
+    const launch = prev.then(() => launchAgent(session, fresh));
+    session.agentLaunch = launch.catch(() => undefined);
+    return json(res, 200, await launch);
+  }
+
   if (method === 'POST' && pathname === '/pty/reset') {
     // kill the project's shared shell; onExit drops the session, so the next
     // /pty connect spawns a fresh one.
+    if (!terminalReady()) return json(res, 409, { error: 'terminal disabled' });
+    if (!authTerminal(req, url)) return json(res, 403, { error: 'forbidden' });
     const project = url.searchParams.get('project');
     const session = project ? ptySessions.get(project) : undefined;
     if (session) session.proc.kill();
