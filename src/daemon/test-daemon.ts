@@ -17,6 +17,8 @@ export interface TestDaemon {
   port: number;
   dbDir: string;
   stop(): Promise<void>;
+  /** The daemon's exit code once it has exited (null if still running or killed by a signal). */
+  exitCode(): number | null;
 }
 
 /** A free TCP port (bind :0, read it back, release it). */
@@ -70,9 +72,11 @@ export async function startDaemon(opts: { env?: Record<string, string> } = {}): 
     stdio: 'ignore',
   });
   let exited = false;
+  let code: number | null = null;
   const exit = new Promise<void>((resolve) => {
-    proc.once('exit', () => {
+    proc.once('exit', (c) => {
       exited = true;
+      code = c;
       resolve();
     });
   });
@@ -96,5 +100,5 @@ export async function startDaemon(opts: { env?: Record<string, string> } = {}): 
     await stop();
     throw err;
   }
-  return { base, port, dbDir, stop };
+  return { base, port, dbDir, stop, exitCode: () => code };
 }

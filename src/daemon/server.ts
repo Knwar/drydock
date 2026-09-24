@@ -1194,19 +1194,83 @@ server.listen(PORT, HOST, onListening);
 // DEFAULT (so the webhook/Slack demo works out of the box); set KANKAN_DISPATCHER=0
 // to disable it. A bad tick is swallowed so a delivery hiccup can't kill the
 // daemon; runOnce is fire-and-forget so a slow send never blocks the interval.
+const intervals: NodeJS.Timeout[] = [];
 if (process.env.KANKAN_DISPATCHER !== '0') {
   const dispatcher = new Dispatcher(db);
-  setInterval(() => {
+  intervals.push(setInterval(() => {
     dispatcher.runOnce().catch((err) => console.error(`dispatcher tick failed: ${(err as Error).message}`));
-  }, 1000).unref();
+  }, 1000).unref());
 }
 
 // ── autopilot sweep ─────────────────────────────────────────────────
 // Every 30s, re-evaluate projects that opted in (catches idle sessions whose
 // idle ping arrived before a card was queued or before usage dropped).
 if (AUTOPILOT_ENGINE) {
-  setInterval(() => {
+  intervals.push(setInterval(() => {
     const rows = db.prepare('SELECT id FROM projects WHERE autopilot = 1').all() as { id: string }[];
     for (const { id } of rows) void evaluateAutopilot(id);
-  }, AUTOPILOT_INTERVAL_MS).unref();
+  }, AUTOPILOT_INTERVAL_MS).unref());
 }
+
+// ── shutdown ────────────────────────────────────────────────────────
+// Without this, a stopped daemon orphans every pty shell (and whatever runs
+// in it, e.g. claude) — they get re-parented to PID 1 and live on invisibly.
+// node-pty makes each shell a session/process-group leader; with job control
+// the shell puts each job (e.g. claude) in its OWN process group, so we signal
+// every process group on the shell's tty, not just the shell's.
+const PTY_KILL_GRACE_MS = 500;
+const SHUTDOWN_DEADLINE_MS = 3000;
+let shuttingDown = false;
+
+function killGroup(pid: number, signal: NodeJS.Signals) {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    /* ESRCH: already gone */
+  }
+}
+
+/** Every process group with a process on the shell's tty (the shell's own included). */
+async function sessionGroups(shellPid: number): Promise<number[]> {
+  const groups = new Set([shellPid]);
+  try {
+    const { stdout: tty } = await execFileAsync('ps', ['-o', 'tty=', '-p', String(shellPid)]);
+    const { stdout } = await execFileAsync('ps', ['-o', 'pgid=', '-t', tty.trim()]);
+    for (const g of stdout.split('\n').map(Number)) if (g > 1) groups.add(g);
+  } catch {
+    /* shell already gone, or ps failed: fall back to the shell's group */
+  }
+  return [...groups];
+}
+
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  setTimeout(() => process.exit(0), SHUTDOWN_DEADLINE_MS).unref();
+
+  const sessions = [...ptySessions.values()];
+  console.log(`closing ${sessions.length} terminal session(s)`);
+  const groups = (await Promise.all(sessions.map((s) => sessionGroups(s.proc.pid as number)))).flat();
+  for (const g of groups) killGroup(g, 'SIGHUP');
+  if (groups.length > 0) {
+    await new Promise((r) => setTimeout(r, PTY_KILL_GRACE_MS));
+    for (const g of groups) killGroup(g, 'SIGKILL');
+  }
+
+  for (const t of intervals) clearInterval(t);
+  for (const w of [wss, ptyWss]) {
+    for (const client of w.clients) client.terminate();
+    w.close();
+  }
+  server.closeAllConnections();
+  await new Promise<void>((r) => server.close(() => r()));
+  try {
+    db.close();
+  } catch {
+    /* already closed */
+  }
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => void shutdown());
+process.on('SIGINT', () => void shutdown());
