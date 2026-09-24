@@ -39,31 +39,28 @@ describe('suggestVerticals', () => {
   });
 
   it('labels every manifest kind', (t) => {
-    const root = repo(t, [
-      'clients/a/pyproject.toml',
-      'clients/b/requirements.txt',
-      'clients/c/Gemfile',
-      'clients/d/pom.xml',
-      'clients/e/build.gradle',
-      'clients/f/build.gradle.kts',
-      'clients/g/composer.json',
-      'clients/h/App.csproj',
-      'clients/i/App.xcodeproj/',
-    ]);
-    assert.deepEqual(
-      suggestVerticals(root).map((s) => [s.folder, s.stack]),
-      [
-        ['clients/a', 'python'],
-        ['clients/b', 'python'],
-        ['clients/c', 'ruby'],
-        ['clients/d', 'java'],
-        ['clients/e', 'java'],
-        ['clients/f', 'java'],
-        ['clients/g', 'php'],
-        ['clients/h', 'dotnet'],
-        ['clients/i', 'ios'],
-      ],
-    );
+    const cases: [string, string][] = [
+      ['pyproject.toml', 'python'],
+      ['requirements.txt', 'python'],
+      ['Gemfile', 'ruby'],
+      ['pom.xml', 'java'],
+      ['build.gradle', 'java'],
+      ['build.gradle.kts', 'java'],
+      ['composer.json', 'php'],
+      ['App.csproj', 'dotnet'],
+      ['App.xcodeproj/', 'ios'],
+    ];
+    for (const [manifest, stack] of cases) {
+      const root = repo(t, [`clients/a/${manifest}`, 'clients/b/package.json']);
+      assert.deepEqual(
+        suggestVerticals(root).map((s) => [s.folder, s.stack]),
+        [
+          ['clients/a', stack],
+          ['clients/b', 'node'],
+        ],
+        manifest,
+      );
+    }
   });
 
   it('a single candidate → []', (t) => {
@@ -95,17 +92,56 @@ describe('suggestVerticals', () => {
     assert.deepEqual(suggestVerticals(withOne), []);
   });
 
-  it('drops packages/* when apps/ has candidates', (t) => {
+  it('never suggests packages/* children', (t) => {
     const root = repo(t, ['apps/web/package.json', 'apps/admin/package.json', 'packages/ui/package.json']);
     assert.deepEqual(
       suggestVerticals(root).map((s) => s.folder),
       ['apps/admin', 'apps/web'],
     );
-    // no apps/ or services/ → packages/* are candidates
     const pkgs = repo(t, ['packages/a/package.json', 'packages/b/package.json']);
+    assert.deepEqual(suggestVerticals(pkgs), []);
+  });
+
+  it('ignores platform folders when the root is a Flutter app', (t) => {
+    const root = repo(t, ['pubspec.yaml', 'android/build.gradle', 'ios/App.xcodeproj/', 'web/package.json']);
+    assert.deepEqual(suggestVerticals(root), []);
+    // other known names still count
+    const withApi = repo(t, ['pubspec.yaml', 'android/build.gradle', 'api/go.mod', 'admin/package.json']);
     assert.deepEqual(
-      suggestVerticals(pkgs).map((s) => s.folder),
-      ['packages/a', 'packages/b'],
+      suggestVerticals(withApi).map((s) => s.folder),
+      ['admin', 'api'],
+    );
+  });
+
+  it('ignores platform folders when the root is a React Native app', (t) => {
+    const root = repo(t, ['android/build.gradle', 'ios/App.xcodeproj/']);
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ dependencies: { 'react-native': '0.80.0' } }));
+    assert.deepEqual(suggestVerticals(root), []);
+    // a plain node root does not hide them
+    const plain = repo(t, ['android/build.gradle', 'ios/App.xcodeproj/']);
+    writeFileSync(join(plain, 'package.json'), JSON.stringify({ dependencies: { express: '5.0.0' } }));
+    assert.deepEqual(
+      suggestVerticals(plain).map((s) => s.folder),
+      ['android', 'ios'],
+    );
+  });
+
+  it('a container with more than 3 candidates becomes one vertical', (t) => {
+    const four = repo(t, [
+      'mobile/pubspec.yaml',
+      'services/a/package.json',
+      'services/b/package.json',
+      'services/c/package.json',
+      'services/d/go.mod',
+    ]);
+    assert.deepEqual(suggestVerticals(four), [
+      { name: 'mobile', folder: 'mobile', stack: 'flutter' },
+      { name: 'services', folder: 'services', stack: 'node' },
+    ]);
+    const three = repo(t, ['mobile/pubspec.yaml', 'services/a/package.json', 'services/b/package.json', 'services/c/go.mod']);
+    assert.deepEqual(
+      suggestVerticals(three).map((s) => s.folder),
+      ['mobile', 'services/a', 'services/b', 'services/c'],
     );
   });
 
