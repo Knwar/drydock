@@ -880,7 +880,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // only a standalone project (no verticals, not a vertical itself) gets suggestions
     const { workspace, verticals } = board.getWorkspace(db, pid);
     if (workspace.id !== pid || verticals.length > 0) return json(res, 200, { suggestions: [] });
-    return json(res, 200, { suggestions: suggestVerticals(root) });
+    // folders relative to the git toplevel, as split targets resolve them (absolute if outside)
+    const top = realOrResolved(sessionCwd(root));
+    const suggestions = suggestVerticals(root).map((s) => {
+      const abs = realOrResolved(join(root, s.folder));
+      const rel = relative(top, abs);
+      return { ...s, folder: rel.startsWith('..') || isAbsolute(rel) ? abs : rel };
+    });
+    return json(res, 200, { suggestions });
   }
 
   // ── split / merge verticals ─────────────────────────────────────────
