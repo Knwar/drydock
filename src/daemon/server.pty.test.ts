@@ -36,13 +36,16 @@ describe('/pty routes with the terminal enabled', () => {
   let token: string | null = null;
   let enabled = false;
   let project = '';
-  // fake `claude` first on PATH so the valid case never launches the real one
+  // fake `claude` first on PATH so the valid case never launches the real one;
+  // it execs `sleep <seconds in dur>` so the foreground process is 'sleep'.
   const binDir = mkdtempSync(join(tmpdir(), 'kankan-fake-claude-'));
+  const setFakeDuration = (secs: number) => writeFileSync(join(binDir, 'dur'), String(secs));
   const projDir = mkdtempSync(join(tmpdir(), 'kankan-pty-proj-'));
 
   before(async () => {
     const fake = join(binDir, 'claude');
-    writeFileSync(fake, '#!/bin/sh\nsleep 30\n');
+    writeFileSync(fake, `#!/bin/sh\nexec sleep "$(cat '${join(binDir, 'dur')}')"\n`);
+    setFakeDuration(30);
     chmodSync(fake, 0o755);
     daemon = await startDaemon({
       env: { KANKAN_TERMINAL: '1', SHELL: '/bin/sh', PATH: `${binDir}:${process.env.PATH ?? ''}` },
@@ -90,27 +93,48 @@ describe('/pty routes with the terminal enabled', () => {
     assert.equal((await agent('no-such-project', token)).status, 404);
   });
 
-  it('starts the agent once; a second call reports already running', async (t) => {
+  /** Poll /pty/agent until it reports started:true (or time runs out). */
+  async function agentUntilStarted(timeoutMs = 5000): Promise<unknown> {
+    const deadline = Date.now() + timeoutMs;
+    let body: unknown;
+    while (Date.now() < deadline) {
+      body = await (await agent(project, token)).json();
+      if ((body as { started: boolean }).started) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return body;
+  }
+
+  it('starts the agent in an idle shell; while it runs the shell is busy', async (t) => {
     if (!enabled) return t.skip('node-pty unavailable');
     const first = await agent(project, token);
     assert.equal(first.status, 200);
     assert.deepEqual(await first.json(), { started: true });
-    const second = await agent(project, token);
-    assert.equal(second.status, 200);
-    assert.deepEqual(await second.json(), { started: false, reason: 'already running' });
+    // the typed command needs a moment to become the foreground process
+    const deadline = Date.now() + 5000;
+    let body: { started: boolean; reason?: string; foreground?: string } | undefined;
+    while (Date.now() < deadline) {
+      body = (await (await agent(project, token)).json()) as typeof body;
+      if (body?.foreground === 'sleep') break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.deepEqual(body, { started: false, reason: 'busy', foreground: 'sleep' });
   });
 
   it('/pty/reset with the token kills the shell; the agent can then start again', async (t) => {
     if (!enabled) return t.skip('node-pty unavailable');
     const res = await reset(project, token);
     assert.equal(res.status, 200);
-    const deadline = Date.now() + 5000;
-    let body: { started: boolean } | undefined;
-    while (Date.now() < deadline) {
-      body = (await (await agent(project, token)).json()) as { started: boolean };
-      if (body.started) break;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    assert.deepEqual(body, { started: true });
+    assert.deepEqual(await agentUntilStarted(), { started: true });
+  });
+
+  it('once the agent exits the shell is idle again — starts without a reset', async (t) => {
+    if (!enabled) return t.skip('node-pty unavailable');
+    setFakeDuration(1);
+    assert.equal((await reset(project, token)).status, 200);
+    assert.deepEqual(await agentUntilStarted(), { started: true }); // fresh shell
+    const busy = (await (await agent(project, token)).json()) as { started: boolean };
+    assert.equal(busy.started, false);
+    assert.deepEqual(await agentUntilStarted(), { started: true }); // fake exited, same shell
   });
 });
