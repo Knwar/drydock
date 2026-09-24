@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { basename, resolve, sep } from 'node:path';
 import type { DB } from './db.js';
 import { buildWhere } from './sql-util.js';
 import {
@@ -347,6 +347,145 @@ export function splitIntoVerticals(
     for (const p of [source, ...verticals])
       appendEvent(db, { project_id: p.id, type: 'vertical_split', payload });
     return { verticals, moved };
+  })();
+}
+
+/** A merge precondition failed; nothing was changed. `cardIds` are the offending cards. */
+export class MergeError extends Error {
+  cardIds: string[];
+  constructor(message: string, cardIds: string[] = []) {
+    super(message);
+    this.name = 'MergeError';
+    this.cardIds = cardIds;
+  }
+}
+
+/**
+ * Merge vertical `fromId` into sibling vertical `intoId`: every card (renumbered
+ * after into's, in from's order) with its card_activity, task_events, sync_links,
+ * plus from's subscriptions and undelivered outbox rows. Phases are appended to
+ * into's roadmap or folded into into's active phase. Optionally renames/re-roots
+ * into (taking from's root is allowed). from's row is deleted. One transaction.
+ */
+export function mergeVerticals(
+  db: DB,
+  fromId: string,
+  intoId: string,
+  opts: { name?: string; root?: string; phases: 'append' | 'fold' },
+): Project {
+  return db.transaction(() => {
+    if (fromId === intoId) throw new MergeError('cannot merge a vertical into itself');
+    const find = (id: string) =>
+      db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as Project | undefined;
+    const from = find(fromId);
+    const into = find(intoId);
+    if (!from || !into) throw new MergeError('no such project');
+    if (from.parent_id === null || into.parent_id === null)
+      throw new MergeError('only verticals can be merged');
+    if (from.parent_id !== into.parent_id)
+      throw new MergeError('verticals belong to different workspaces');
+    const workspace = getProject(db, into.parent_id);
+
+    const inFlight = (
+      db
+        .prepare(
+          `SELECT id FROM tasks WHERE project_id IN (?, ?) AND lane IN ('in_progress', 'in_review')
+           ORDER BY position, rowid`,
+        )
+        .all(fromId, intoId) as { id: string }[]
+    ).map((r) => r.id);
+    if (inFlight.length) throw new MergeError('cards in progress or in review block a merge', inFlight);
+
+    let root: string | undefined;
+    if (opts.root !== undefined) {
+      root = normalizeRoot(opts.root);
+      if (root === workspace.root_path)
+        throw new MergeError(`root must differ from the workspace's own root_path`);
+      let isDir = false;
+      try {
+        isDir = statSync(root).isDirectory();
+      } catch {
+        // missing path → not a directory
+      }
+      if (!isDir) throw new MergeError(`not an existing directory: ${root}`);
+      const owner = findProject(db, root);
+      if (owner && owner.id !== fromId && owner.id !== intoId)
+        throw new MergeError(`project already exists at ${root}`);
+      // segment-aware: apps is an ancestor of apps/admin, apps/web is not of apps/webhooks
+      const nests = (a: string, b: string) => b.startsWith(a.endsWith(sep) ? a : a + sep);
+      const nested = listVerticals(db, workspace.id).find(
+        (v) => v.id !== fromId && v.id !== intoId && (nests(root!, v.root_path) || nests(v.root_path, root!)),
+      );
+      if (nested) throw new MergeError(`root ${root} nests with ${nested.name}'s root ${nested.root_path}`);
+    }
+
+    // Phases first, so folded cards can pick up into's active phase.
+    const intoActive = getActivePhase(db, intoId);
+    const fromPhases = db
+      .prepare('SELECT * FROM phases WHERE project_id = ? ORDER BY position, rowid')
+      .all(fromId) as Phase[];
+    if (opts.phases === 'append') {
+      let pos =
+        (db.prepare('SELECT MAX(position) AS max FROM phases WHERE project_id = ?').get(intoId) as {
+          max: number | null;
+        }).max ?? 0;
+      for (const ph of fromPhases) {
+        const status: PhaseStatus = ph.status === 'active' && intoActive ? 'planned' : ph.status;
+        db.prepare('UPDATE phases SET project_id = ?, position = ?, status = ?, updated_at = ? WHERE id = ?').run(
+          intoId,
+          ++pos,
+          status,
+          now(),
+          ph.id,
+        );
+      }
+    } else {
+      // open cards join into's active phase; done cards drop their (deleted) phase
+      db.prepare(`UPDATE tasks SET phase_id = ? WHERE project_id = ? AND lane != 'done'`).run(
+        intoActive?.id ?? null,
+        fromId,
+      );
+      db.prepare(`UPDATE tasks SET phase_id = NULL WHERE project_id = ? AND lane = 'done'`).run(fromId);
+      db.prepare('DELETE FROM phases WHERE project_id = ?').run(fromId);
+    }
+
+    // Cards land after into's, in from's order — positions never collide.
+    let pos =
+      (db.prepare('SELECT MAX(position) AS max FROM tasks WHERE project_id = ?').get(intoId) as {
+        max: number | null;
+      }).max ?? 0;
+    const cards = db
+      .prepare('SELECT id FROM tasks WHERE project_id = ? ORDER BY position, rowid')
+      .all(fromId) as { id: string }[];
+    for (const c of cards)
+      db.prepare('UPDATE tasks SET project_id = ?, position = ? WHERE id = ?').run(intoId, ++pos, c.id);
+    // On a phased board a phaseless open card is never picked: give every open
+    // phaseless card on into the active phase, else the first planned one.
+    const home = (getActivePhase(db, intoId) ??
+      db
+        .prepare(`SELECT * FROM phases WHERE project_id = ? AND status = 'planned' ORDER BY position LIMIT 1`)
+        .get(intoId)) as Phase | undefined;
+    if (home)
+      db.prepare(
+        `UPDATE tasks SET phase_id = ? WHERE project_id = ? AND phase_id IS NULL AND lane != 'done'`,
+      ).run(home.id, intoId);
+    db.prepare('UPDATE card_activity SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
+    db.prepare('UPDATE task_events SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
+    db.prepare('UPDATE sync_links SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
+    db.prepare('UPDATE subscriptions SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
+    // undelivered outbox rows follow the board; processed rows stay as history
+    db.prepare(
+      `UPDATE outbox SET project_id = ? WHERE project_id = ? AND (status = 'pending' OR status IS NULL)`,
+    ).run(intoId, fromId);
+
+    // Delete from first so into may take from's root (root_path is UNIQUE).
+    db.prepare('DELETE FROM projects WHERE id = ?').run(fromId);
+    if (opts.name !== undefined) db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(opts.name, intoId);
+    if (root !== undefined) db.prepare('UPDATE projects SET root_path = ? WHERE id = ?').run(root, intoId);
+
+    const payload = { from: { id: from.id, name: from.name }, into: intoId, moved: cards.length };
+    for (const p of [intoId, workspace.id]) appendEvent(db, { project_id: p, type: 'vertical_merge', payload });
+    return getProject(db, intoId);
   })();
 }
 

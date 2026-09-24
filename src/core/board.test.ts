@@ -41,6 +41,8 @@ import {
   listSyncLinks,
   listTeam,
   listVerticals,
+  mergeVerticals,
+  MergeError,
   validateVertical,
   moveTask,
   raiseBlocker,
@@ -2373,5 +2375,313 @@ describe('splitIntoVerticals', () => {
       /boom/,
     );
     assert.deepEqual(snapshot(), before);
+  });
+});
+
+describe('mergeVerticals', () => {
+  function mergeSetup() {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-merge-'));
+    for (const sub of ['web', 'api', 'shared', 'other']) mkdirSync(join(dir, sub));
+    const db = openDb();
+    const ws = getOrCreateProject(db, dir, 'Shop');
+    const web = createVertical(db, ws.id, 'Web', join(dir, 'web'));
+    const api = createVertical(db, ws.id, 'API', join(dir, 'api'));
+    const cleanup = () => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    };
+    return { db, dir, ws, web, api, cleanup };
+  }
+  const count = (db: Database.Database, table: string, col: string, id: string) =>
+    (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${col} = ?`).get(id) as { n: number }).n;
+  const snapshot = (db: Database.Database) =>
+    Object.fromEntries(
+      ['projects', 'tasks', 'card_activity', 'task_events', 'phases', 'sync_links', 'outbox', 'subscriptions'].map(
+        (tb) => [tb, db.prepare(`SELECT * FROM ${tb} ORDER BY rowid`).all()],
+      ),
+    );
+
+  it('moves cards (renumbered, no collisions), history, subscriptions and pending outbox; deletes from', (t) => {
+    const { db, ws, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const i1 = createTask(db, web.id, 'i1');
+    const i2 = createTask(db, web.id, 'i2');
+    const f1 = createTask(db, api.id, 'f1');
+    const f2 = createTask(db, api.id, 'f2');
+    const f3 = createTask(db, api.id, 'f3');
+    moveTask(db, f3.id, 'done');
+    recordActivity(db, { project_id: api.id, task_id: f1.id, tokens: 5, tokens_out: 1, lines_added: 2, lines_removed: 0, ms: 10 });
+    createSyncLink(db, { project_id: api.id, local_id: f1.id, provider: 'github' });
+    const sub = createSubscription(db, {
+      project_id: api.id,
+      kind: 'webhook',
+      event_filter: 'create',
+      target: 'https://example.com/hook',
+    });
+    appendEvent(db, { project_id: api.id, type: 'note', payload: { n: 1 } }); // board-level event, no task
+    db.prepare(`UPDATE outbox SET status = 'processed' WHERE task_id = ?`).run(f1.id);
+    db.prepare(`UPDATE outbox SET status = NULL WHERE task_id = ? AND type = 'create'`).run(f2.id);
+
+    const res = mergeVerticals(db, api.id, web.id, { phases: 'append' });
+    assert.equal(res.id, web.id);
+    assert.equal(res.name, 'Web');
+    assert.equal(db.prepare('SELECT 1 FROM projects WHERE id = ?').get(api.id), undefined);
+    assert.deepEqual(listVerticals(db, ws.id).map((v) => v.id), [web.id]);
+
+    const rows = db
+      .prepare('SELECT id, position FROM tasks WHERE project_id = ? ORDER BY position')
+      .all(web.id) as { id: string; position: number }[];
+    assert.deepEqual(rows.map((r) => r.id), [i1.id, i2.id, f1.id, f2.id, f3.id]);
+    assert.deepEqual(rows.map((r) => r.position), [1, 2, 3, 4, 5]);
+
+    assert.equal(count(db, 'card_activity', 'project_id', web.id), 1);
+    assert.equal(count(db, 'task_events', 'project_id', api.id), 0);
+    assert.ok(count(db, 'task_events', 'project_id', web.id) > 0);
+    assert.equal(getSyncLinkByLocal(db, 'github', f1.id)?.project_id, web.id);
+    assert.equal(getSubscription(db, sub.id)?.project_id, web.id);
+
+    const f1Outbox = db.prepare('SELECT DISTINCT project_id FROM outbox WHERE task_id = ?').all(f1.id);
+    assert.deepEqual(f1Outbox, [{ project_id: api.id }]); // processed stays
+    const f2Outbox = db.prepare('SELECT type, status, project_id FROM outbox WHERE task_id = ? ORDER BY id').all(f2.id);
+    assert.deepEqual(f2Outbox, [{ type: 'create', status: null, project_id: web.id }]);
+    assert.equal(
+      count(db, 'outbox', 'project_id', api.id),
+      (db.prepare(`SELECT COUNT(*) AS n FROM outbox WHERE status = 'processed' AND project_id = ?`).get(api.id) as { n: number }).n,
+    );
+
+    for (const p of [web.id, ws.id]) {
+      const ev = getRecentEvents(db, p, 50).find((e) => e.type === 'vertical_merge');
+      assert.deepEqual(JSON.parse(ev!.payload!), { from: { id: api.id, name: 'API' }, into: web.id, moved: 3 });
+    }
+  });
+
+  it('append: from phases follow into\'s in from\'s order; active → planned when into has one', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const own = createPhase(db, web.id, 'Own');
+    advancePhase(db, web.id);
+    const a1 = createPhase(db, api.id, 'A1');
+    const a2 = createPhase(db, api.id, 'A2');
+    const a3 = createPhase(db, api.id, 'A3');
+    advancePhase(db, api.id);
+    advancePhase(db, api.id); // A1 done, A2 active, A3 planned
+    const c = createTask(db, api.id, 'c', { phase_id: a2.id });
+    mergeVerticals(db, api.id, web.id, { phases: 'append' });
+    assert.deepEqual(
+      getPhases(db, web.id).map((p) => [p.id, p.status, p.position]),
+      [[own.id, 'active', 1], [a1.id, 'done', 2], [a2.id, 'planned', 3], [a3.id, 'planned', 4]],
+    );
+    assert.equal(getActivePhase(db, web.id)?.id, own.id);
+    assert.equal(getTask(db, c.id).phase_id, a2.id);
+  });
+
+  it('append: from\'s active phase stays active when into has none', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const a1 = createPhase(db, api.id, 'A1');
+    advancePhase(db, api.id);
+    mergeVerticals(db, api.id, web.id, { phases: 'append' });
+    assert.equal(getActivePhase(db, web.id)?.id, a1.id);
+  });
+
+  it('fold: from cards get into\'s active phase and from phases are deleted', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const own = createPhase(db, web.id, 'Own');
+    advancePhase(db, web.id);
+    const a1 = createPhase(db, api.id, 'A1');
+    const c = createTask(db, api.id, 'c', { phase_id: a1.id });
+    const d = createTask(db, api.id, 'd');
+    mergeVerticals(db, api.id, web.id, { phases: 'fold' });
+    assert.equal(getTask(db, c.id).phase_id, own.id);
+    assert.equal(getTask(db, d.id).phase_id, own.id);
+    assert.equal(count(db, 'phases', 'id', a1.id), 0);
+    assert.deepEqual(getPhases(db, web.id).map((p) => p.id), [own.id]);
+  });
+
+  it('fold into a board with only planned phases → open cards get the first planned phase; done cards null', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const p1 = createPhase(db, web.id, 'P1');
+    createPhase(db, web.id, 'P2');
+    const a1 = createPhase(db, api.id, 'A1');
+    advancePhase(db, api.id);
+    const c = createTask(db, api.id, 'c', { phase_id: a1.id });
+    const done = createTask(db, api.id, 'done', { phase_id: a1.id });
+    moveTask(db, done.id, 'done');
+    mergeVerticals(db, api.id, web.id, { phases: 'fold' });
+    assert.equal(getTask(db, c.id).phase_id, p1.id);
+    assert.equal(getTask(db, done.id).phase_id, null);
+    assert.equal(count(db, 'phases', 'project_id', api.id), 0);
+    assert.equal(count(db, 'phases', 'project_id', web.id), 2);
+    assert.equal(getNextCard(db, web.id)?.id, c.id);
+    assert.equal(advancePhase(db, web.id)?.id, p1.id);
+    assert.equal(getNextCard(db, web.id)?.id, c.id);
+  });
+
+  it('fold: done cards of from lose their phase, open cards join into\'s active phase', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const own = createPhase(db, web.id, 'Own');
+    advancePhase(db, web.id);
+    const a1 = createPhase(db, api.id, 'A1');
+    const open = createTask(db, api.id, 'open', { phase_id: a1.id });
+    const done = createTask(db, api.id, 'done', { phase_id: a1.id });
+    moveTask(db, done.id, 'done');
+    mergeVerticals(db, api.id, web.id, { phases: 'fold' });
+    assert.equal(getTask(db, open.id).phase_id, own.id);
+    assert.equal(getTask(db, done.id).phase_id, null);
+  });
+
+  it('fold into a board whose phases are all done → open cards stay phaseless', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    createPhase(db, web.id, 'P1');
+    advancePhase(db, web.id);
+    advancePhase(db, web.id); // P1 done, nothing left
+    const c = createTask(db, api.id, 'c');
+    mergeVerticals(db, api.id, web.id, { phases: 'fold' });
+    assert.equal(getTask(db, c.id).phase_id, null);
+    assert.equal(getNextCard(db, web.id)?.id, c.id);
+  });
+
+  it('append a flat from into a phased into → from\'s cards join into\'s active phase', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const own = createPhase(db, web.id, 'Own');
+    advancePhase(db, web.id);
+    const f = createTask(db, api.id, 'f');
+    mergeVerticals(db, api.id, web.id, { phases: 'append' });
+    assert.equal(getTask(db, f.id).phase_id, own.id);
+    assert.equal(getNextCard(db, web.id)?.id, f.id);
+  });
+
+  it('append a phased from into a flat into → into\'s own phaseless backlog stays pickable', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const mine = createTask(db, web.id, 'mine');
+    const oldDone = createTask(db, web.id, 'old done');
+    moveTask(db, oldDone.id, 'done');
+    const a1 = createPhase(db, api.id, 'A1');
+    advancePhase(db, api.id);
+    const f = createTask(db, api.id, 'f', { phase_id: a1.id });
+    mergeVerticals(db, api.id, web.id, { phases: 'append' });
+    assert.equal(getActivePhase(db, web.id)?.id, a1.id);
+    assert.equal(getTask(db, mine.id).phase_id, a1.id);
+    assert.equal(getTask(db, oldDone.id).phase_id, null); // done cards untouched
+    assert.equal(getNextCard(db, web.id)?.id, mine.id);
+    moveTask(db, mine.id, 'done');
+    assert.equal(getNextCard(db, web.id)?.id, f.id);
+  });
+
+  it('a root nesting with another vertical\'s root → MergeError (segment-aware)', (t) => {
+    const { db, dir, ws, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    for (const sub of ['apps', 'apps/admin', 'apps/admin/x', 'apps/web', 'apps/webhooks']) mkdirSync(join(dir, sub));
+    createVertical(db, ws.id, 'Admin', join(dir, 'apps/admin'));
+    createVertical(db, ws.id, 'Hooks', join(dir, 'apps/webhooks'));
+    const before = snapshot(db);
+    assert.throws(() => mergeVerticals(db, api.id, web.id, { phases: 'append', root: join(dir, 'apps') }), MergeError);
+    assert.throws(
+      () => mergeVerticals(db, api.id, web.id, { phases: 'append', root: join(dir, 'apps/admin/x') }),
+      MergeError,
+    );
+    assert.deepEqual(snapshot(db), before);
+    const r = mergeVerticals(db, api.id, web.id, { phases: 'append', root: join(dir, 'apps/web') });
+    assert.equal(r.root_path, join(dir, 'apps/web'));
+  });
+
+  it('applies name and root, including taking from\'s own root', (t) => {
+    const { db, dir, ws, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const r1 = mergeVerticals(db, api.id, web.id, { phases: 'append', name: 'Platform', root: join(dir, 'api') });
+    assert.equal(r1.name, 'Platform');
+    assert.equal(r1.root_path, join(dir, 'api'));
+    assert.equal(findProject(db, join(dir, 'api'))?.id, web.id);
+    // a shared parent folder, with a trailing slash normalized
+    const other = createVertical(db, ws.id, 'Other', join(dir, 'other'));
+    const r2 = mergeVerticals(db, other.id, web.id, { phases: 'append', root: join(dir, 'shared') + '/' });
+    assert.equal(r2.root_path, join(dir, 'shared'));
+    assert.equal(r2.name, 'Platform');
+  });
+
+  it('root equal to the workspace root or another project\'s root → MergeError, nothing changed', (t) => {
+    const { db, dir, ws, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    createTask(db, api.id, 'c');
+    const other = createVertical(db, ws.id, 'Other', join(dir, 'other'));
+    const before = snapshot(db);
+    assert.throws(() => mergeVerticals(db, api.id, web.id, { phases: 'append', root: dir }), MergeError);
+    assert.throws(
+      () => mergeVerticals(db, api.id, web.id, { phases: 'append', root: other.root_path }),
+      MergeError,
+    );
+    assert.deepEqual(snapshot(db), before);
+  });
+
+  it('an in-flight card in either vertical → MergeError listing them, nothing changed', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    createTask(db, api.id, 'ok');
+    const busy = createTask(db, api.id, 'busy');
+    moveTask(db, busy.id, 'in_progress');
+    const review = createTask(db, web.id, 'review');
+    moveTask(db, review.id, 'in_review');
+    const before = snapshot(db);
+    assert.throws(
+      () => mergeVerticals(db, api.id, web.id, { phases: 'append' }),
+      (err: unknown) =>
+        err instanceof MergeError && err.cardIds.sort().join() === [busy.id, review.id].sort().join(),
+    );
+    assert.deepEqual(snapshot(db), before);
+  });
+
+  it('same id, non-vertical, or different workspaces → MergeError', (t) => {
+    const { db, dir, ws, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const dir2 = mkdtempSync(join(tmpdir(), 'kankan-merge2-'));
+    mkdirSync(join(dir2, 'x'));
+    t.after(() => rmSync(dir2, { recursive: true, force: true }));
+    const ws2 = getOrCreateProject(db, dir2, 'Other WS');
+    const x = createVertical(db, ws2.id, 'X', join(dir2, 'x'));
+    const before = snapshot(db);
+    assert.throws(() => mergeVerticals(db, web.id, web.id, { phases: 'append' }), MergeError);
+    assert.throws(() => mergeVerticals(db, ws.id, web.id, { phases: 'append' }), MergeError);
+    assert.throws(() => mergeVerticals(db, api.id, ws.id, { phases: 'append' }), MergeError);
+    assert.throws(() => mergeVerticals(db, x.id, web.id, { phases: 'append' }), MergeError);
+    assert.throws(() => mergeVerticals(db, api.id, 'nope', { phases: 'append' }), MergeError);
+    assert.deepEqual(snapshot(db), before);
+  });
+
+  it('a failure after the data writes rolls everything back', (t) => {
+    const { db, dir, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const a1 = createPhase(db, api.id, 'A1');
+    advancePhase(db, api.id);
+    const a = createTask(db, api.id, 'a', { phase_id: a1.id });
+    recordActivity(db, { project_id: api.id, task_id: a.id, tokens: 1, tokens_out: 1, lines_added: 1, lines_removed: 0, ms: 1 });
+    createSyncLink(db, { project_id: api.id, local_id: a.id, provider: 'github' });
+    createSubscription(db, { project_id: api.id, kind: 'webhook', event_filter: 'create', target: 'https://example.com/h' });
+    db.exec(`CREATE TRIGGER boom BEFORE INSERT ON task_events WHEN NEW.type = 'vertical_merge'
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;`);
+    const before = snapshot(db);
+    assert.throws(
+      () => mergeVerticals(db, api.id, web.id, { phases: 'append', name: 'P', root: join(dir, 'api') }),
+      /boom/,
+    );
+    assert.deepEqual(snapshot(db), before);
+  });
+
+  it('getNextCard on into sees the merged backlog', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const i1 = createTask(db, web.id, 'i1');
+    moveTask(db, i1.id, 'done');
+    const f1 = createTask(db, api.id, 'f1');
+    const f2 = createTask(db, api.id, 'f2', { depends_on: [f1.id] });
+    mergeVerticals(db, api.id, web.id, { phases: 'append' });
+    assert.equal(getNextCard(db, web.id)?.id, f1.id);
+    moveTask(db, f1.id, 'done');
+    assert.equal(getNextCard(db, web.id)?.id, f2.id);
   });
 });

@@ -107,6 +107,7 @@ export const EVENT_TYPES = [
   'phase_park',
   'vertical_create',
   'vertical_split',
+  'vertical_merge',
   'autopilot',
 ] as const;
 
