@@ -2283,4 +2283,95 @@ describe('splitIntoVerticals', () => {
     moveTask(db, dep.id, 'done');
     assert.equal(getNextCard(db, a.id)?.id, gated.id);
   });
+
+  it('phase copies follow SOURCE roadmap order, not card order', (t) => {
+    const { db, dir, source, cleanup } = splitSetup();
+    t.after(cleanup);
+    const p1 = createPhase(db, source.id, 'P1');
+    createPhase(db, source.id, 'P2');
+    const p3 = createPhase(db, source.id, 'P3');
+    const c3 = createTask(db, source.id, 'c3', { phase_id: p3.id }); // created first
+    const c1 = createTask(db, source.id, 'c1', { phase_id: p1.id });
+    const res = splitIntoVerticals(db, source.id, {
+      targets: [{ name: 'Web', root: join(dir, 'web') }],
+      assignments: { [c3.id]: 0, [c1.id]: 0 },
+    });
+    const w = res.verticals[0];
+    assert.deepEqual(getPhases(db, w.id).map((p) => [p.title, p.position]), [['P1', 1], ['P3', 2]]);
+    assert.equal(advancePhase(db, w.id)?.title, 'P1');
+    assert.equal(getNextCard(db, w.id)?.id, c1.id);
+  });
+
+  it('moved cards are positioned after an adopted target\'s existing cards, in source order', (t) => {
+    const { db, dir, source, cleanup } = splitSetup();
+    t.after(cleanup);
+    const webProj = getOrCreateProject(db, join(dir, 'web'), 'old-web');
+    const e1 = createTask(db, webProj.id, 'existing 1');
+    const e2 = createTask(db, webProj.id, 'existing 2');
+    const a = createTask(db, source.id, 'a');
+    const b = createTask(db, source.id, 'b');
+    const c = createTask(db, source.id, 'c');
+    const res = splitIntoVerticals(db, source.id, {
+      targets: [{ name: 'Web', root: join(dir, 'web') }],
+      assignments: { [a.id]: 0, [b.id]: 'stay', [c.id]: 0 },
+    });
+    const rows = db
+      .prepare('SELECT id, position FROM tasks WHERE project_id = ? ORDER BY position')
+      .all(res.verticals[0].id) as { id: string; position: number }[];
+    assert.deepEqual(rows.map((r) => r.id), [e1.id, e2.id, a.id, c.id]);
+    assert.equal(new Set(rows.map((r) => r.position)).size, rows.length); // no collisions
+    assert.deepEqual(rows.map((r) => r.position), [1, 2, 3, 4]);
+  });
+
+  it('pending outbox rows follow a moved card; processed rows stay', (t) => {
+    const { db, dir, source, cleanup } = splitSetup();
+    t.after(cleanup);
+    const a = createTask(db, source.id, 'a'); // 'create' outbox row
+    db.prepare(`UPDATE outbox SET status = 'processed' WHERE task_id = ?`).run(a.id);
+    moveTask(db, a.id, 'queued'); // 'move' outbox row, pending
+    const res = splitIntoVerticals(db, source.id, {
+      targets: [{ name: 'Web', root: join(dir, 'web') }],
+      assignments: { [a.id]: 0 },
+    });
+    const rows = db
+      .prepare('SELECT type, status, project_id FROM outbox WHERE task_id = ? ORDER BY id')
+      .all(a.id);
+    assert.deepEqual(rows, [
+      { type: 'create', status: 'processed', project_id: source.id },
+      { type: 'move', status: 'pending', project_id: res.verticals[0].id },
+    ]);
+  });
+
+  it('a failure after the card/history writes rolls everything back', (t) => {
+    const { db, dir, source, cleanup } = splitSetup();
+    t.after(cleanup);
+    const p1 = createPhase(db, source.id, 'P1');
+    advancePhase(db, source.id);
+    const a = createTask(db, source.id, 'a', { phase_id: p1.id });
+    const b = createTask(db, source.id, 'b');
+    recordActivity(db, { project_id: source.id, task_id: a.id, tokens: 1, tokens_out: 1, lines_added: 1, lines_removed: 0, ms: 1 });
+    createSyncLink(db, { project_id: source.id, local_id: a.id, provider: 'github' });
+    db.exec(`CREATE TRIGGER boom BEFORE INSERT ON task_events WHEN NEW.type = 'vertical_split'
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;`);
+    const snapshot = () =>
+      Object.fromEntries(
+        ['projects', 'tasks', 'card_activity', 'task_events', 'phases', 'sync_links', 'outbox'].map((tb) => [
+          tb,
+          db.prepare(`SELECT * FROM ${tb} ORDER BY rowid`).all(),
+        ]),
+      );
+    const before = snapshot();
+    assert.throws(
+      () =>
+        splitIntoVerticals(db, source.id, {
+          targets: [
+            { name: 'Mobile', root: join(dir, 'mobile') },
+            { name: 'Web', root: join(dir, 'web') },
+          ],
+          assignments: { [a.id]: 0, [b.id]: 1 },
+        }),
+      /boom/,
+    );
+    assert.deepEqual(snapshot(), before);
+  });
 });

@@ -269,7 +269,7 @@ export function splitIntoVerticals(
     const source = getProject(db, sourceId);
     if (targets.length === 0) throw new SplitError('at least one target is required');
     const cards = db
-      .prepare('SELECT id, lane, phase_id FROM tasks WHERE project_id = ?')
+      .prepare('SELECT id, lane, phase_id FROM tasks WHERE project_id = ? ORDER BY position, rowid')
       .all(sourceId) as Pick<Task, 'id' | 'lane' | 'phase_id'>[];
     const open = cards.filter((c) => c.lane !== 'done');
     const onSource = new Set(cards.map((c) => c.id));
@@ -292,35 +292,54 @@ export function splitIntoVerticals(
     const workspaceId = source.parent_id ?? source.id;
     const verticals = targets.map((t) => createVertical(db, workspaceId, t.name, t.root));
 
-    const phaseCopies = new Map<string, string>(); // `${phaseId}|${projectId}` → copy id
-    const copyPhase = (phaseId: string, projectId: string): string => {
-      const key = `${phaseId}|${projectId}`;
-      const hit = phaseCopies.get(key);
-      if (hit) return hit;
-      const src = getPhase(db, phaseId);
-      const status: PhaseStatus =
-        src.status === 'active' && getActivePhase(db, projectId) ? 'planned' : src.status;
-      const max = db
-        .prepare('SELECT MAX(position) AS max FROM phases WHERE project_id = ?')
-        .get(projectId) as { max: number | null };
-      const id = shortId();
-      const ts = now();
-      db.prepare(
-        `INSERT INTO phases (id, project_id, title, goal, plan, status, position, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(id, projectId, src.title, src.goal, src.plan, status, (max.max ?? 0) + 1, ts, ts);
-      phaseCopies.set(key, id);
-      return id;
-    };
+    const maxPos = (table: 'phases' | 'tasks', projectId: string) =>
+      (db.prepare(`SELECT MAX(position) AS max FROM ${table} WHERE project_id = ?`).get(projectId) as {
+        max: number | null;
+      }).max ?? 0;
 
+    // Phase copies: collect every (phase, target) pair first, then create each
+    // target's copies in SOURCE roadmap order so its phase order matches.
+    const phaseCopies = new Map<string, string>(); // `${phaseId}|${projectId}` → copy id
+    const sourcePhases = db
+      .prepare('SELECT * FROM phases WHERE project_id = ? ORDER BY position')
+      .all(sourceId) as Phase[];
+    for (const v of verticals) {
+      const needed = new Set(
+        moving.filter((c) => c.phase_id && verticals[assignments[c.id] as number] === v).map((c) => c.phase_id),
+      );
+      for (const src of sourcePhases) {
+        if (!needed.has(src.id)) continue;
+        const status: PhaseStatus =
+          src.status === 'active' && getActivePhase(db, v.id) ? 'planned' : src.status;
+        const id = shortId();
+        const ts = now();
+        db.prepare(
+          `INSERT INTO phases (id, project_id, title, goal, plan, status, position, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(id, v.id, src.title, src.goal, src.plan, status, maxPos('phases', v.id) + 1, ts, ts);
+        phaseCopies.set(`${src.id}|${v.id}`, id);
+      }
+    }
+
+    // Moved cards land after each target's existing cards, in their source order.
+    const nextPos = new Map(verticals.map((v) => [v.id, maxPos('tasks', v.id)]));
     const moved: Record<string, string> = {};
     for (const c of moving) {
       const target = verticals[assignments[c.id] as number].id;
-      const phaseId = c.phase_id ? copyPhase(c.phase_id, target) : null;
-      db.prepare('UPDATE tasks SET project_id = ?, phase_id = ? WHERE id = ?').run(target, phaseId, c.id);
+      const phaseId = c.phase_id ? phaseCopies.get(`${c.phase_id}|${target}`)! : null;
+      const position = nextPos.get(target)! + 1;
+      nextPos.set(target, position);
+      db.prepare('UPDATE tasks SET project_id = ?, phase_id = ?, position = ? WHERE id = ?').run(
+        target,
+        phaseId,
+        position,
+        c.id,
+      );
       db.prepare('UPDATE card_activity SET project_id = ? WHERE task_id = ?').run(target, c.id);
       db.prepare('UPDATE task_events SET project_id = ? WHERE task_id = ?').run(target, c.id);
       db.prepare('UPDATE sync_links SET project_id = ? WHERE local_id = ?').run(target, c.id);
+      // undelivered outbox rows follow the card; processed rows stay as history
+      db.prepare(`UPDATE outbox SET project_id = ? WHERE task_id = ? AND status = 'pending'`).run(target, c.id);
       moved[c.id] = target;
     }
 
