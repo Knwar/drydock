@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { basename, resolve, sep } from 'node:path';
 import type { DB } from './db.js';
 import { buildWhere } from './sql-util.js';
 import {
@@ -411,6 +411,12 @@ export function mergeVerticals(
       const owner = findProject(db, root);
       if (owner && owner.id !== fromId && owner.id !== intoId)
         throw new MergeError(`project already exists at ${root}`);
+      // segment-aware: apps is an ancestor of apps/admin, apps/web is not of apps/webhooks
+      const nests = (a: string, b: string) => b.startsWith(a.endsWith(sep) ? a : a + sep);
+      const nested = listVerticals(db, workspace.id).find(
+        (v) => v.id !== fromId && v.id !== intoId && (nests(root!, v.root_path) || nests(v.root_path, root!)),
+      );
+      if (nested) throw new MergeError(`root ${root} nests with ${nested.name}'s root ${nested.root_path}`);
     }
 
     // Phases first, so folded cards can pick up into's active phase.
@@ -434,7 +440,12 @@ export function mergeVerticals(
         );
       }
     } else {
-      db.prepare('UPDATE tasks SET phase_id = ? WHERE project_id = ?').run(intoActive?.id ?? null, fromId);
+      // open cards join into's active phase; done cards drop their (deleted) phase
+      db.prepare(`UPDATE tasks SET phase_id = ? WHERE project_id = ? AND lane != 'done'`).run(
+        intoActive?.id ?? null,
+        fromId,
+      );
+      db.prepare(`UPDATE tasks SET phase_id = NULL WHERE project_id = ? AND lane = 'done'`).run(fromId);
       db.prepare('DELETE FROM phases WHERE project_id = ?').run(fromId);
     }
 
@@ -448,6 +459,16 @@ export function mergeVerticals(
       .all(fromId) as { id: string }[];
     for (const c of cards)
       db.prepare('UPDATE tasks SET project_id = ?, position = ? WHERE id = ?').run(intoId, ++pos, c.id);
+    // On a phased board a phaseless open card is never picked: give every open
+    // phaseless card on into the active phase, else the first planned one.
+    const home = (getActivePhase(db, intoId) ??
+      db
+        .prepare(`SELECT * FROM phases WHERE project_id = ? AND status = 'planned' ORDER BY position LIMIT 1`)
+        .get(intoId)) as Phase | undefined;
+    if (home)
+      db.prepare(
+        `UPDATE tasks SET phase_id = ? WHERE project_id = ? AND phase_id IS NULL AND lane != 'done'`,
+      ).run(home.id, intoId);
     db.prepare('UPDATE card_activity SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
     db.prepare('UPDATE task_events SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
     db.prepare('UPDATE sync_links SET project_id = ? WHERE project_id = ?').run(intoId, fromId);

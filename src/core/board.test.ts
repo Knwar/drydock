@@ -2499,17 +2499,96 @@ describe('mergeVerticals', () => {
     assert.deepEqual(getPhases(db, web.id).map((p) => p.id), [own.id]);
   });
 
-  it('fold: into without an active phase → from cards get a null phase', (t) => {
+  it('fold into a board with only planned phases → open cards get the first planned phase; done cards null', (t) => {
     const { db, web, api, cleanup } = mergeSetup();
     t.after(cleanup);
-    createPhase(db, web.id, 'Planned only');
+    const p1 = createPhase(db, web.id, 'P1');
+    createPhase(db, web.id, 'P2');
     const a1 = createPhase(db, api.id, 'A1');
     advancePhase(db, api.id);
     const c = createTask(db, api.id, 'c', { phase_id: a1.id });
+    const done = createTask(db, api.id, 'done', { phase_id: a1.id });
+    moveTask(db, done.id, 'done');
+    mergeVerticals(db, api.id, web.id, { phases: 'fold' });
+    assert.equal(getTask(db, c.id).phase_id, p1.id);
+    assert.equal(getTask(db, done.id).phase_id, null);
+    assert.equal(count(db, 'phases', 'project_id', api.id), 0);
+    assert.equal(count(db, 'phases', 'project_id', web.id), 2);
+    assert.equal(getNextCard(db, web.id)?.id, c.id);
+    assert.equal(advancePhase(db, web.id)?.id, p1.id);
+    assert.equal(getNextCard(db, web.id)?.id, c.id);
+  });
+
+  it('fold: done cards of from lose their phase, open cards join into\'s active phase', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const own = createPhase(db, web.id, 'Own');
+    advancePhase(db, web.id);
+    const a1 = createPhase(db, api.id, 'A1');
+    const open = createTask(db, api.id, 'open', { phase_id: a1.id });
+    const done = createTask(db, api.id, 'done', { phase_id: a1.id });
+    moveTask(db, done.id, 'done');
+    mergeVerticals(db, api.id, web.id, { phases: 'fold' });
+    assert.equal(getTask(db, open.id).phase_id, own.id);
+    assert.equal(getTask(db, done.id).phase_id, null);
+  });
+
+  it('fold into a board whose phases are all done → open cards stay phaseless', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    createPhase(db, web.id, 'P1');
+    advancePhase(db, web.id);
+    advancePhase(db, web.id); // P1 done, nothing left
+    const c = createTask(db, api.id, 'c');
     mergeVerticals(db, api.id, web.id, { phases: 'fold' });
     assert.equal(getTask(db, c.id).phase_id, null);
-    assert.equal(count(db, 'phases', 'project_id', api.id), 0);
-    assert.equal(count(db, 'phases', 'project_id', web.id), 1);
+    assert.equal(getNextCard(db, web.id)?.id, c.id);
+  });
+
+  it('append a flat from into a phased into → from\'s cards join into\'s active phase', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const own = createPhase(db, web.id, 'Own');
+    advancePhase(db, web.id);
+    const f = createTask(db, api.id, 'f');
+    mergeVerticals(db, api.id, web.id, { phases: 'append' });
+    assert.equal(getTask(db, f.id).phase_id, own.id);
+    assert.equal(getNextCard(db, web.id)?.id, f.id);
+  });
+
+  it('append a phased from into a flat into → into\'s own phaseless backlog stays pickable', (t) => {
+    const { db, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    const mine = createTask(db, web.id, 'mine');
+    const oldDone = createTask(db, web.id, 'old done');
+    moveTask(db, oldDone.id, 'done');
+    const a1 = createPhase(db, api.id, 'A1');
+    advancePhase(db, api.id);
+    const f = createTask(db, api.id, 'f', { phase_id: a1.id });
+    mergeVerticals(db, api.id, web.id, { phases: 'append' });
+    assert.equal(getActivePhase(db, web.id)?.id, a1.id);
+    assert.equal(getTask(db, mine.id).phase_id, a1.id);
+    assert.equal(getTask(db, oldDone.id).phase_id, null); // done cards untouched
+    assert.equal(getNextCard(db, web.id)?.id, mine.id);
+    moveTask(db, mine.id, 'done');
+    assert.equal(getNextCard(db, web.id)?.id, f.id);
+  });
+
+  it('a root nesting with another vertical\'s root → MergeError (segment-aware)', (t) => {
+    const { db, dir, ws, web, api, cleanup } = mergeSetup();
+    t.after(cleanup);
+    for (const sub of ['apps', 'apps/admin', 'apps/admin/x', 'apps/web', 'apps/webhooks']) mkdirSync(join(dir, sub));
+    createVertical(db, ws.id, 'Admin', join(dir, 'apps/admin'));
+    createVertical(db, ws.id, 'Hooks', join(dir, 'apps/webhooks'));
+    const before = snapshot(db);
+    assert.throws(() => mergeVerticals(db, api.id, web.id, { phases: 'append', root: join(dir, 'apps') }), MergeError);
+    assert.throws(
+      () => mergeVerticals(db, api.id, web.id, { phases: 'append', root: join(dir, 'apps/admin/x') }),
+      MergeError,
+    );
+    assert.deepEqual(snapshot(db), before);
+    const r = mergeVerticals(db, api.id, web.id, { phases: 'append', root: join(dir, 'apps/web') });
+    assert.equal(r.root_path, join(dir, 'apps/web'));
   });
 
   it('applies name and root, including taking from\'s own root', (t) => {
