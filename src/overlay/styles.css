@@ -339,6 +339,7 @@ footer {
 }
 #agent-status.idle { color: var(--dim); font-weight: 400; }
 #agent-status.thinking { color: #e5c07b; }
+#agent-status.needs-you { color: #e06c75; font-weight: 600; }
 #agent-status .who { color: var(--text); }
 
 #teams-btn {

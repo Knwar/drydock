@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { WebSocket } from 'ws';
 import { startDaemon, type TestDaemon } from './daemon/test-daemon.js';
 
 // Hook project resolution: a KANKAN_PROJECT_ID env binding wins when valid,
@@ -153,6 +154,75 @@ describe('hook project resolution', () => {
     assert.match(r.stdout, /vertical "api" of workspace/);
   });
 
+  // run on-notify.js asynchronously so the ws client keeps receiving meanwhile
+  const notify = (
+    cwd: string,
+    projectId?: string,
+    extra: Record<string, string> = { message: 'Claude needs your permission to use Bash' },
+  ) =>
+    new Promise<number | null>((resolve) => {
+      const child = spawn(process.execPath, [join(HOOKS, 'on-notify.js')], { cwd, env: env(projectId) });
+      child.on('exit', (code) => resolve(code));
+      child.stdin.end(JSON.stringify({ hook_event_name: 'Notification', cwd, ...extra }));
+    });
+  const statusSocket = async () => {
+    const ws = new WebSocket(`${daemon!.base.replace('http', 'ws')}/ws`);
+    const statuses: { agent: string; verb: string; detail: string }[] = [];
+    ws.on('message', (raw) => {
+      const msg = JSON.parse(String(raw));
+      if (msg.type === 'status') statuses.push(msg.status);
+    });
+    await new Promise((resolve, reject) => ws.once('open', resolve).once('error', reject));
+    return { ws, statuses };
+  };
+
+  it("on-notify: a vertical-bound session broadcasts 'needs you' as the orchestrator", async () => {
+    const { ws, statuses } = await statusSocket();
+    try {
+      assert.equal(await notify(wsRoot, verticalId), 0);
+      for (let i = 0; i < 50 && statuses.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+      assert.equal(statuses.length, 1, JSON.stringify(statuses));
+      assert.equal(statuses[0].verb, 'needs you');
+      assert.equal(statuses[0].agent, 'orchestrator');
+      assert.equal(statuses[0].detail, 'Claude needs your permission to use Bash');
+    } finally {
+      ws.close();
+    }
+  });
+
+  for (const [label, extra, verb] of [
+    ['idle_prompt type', { notification_type: 'idle_prompt', message: 'Claude is waiting for your input' }, 'idle'],
+    ['message-only idle text', { message: 'Claude is waiting for your input' }, 'idle'],
+    ['permission_prompt type', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' }, 'needs you'],
+    ['message-only permission text', { message: 'Claude needs your permission to use Bash' }, 'needs you'],
+  ] as const) {
+    it(`on-notify: ${label} → '${verb}'`, async () => {
+      const { ws, statuses } = await statusSocket();
+      try {
+        assert.equal(await notify(wsRoot, verticalId, extra), 0);
+        for (let i = 0; i < 50 && statuses.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+        assert.equal(statuses.length, 1, JSON.stringify(statuses));
+        assert.equal(statuses[0].verb, verb);
+        if (verb === 'idle') assert.equal(statuses[0].detail, 'waiting for user');
+      } finally {
+        ws.close();
+      }
+    });
+  }
+
+  it('on-notify: no resolvable project exits 0 and broadcasts nothing', async () => {
+    const stray = mkdtempSync(join(tmpdir(), 'kankan-notify-'));
+    const { ws, statuses } = await statusSocket();
+    try {
+      assert.equal(await notify(stray), 0);
+      await new Promise((r) => setTimeout(r, 500));
+      assert.deepEqual(statuses, []);
+    } finally {
+      ws.close();
+      rmSync(stray, { recursive: true, force: true });
+    }
+  });
+
   it('contextFor keeps the .trees cardId under an env binding', () => {
     const lib = pathToFileURL(join(HOOKS, 'lib.js')).href;
     const script = `const { contextFor } = await import(${JSON.stringify(lib)});
@@ -235,6 +305,30 @@ describe('init-project.sh: first commit + registration', { timeout: 180_000 }, (
     const r = init(target);
     assert.equal(r.status, 0, r.stderr);
     assert.equal(readFileSync(join(target, '.gitignore'), 'utf8'), custom);
+  });
+
+  it('existing settings without a Notification key gain the on-notify.js entry', () => {
+    const target = join(tmp, 'own-settings');
+    mkdirSync(join(target, '.claude'), { recursive: true });
+    const mine = {
+      model: 'opus',
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo mine' }] }] },
+    };
+    writeFileSync(join(target, '.claude', 'settings.json'), JSON.stringify(mine));
+    const r = init(target);
+    assert.equal(r.status, 0, r.stderr);
+    const settings = JSON.parse(readFileSync(join(target, '.claude', 'settings.json'), 'utf8'));
+    assert.ok(existsSync(join(target, '.claude', 'hooks', 'on-notify.js')));
+    assert.ok(
+      settings.hooks.Notification?.some((e: { hooks: { command: string }[] }) =>
+        e.hooks.some((h) => h.command.includes('on-notify.js')),
+      ),
+      JSON.stringify(settings.hooks),
+    );
+    assert.equal(settings.model, 'opus');
+    assert.ok(
+      settings.hooks.Stop.some((e: { hooks: { command: string }[] }) => e.hooks.some((h) => h.command === 'echo mine')),
+    );
   });
 
   it('a path with & and a space registers under the right root', async () => {
