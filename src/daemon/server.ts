@@ -18,6 +18,7 @@ import { Dispatcher } from './dispatcher.js';
 import { sessionCwd, sessionEnv } from './pty-env.js';
 import { ptyGroups, shellInfo, stillOurs, ttyGroups, type ShellInfo } from './pty-groups.js';
 import { SessionStates, type SessionView, type StatusEntry } from './session-state.js';
+import { suggestVerticals } from './vertical-suggest.js';
 
 const PORT = Number(process.env.PORT ?? 7890);
 // Bind loopback by DEFAULT so the daemon (incl. the unauthenticated overlay
@@ -809,6 +810,17 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       };
     })();
     return json(res, 200, body);
+  }
+
+  const suggestMatch = pathname.match(/^\/project\/([^/]+)\/vertical-suggestions$/);
+  if (method === 'GET' && suggestMatch) {
+    const pid = suggestMatch[1];
+    const root = projectRoot(pid);
+    if (!root) return json(res, 404, { error: 'unknown project' });
+    // only a standalone project (no verticals, not a vertical itself) gets suggestions
+    const { workspace, verticals } = board.getWorkspace(db, pid);
+    if (workspace.id !== pid || verticals.length > 0) return json(res, 200, { suggestions: [] });
+    return json(res, 200, { suggestions: suggestVerticals(root) });
   }
 
   const projMatch = pathname.match(/^\/project\/([^/]+)(?:\/(repo|autopilot))?$/);
