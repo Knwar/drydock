@@ -59,7 +59,7 @@ function getPtySession(projectId: string, root: string): PtySession {
   const proc = ptySpawn!(shell, [], {
     name: 'xterm-256color',
     cwd: sessionCwd(root),
-    env: sessionEnv(process.env, projectId),
+    env: sessionEnv(process.env, projectId, `http://localhost:${PORT}`),
     cols: 80,
     rows: 24,
   });

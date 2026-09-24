@@ -16,14 +16,20 @@ export function sessionCwd(rootPath: string): string {
   }
 }
 
-/** The terminal's env: base minus undefined values, with the vertical bound via
- *  KANKAN_PROJECT_ID (overriding any inherited binding) and TERM set. */
-export function sessionEnv(base: NodeJS.ProcessEnv, projectId: string): Record<string, string> {
+/** Daemon-only vars that must not leak into project shells (e.g. PORT would make
+ *  a dev server try to bind the daemon's port). */
+const DAEMON_ONLY = new Set(['PORT', 'HOST', 'DB_PATH', 'KANKAN_TERMINAL', 'KANKAN_DISPATCHER', 'KANKAN_STRICT_TARGETS']);
+
+/** The terminal's env: base minus undefined values and daemon-only vars, with the
+ *  vertical bound via KANKAN_PROJECT_ID, DAEMON_URL pointing at this daemon (both
+ *  overriding any inherited value) and TERM set. */
+export function sessionEnv(base: NodeJS.ProcessEnv, projectId: string, daemonUrl: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) {
-    if (v !== undefined && k !== 'KANKAN_PROJECT_ID') env[k] = v;
+    if (v !== undefined && !DAEMON_ONLY.has(k)) env[k] = v;
   }
   env.TERM = 'xterm-256color';
   env.KANKAN_PROJECT_ID = projectId;
+  env.DAEMON_URL = daemonUrl;
   return env;
 }
