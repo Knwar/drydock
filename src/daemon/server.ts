@@ -14,6 +14,7 @@ import { openDb } from '../core/db.js';
 import type { Project, Task } from '../core/types.js';
 import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
+import { sessionCwd, sessionEnv } from './pty-env.js';
 
 const PORT = Number(process.env.PORT ?? 7890);
 // Bind loopback by DEFAULT so the daemon (incl. the unauthenticated overlay
@@ -49,15 +50,16 @@ interface PtySession { proc: any; buffer: string; clients: Set<WebSocket> }
 const PTY_BUFFER_CAP = 200_000; // scrollback replayed to (re)attaching clients
 const ptySessions = new Map<string, PtySession>();
 
-/** One persistent shell per project, cwd'd at its root; survives page reloads. */
+/** One persistent shell per project, cwd'd at its git toplevel with
+ *  KANKAN_PROJECT_ID bound; survives page reloads. */
 function getPtySession(projectId: string, root: string): PtySession {
   const existing = ptySessions.get(projectId);
   if (existing) return existing;
   const shell = process.env.SHELL ?? '/bin/bash';
   const proc = ptySpawn!(shell, [], {
     name: 'xterm-256color',
-    cwd: root,
-    env: { ...process.env, TERM: 'xterm-256color' },
+    cwd: sessionCwd(root),
+    env: sessionEnv(process.env, projectId),
     cols: 80,
     rows: 24,
   });
