@@ -114,6 +114,19 @@ describe('migrate', () => {
     assert.doesNotThrow(() => migrate(db)); // idempotent
   });
 
+  it('adds avatar to a legacy team_members table, keeping existing rows', (t) => {
+    const db = new Database(':memory:');
+    t.after(() => db.close());
+    db.exec(`CREATE TABLE team_members (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, skill TEXT, color TEXT, created_at INTEGER NOT NULL
+    )`);
+    db.prepare('INSERT INTO team_members (id, name, created_at) VALUES (?, ?, ?)').run('m1', 'Ada', 1);
+    migrate(db);
+    const row = db.prepare('SELECT name, avatar FROM team_members WHERE id = ?').get('m1') as { name: string; avatar: string | null };
+    assert.deepEqual({ ...row }, { name: 'Ada', avatar: null });
+    assert.doesNotThrow(() => migrate(db)); // idempotent
+  });
+
   it('fresh db: projects.autopilot defaults to 0', (t) => {
     const db = openDb();
     t.after(() => db.close());

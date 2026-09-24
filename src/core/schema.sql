@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS team_members (  -- named agents + their assigned skil
   name        TEXT NOT NULL,
   skill       TEXT,                       -- assigned skill name (persona), or null
   color       TEXT,                       -- hex for the UI chip
+  avatar      TEXT,                       -- uploaded image file name under <data dir>/avatars, or null
   created_at  INTEGER NOT NULL
 );
 

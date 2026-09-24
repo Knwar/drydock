@@ -135,6 +135,7 @@ export interface TeamMember {
   name: string;
   skill: string | null; // assigned skill name (persona)
   color: string | null;
+  avatar: string | null; // uploaded image file name (served at /avatars/<name>), or null
   created_at: number;
 }
 
