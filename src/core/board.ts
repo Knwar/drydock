@@ -162,10 +162,14 @@ function getProject(db: DB, projectId: string): Project {
   return project;
 }
 
-/** Add a vertical (child project) under a top-level workspace. Its root_path is
- *  its scope folder — a monorepo subfolder or a separate repo. An existing
- *  childless top-level project at that path is adopted rather than duplicated. */
-export function createVertical(db: DB, workspaceId: string, name: string, rootPath: string): Project {
+/** The checks createVertical enforces, side-effect free — run them before any
+ *  work (e.g. installing the kit) that must not happen for a rejected vertical.
+ *  Returns the workspace, the normalized root and any adoptable project there. */
+export function validateVertical(
+  db: DB,
+  workspaceId: string,
+  rootPath: string,
+): { workspace: Project; root: string; existing: Project | undefined } {
   const workspace = getProject(db, workspaceId);
   if (workspace.parent_id !== null)
     throw new Error(`project ${workspaceId} is a vertical; verticals cannot have verticals`);
@@ -179,15 +183,23 @@ export function createVertical(db: DB, workspaceId: string, name: string, rootPa
   if (!isDir) throw new Error(`not an existing directory: ${root}`);
   if (root === workspace.root_path)
     throw new Error(`vertical root_path must differ from the workspace's own root_path`);
+  const existing = findProject(db, root);
+  if (existing) {
+    const hasChildren = db.prepare('SELECT 1 FROM projects WHERE parent_id = ? LIMIT 1').get(existing.id);
+    if (existing.parent_id !== null || hasChildren)
+      throw new Error(`project already exists at ${root} and cannot be adopted as a vertical`);
+  }
+  return { workspace, root, existing: existing ?? undefined };
+}
+
+/** Add a vertical (child project) under a top-level workspace. Its root_path is
+ *  its scope folder — a monorepo subfolder or a separate repo. An existing
+ *  childless top-level project at that path is adopted rather than duplicated. */
+export function createVertical(db: DB, workspaceId: string, name: string, rootPath: string): Project {
   return db.transaction(() => {
-    const existing = findProject(db, root);
+    const { workspace, root, existing } = validateVertical(db, workspaceId, rootPath);
     let vertical: Project;
     if (existing) {
-      const hasChildren = db
-        .prepare('SELECT 1 FROM projects WHERE parent_id = ? LIMIT 1')
-        .get(existing.id);
-      if (existing.parent_id !== null || hasChildren)
-        throw new Error(`project already exists at ${root} and cannot be adopted as a vertical`);
       db.prepare('UPDATE projects SET parent_id = ?, name = ? WHERE id = ?').run(
         workspace.id,
         name,

@@ -1,9 +1,37 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
 import { startDaemon, type TestDaemon } from './test-daemon.js';
+
+// Git in temp repos must not depend on the user's global config (identity, signing).
+const GIT_ENV = {
+  GIT_AUTHOR_NAME: 'kankan-test',
+  GIT_AUTHOR_EMAIL: 'test@example.invalid',
+  GIT_COMMITTER_NAME: 'kankan-test',
+  GIT_COMMITTER_EMAIL: 'test@example.invalid',
+  GIT_CONFIG_COUNT: '1',
+  GIT_CONFIG_KEY_0: 'commit.gpgsign',
+  GIT_CONFIG_VALUE_0: 'false',
+};
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
+    cwd,
+    env: { ...process.env, ...GIT_ENV },
+    stdio: 'ignore',
+  });
+/** A git repo with one commit (so init has nothing to commit). */
+function makeRepo(root: string) {
+  mkdirSync(root, { recursive: true });
+  git(root, 'init', '-q');
+  writeFileSync(join(root, 'README.md'), 'x\n');
+  git(root, 'add', '-A');
+  git(root, 'commit', '-qm', 'init');
+}
 
 // End-to-end coverage for the workspace/vertical HTTP routes (+ the /phase/:id
 // position guard). Spawns the REAL daemon on a random port with a temp DB,
@@ -29,7 +57,8 @@ describe('daemon workspace/vertical routes', () => {
 
   before(async () => {
     daemon = await startDaemon({
-      env: { HOST: '127.0.0.1', KANKAN_DISPATCHER: '0', KANKAN_TERMINAL: '' },
+      // GIT_ENV: init (run by POST /vertical for separate repos) may commit
+      env: { HOST: '127.0.0.1', KANKAN_DISPATCHER: '0', KANKAN_TERMINAL: '', ...GIT_ENV },
     });
     port = daemon.port;
     dir = daemon.dbDir;
@@ -162,5 +191,107 @@ describe('daemon workspace/vertical routes', () => {
     ws.close();
     assert.equal(msg.project_id, ws2);
     assert.deepEqual(msg.verticals, []);
+  });
+});
+
+describe('POST /vertical kit install (monorepo vs separate repo)', () => {
+  const INIT_TIMEOUT = 120_000; // init may build dist/ on first run
+  let daemon: TestDaemon | undefined;
+  let tmp: string;
+  let wsRoot: string;
+  let workspaceId: string;
+  const post = (path: string, body: unknown) =>
+    fetch(`${daemon!.base}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  const projects = async () =>
+    (await (await fetch(`${daemon!.base}/projects`)).json()) as { id: string; name: string; parent_id: string | null }[];
+
+  before(async () => {
+    daemon = await startDaemon({ env: GIT_ENV });
+    tmp = mkdtempSync(join(tmpdir(), 'kankan-vertical-kit-'));
+    wsRoot = join(tmp, 'workspace');
+    makeRepo(wsRoot);
+    writeFileSync(join(wsRoot, '.mcp.json'), '{}');
+    const res = await fetch(`${daemon.base}/project?root=${encodeURIComponent(wsRoot)}`);
+    workspaceId = ((await res.json()) as { project_id: string }).project_id;
+  });
+
+  after(async () => {
+    await daemon?.stop();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('monorepo subfolder → kit shared, nothing written into the subfolder', async () => {
+    const sub = join(wsRoot, 'api');
+    mkdirSync(sub);
+    const res = await post('/vertical', { workspace_id: workspaceId, name: 'api', root: sub });
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as { kit: string }).kit, 'shared');
+    assert.equal(existsSync(join(sub, '.mcp.json')), false);
+  });
+
+  it('separate repo → kit installed, adopted as a vertical without a duplicate project', { timeout: INIT_TIMEOUT }, async () => {
+    const sep = join(tmp, 'web');
+    makeRepo(sep);
+    const res = await post('/vertical', { workspace_id: workspaceId, name: 'web', root: sep });
+    assert.equal(res.status, 200, await res.clone().text());
+    const body = (await res.json()) as { project_id: string; parent_id: string; kit: string };
+    assert.equal(body.kit, 'installed');
+    assert.equal(body.parent_id, workspaceId);
+    assert.ok(existsSync(join(sep, '.mcp.json')));
+    assert.ok(existsSync(join(sep, '.claude', 'hooks', 'lib.js')));
+    // init was pointed at THIS test daemon, not a real one on :7890
+    assert.match(readFileSync(join(sep, '.mcp.json'), 'utf8'), new RegExp(`localhost:${daemon!.port}`));
+    const view = (await (await fetch(`${daemon!.base}/workspace?project=${workspaceId}`)).json()) as {
+      verticals: { id: string }[];
+    };
+    assert.ok(view.verticals.some((v) => v.id === body.project_id));
+    // init registered it as 'web' (folder basename); adoption must not leave a second one
+    const rows = (await projects()).filter((r) => r.name === 'web');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, body.project_id);
+    assert.equal(rows[0].parent_id, workspaceId);
+  });
+
+  it('subfolder of another repo → kit skipped, nothing written into that repo', async () => {
+    const other = join(tmp, 'other');
+    makeRepo(other);
+    const sub = join(other, 'pkg');
+    mkdirSync(sub);
+    const res = await post('/vertical', { workspace_id: workspaceId, name: 'pkg', root: sub });
+    assert.equal(res.status, 200);
+    assert.match(((await res.json()) as { kit: string }).kit, /^skipped: folder is inside another repo/);
+    assert.equal(existsSync(join(other, '.mcp.json')), false);
+    assert.equal(existsSync(join(sub, '.mcp.json')), false);
+  });
+
+  it('a vertical as workspace_id → 400 before any kit is written (validation precedes init)', async () => {
+    const sub = join(wsRoot, 'svc');
+    mkdirSync(sub);
+    const vRes = await post('/vertical', { workspace_id: workspaceId, name: 'svc', root: sub });
+    const verticalId = ((await vRes.json()) as { project_id: string }).project_id;
+    const sep = join(tmp, 'mobile');
+    makeRepo(sep);
+    const res = await post('/vertical', { workspace_id: verticalId, name: 'mobile', root: sep });
+    assert.equal(res.status, 400);
+    assert.match(((await res.json()) as { error: string }).error, /verticals cannot have verticals/);
+    assert.equal(existsSync(join(sep, '.mcp.json')), false);
+    assert.equal(existsSync(join(sep, '.claude')), false);
+  });
+
+  it('init failure → 500 with stderr tail, no vertical created', { timeout: INIT_TIMEOUT }, async () => {
+    // The kankan checkout is its own git toplevel, and init refuses to bootstrap
+    // kankan into itself — a portable, guaranteed init failure.
+    const knwrRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+    const before = (await projects()).length;
+    const res = await post('/vertical', { workspace_id: workspaceId, name: 'self', root: knwrRoot });
+    assert.equal(res.status, 500);
+    const body = (await res.json()) as { error: string; detail: string };
+    assert.equal(body.error, 'kit install failed');
+    assert.match(body.detail, /refusing to bootstrap knwr into itself/);
+    assert.equal((await projects()).length, before);
   });
 });
