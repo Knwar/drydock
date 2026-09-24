@@ -383,15 +383,22 @@ export function resolveBlocker(db: DB, taskId: string, note?: string): Task {
  * from any other card's depends_on so nothing is left blocked on a ghost.
  * Irreversible — for mistakes and throwaways.
  */
-export function deleteTask(db: DB, taskId: string): { id: string; title: string; project_id: string } {
+export function deleteTask(
+  db: DB,
+  taskId: string,
+): { id: string; title: string; project_id: string; unblocked: string[] } {
   const task = getTask(db, taskId);
+  const unblocked: string[] = [];
   db.transaction(() => {
-    // unblock dependents: drop this id from their depends_on arrays
+    // unblock dependents on every board (depends_on may cross boards): drop this id from their depends_on arrays
     const dependents = db
-      .prepare(`SELECT id, depends_on FROM tasks WHERE project_id = ? AND depends_on LIKE ?`)
-      .all(task.project_id, `%"${taskId}"%`) as { id: string; depends_on: string }[];
+      .prepare(`SELECT id, depends_on FROM tasks WHERE depends_on LIKE ? AND id != ?`)
+      .all(`%"${taskId}"%`, taskId) as { id: string; depends_on: string }[];
     for (const d of dependents) {
-      const deps = (JSON.parse(d.depends_on) as string[]).filter((x) => x !== taskId);
+      const before = JSON.parse(d.depends_on) as string[];
+      const deps = before.filter((x) => x !== taskId);
+      if (deps.length === before.length) continue;
+      unblocked.push(d.id);
       db.prepare('UPDATE tasks SET depends_on = ? WHERE id = ?').run(deps.length ? JSON.stringify(deps) : null, d.id);
     }
     db.prepare('DELETE FROM reviews WHERE task_id = ?').run(taskId);
@@ -399,7 +406,7 @@ export function deleteTask(db: DB, taskId: string): { id: string; title: string;
     db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
     appendEvent(db, { project_id: task.project_id, type: 'delete', payload: { id: taskId, title: task.title } });
   })();
-  return { id: taskId, title: task.title, project_id: task.project_id };
+  return { id: taskId, title: task.title, project_id: task.project_id, unblocked };
 }
 
 /**
