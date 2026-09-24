@@ -1030,11 +1030,12 @@ async function refreshCardModal() {
   const res = await fetch(`/task/${openCardId}`);
   if (!res.ok) return closeCardModal();
   const task = await res.json();
+  await teamCacheLoad;
   document.getElementById('card-title').textContent = task.title;
   const meta = [
     task.tag && `${team(task.tag).name} team`,
     LANE_NAME(task.lane),
-    task.assigned_agent && `● ${task.assigned_agent}`,
+    task.assigned_agent && { agent: task.assigned_agent },
     task.skill && `✦ ${task.skill}`,
     task.review_rounds > 0 && `review round ${task.review_rounds}`,
     task.branch,
@@ -1045,7 +1046,16 @@ async function refreshCardModal() {
     meta.push(`+${act.lines_added} −${act.lines_removed} lines`);
     if (act.ms) meta.push(fmtDur(act.ms));
   }
-  document.getElementById('card-meta').innerHTML = meta.map((m) => `<span>${esc(m)}</span>`).join('');
+  document.getElementById('card-meta').replaceChildren(
+    ...meta.map((m) => {
+      if (typeof m === 'string') return node('span', '', m);
+      const member = teamByName.get(m.agent);
+      if (!member) return node('span', '', `● ${m.agent}`);
+      const chip = node('span', 'cm-agent');
+      chip.append(avatarEl(member, 14), node('span', '', m.agent));
+      return chip;
+    }),
+  );
   const blockedBox = document.getElementById('card-blocked');
   blockedBox.classList.toggle('hidden', !task.blocked_at);
   if (task.blocked_at) {
@@ -1727,6 +1737,7 @@ async function loadTeam() {
   } catch {
     team = [];
   }
+  setTeamCache(team);
   const host = $('team-list');
   if (!team.length) {
     host.innerHTML = '<div class="st-empty">No team members yet.<br>Add one to build your roster.</div>';
@@ -1734,11 +1745,13 @@ async function loadTeam() {
   }
   host.replaceChildren(
     ...team.map((m) => {
-      const el = document.createElement('div');
-      el.className = 'member';
-      const initial = esc(((m.name || '?').trim()[0] ?? '?').toUpperCase());
-      el.innerHTML = `<span class="m-avatar" style="background:${esc(m.color || '#5dd3a8')}">${initial}</span><span class="m-main"><div class="m-name">${esc(m.name)}</div><div class="m-id">${esc(m.id)}</div></span><span class="m-skill${m.skill ? '' : ' none'}">${m.skill ? esc(m.skill) : 'no skill'}</span><button class="m-del" title="Remove">✕</button>`;
-      el.querySelector('.m-del').onclick = async () => {
+      const el = node('div', 'member');
+      const main = node('span', 'm-main');
+      main.append(node('div', 'm-name', m.name), node('div', 'm-id', m.id));
+      const del = node('button', 'm-del', '✕');
+      del.title = 'Remove';
+      el.append(avatarEl(m, 32), main, node('span', `m-skill${m.skill ? '' : ' none'}`, m.skill ?? 'no skill'), del);
+      del.onclick = async () => {
         await fetch(`/team/${m.id}`, { method: 'DELETE' });
         loadTeam();
       };
@@ -2115,7 +2128,15 @@ function dashTile(b, isMain) {
       flag.append(node('span', 'word', ' blocked'));
       row.append(flag);
     }
-    if (c.agent) row.append(node('span', 'dt-card-agent', c.agent));
+    if (c.agent) {
+      const member = teamByName.get(c.agent);
+      if (!member) row.append(node('span', 'dt-card-agent', c.agent));
+      else {
+        const chip = node('span', 'dt-card-agent has-av');
+        chip.append(avatarEl(member, 14), node('span', 'dt-card-agent-name', c.agent));
+        row.append(chip);
+      }
+    }
     list.append(row);
   }
   if (active.length > DASH_MAX_CARDS) list.append(node('div', 'dt-more', `+${active.length - DASH_MAX_CARDS} more`));
@@ -2277,11 +2298,347 @@ function homeQueueBtn(item) {
   return b;
 }
 
-// Placeholder hook for the agent editor (a later card replaces it).
-function openAgentEditor(member) {
-  console.debug('openAgentEditor', member?.id);
+// ── team avatars + agent editor ─────────────────────────────────────
+// Latest /team roster by name, so card/dashboard chips can show avatars.
+const teamByName = new Map();
+let teamCacheLoad = null; // the first load, awaited by the card modal
+
+async function loadTeamCache() {
+  try {
+    const res = await fetch('/team');
+    if (!res.ok) return;
+    setTeamCache(await res.json());
+  } catch {
+    /* keep the last roster */
+  }
 }
 
+function setTeamCache(team) {
+  teamByName.clear();
+  for (const m of team) teamByName.set(m.name, m);
+}
+
+// One avatar for every team member chip: the uploaded image, else the initial
+// on the member's colour.
+function avatarEl(m, size) {
+  const av = node('span', 'avatar');
+  av.style.width = av.style.height = `${size}px`;
+  av.style.fontSize = `${Math.max(6, Math.round(size * 0.41))}px`;
+  if (m.avatar) {
+    const img = document.createElement('img');
+    img.src = `/avatars/${encodeURIComponent(m.avatar)}`;
+    img.alt = '';
+    av.append(img);
+  } else {
+    av.textContent = ((m.name || '?').trim()[0] ?? '?').toUpperCase();
+    av.style.background = m.color || accentFor(m.name);
+  }
+  return av;
+}
+
+// Re-render everything that shows team data after an edit.
+async function refreshTeamViews() {
+  await loadTeamCache();
+  await loadHome();
+  if (!$('settings-modal').classList.contains('hidden')) loadTeam();
+  if (openCardId) refreshCardModal();
+  if (activeView === 'dashboard') renderDashboard();
+}
+
+const AE_COLOURS = [
+  ['#c678dd', 'Violet'],
+  ['#61afef', 'Blue'],
+  ['#5dd3a8', 'Mint'],
+  ['#e5c07b', 'Amber'],
+  ['#e06c75', 'Rose'],
+  ['#aab2c5', 'Grey'],
+];
+const AE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+const AE_MAX_BYTES = 2 * 1024 * 1024;
+
+function openAgentEditor(member) {
+  if (document.querySelector('.ae-backdrop')) return;
+  const opener = document.activeElement;
+  let cur = member; // latest server copy (a partial save updates it)
+  const st = {
+    color: member.color || accentFor(member.name),
+    mode: member.avatar ? 'image' : 'initials',
+    file: null,
+    url: null,
+  };
+
+  const backdrop = node('div', 'ae-backdrop');
+  const dlg = node('div', 'ae-dialog');
+  dlg.setAttribute('role', 'dialog');
+  dlg.setAttribute('aria-modal', 'true');
+  dlg.setAttribute('aria-labelledby', 'ae-title');
+  backdrop.append(dlg);
+
+  const title = node('h2', 'ae-title', 'Edit agent');
+  title.id = 'ae-title';
+
+  const preview = node('div', 'ae-preview');
+  const previewAv = node('div', 'ae-preview-av');
+  const previewName = node('div', 'ae-preview-name');
+  const previewSkill = node('div', 'ae-preview-skill', member.skill ?? 'no skill');
+  const previewId = node('div', 'ae-preview-id');
+  previewId.append(previewName, previewSkill);
+  preview.append(previewAv, previewId);
+
+  // Initials / Image tabs
+  const tabs = node('div', 'ae-tabs');
+  tabs.setAttribute('role', 'tablist');
+  tabs.setAttribute('aria-label', 'Avatar style');
+  const mkTab = (mode, label) => {
+    const t = node('button', 'ae-tab', label);
+    t.type = 'button';
+    t.id = `ae-tab-${mode}`;
+    t.setAttribute('role', 'tab');
+    t.setAttribute('aria-controls', `ae-panel-${mode}`);
+    t.onclick = () => setMode(mode);
+    return t;
+  };
+  const tabInitials = mkTab('initials', 'Initials');
+  const tabImage = mkTab('image', 'Image');
+  tabs.append(tabInitials, tabImage);
+  tabs.onkeydown = (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    setMode(st.mode === 'initials' ? 'image' : 'initials');
+    (st.mode === 'initials' ? tabInitials : tabImage).focus();
+  };
+
+  // name
+  const nameField = node('div', 'ae-field');
+  const nameLabel = node('label', 'ae-label', 'Name');
+  nameLabel.htmlFor = 'ae-name';
+  const nameInput = document.createElement('input');
+  nameInput.id = 'ae-name';
+  nameInput.className = 'ae-input';
+  nameInput.type = 'text';
+  nameInput.autocomplete = 'off';
+  nameInput.maxLength = 60;
+  nameInput.value = member.name;
+  nameInput.setAttribute('aria-describedby', 'ae-name-help');
+  nameInput.oninput = renderPreview;
+  const nameHelp = node('div', 'ae-help', 'Past cards and stats move to the new name.');
+  nameHelp.id = 'ae-name-help';
+  nameField.append(nameLabel, nameInput, nameHelp);
+
+  // initials panel: colour swatches
+  const panelInitials = node('div', 'ae-panel');
+  panelInitials.id = 'ae-panel-initials';
+  panelInitials.setAttribute('role', 'tabpanel');
+  panelInitials.setAttribute('aria-labelledby', 'ae-tab-initials');
+  const swLabel = node('div', 'ae-label', 'Colour');
+  swLabel.id = 'ae-colour-label';
+  const swatches = node('div', 'ae-swatches');
+  swatches.setAttribute('role', 'group');
+  swatches.setAttribute('aria-labelledby', 'ae-colour-label');
+  const colours = [...AE_COLOURS];
+  if (!colours.some(([c]) => c.toLowerCase() === st.color.toLowerCase())) colours.push([st.color, 'Current']);
+  const swBtns = colours.map(([c, label]) => {
+    const b = node('button', 'ae-swatch');
+    b.type = 'button';
+    b.dataset.color = c;
+    b.style.setProperty('--sw', c);
+    b.setAttribute('aria-label', `${label} avatar colour`);
+    b.onclick = () => {
+      st.color = c;
+      renderPreview();
+    };
+    return b;
+  });
+  swatches.append(...swBtns);
+  panelInitials.append(swLabel, swatches);
+
+  // image panel: upload
+  const panelImage = node('div', 'ae-panel');
+  panelImage.id = 'ae-panel-image';
+  panelImage.setAttribute('role', 'tabpanel');
+  panelImage.setAttribute('aria-labelledby', 'ae-tab-image');
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.id = 'ae-file';
+  fileInput.className = 'ae-file';
+  fileInput.accept = AE_TYPES.join(',');
+  fileInput.setAttribute('aria-describedby', 'ae-file-hint');
+  const upload = node('label', 'ae-upload');
+  upload.htmlFor = 'ae-file';
+  const uploadMain = node('span', 'ae-upload-main', 'Choose an image');
+  const uploadHint = node('span', 'ae-upload-hint', 'PNG, JPEG or WebP · up to 2 MB');
+  uploadHint.id = 'ae-file-hint';
+  upload.append(uploadMain, uploadHint);
+  panelImage.append(fileInput, upload);
+  fileInput.onchange = () => {
+    const f = fileInput.files?.[0];
+    fileInput.value = '';
+    if (!f) return;
+    if (!AE_TYPES.includes(f.type)) return showError('That file isn’t a PNG, JPEG or WebP image.');
+    if (f.size > AE_MAX_BYTES) return showError('That image is larger than 2 MB — pick a smaller one.');
+    showError('');
+    if (st.url) URL.revokeObjectURL(st.url);
+    st.file = f;
+    st.url = URL.createObjectURL(f);
+    renderPreview();
+  };
+
+  const err = node('div', 'ae-error');
+  err.setAttribute('role', 'alert');
+
+  const foot = node('div', 'ae-foot');
+  const cancel = node('button', 'home-btn', 'Cancel');
+  cancel.type = 'button';
+  const save = node('button', 'home-btn primary', 'Save');
+  save.type = 'button';
+  foot.append(cancel, save);
+
+  dlg.append(title, preview, nameField, tabs, panelInitials, panelImage, err, foot);
+
+  function showError(msg) {
+    err.textContent = msg;
+  }
+
+  function imageUrl() {
+    if (st.mode !== 'image') return null;
+    if (st.url) return st.url;
+    return cur.avatar ? `/avatars/${encodeURIComponent(cur.avatar)}` : null;
+  }
+
+  function renderPreview() {
+    const name = nameInput.value.trim() || member.name;
+    const url = imageUrl();
+    const av = avatarEl({ name, color: st.color, avatar: null }, 72);
+    if (url) {
+      av.textContent = '';
+      av.style.background = '';
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = '';
+      av.append(img);
+    }
+    previewAv.replaceChildren(av);
+    previewName.textContent = name;
+    for (const b of swBtns) {
+      const on = b.dataset.color === st.color;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
+    uploadMain.textContent = st.file ? st.file.name : cur.avatar ? 'Replace image' : 'Choose an image';
+  }
+
+  function setMode(mode) {
+    st.mode = mode;
+    for (const [t, m] of [[tabInitials, 'initials'], [tabImage, 'image']]) {
+      t.setAttribute('aria-selected', String(m === mode));
+      t.tabIndex = m === mode ? 0 : -1;
+    }
+    panelInitials.hidden = mode !== 'initials';
+    panelImage.hidden = mode !== 'image';
+    showError('');
+    renderPreview();
+  }
+
+  function close() {
+    if (st.url) URL.revokeObjectURL(st.url);
+    document.removeEventListener('keydown', onKey, true);
+    backdrop.remove();
+    if (opener && opener.isConnected) opener.focus();
+    else if (opener) {
+      // Home re-rendered meanwhile: land on this member's (new) ✎ button
+      const again = [...document.querySelectorAll('.home-edit')].find((b) => b.dataset.id === member.id);
+      again?.focus();
+    }
+  }
+
+  function onKey(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const f = [...dlg.querySelectorAll('button, input, [tabindex]')].filter(
+      (el) => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length && !el.closest('[hidden]'),
+    );
+    if (!f.length) return;
+    const first = f[0];
+    const last = f[f.length - 1];
+    if (!dlg.contains(document.activeElement)) {
+      e.preventDefault();
+      first.focus();
+    } else if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  async function errorOf(res, fallback) {
+    if (res.status === 413) return 'That image is larger than 2 MB — pick a smaller one.';
+    const body = await res.json().catch(() => ({}));
+    return typeof body.error === 'string' && body.error ? body.error : fallback;
+  }
+
+  async function doSave() {
+    const name = nameInput.value.trim();
+    if (!name) return showError('Name can’t be empty.');
+    showError('');
+    save.disabled = cancel.disabled = true;
+    save.textContent = 'Saving…';
+    const base = `/team/${encodeURIComponent(member.id)}`;
+    try {
+      const patch = {};
+      if (name !== cur.name) patch.name = name;
+      if (st.color !== (cur.color || '')) patch.color = st.color;
+      if (Object.keys(patch).length) {
+        const res = await fetch(base, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) });
+        if (!res.ok) return showError(await errorOf(res, 'Couldn’t save — try again.'));
+        cur = await res.json();
+      }
+      if (st.mode === 'image' && st.file) {
+        const res = await fetch(`${base}/avatar`, { method: 'POST', headers: { 'content-type': st.file.type }, body: st.file });
+        if (!res.ok) return showError(await errorOf(res, 'Couldn’t upload the image — try again.'));
+        cur = await res.json();
+        st.file = null;
+      } else if (st.mode === 'initials' && cur.avatar) {
+        const res = await fetch(`${base}/avatar`, { method: 'DELETE' });
+        if (!res.ok) return showError(await errorOf(res, 'Couldn’t remove the image — try again.'));
+        cur = await res.json();
+      }
+    } catch {
+      return showError('Couldn’t reach the daemon — try again.');
+    } finally {
+      save.disabled = cancel.disabled = false;
+      save.textContent = 'Save';
+      // a partial save still changed what other views show
+      if (cur !== member && err.textContent) refreshTeamViews();
+    }
+    await refreshTeamViews();
+    close();
+  }
+
+  cancel.onclick = close;
+  save.onclick = doSave;
+  nameInput.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      doSave();
+    }
+  };
+  backdrop.onmousedown = (e) => {
+    if (e.target === backdrop) close();
+  };
+  document.addEventListener('keydown', onKey, true);
+
+  setMode(st.mode);
+  document.body.append(backdrop);
+  nameInput.focus();
+  nameInput.select();
+}
 function renderHome() {
   const d = home.data;
   if (!d) {
@@ -2423,20 +2780,6 @@ function renderHomeVerticals() {
   host.replaceChildren(homeLabel('Verticals', `${d.verticals.length}`), list, foot);
 }
 
-function homeAvatar(m) {
-  const av = node('span', 'home-avatar');
-  if (m.avatar) {
-    const img = document.createElement('img');
-    img.src = `/avatars/${encodeURIComponent(m.avatar)}`;
-    img.alt = '';
-    av.append(img);
-  } else {
-    av.textContent = ((m.name || '?').trim()[0] ?? '?').toUpperCase();
-    av.style.background = m.color || accentFor(m.name);
-  }
-  return av;
-}
-
 function renderHomeAgents() {
   const d = home.data;
   const host = $('home-agents');
@@ -2453,8 +2796,9 @@ function renderHomeAgents() {
       const edit = node('button', 'home-edit', '✎');
       edit.setAttribute('aria-label', `Edit ${m.name}`);
       edit.title = `Edit ${m.name}`;
+      edit.dataset.id = m.id;
       edit.onclick = () => openAgentEditor(m);
-      top.append(homeAvatar(m), id, edit);
+      top.append(avatarEl(m, 44), id, edit);
       const stats = node('div', 'home-agent-stats');
       const stat = (val, label, cls) => {
         const s = node('div', 'home-stat');
@@ -2606,4 +2950,8 @@ const EARLY_VIEW = URL_VIEW === 'dashboard' ? null : URL_VIEWS.includes(URL_VIEW
 if (EARLY_VIEW && EARLY_VIEW !== 'scm') setView(EARLY_VIEW);
 
 connect();
+teamCacheLoad = loadTeamCache();
+teamCacheLoad.then(() => {
+  if (activeView === 'dashboard') renderDashboard();
+});
 if (!EMBED) initTerminal(); // an OBS scene gets no terminal (and no pty sockets)
