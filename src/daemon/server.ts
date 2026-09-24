@@ -96,7 +96,9 @@ async function launchAgent(session: PtySession, fresh: boolean) {
   if (!fresh && (await foregroundPgid(session)) !== pid) {
     return { started: false, reason: 'busy', foreground: session.proc.process };
   }
-  session.proc.write('claude\r');
+  // Ctrl-U first: kill any half-typed input at the prompt, else it would be
+  // glued onto the command ("rm -rf build" + "claude" → "rm -rf buildclaude").
+  session.proc.write('\x15claude\r');
   for (const deadline = Date.now() + 3000; Date.now() < deadline; ) {
     const fg = await foregroundPgid(session);
     if (fg > 0 && fg !== pid) break;
