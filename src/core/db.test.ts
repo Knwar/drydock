@@ -39,6 +39,23 @@ describe('openDb', () => {
     db.close();
   });
 
+  it('creates the summary-query indexes on a fresh db', () => {
+    const db = openDb();
+    const names = (db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as { name: string }[]).map(
+      (r) => r.name,
+    );
+    for (const idx of [
+      'idx_tasks_phase',
+      'idx_card_activity_project',
+      'idx_card_activity_task',
+      'idx_reviews_task',
+      'idx_events_task',
+    ]) {
+      assert.ok(names.includes(idx), `missing ${idx}`);
+    }
+    db.close();
+  });
+
   it('creates the parent directory for a file-backed db', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kankan-db-'));
     const path = join(dir, 'nested', 'board.db'); // parent does not exist yet
@@ -81,6 +98,15 @@ describe('migrate', () => {
       .get();
     assert.ok(idx, 'migrate() should create idx_projects_parent');
     assert.doesNotThrow(() => migrate(db)); // idempotent
+    db.close();
+  });
+
+  it('creates idx_tasks_phase on a legacy tasks table without phase_id', () => {
+    const db = new Database(':memory:');
+    db.exec(LEGACY_TASKS_DDL);
+    assert.doesNotThrow(() => migrate(db));
+    const idx = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_phase'").get();
+    assert.ok(idx, 'migrate() should create idx_tasks_phase');
     db.close();
   });
 

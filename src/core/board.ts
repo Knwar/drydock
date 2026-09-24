@@ -889,10 +889,14 @@ export function getStats(db: DB, projectId: string): ProjectStats {
        FROM card_activity WHERE project_id = ? GROUP BY agent ORDER BY tokens DESC`,
     )
     .all(projectId) as AgentStat[];
-  const totals = db
+  return { totals: getTotals(db, projectId), agents };
+}
+
+/** Project-wide activity totals (the `totals` half of getStats, without the per-agent GROUP BY). */
+function getTotals(db: DB, projectId: string): ProjectStats['totals'] {
+  return db
     .prepare(`SELECT COUNT(DISTINCT task_id) AS cards, ${TOTALS_SELECT} FROM card_activity WHERE project_id = ?`)
-    .get(projectId) as CardTotals & { cards: number };
-  return { totals, agents };
+    .get(projectId) as ProjectStats['totals'];
 }
 
 // ── attention: the "manage by exception" queue ──────────────────────
@@ -1067,14 +1071,21 @@ function boardSummary(db: DB, p: Project): BoardSummary {
   const { n: blocked } = db
     .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE project_id = ? AND blocked_at IS NOT NULL AND lane != 'done'`)
     .get(p.id) as { n: number };
-  const ap = getPhases(db, p.id).find((ph) => ph.status === 'active');
+  const ap = db
+    .prepare(`SELECT id, title FROM phases WHERE project_id = ? AND status = 'active' ORDER BY position LIMIT 1`)
+    .get(p.id) as Pick<Phase, 'id' | 'title'> | undefined;
+  const prog = ap
+    ? (db
+        .prepare(`SELECT COUNT(*) AS total, SUM(lane = 'done') AS done FROM tasks WHERE phase_id = ?`)
+        .get(ap.id) as { total: number; done: number | null })
+    : null;
   return {
     project: { id: p.id, name: p.name, root_path: p.root_path, parent_id: p.parent_id },
     lanes,
     active,
     blocked,
-    phase: ap ? { id: ap.id, title: ap.title, done: ap.progress.done, total: ap.progress.total } : null,
-    totals: getStats(db, p.id).totals,
+    phase: ap && prog ? { id: ap.id, title: ap.title, done: prog.done ?? 0, total: prog.total } : null,
+    totals: getTotals(db, p.id),
   };
 }
 
@@ -1083,23 +1094,29 @@ function boardSummary(db: DB, p: Project): BoardSummary {
  * workspace board first, then each vertical, plus one combined attention list —
  * boards ordered by their most severe item, each keeping its own ordering.
  */
+// Rank for a board with no attention items: one past the least severe rank, so empty boards sort last.
+const NO_ATTENTION_RANK = Object.keys(SEV_RANK).length;
+
 export function getWorkspaceSummary(db: DB, projectId: string): WorkspaceSummary {
-  const { workspace, verticals } = getWorkspace(db, projectId);
-  const projects = [workspace, ...verticals];
-  const perBoard = projects.map((p) =>
-    getAttention(db, p.id).map((i): WorkspaceAttentionItem => ({ ...i, project_id: p.id, project_name: p.name })),
-  );
-  const worst = (items: WorkspaceAttentionItem[]) =>
-    Math.min(Object.keys(SEV_RANK).length, ...items.map((i) => SEV_RANK[i.severity]));
-  const attention = perBoard
-    .map((items, idx) => ({ items, idx, rank: worst(items) }))
-    .sort((a, b) => a.rank - b.rank || a.idx - b.idx)
-    .flatMap((b) => b.items);
-  return {
-    workspace: { id: workspace.id, name: workspace.name },
-    boards: projects.map((p) => boardSummary(db, p)),
-    attention,
-  };
+  // one read transaction: every board is read from the same consistent snapshot
+  return db.transaction((): WorkspaceSummary => {
+    const { workspace, verticals } = getWorkspace(db, projectId);
+    const projects = [workspace, ...verticals];
+    const perBoard = projects.map((p) =>
+      getAttention(db, p.id).map((i): WorkspaceAttentionItem => ({ ...i, project_id: p.id, project_name: p.name })),
+    );
+    const worst = (items: WorkspaceAttentionItem[]) =>
+      Math.min(NO_ATTENTION_RANK, ...items.map((i) => SEV_RANK[i.severity]));
+    const attention = perBoard
+      .map((items, idx) => ({ items, idx, rank: worst(items) }))
+      .sort((a, b) => a.rank - b.rank || a.idx - b.idx)
+      .flatMap((b) => b.items);
+    return {
+      workspace: { id: workspace.id, name: workspace.name },
+      boards: projects.map((p) => boardSummary(db, p)),
+      attention,
+    };
+  })();
 }
 
 // ── sync_links: local<->remote link state for the bridge (Phase 5 foundations) ──
