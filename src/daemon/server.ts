@@ -15,6 +15,7 @@ import type { Project, Task } from '../core/types.js';
 import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
 import { sessionCwd, sessionEnv } from './pty-env.js';
+import { SessionStates } from './session-state.js';
 
 const PORT = Number(process.env.PORT ?? 7890);
 // Bind loopback by DEFAULT so the daemon (incl. the unauthenticated overlay
@@ -27,6 +28,8 @@ const INIT_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 's
 
 const db = openDb(DB_PATH);
 const broadcaster = new Broadcaster();
+// live agent session state per project: memory only, never persisted
+const states = new SessionStates();
 
 // ── embedded terminal (opt-in via KANKAN_TERMINAL=1) ────────────────
 // node-pty is an OPTIONAL native dep: the board runs fine without it, and a
@@ -595,6 +598,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         | { parent_id: string | null }
         | undefined;
       board.deleteProject(db, pid);
+      states.forget(pid);
       broadcaster.send(pid, { type: 'project_removed', project_id: pid });
       if (parent?.parent_id) announceVerticals(parent.parent_id); // a vertical left its workspace
       return json(res, 200, { deleted: pid });
@@ -951,19 +955,31 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   }
 
   if (method === 'POST' && pathname === '/status') {
-    // ephemeral: broadcast-only, never stored — live "what is the agent doing"
+    // ephemeral: cached in memory (SessionStates), never stored in SQLite —
+    // live "what is the agent doing"
     const b = await readBody(req);
     if (!b.project_id || !b.verb) return json(res, 400, { error: 'project_id and verb required' });
+    const status = {
+      agent: b.agent ?? 'agent',
+      verb: b.verb,
+      detail: b.detail ?? '',
+      task_id: b.task_id ?? null,
+    };
+    const now = Date.now();
+    states.record(b.project_id, { ...status, at: now });
     broadcaster.send(b.project_id, {
       type: 'status',
-      status: {
-        agent: b.agent ?? 'agent',
-        verb: b.verb,
-        detail: b.detail ?? '',
-        task_id: b.task_id ?? null,
-      },
+      project_id: b.project_id,
+      status,
+      session: states.view(b.project_id, now),
     });
     return json(res, 200, { ok: true });
+  }
+
+  if (method === 'GET' && pathname === '/session') {
+    const project = url.searchParams.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    return json(res, 200, states.view(project, Date.now()));
   }
 
   if (method === 'POST' && pathname === '/event') {
