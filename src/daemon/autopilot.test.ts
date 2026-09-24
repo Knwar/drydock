@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { resetsAtMs, shouldNudge, USAGE_PAUSE_PCT, type NudgeInput } from './autopilot.js';
+import { looksLikeClaude, resetsAtMs, shouldNudge, USAGE_PAUSE_PCT, type NudgeInput } from './autopilot.js';
 
 const NOW = 1_700_000_000_000;
 const base: NudgeInput = {
@@ -60,5 +60,40 @@ describe('resetsAtMs', () => {
     assert.equal(resetsAtMs(undefined), null);
     assert.equal(resetsAtMs(null), null);
     assert.equal(resetsAtMs('garbage'), null);
+  });
+});
+
+describe('looksLikeClaude', () => {
+  it('accepts the native binary, the node CLI, and an interpreter-run claude script', () => {
+    for (const cmd of [
+      '/Users/x/.local/bin/claude',
+      'claude',
+      'claude --resume',
+      'node /Users/x/.nvm/lib/node_modules/@anthropic-ai/claude-code/cli.js',
+      '/bin/sh /var/folders/ab/T/kankan-ap-fake-claude-x/claude',
+      'bash /tmp/bin/claude --resume',
+      '/usr/local/bin/node /opt/bin/claude\n',
+    ]) {
+      assert.equal(looksLikeClaude(cmd), true, cmd);
+    }
+  });
+
+  it('rejects other foreground programs', () => {
+    for (const cmd of [
+      'vim',
+      'vim notes/claude',
+      'node server.js',
+      'npm run dev',
+      '/bin/zsh',
+      '-zsh',
+      'claude-clone',
+      'myclaude',
+      '/usr/bin/myclaude --x',
+      'python /tmp/claude',
+      'sh /tmp/claude-clone',
+      '',
+    ]) {
+      assert.equal(looksLikeClaude(cmd), false, cmd);
+    }
   });
 });

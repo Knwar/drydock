@@ -71,14 +71,15 @@ describe('autopilot nudges an idle session through the pty (fake claude)', () =>
   let enabled = false;
   let token = '';
   let project = '';
-  // fake `claude` first on PATH: `exec cat` stays in the foreground reading
+  // fake `claude` first on PATH: runs `cat` (no exec, so the foreground group
+  // leader stays `/bin/sh …/claude`, which looksLikeClaude accepts) reading
   // stdin, so whatever autopilot types shows up in the pty output.
   const binDir = mkdtempSync(join(tmpdir(), 'kankan-ap-fake-claude-'));
   const projDir = mkdtempSync(join(tmpdir(), 'kankan-ap-pty-proj-'));
 
   before(async () => {
     const fake = join(binDir, 'claude');
-    writeFileSync(fake, '#!/bin/sh\nexec cat\n');
+    writeFileSync(fake, '#!/bin/sh\ncat\n');
     chmodSync(fake, 0o755);
     daemon = await startDaemon({
       env: {

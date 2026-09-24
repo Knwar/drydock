@@ -12,7 +12,7 @@ import * as board from '../core/board.js';
 import * as subscriptions from '../core/subscriptions.js';
 import { openDb } from '../core/db.js';
 import type { Project, Task } from '../core/types.js';
-import { NUDGE_PROMPT, resetsAtMs, shouldNudge } from './autopilot.js';
+import { looksLikeClaude, NUDGE_PROMPT, resetsAtMs, shouldNudge, type NudgeInput } from './autopilot.js';
 import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
 import { sessionCwd, sessionEnv } from './pty-env.js';
@@ -208,29 +208,43 @@ async function evaluateAutopilot(projectId: string): Promise<void> {
     if (!row) return;
     const now = Date.now();
     const view = states.view(projectId, now);
+    const idleSince = (v: typeof view) =>
+      v.main?.verb === 'idle' ? (mainIdleStart.get(projectId) ?? v.main.at) : null;
     const { n: queued } = db
       .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE project_id = ? AND lane = 'queued'`)
       .get(projectId) as { n: number };
-    const session = ptySessions.get(projectId);
-    let claudeForeground = false;
-    if (session) {
-      const fg = await foregroundPgid(session);
-      claudeForeground = fg > 0 && fg !== session.proc.pid;
-    }
     const five = usage?.five_hour;
-    const decision = shouldNudge({
+    const input: NudgeInput = {
       autopilot: row.autopilot === 1,
       sessionState: view.state,
-      mainIdleSince: view.main?.verb === 'idle' ? (mainIdleStart.get(projectId) ?? view.main.at) : null,
+      mainIdleSince: idleSince(view),
       lastNudgedIdleAt: lastNudgedIdleAt.get(projectId) ?? null,
       queued,
-      claudeForeground,
+      claudeForeground: true, // pre-check: cheap conditions first, ps only if they pass
       fivePct: typeof five?.used_percentage === 'number' ? five.used_percentage : null,
       fiveResetsAt: resetsAtMs(five?.resets_at),
       now,
-    });
-    if (!decision.nudge || !session || view.main === null) return;
-    lastNudgedIdleAt.set(projectId, mainIdleStart.get(projectId) ?? view.main.at);
+    };
+    const session = ptySessions.get(projectId);
+    if (!shouldNudge(input).nudge || !session) return;
+    // Only type into Claude Code itself: the pty's foreground process group
+    // leader must look like claude (not vim, a dev server, a nested shell…).
+    const fg = await foregroundPgid(session);
+    let claudeForeground = false;
+    if (fg > 0 && fg !== session.proc.pid) {
+      try {
+        const { stdout } = await execFileAsync('ps', ['-ww', '-o', 'command=', '-p', String(fg)]);
+        claudeForeground = looksLikeClaude(stdout);
+      } catch {
+        /* process gone → not in foreground */
+      }
+    }
+    if (!shouldNudge({ ...input, claudeForeground }).nudge) return;
+    // the async checks took time: re-confirm the same idle period is still current
+    const fresh = states.view(projectId, Date.now());
+    if (fresh.state !== 'idle' || fresh.main === null || idleSince(fresh) !== input.mainIdleSince) return;
+    if (ptySessions.get(projectId) !== session) return;
+    lastNudgedIdleAt.set(projectId, input.mainIdleSince!);
     // typed into Claude Code's input (not a shell) → no Ctrl-U line-kill. The
     // short gap keeps the Enter from being read as part of a paste.
     session.proc.write(NUDGE_PROMPT);

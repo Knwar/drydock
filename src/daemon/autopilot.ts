@@ -32,6 +32,20 @@ export function shouldNudge(i: NudgeInput): { nudge: boolean; reason: string } {
   return { nudge: true, reason: 'idle with queued cards' };
 }
 
+const INTERPRETERS = new Set(['sh', 'bash', 'zsh', 'node']);
+const base = (p: string) => p.slice(p.lastIndexOf('/') + 1);
+
+/** Does a process command line (from `ps -o command=`) look like Claude Code?
+ *  Native `claude` binary, `node …/@anthropic-ai/claude-code/cli.js`, or a
+ *  `claude` script run by an interpreter (`/bin/sh …/claude`). */
+export function looksLikeClaude(cmd: string): boolean {
+  const c = cmd.trim();
+  if (c.includes('@anthropic-ai/claude-code')) return true;
+  const [exe = '', arg1 = ''] = c.split(/\s+/);
+  if (/(^|\/)claude$/.test(exe)) return true;
+  return INTERPRETERS.has(base(exe)) && arg1.endsWith('/claude');
+}
+
 /** Normalize a rate-limit `resets_at` (epoch seconds, epoch ms, or ISO string) to epoch ms; null if absent/unparseable. */
 export function resetsAtMs(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return v < 1e12 ? v * 1000 : v;
