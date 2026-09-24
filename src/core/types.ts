@@ -5,7 +5,14 @@ export interface Project {
   id: string;
   name: string;
   root_path: string;
+  parent_id: string | null; // workspace this vertical belongs to, or null (top-level)
   created_at: number;
+}
+
+/** A top-level project and its child verticals (empty for a standalone project). */
+export interface WorkspaceView {
+  workspace: Project;
+  verticals: Project[];
 }
 
 export const PHASE_STATUSES = ['planned', 'active', 'done'] as const;
@@ -97,6 +104,7 @@ export const EVENT_TYPES = [
   'phase_activate',
   'phase_done',
   'phase_park',
+  'vertical_create',
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];

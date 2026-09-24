@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import Database from 'better-sqlite3';
 import {
@@ -11,6 +14,7 @@ import {
   createSyncLink,
   createTask,
   createTeamMember,
+  createVertical,
   deleteTask,
   deleteTeamMember,
   detectSyncConflicts,
@@ -20,6 +24,8 @@ import {
   getActiveCards,
   getActivePhase,
   getAttention,
+  findProject,
+  getWorkspace,
   getBoard,
   getNextCard,
   getNextPhase,
@@ -30,6 +36,7 @@ import {
   getStats,
   listSyncLinks,
   listTeam,
+  listVerticals,
   moveTask,
   raiseBlocker,
   recordActivity,
@@ -62,6 +69,88 @@ function setup() {
   const project = getOrCreateProject(db, '/tmp/demo-app', 'Demo App');
   return { db, project };
 }
+
+describe('workspaces', () => {
+  function wsSetup() {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-ws-'));
+    for (const sub of ['mobile', 'web', 'api']) mkdirSync(join(dir, sub));
+    const db = openDb();
+    const workspace = getOrCreateProject(db, dir, 'Shop');
+    const cleanup = () => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    };
+    return { db, dir, workspace, cleanup };
+  }
+
+  it('new projects are top-level (parent_id null)', () => {
+    const { workspace, cleanup } = wsSetup();
+    assert.equal(workspace.parent_id, null);
+    cleanup();
+  });
+
+  it('creates a vertical that cwd lookup resolves to, and logs vertical_create', () => {
+    const { db, dir, workspace, cleanup } = wsSetup();
+    const v = createVertical(db, workspace.id, 'Mobile', join(dir, 'mobile') + '/');
+    assert.equal(v.parent_id, workspace.id);
+    assert.equal(v.name, 'Mobile');
+    assert.equal(v.root_path, join(dir, 'mobile'));
+    assert.equal(findProject(db, join(dir, 'mobile'))?.id, v.id);
+    const ev = getRecentEvents(db, workspace.id).find((e) => e.type === 'vertical_create');
+    assert.deepEqual(JSON.parse(ev!.payload!), { vertical_id: v.id, name: 'Mobile' });
+    cleanup();
+  });
+
+  it('rejects a vertical as parent, a missing dir, the workspace root, and an unknown workspace', () => {
+    const { db, dir, workspace, cleanup } = wsSetup();
+    const v = createVertical(db, workspace.id, 'Mobile', join(dir, 'mobile'));
+    assert.throws(() => createVertical(db, v.id, 'Web', join(dir, 'web')), /vertical/);
+    assert.throws(() => createVertical(db, workspace.id, 'X', join(dir, 'nope')), /not an existing directory/);
+    assert.throws(() => createVertical(db, workspace.id, 'Root', dir + '/'), /differ/);
+    assert.throws(() => createVertical(db, 'no-such-id', 'Web', join(dir, 'web')), /no such project/);
+    cleanup();
+  });
+
+  it('adopts an existing childless top-level project at that path', () => {
+    const { db, dir, workspace, cleanup } = wsSetup();
+    const api = getOrCreateProject(db, join(dir, 'api'), 'old-api');
+    const v = createVertical(db, workspace.id, 'API', join(dir, 'api'));
+    assert.equal(v.id, api.id);
+    assert.equal(v.parent_id, workspace.id);
+    assert.equal(findProject(db, join(dir, 'api'))?.name, 'API');
+    cleanup();
+  });
+
+  it('refuses to adopt an existing project that has children (or is already a vertical)', () => {
+    const { db, dir, workspace, cleanup } = wsSetup();
+    const other = getOrCreateProject(db, join(dir, 'web'), 'Other WS');
+    createVertical(db, other.id, 'Api', join(dir, 'api'));
+    assert.throws(() => createVertical(db, workspace.id, 'Web', join(dir, 'web')), /cannot be adopted/);
+    assert.throws(() => createVertical(db, workspace.id, 'Api', join(dir, 'api')), /cannot be adopted/);
+    assert.equal(findProject(db, join(dir, 'web'))?.parent_id, null);
+    cleanup();
+  });
+
+  it('lists verticals and resolves the workspace from either id', () => {
+    const { db, dir, workspace, cleanup } = wsSetup();
+    const m = createVertical(db, workspace.id, 'Mobile', join(dir, 'mobile'));
+    const w = createVertical(db, workspace.id, 'Web', join(dir, 'web'));
+    assert.deepEqual(listVerticals(db, workspace.id).map((p) => p.id), [m.id, w.id]);
+    for (const id of [workspace.id, w.id]) {
+      const view = getWorkspace(db, id);
+      assert.equal(view.workspace.id, workspace.id);
+      assert.deepEqual(view.verticals.map((p) => p.id), [m.id, w.id]);
+    }
+    cleanup();
+  });
+
+  it('getWorkspace: standalone project has no verticals; unknown id throws', () => {
+    const { db } = setup();
+    const solo = getOrCreateProject(db, '/tmp/solo-app');
+    assert.deepEqual(getWorkspace(db, solo.id), { workspace: solo, verticals: [] });
+    assert.throws(() => getWorkspace(db, 'no-such-id'), /no such project/);
+  });
+});
 
 describe('projects', () => {
   it('get_or_create is idempotent on root_path', () => {

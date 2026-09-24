@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { statSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import type { DB } from './db.js';
 import { buildWhere } from './sql-util.js';
@@ -24,6 +25,7 @@ import {
   type TaskEvent,
   type TeamMember,
   type Verdict,
+  type WorkspaceView,
 } from './types.js';
 
 export function now(): number {
@@ -133,6 +135,7 @@ export function getOrCreateProject(db: DB, rootPath: string, name?: string): Pro
     id: randomUUID(),
     name: name ?? basename(root),
     root_path: root,
+    parent_id: null,
     created_at: now(),
   };
   db.prepare('INSERT INTO projects (id, name, root_path, created_at) VALUES (?, ?, ?, ?)').run(
@@ -149,6 +152,74 @@ export function findProject(db: DB, rootPath: string): Project | undefined {
   return db.prepare('SELECT * FROM projects WHERE root_path = ?').get(normalizeRoot(rootPath)) as
     | Project
     | undefined;
+}
+
+function getProject(db: DB, projectId: string): Project {
+  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as
+    | Project
+    | undefined;
+  if (!project) throw new Error(`no such project: ${projectId}`);
+  return project;
+}
+
+/** Add a vertical (child project) under a top-level workspace. Its root_path is
+ *  its scope folder — a monorepo subfolder or a separate repo. An existing
+ *  childless top-level project at that path is adopted rather than duplicated. */
+export function createVertical(db: DB, workspaceId: string, name: string, rootPath: string): Project {
+  const workspace = getProject(db, workspaceId);
+  if (workspace.parent_id !== null)
+    throw new Error(`project ${workspaceId} is a vertical; verticals cannot have verticals`);
+  const root = normalizeRoot(rootPath);
+  let isDir = false;
+  try {
+    isDir = statSync(root).isDirectory();
+  } catch {
+    // missing path → not a directory
+  }
+  if (!isDir) throw new Error(`not an existing directory: ${root}`);
+  if (root === workspace.root_path)
+    throw new Error(`vertical root_path must differ from the workspace's own root_path`);
+  return db.transaction(() => {
+    const existing = findProject(db, root);
+    let vertical: Project;
+    if (existing) {
+      const hasChildren = db
+        .prepare('SELECT 1 FROM projects WHERE parent_id = ? LIMIT 1')
+        .get(existing.id);
+      if (existing.parent_id !== null || hasChildren)
+        throw new Error(`project already exists at ${root} and cannot be adopted as a vertical`);
+      db.prepare('UPDATE projects SET parent_id = ?, name = ? WHERE id = ?').run(
+        workspace.id,
+        name,
+        existing.id,
+      );
+      vertical = { ...existing, parent_id: workspace.id, name };
+    } else {
+      vertical = { id: randomUUID(), name, root_path: root, parent_id: workspace.id, created_at: now() };
+      db.prepare(
+        'INSERT INTO projects (id, name, root_path, parent_id, created_at) VALUES (?, ?, ?, ?, ?)',
+      ).run(vertical.id, vertical.name, vertical.root_path, vertical.parent_id, vertical.created_at);
+    }
+    appendEvent(db, {
+      project_id: workspace.id,
+      type: 'vertical_create',
+      payload: { vertical_id: vertical.id, name },
+    });
+    return vertical;
+  })();
+}
+
+export function listVerticals(db: DB, workspaceId: string): Project[] {
+  return db
+    .prepare('SELECT * FROM projects WHERE parent_id = ? ORDER BY created_at, rowid')
+    .all(workspaceId) as Project[];
+}
+
+/** The top-level workspace + its verticals, given either a workspace or a vertical id. */
+export function getWorkspace(db: DB, projectId: string): WorkspaceView {
+  const project = getProject(db, projectId);
+  const workspace = project.parent_id === null ? project : getProject(db, project.parent_id);
+  return { workspace, verticals: listVerticals(db, workspace.id) };
 }
 
 /** Unregister a project and everything it owns from the board. The folder on disk is left untouched. */
