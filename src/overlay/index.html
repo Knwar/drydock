@@ -32,6 +32,9 @@
   </header>
   <div id="workspace">
     <nav id="activity-rail">
+      <button id="rail-home" class="rail-tab" title="Home">
+        <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor"><path d="M7.47 1.72a.75.75 0 0 1 1.06 0l6 6a.75.75 0 0 1-1.06 1.06L13 8.31v5.19a1.5 1.5 0 0 1-1.5 1.5H10a.75.75 0 0 1-.75-.75V11a.5.5 0 0 0-.5-.5h-1.5a.5.5 0 0 0-.5.5v3.25a.75.75 0 0 1-.75.75H4.5A1.5 1.5 0 0 1 3 13.5V8.31l-.47.47a.75.75 0 0 1-1.06-1.06l6-6Z"/></svg>
+      </button>
       <button id="rail-dashboard" class="rail-tab hidden" title="Dashboard">
         <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor"><path d="M2 3a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1v3.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Zm6.5 0a1 1 0 0 1 1-1H13a1 1 0 0 1 1 1v3.5a1 1 0 0 1-1 1H9.5a1 1 0 0 1-1-1V3ZM2 9.5a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V9.5Zm6.5 0a1 1 0 0 1 1-1H13a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1H9.5a1 1 0 0 1-1-1V9.5Z"/></svg>
       </button>
@@ -160,6 +163,39 @@
     <section id="stats-view" class="view hidden">
       <div id="stats-body" class="view-detail"></div>
     </section>
+    <section id="home-view" class="view hidden">
+      <div id="home-body">
+        <div class="home-head">
+          <div class="home-title"><span id="home-name"></span><span id="home-sub"></span></div>
+          <span id="home-usage"></span>
+        </div>
+        <div id="home-top" class="home-grid">
+          <div id="home-now" class="home-panel home-hero"></div>
+          <div id="home-verticals" class="home-panel"></div>
+        </div>
+        <div class="home-agents-wrap">
+          <div class="home-label">Agents</div>
+          <div id="home-agents" class="home-agents"></div>
+        </div>
+        <div id="home-bottom" class="home-grid">
+          <div id="home-upnext" class="home-panel home-upnext"></div>
+          <div id="home-send" class="home-panel home-send">
+            <div class="home-label">Send to agent</div>
+            <select id="home-send-target" class="st-select" aria-label="Send to"></select>
+            <div class="home-chips">
+              <button class="home-chip" data-text="Work the next queued card on this board.">Work next card</button>
+              <button class="home-chip" data-text="Give me a short status report on what you're doing.">Status report</button>
+              <button class="home-chip" data-text="Finish the current card, then stop and wait for me.">Pause after this card</button>
+            </div>
+            <textarea id="home-send-text" rows="3" maxlength="2000" placeholder="Tell the agent what to do…"></textarea>
+            <div class="home-send-foot">
+              <span id="home-send-result"></span>
+              <button id="home-send-btn" class="home-btn primary">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
     <section id="dashboard-view" class="view hidden">
       <div id="dashboard-body"></div>
     </section>
@@ -231,6 +267,7 @@
             <div class="st-list-row">
               <div class="st-rowtext"><div class="st-rowtitle">Default view</div><div class="st-rowsub">Which view the board opens on</div></div>
               <select id="opt-default-view" class="st-select">
+                <option value="home">Home</option>
                 <option value="smart">Smart — Attention if blockers</option>
                 <option value="kanban">Kanban</option>
                 <option value="attention">Attention</option>
