@@ -143,7 +143,13 @@ describe('POST /pty/send with the terminal enabled (fake claude)', () => {
     const note = events.find((e) => e.type === 'note');
     assert.ok(note, 'a note event was appended');
     const payload = typeof note!.payload === 'string' ? JSON.parse(note!.payload) : note!.payload;
-    assert.deepEqual(payload, { text: 'hello[31m world', via: 'home' });
+    assert.deepEqual(payload, { msg: 'hello[31m world', via: 'home' });
+
+    // needs you → a permission prompt is up; Enter would answer it → refuse
+    await status('needs you');
+    const decision = await send(project, token, { text: 'should-not-appear' });
+    assert.equal(decision.status, 409);
+    assert.deepEqual(await decision.json(), { error: 'waiting for a decision in the terminal — answer it there' });
 
     // working → busy, nothing typed
     await status('Edit');

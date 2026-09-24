@@ -97,11 +97,14 @@ function getPtySession(projectId: string, root: string): PtySession {
   return session;
 }
 
+// a hung `ps` must not stall the typing lock; a timeout counts as "unknown"
+const PS_TIMEOUT_MS = 3000;
+
 /** The terminal's foreground process group (0 before the shell has taken the
  *  tty, -1 if unknown). The shell is idle iff this is its own pid. */
 async function foregroundPgid(session: PtySession): Promise<number> {
   try {
-    const { stdout } = await execFileAsync('ps', ['-o', 'tpgid=', '-p', String(session.proc.pid)]);
+    const { stdout } = await execFileAsync('ps', ['-o', 'tpgid=', '-p', String(session.proc.pid)], { timeout: PS_TIMEOUT_MS });
     return Number(stdout.trim());
   } catch {
     return -1;
@@ -133,10 +136,10 @@ async function claudeIsForeground(session: PtySession): Promise<boolean> {
   const fg = await foregroundPgid(session);
   if (fg <= 0 || fg === session.proc.pid) return false;
   try {
-    const { stdout } = await execFileAsync('ps', ['-ww', '-o', 'command=', '-p', String(fg)]);
+    const { stdout } = await execFileAsync('ps', ['-ww', '-o', 'command=', '-p', String(fg)], { timeout: PS_TIMEOUT_MS });
     return looksLikeClaude(stdout);
   } catch {
-    return false; // process gone → not in foreground
+    return false; // process gone / ps timed out → not in foreground
   }
 }
 
@@ -782,7 +785,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   if (method === 'POST' && pathname === '/pty/send') {
     // types text into the project's Claude session — gated like /pty/agent, and
-    // only into a verified, idle Claude Code foreground (same bar as autopilot).
+    // only into a verified Claude Code foreground at an idle prompt (same bar as autopilot).
     if (!terminalReady()) return json(res, 409, { error: 'terminal disabled' });
     if (!authTerminal(req, url)) return json(res, 403, { error: 'forbidden' });
     const project = url.searchParams.get('project');
@@ -801,12 +804,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const result = await withTypingLock(session, async () => {
       if (ptySessions.get(project) !== session || !(await claudeIsForeground(session))) return 'no claude session';
       const state = states.view(project, Date.now()).state;
-      if (state !== 'idle' && state !== 'needs_you') return state === 'working' ? 'agent busy' : 'no claude session';
+      // needs_you = a permission prompt is on screen: Enter would pick its
+      // highlighted option, so only an idle prompt is safe to type into.
+      if (state === 'needs_you') return 'waiting for a decision in the terminal — answer it there';
+      if (state !== 'idle') return state === 'working' ? 'agent busy' : 'no claude session';
       await typeIntoClaude(session, text);
       return null;
     });
     if (result) return json(res, 409, { error: result });
-    board.appendEvent(db, { project_id: project, type: 'note', payload: { text, via: 'home' } });
+    board.appendEvent(db, { project_id: project, type: 'note', payload: { msg: text, via: 'home' } });
     flushEvents();
     return json(res, 200, { sent: true });
   }
