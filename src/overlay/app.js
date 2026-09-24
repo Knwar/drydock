@@ -166,6 +166,7 @@ function applyEvent(msg) {
     phases = msg.phases ?? [];
     setProject(msg.project);
     projectId = msg.project?.id ?? null;
+    initDashboard();
     loadProjects();
     refreshScmBadge();
     seedHeadline(msg.events);
@@ -409,11 +410,13 @@ const railKanban = document.getElementById('rail-kanban');
 const railScm = document.getElementById('rail-scm');
 const railPhases = document.getElementById('rail-phases');
 const railStats = document.getElementById('rail-stats');
+const railDashboard = document.getElementById('rail-dashboard');
 const attentionView = document.getElementById('attention-view');
 const scmView = document.getElementById('scm-view');
 const phasesView = document.getElementById('phases-view');
 const statsView = document.getElementById('stats-view');
-let activeView = 'kanban'; // 'attention' | 'kanban' | 'scm' | 'phases' | 'stats'
+const dashboardView = document.getElementById('dashboard-view');
+let activeView = 'kanban'; // 'attention' | 'kanban' | 'scm' | 'phases' | 'stats' | 'dashboard'
 
 // Non-kanban views take over the whole board area (full-screen).
 function setView(name) {
@@ -423,15 +426,19 @@ function setView(name) {
   railScm.classList.toggle('active', name === 'scm');
   railPhases.classList.toggle('active', name === 'phases');
   railStats.classList.toggle('active', name === 'stats');
+  railDashboard.classList.toggle('active', name === 'dashboard');
   attentionView.classList.toggle('hidden', name !== 'attention');
   boardEl.classList.toggle('hidden', name !== 'kanban');
   scmView.classList.toggle('hidden', name !== 'scm');
   phasesView.classList.toggle('hidden', name !== 'phases');
   statsView.classList.toggle('hidden', name !== 'stats');
+  dashboardView.classList.toggle('hidden', name !== 'dashboard');
   if (name === 'scm') refreshFiles();
   if (name === 'phases') renderPhaseDetail();
   if (name === 'attention') renderAttention();
   if (name === 'stats') loadStats();
+  if (name === 'dashboard') openDashboard();
+  else closeDashboard();
 }
 
 railAttention.onclick = () => setView('attention');
@@ -439,6 +446,7 @@ railKanban.onclick = () => setView('kanban');
 railScm.onclick = () => setView('scm');
 railPhases.onclick = () => setView('phases');
 railStats.onclick = () => setView('stats');
+railDashboard.onclick = () => setView('dashboard');
 
 // ── project stats: tokens / lines / time, per agent ─────────────────
 const fmtTokens = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n | 0));
@@ -1216,6 +1224,7 @@ async function initTerminal() {
   const h = Number(localStorage.getItem('term.height'));
   if (h) termPanel.style.height = `${h}px`;
   if (localStorage.getItem('term.open') === '1') openTerm();
+  if (activeView === 'dashboard') renderDashboard(); // tiles gain their ❯_ buttons
 }
 
 function makeTab(id, name) {
@@ -1730,5 +1739,233 @@ $('team-add-toggle').onclick = () => $('team-form').classList.toggle('hidden');
 $('team-cancel').onclick = () => $('team-form').classList.add('hidden');
 $('team-add-btn').onclick = addTeamMember;
 
+// ── workspace dashboard: one live tile per board (Main + verticals) ───
+// Also its own URL for an OBS scene: ?project=<id>&view=dashboard[&embed=1].
+// Every user-controlled string goes in via textContent (node() below) — never innerHTML.
+const URL_VIEW = new URLSearchParams(location.search).get('view');
+const EMBED = new URLSearchParams(location.search).get('embed') === '1';
+const dash = { checked: false, workspace: null, summary: null, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null };
+const DASH_LANES = [['backlog', 'backlog'], ['queued', 'queued'], ['in_progress', 'in prog'], ['in_review', 'review'], ['done', 'done']];
+const DASH_STATE = { working: 'working', idle: 'idle', needs_you: '⚠ needs you', offline: 'offline' };
+const DASH_MAX_CARDS = 5;
+
+if (EMBED) document.body.classList.add('embed');
+if (URL_VIEW === 'dashboard') initialViewSet = true; // the URL wins over the default-view setting
+
+function node(tag, cls, text) {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  if (text !== undefined && text !== null) el.textContent = String(text);
+  return el;
+}
+
+// Once per page: is the current project part of a workspace? Shows the rail
+// button, and honors ?view=dashboard.
+async function initDashboard() {
+  if (dash.checked) return;
+  const project = currentProject();
+  if (!project) return;
+  dash.checked = true;
+  let view = null;
+  try {
+    const res = await fetch(`/workspace?project=${encodeURIComponent(project)}`);
+    if (res.ok) view = await res.json();
+  } catch {
+    /* daemon hiccup — no dashboard button */
+  }
+  const inWorkspace = !!view && (view.verticals.length > 0 || view.workspace.id !== project);
+  if (view) dash.workspace = view.workspace.id;
+  railDashboard.classList.toggle('hidden', !inWorkspace);
+  if (URL_VIEW === 'dashboard' && view) setView('dashboard');
+}
+
+async function loadDashboard() {
+  const project = dash.workspace ?? currentProject();
+  if (!project) return;
+  try {
+    const res = await fetch(`/workspace/summary?project=${encodeURIComponent(project)}`);
+    if (!res.ok) return;
+    dash.summary = await res.json();
+  } catch {
+    return; // keep the last good summary on screen
+  }
+  dash.workspace = dash.summary.workspace.id;
+  dash.ids = new Set(dash.summary.boards.map((b) => b.project.id));
+  if (activeView === 'dashboard') renderDashboard();
+}
+
+function scheduleDashboardRefetch() {
+  clearTimeout(dash.refetchTimer);
+  dash.refetchTimer = setTimeout(loadDashboard, 400);
+}
+
+function dashConnect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`); // no ?project= → every project
+  dash.ws = ws;
+  ws.onopen = () => {
+    dash.retry = 1000;
+    loadDashboard(); // catch anything missed while disconnected
+  };
+  ws.onmessage = (e) => onDashboardMessage(JSON.parse(e.data));
+  ws.onclose = () => {
+    if (dash.ws !== ws) return; // closed on purpose (left the view)
+    dash.ws = null;
+    dash.retryTimer = setTimeout(dashConnect, dash.retry);
+    dash.retry = Math.min(dash.retry * 2, 10000);
+  };
+}
+
+function onDashboardMessage(msg) {
+  const pid = msg.type === 'event' ? msg.event?.project_id : msg.project_id;
+  if (!pid || !dash.ids.has(pid)) return;
+  if (msg.type === 'status') {
+    const b = dash.summary?.boards.find((x) => x.project.id === pid);
+    if (!b || !msg.session) return;
+    b.session = msg.session;
+    const old = $('dashboard-body').querySelector(`.dash-tile[data-id="${CSS.escape(pid)}"]`);
+    if (old) old.replaceWith(dashTile(b, dash.summary.boards.indexOf(b) === 0));
+    renderDashHead();
+  } else if (['card', 'card_removed', 'phases', 'verticals', 'event'].includes(msg.type)) {
+    scheduleDashboardRefetch();
+  }
+}
+
+function openDashboard() {
+  loadDashboard();
+  if (!dash.ws && !dash.retryTimer) dashConnect();
+}
+
+function closeDashboard() {
+  clearTimeout(dash.retryTimer);
+  clearTimeout(dash.refetchTimer);
+  dash.retryTimer = null;
+  dash.retry = 1000;
+  const ws = dash.ws;
+  dash.ws = null;
+  ws?.close();
+}
+
+function renderDashHead() {
+  const head = $('dashboard-body').querySelector('.dash-head');
+  if (!head || !dash.summary) return;
+  const boards = dash.summary.boards;
+  const count = (st) => boards.filter((b) => b.session?.state === st).length;
+  const working = count('working');
+  const needs = count('needs_you');
+  const stats = node('span', 'dash-head-stats');
+  stats.append(node('span', '', `${boards.length} board${boards.length === 1 ? '' : 's'}`));
+  if (working) stats.append(node('span', 'dh-working', `${working} working`));
+  if (needs) stats.append(node('span', 'dh-needs', `⚠ ${needs} need${needs === 1 ? 's' : ''} you`));
+  head.replaceChildren(node('span', 'dash-head-name', dash.summary.workspace.name), stats);
+}
+
+function renderDashboard() {
+  const host = $('dashboard-body');
+  if (!dash.summary) {
+    host.replaceChildren(node('div', 'att-empty', 'Loading workspace…'));
+    return;
+  }
+  const grid = node('div', 'dash-grid');
+  grid.append(...dash.summary.boards.map((b, i) => dashTile(b, i === 0)));
+  host.replaceChildren(node('div', 'dash-head'), grid);
+  renderDashHead();
+}
+
+function dashTile(b, isMain) {
+  const s = b.session ?? { state: 'offline', main: null, agents: [] };
+  const tile = node('div', 'dash-tile');
+  tile.dataset.id = b.project.id;
+  tile.dataset.state = s.state;
+  tile.title = `Open ${isMain ? 'Main' : b.project.name} board`;
+  tile.onclick = () => (location.search = `?project=${encodeURIComponent(b.project.id)}`);
+
+  // head: name · state pill · terminal shortcut
+  const head = node('div', 'dt-head');
+  const name = node('div', 'dt-name', isMain ? 'Main' : b.project.name);
+  if (isMain) name.append(node('span', 'dt-kind', 'workspace'));
+  const pill = node('span', 'dt-pill');
+  pill.append(node('span', 'dt-dot'), node('span', '', DASH_STATE[s.state] ?? s.state));
+  head.append(name, pill);
+  if (!EMBED && term.enabled) {
+    const tb = node('button', 'dt-term', '❯_');
+    tb.title = 'Open this board’s terminal tab';
+    tb.onclick = (e) => {
+      e.stopPropagation();
+      try {
+        localStorage.setItem(`term.tab.${dash.workspace}`, b.project.id);
+      } catch {
+        /* storage unavailable */
+      }
+      if (term.tabs.has(b.project.id)) term.active = b.project.id;
+      openTerm();
+    };
+    head.append(tb);
+  }
+  tile.append(head);
+
+  // subtitle: what the main session is doing (+N subagents)
+  const sub = node('div', 'dt-sub');
+  const what = s.main ? `${s.main.verb} ${s.main.detail ?? ''}`.trim() : s.state === 'offline' ? 'no session' : '—';
+  sub.append(node('span', 'dt-what', what));
+  if (s.agents?.length) sub.append(node('span', 'dt-agents', `+${s.agents.length} agent${s.agents.length === 1 ? '' : 's'}`));
+  tile.append(sub);
+
+  // lane counts
+  const lanes = node('div', 'dt-lanes');
+  for (const [lane, label] of DASH_LANES) {
+    const l = node('div', 'dt-lane');
+    l.dataset.lane = lane;
+    l.append(node('span', 'dt-lane-n', b.lanes?.[lane] ?? 0), node('span', 'dt-lane-l', label));
+    lanes.append(l);
+  }
+  tile.append(lanes);
+
+  // active phase
+  if (b.phase) {
+    const ph = node('div', 'dt-phase');
+    const row = node('div', 'dt-phase-row');
+    row.append(node('span', 'dt-phase-title', b.phase.title), node('span', 'dt-phase-n', `${b.phase.done}/${b.phase.total}`));
+    const bar = node('div', 'dt-bar');
+    const fill = node('span', 'dt-bar-fill');
+    fill.style.width = `${b.phase.total ? Math.round((100 * b.phase.done) / b.phase.total) : 0}%`;
+    bar.append(fill);
+    ph.append(row, bar);
+    tile.append(ph);
+  }
+
+  // active cards
+  const list = node('div', 'dt-cards');
+  const active = b.active ?? [];
+  if (!active.length) list.append(node('div', 'dt-empty', 'nothing in flight'));
+  for (const c of active.slice(0, DASH_MAX_CARDS)) {
+    const row = node('div', `dt-card${c.blocked ? ' blocked' : ''}`);
+    row.dataset.lane = c.lane;
+    row.append(node('span', 'dt-card-mark'), node('span', 'dt-card-title', c.title));
+    if (c.blocked) {
+      const flag = node('span', 'dt-card-blocked', '✋');
+      flag.title = 'blocked';
+      flag.append(node('span', 'word', ' blocked'));
+      row.append(flag);
+    }
+    if (c.agent) row.append(node('span', 'dt-card-agent', c.agent));
+    list.append(row);
+  }
+  if (active.length > DASH_MAX_CARDS) list.append(node('div', 'dt-more', `+${active.length - DASH_MAX_CARDS} more`));
+  tile.append(list);
+
+  // footer: tokens · lines · blocked
+  const t = b.totals ?? {};
+  const foot = node('div', 'dt-foot');
+  foot.append(
+    node('span', 'dt-tok', `${fmtTokens(t.tokens ?? 0)} tok`),
+    node('span', 'add', `+${t.lines_added ?? 0}`),
+    node('span', 'del', `−${t.lines_removed ?? 0}`),
+  );
+  const blocked = node('span', `dt-blocked${b.blocked ? ' on' : ''}`, `${b.blocked ?? 0} blocked`);
+  foot.append(blocked);
+  tile.append(foot);
+  return tile;
+}
+
 connect();
-initTerminal();
+if (!EMBED) initTerminal(); // an OBS scene gets no terminal (and no pty sockets)

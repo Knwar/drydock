@@ -32,6 +32,9 @@
   </header>
   <div id="workspace">
     <nav id="activity-rail">
+      <button id="rail-dashboard" class="rail-tab hidden" title="Dashboard">
+        <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor"><path d="M2 3a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1v3.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Zm6.5 0a1 1 0 0 1 1-1H13a1 1 0 0 1 1 1v3.5a1 1 0 0 1-1 1H9.5a1 1 0 0 1-1-1V3ZM2 9.5a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V9.5Zm6.5 0a1 1 0 0 1 1-1H13a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1H9.5a1 1 0 0 1-1-1V9.5Z"/></svg>
+      </button>
       <button id="rail-attention" class="rail-tab" title="Attention">
         <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor"><path d="M8 1.5A3.5 3.5 0 0 0 4.5 5v1.9c0 .35-.13.69-.37.95l-.98 1.06A1 1 0 0 0 3.88 11.5h8.24a1 1 0 0 0 .73-1.69l-.98-1.06a1.4 1.4 0 0 1-.37-.95V5A3.5 3.5 0 0 0 8 1.5ZM6.5 12.5a1.5 1.5 0 0 0 3 0h-3Z"/></svg>
       </button>
@@ -156,6 +159,9 @@
     </section>
     <section id="stats-view" class="view hidden">
       <div id="stats-body" class="view-detail"></div>
+    </section>
+    <section id="dashboard-view" class="view hidden">
+      <div id="dashboard-body"></div>
     </section>
   </div>
   <section id="terminal-panel" class="hidden">
