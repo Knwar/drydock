@@ -1761,10 +1761,11 @@ $('team-add-btn').onclick = addTeamMember;
 // Every user-controlled string goes in via textContent (node() below) — never innerHTML.
 const URL_VIEW = new URLSearchParams(location.search).get('view');
 const EMBED = new URLSearchParams(location.search).get('embed') === '1';
-const dash = { checked: false, workspace: null, summary: null, failed: false, fetchRetry: 1000, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null, skipOpenFetch: false };
+const dash = { checked: false, workspace: null, summary: null, failed: false, fetchRetry: 1000, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null, skipOpenFetch: false, nudged: new Map() };
 const DASH_LANES = [['backlog', 'backlog'], ['queued', 'queued'], ['in_progress', 'in prog'], ['in_review', 'review'], ['done', 'done']];
 const DASH_STATE = { working: 'working', idle: 'idle', needs_you: '⚠ needs you', offline: 'offline' };
 const DASH_MAX_CARDS = 5;
+const DASH_NUDGE_PULSE_MS = 2400;
 
 if (EMBED) document.body.classList.add('embed');
 // Resolves once initDashboard's /workspace probe has settled; refreshAttention
@@ -1859,13 +1860,33 @@ function onDashboardMessage(msg) {
     const b = dash.summary?.boards.find((x) => x.project.id === pid);
     if (!b || !msg.session) return;
     b.session = msg.session;
-    const old = $('dashboard-body').querySelector(`.dash-tile[data-id="${CSS.escape(pid)}"]`);
-    if (old) old.replaceWith(dashTile(b, dash.summary.boards.indexOf(b) === 0));
+    dash.nudged.delete(pid); // a real status replaces "nudged just now"
+    replaceDashTile(b);
     renderDashHead();
     renderDashAttn();
+  } else if (msg.type === 'autopilot') {
+    const b = dash.summary?.boards.find((x) => x.project.id === pid);
+    if (!b) return;
+    b.project.autopilot = msg.on ? 1 : 0;
+    if (!msg.on) dash.nudged.delete(pid); // no "nudged just now" without a badge
+    replaceDashTile(b);
+  } else if (msg.type === 'autopilot_nudge') {
+    const b = dash.summary?.boards.find((x) => x.project.id === pid);
+    if (!b) return;
+    b.project.autopilot = 1; // only autopilot boards get nudged
+    dash.nudged.set(pid, Date.now());
+    replaceDashTile(b);
+    setTimeout(() => {
+      $('dashboard-body').querySelector(`.dash-tile[data-id="${CSS.escape(pid)}"] .dt-autopilot`)?.classList.remove('nudged');
+    }, DASH_NUDGE_PULSE_MS);
   } else if (['card', 'card_removed', 'phases', 'verticals', 'event'].includes(msg.type)) {
     scheduleDashboardRefetch();
   }
+}
+
+function replaceDashTile(b) {
+  const old = $('dashboard-body').querySelector(`.dash-tile[data-id="${CSS.escape(b.project.id)}"]`);
+  if (old) old.replaceWith(dashTile(b, dash.summary.boards.indexOf(b) === 0));
 }
 
 function openDashboard() {
@@ -1878,6 +1899,7 @@ function openDashboard() {
 }
 
 function closeDashboard() {
+  dash.nudged.clear(); // the socket closes → the clearing status could be missed
   clearTimeout(dash.retryTimer);
   clearTimeout(dash.refetchTimer);
   dash.retryTimer = null;
@@ -2001,6 +2023,13 @@ function dashTile(b, isMain) {
   const pill = node('span', 'dt-pill');
   pill.append(node('span', 'dt-dot'), node('span', '', DASH_STATE[s.state] ?? s.state));
   head.append(name, pill);
+  if (b.project.autopilot) {
+    const ap = node('span', 'dt-autopilot', 'autopilot');
+    ap.title = 'Autopilot on — prompts this board when idle with queued cards; pauses at 80% usage';
+    const at = dash.nudged.get(b.project.id);
+    if (at && Date.now() - at < DASH_NUDGE_PULSE_MS) ap.classList.add('nudged');
+    head.append(ap);
+  }
   if (!EMBED && term.enabled) {
     const tb = node('button', 'dt-term', '❯_');
     tb.title = 'Open this board’s terminal tab';
@@ -2014,8 +2043,9 @@ function dashTile(b, isMain) {
 
   // subtitle: what the main session is doing (+N subagents)
   const sub = node('div', 'dt-sub');
-  const what = s.main ? `${s.main.verb} ${s.main.detail ?? ''}`.trim() : s.state === 'offline' ? 'no session' : '—';
-  sub.append(node('span', 'dt-what', what));
+  const nudged = dash.nudged.has(b.project.id);
+  const what = nudged ? 'nudged just now' : s.main ? `${s.main.verb} ${s.main.detail ?? ''}`.trim() : s.state === 'offline' ? 'no session' : '—';
+  sub.append(node('span', `dt-what${nudged ? ' nudged' : ''}`, what));
   if (s.agents?.length) sub.append(node('span', 'dt-agents', `+${s.agents.length} agent${s.agents.length === 1 ? '' : 's'}`));
   tile.append(sub);
 

@@ -1234,6 +1234,22 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 @keyframes dt-dot { 0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(93, 211, 168, 0.6); } 50% { opacity: 0.45; box-shadow: 0 0 0 4px rgba(93, 211, 168, 0); } }
 body.reduce-motion .dash-tile, body.reduce-motion .dt-dot { animation: none !important; }
 
+.dt-autopilot {
+  flex: none;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  cursor: help;
+}
+.dt-autopilot.nudged { background: rgba(93, 211, 168, 0.22); animation: dt-nudge 0.8s ease-in-out 3; }
+@keyframes dt-nudge { 0%, 100% { box-shadow: 0 0 0 0 rgba(93, 211, 168, 0); } 50% { box-shadow: 0 0 12px 2px rgba(93, 211, 168, 0.55); } }
+body.reduce-motion .dt-autopilot.nudged { animation: none !important; box-shadow: 0 0 0 2px rgba(93, 211, 168, 0.35); }
+
 .dt-term {
   flex: none;
   font: inherit;
@@ -1251,6 +1267,7 @@ body.reduce-motion .dash-tile, body.reduce-motion .dt-dot { animation: none !imp
 .dt-what { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dash-tile[data-state="working"] .dt-what { color: var(--text); }
 .dash-tile[data-state="needs_you"] .dt-what { color: #e06c75; }
+.dash-tile .dt-what.nudged { color: var(--accent); }
 .dt-agents { flex: none; color: var(--accent); font-size: 11px; }
 
 .dt-lanes { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
