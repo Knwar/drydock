@@ -1570,3 +1570,4 @@ body.reduce-motion .home-dot { animation: none !important; }
   .home-head { flex-direction: column; gap: 4px; }
   .home-hero-title { font-size: 18px; }
 }
+.home-qerr { flex: 0 1 auto; min-width: 0; max-width: 45%; font-size: 11.5px; color: #e06c75; overflow-wrap: anywhere; text-align: right; }

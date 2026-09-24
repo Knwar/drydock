@@ -427,6 +427,7 @@ let activeView = 'kanban'; // 'home' | 'attention' | 'kanban' | 'scm' | 'phases'
 
 // Non-kanban views take over the whole board area (full-screen).
 function setView(name) {
+  const prev = activeView;
   activeView = name;
   railAttention.classList.toggle('active', name === 'attention');
   railKanban.classList.toggle('active', name === 'kanban');
@@ -447,8 +448,8 @@ function setView(name) {
   if (name === 'attention') renderAttention();
   if (name === 'stats') loadStats();
   if (name === 'dashboard') openDashboard();
-  else closeDashboard(); // also drops Home's all-projects socket on leave
-  if (name === 'home') openHome();
+  else if (!(name === 'home' && prev === 'home')) closeDashboard(); // also drops Home's all-projects socket on leave
+  if (name === 'home' && prev !== 'home') openHome();
 }
 
 railAttention.onclick = () => setView('attention');
@@ -1775,7 +1776,7 @@ $('team-add-btn').onclick = addTeamMember;
 const URL_VIEW = new URLSearchParams(location.search).get('view');
 const URL_VIEWS = ['home', 'attention', 'kanban', 'scm', 'phases', 'stats'];
 const EMBED = new URLSearchParams(location.search).get('embed') === '1';
-const dash = { checked: false, workspace: null, summary: null, failed: false, fetchRetry: 1000, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null, skipOpenFetch: false, nudged: new Map() };
+const dash = { checked: false, workspace: null, summary: null, failed: false, fetchRetry: 1000, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null, refetchFirst: null, skipOpenFetch: false, nudged: new Map() };
 const DASH_LANES = [['backlog', 'backlog'], ['queued', 'queued'], ['in_progress', 'in prog'], ['in_review', 'review'], ['done', 'done']];
 const DASH_STATE = { working: 'working', idle: 'idle', needs_you: '⚠ needs you', offline: 'offline' };
 const DASH_MAX_CARDS = 5;
@@ -1842,10 +1843,20 @@ async function loadDashboard() {
   if (activeView === 'dashboard') renderDashboard();
 }
 
-// Debounced refetch of whichever socket-fed view is showing (dashboard or Home).
+// Debounced refetch of whichever socket-fed view is showing (dashboard or Home):
+// 400ms after the last trigger, but never later than 1.5s after the first
+// pending one, so steady traffic can't starve the refetch.
+const REFETCH_DEBOUNCE_MS = 400;
+const REFETCH_MAX_WAIT_MS = 1500;
 function scheduleDashboardRefetch() {
   clearTimeout(dash.refetchTimer);
-  dash.refetchTimer = setTimeout(activeView === 'home' ? loadHome : loadDashboard, 400);
+  const now = Date.now();
+  dash.refetchFirst ??= now;
+  const wait = Math.max(0, Math.min(REFETCH_DEBOUNCE_MS, dash.refetchFirst + REFETCH_MAX_WAIT_MS - now));
+  dash.refetchTimer = setTimeout(() => {
+    dash.refetchFirst = null;
+    (activeView === 'home' ? loadHome : loadDashboard)();
+  }, wait);
 }
 
 function dashConnect() {
@@ -1871,7 +1882,8 @@ function dashConnect() {
 function onDashboardMessage(msg) {
   const pid = msg.type === 'event' ? msg.event?.project_id : msg.project_id;
   if (!pid || !dash.ids.has(pid)) return;
-  if (activeView === 'home') return onHomeMessage(msg);
+  // the current project's messages come in on the board socket already
+  if (activeView === 'home') return void (pid !== projectId && onHomeMessage(msg));
   if (msg.type === 'status') {
     const b = dash.summary?.boards.find((x) => x.project.id === pid);
     if (!b || !msg.session) return;
@@ -1918,6 +1930,7 @@ function closeDashboard() {
   dash.nudged.clear(); // the socket closes → the clearing status could be missed
   clearTimeout(dash.retryTimer);
   clearTimeout(dash.refetchTimer);
+  dash.refetchFirst = null;
   dash.retryTimer = null;
   dash.retry = 1000;
   dash.fetchRetry = 1000;
@@ -2126,7 +2139,8 @@ function dashTile(b, isMain) {
 // One read (GET /home) re-fetched on live board messages; status messages are
 // applied in place first. Every user-controlled string goes in via node().
 const home = { data: null, failed: false, sessions: new Map(), target: null };
-const HOME_REFETCH = ['card', 'card_removed', 'phases', 'event', 'verticals', 'status', 'autopilot'];
+// status is applied in place (applyHomeStatus), never refetched; init = board socket (re)connected
+const HOME_REFETCH = ['init', 'card', 'card_removed', 'phases', 'event', 'verticals', 'autopilot'];
 const HOME_MAX_UP_NEXT = 3;
 
 function fmtElapsed(since) {
@@ -2239,12 +2253,18 @@ function homeOpenCard(card) {
 async function homeQueue(id, btn) {
   btn.disabled = true;
   btn.textContent = 'Queuing…';
+  btn.parentElement.querySelector('.home-qerr')?.remove();
+  let error = null;
   try {
     const res = await fetch(`/task/${encodeURIComponent(id)}/move`, { method: 'POST', body: JSON.stringify({ lane: 'queued' }) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) error = (await res.json().catch(() => ({}))).error || 'Couldn’t queue — try again';
   } catch {
+    error = 'Couldn’t queue — try again';
+  }
+  if (error) {
     btn.disabled = false;
-    btn.textContent = 'Retry';
+    btn.textContent = 'Queue it';
+    btn.before(node('span', 'home-qerr', error));
     return;
   }
   scheduleDashboardRefetch();
@@ -2331,8 +2351,8 @@ function renderHomeNow() {
   const who = node('div', `home-activity${cur.activity ? ' on' : ''}`);
   who.append(node('span', 'home-dot'));
   const text = cur.agent
-    ? cur.activity ? `${cur.agent} is ${cur.activity}` : cur.agent
-    : cur.activity ? `unassigned — ${cur.activity}` : 'unassigned';
+    ? cur.activity ? `${cur.agent} · ${cur.activity}` : cur.agent
+    : cur.activity ? `unassigned · ${cur.activity}` : 'unassigned';
   who.append(node('span', '', text));
   host.append(who);
 
@@ -2533,9 +2553,23 @@ async function homeSend() {
   res.textContent = 'Sending…';
   res.className = '';
   try {
-    const r = await fetch(`/pty/send?${ptyQuery(home.target)}`, { method: 'POST', body: JSON.stringify({ text }) });
+    const post = () => fetch(`/pty/send?${ptyQuery(home.target)}`, { method: 'POST', body: JSON.stringify({ text }) });
+    let r = await post();
+    if (r.status === 403) {
+      // daemon restarted → the cached token is stale: refresh it once and retry
+      try {
+        const cfg = await (await fetch('/config')).json();
+        if (cfg.token) term.token = cfg.token;
+      } catch {
+        /* fall through to the retry, which reports the failure */
+      }
+      r = await post();
+    }
     const out = await r.json().catch(() => ({}));
-    if (r.ok && out.sent) {
+    if (r.status === 403) {
+      res.textContent = 'Couldn’t reach the terminal — reload the page';
+      res.className = 'err';
+    } else if (r.ok && out.sent) {
       res.textContent = 'Sent';
       res.className = 'ok';
       $('home-send-text').value = '';
@@ -2564,6 +2598,12 @@ for (const chip of document.querySelectorAll('#home-send .home-chip')) {
   };
 }
 $('home-send-btn').onclick = homeSend;
+
+// Show the landing view at once — no Kanban flash while the first board data and
+// attention fetch are in flight. 'smart' and ?view=dashboard still wait for data;
+// scm needs the project id before it can load.
+const EARLY_VIEW = URL_VIEW === 'dashboard' ? null : URL_VIEWS.includes(URL_VIEW) ? URL_VIEW : SETTINGS.defaultView === 'home' ? 'home' : null;
+if (EARLY_VIEW && EARLY_VIEW !== 'scm') setView(EARLY_VIEW);
 
 connect();
 if (!EMBED) initTerminal(); // an OBS scene gets no terminal (and no pty sockets)
