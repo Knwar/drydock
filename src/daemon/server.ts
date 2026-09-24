@@ -16,6 +16,7 @@ import { looksLikeClaude, NUDGE_PROMPT, resetsAtMs, shouldNudge, type NudgeInput
 import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
 import { sessionCwd, sessionEnv } from './pty-env.js';
+import { isPtyName, ptyGroups } from './pty-groups.js';
 import { SessionStates } from './session-state.js';
 
 const PORT = Number(process.env.PORT ?? 7890);
@@ -1231,16 +1232,22 @@ function killGroup(pid: number, signal: NodeJS.Signals) {
 }
 
 /** Every process group with a process on the shell's tty (the shell's own included). */
+let ownPgid: number | undefined;
 async function sessionGroups(shellPid: number): Promise<number[]> {
-  const groups = new Set([shellPid]);
+  let tty = '';
+  let psOutput = '';
   try {
-    const { stdout: tty } = await execFileAsync('ps', ['-o', 'tty=', '-p', String(shellPid)]);
-    const { stdout } = await execFileAsync('ps', ['-o', 'pgid=', '-t', tty.trim()]);
-    for (const g of stdout.split('\n').map(Number)) if (g > 1) groups.add(g);
+    if (ownPgid === undefined) {
+      const g = Number((await execFileAsync('ps', ['-o', 'pgid=', '-p', String(process.pid)])).stdout.trim());
+      if (g > 1) ownPgid = g;
+    }
+    tty = (await execFileAsync('ps', ['-o', 'tty=', '-p', String(shellPid)])).stdout.trim();
+    // only query a real pty name: `ps -t ??` could list terminal-less processes machine-wide
+    if (isPtyName(tty)) psOutput = (await execFileAsync('ps', ['-o', 'pgid=,tty=', '-t', tty])).stdout;
   } catch {
     /* shell already gone, or ps failed: fall back to the shell's group */
   }
-  return [...groups];
+  return ptyGroups(shellPid, tty, psOutput, ownPgid ?? process.pid);
 }
 
 async function shutdown() {
