@@ -162,8 +162,10 @@
     <div id="term-resize" title="Drag to resize"></div>
     <div class="term-bar">
       <span class="term-label">TERMINAL</span>
+      <span id="term-tabs" class="term-tabs hidden"></span>
       <span id="term-conn" class="term-conn">connecting…</span>
       <button id="term-new" title="New session (kills and restarts the shell)">⟳ New session</button>
+      <button id="term-agent" title="Start a Claude agent in this shell (only when it's idle)">▶<span class="term-agent-label"> Start agent</span></button>
       <button id="term-hide" title="Hide terminal">✕</button>
     </div>
     <div id="term-host"></div>
