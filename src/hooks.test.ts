@@ -214,6 +214,19 @@ describe('init-project.sh: first commit + registration', { timeout: 180_000 }, (
     assert.ok(!files.some((f) => f.startsWith('node_modules')));
   });
 
+  it('an existing git repo with no commits also gets the .gitignore before the first commit', () => {
+    const target = join(tmp, 'empty-repo');
+    mkdirSync(target);
+    assert.equal(spawnSync('git', ['init', '-q', target]).status, 0);
+    writeFileSync(join(target, '.env'), 'SECRET=1');
+    const r = init(target);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(existsSync(join(target, '.gitignore')));
+    const files = spawnSync('git', ['-C', target, 'ls-files'], { encoding: 'utf8' }).stdout.split('\n');
+    assert.ok(files.includes('.gitignore'));
+    assert.ok(!files.includes('.env'));
+  });
+
   it('an existing .gitignore is left untouched', () => {
     const target = join(tmp, 'own-ignore');
     mkdirSync(target);

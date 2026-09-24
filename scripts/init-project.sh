@@ -97,13 +97,13 @@ cd "$TARGET"
 if [ ! -d .git ]; then
   git init -qb main
   installed="$installed .git"
+fi
+if ! git rev-parse HEAD > /dev/null 2>&1; then
   # never sweep secrets/deps/build output into the first commit
-  if [ ! -e .gitignore ]; then
+  if [ ! -e .gitignore ] && [ ! -L .gitignore ]; then
     printf '%s\n' 'node_modules/' '.env' '.env.*' 'dist/' 'build/' '.DS_Store' '.trees/' > .gitignore
     installed="$installed .gitignore"
   fi
-fi
-if ! git rev-parse HEAD > /dev/null 2>&1; then
   git add -A
   git commit -qm "Bootstrap kankan orchestration kit"
   installed="$installed (initial commit)"
