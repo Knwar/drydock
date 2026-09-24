@@ -1190,6 +1190,48 @@ export function homeScope(db: DB, projectId: string): Project[] {
   return project.parent_id === null ? [project, ...listVerticals(db, project.id)] : [project];
 }
 
+const IN_CHUNK = 500; // stay well under SQLite's bound-parameter limit
+
+function chunks<T>(xs: T[]): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < xs.length; i += IN_CHUNK) out.push(xs.slice(i, i + IN_CHUNK));
+  return out;
+}
+
+const marks = (n: number) => Array(n).fill('?').join(', ');
+
+/** card id → assigned agent, for the given card ids on the given boards
+ *  (ids elsewhere or unknown are omitted). */
+export function cardAgents(db: DB, taskIds: string[], projectIds: string[]): Map<string, string | null> {
+  const map = new Map<string, string | null>();
+  if (taskIds.length === 0 || projectIds.length === 0) return map;
+  for (const ids of chunks([...new Set(taskIds)])) {
+    const rows = db
+      .prepare(
+        `SELECT id, assigned_agent FROM tasks WHERE id IN (${marks(ids.length)}) AND project_id IN (${marks(projectIds.length)})`,
+      )
+      .all(...ids, ...projectIds) as { id: string; assigned_agent: string | null }[];
+    for (const r of rows) map.set(r.id, r.assigned_agent);
+  }
+  return map;
+}
+
+/** Per-board lane counts (every lane present, zero-filled) for the given boards. */
+export function laneCounts(db: DB, projectIds: string[]): Map<string, Record<Lane, number>> {
+  const map = new Map(
+    projectIds.map((id) => [id, Object.fromEntries(LANES.map((l) => [l, 0])) as Record<Lane, number>]),
+  );
+  for (const ids of chunks(projectIds)) {
+    const rows = db
+      .prepare(
+        `SELECT project_id, lane, COUNT(*) AS n FROM tasks WHERE project_id IN (${marks(ids.length)}) GROUP BY project_id, lane`,
+      )
+      .all(...ids) as { project_id: string; lane: Lane; n: number }[];
+    for (const r of rows) map.get(r.project_id)![r.lane] = r.n;
+  }
+  return map;
+}
+
 /** A card's unfinished depends_on, cross-board; an unknown id reads as {id, null, null}. */
 function waitingOn(db: DB, dependsOn: string | null): WaitingOn[] {
   const deps: string[] = dependsOn ? JSON.parse(dependsOn) : [];
