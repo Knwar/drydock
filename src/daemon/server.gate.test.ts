@@ -31,7 +31,7 @@ describe('daemon network boundary', () => {
         // from a LAN IP; the gate must still deny it.
         HOST: '0.0.0.0',
         KANKAN_DISPATCHER: '0',
-        KANKAN_TERMINAL: '', // no per-start token → non-loopback callers are token-less
+        KANKAN_TERMINAL: '0', // no per-start token → non-loopback callers are token-less
       },
     });
     port = daemon.port;

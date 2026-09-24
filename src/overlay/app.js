@@ -1234,7 +1234,7 @@ async function initTerminal() {
   } catch {
     return; // daemon hiccup — leave the terminal off
   }
-  if (!cfg.terminal) return;
+  if (!cfg.terminal || !cfg.token) return; // no token → not on this machine
   term.enabled = true;
   term.token = cfg.token;
   termBtn.classList.remove('hidden');

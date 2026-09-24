@@ -33,23 +33,30 @@ const broadcaster = new Broadcaster();
 // live agent session state per project: memory only, never persisted
 const states = new SessionStates();
 
-// ── embedded terminal (opt-in via KANKAN_TERMINAL=1) ────────────────
+// ── embedded terminal (on by default; KANKAN_TERMINAL=0 disables) ───
 // node-pty is an OPTIONAL native dep: the board runs fine without it, and a
-// failed compile just leaves the terminal off. A per-start token (handed only
-// to same-origin overlay loads via /config) gates every /pty connection.
+// failed compile just leaves the terminal off. It is strictly LOCAL: every
+// /pty connection must arrive over loopback AND carry a per-start token
+// (handed out by /config to loopback callers only).
 type PtySpawn = (file: string, args: string[], opts: Record<string, unknown>) => any;
 let ptySpawn: PtySpawn | null = null;
 let terminalToken: string | null = null;
-if (process.env.KANKAN_TERMINAL === '1') {
+if (process.env.KANKAN_TERMINAL !== '0') {
   try {
     const mod: any = await import('node-pty');
     ptySpawn = (mod.spawn ?? mod.default?.spawn) as PtySpawn;
     terminalToken = randomBytes(24).toString('hex');
   } catch (err) {
-    console.warn(`KANKAN_TERMINAL set but node-pty is unavailable — terminal disabled (${(err as Error).message})`);
+    console.warn(`terminal disabled: node-pty unavailable (${(err as Error).message})`);
   }
 }
 const terminalReady = (): boolean => ptySpawn !== null && terminalToken !== null;
+/** A loopback bind address: localhost, ::1 / [::1], or anything in 127.0.0.0/8. */
+const isLoopbackHost = (h: string): boolean =>
+  h === 'localhost' || h === '::1' || h === '[::1]' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
+if (terminalReady() && !isLoopbackHost(HOST)) {
+  console.warn(`note: daemon bound to ${HOST}; the embedded terminal only accepts connections from this machine`);
+}
 
 interface PtySession { proc: any; buffer: string; clients: Set<WebSocket>; agentLaunch?: Promise<unknown> }
 const PTY_BUFFER_CAP = 200_000; // scrollback replayed to (re)attaching clients
@@ -124,9 +131,10 @@ function isLoopback(req: IncomingMessage): boolean {
   return addr != null && LOOPBACK_ADDRS.has(addr);
 }
 
-/** /pty gate: valid per-start token + a same-machine Origin (or none, for CLIs). */
+/** /pty gate: a loopback connection + valid per-start token + a same-machine
+ *  Origin (or none, for CLIs). */
 function authTerminal(req: IncomingMessage, url: URL): boolean {
-  if (!terminalReady() || url.searchParams.get('token') !== terminalToken) return false;
+  if (!terminalReady() || !isLoopback(req) || url.searchParams.get('token') !== terminalToken) return false;
   const origin = req.headers.origin;
   if (origin) {
     try {
@@ -141,7 +149,8 @@ function authTerminal(req: IncomingMessage, url: URL): boolean {
 /** Gate for the outbound-webhook routes (/subscriptions*, /deliveries): allow if
  *  the request is loopback (same machine — how the MCP tools + hooks reach the
  *  daemon, over localhost with no token) OR it presents the daemon's per-start
- *  token (the SAME token the terminal uses, served via /config). Anything else
+ *  token (the SAME token the terminal uses; /config serves it to loopback
+ *  callers only, so a remote caller must be handed it out of band). Anything else
  *  is a non-loopback caller without a valid token → denied. */
 function authDaemonRoute(req: IncomingMessage, url: URL): boolean {
   if (isLoopback(req)) return true;
@@ -551,9 +560,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const method = req.method ?? 'GET';
 
   if (method === 'GET' && pathname === '/config') {
-    // token is readable only same-origin (no CORS headers set) → stays out of
-    // cross-origin pages; the /pty upgrade requires it.
-    return json(res, 200, { terminal: terminalReady(), token: terminalToken });
+    // token goes to loopback callers only (a LAN host could otherwise curl it),
+    // and same-origin only (no CORS headers) → stays out of cross-origin pages.
+    return json(res, 200, { terminal: terminalReady(), token: isLoopback(req) ? terminalToken : null });
   }
 
   if (method === 'GET' && pathname === '/project') {
