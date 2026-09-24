@@ -1868,6 +1868,7 @@ function onDashboardMessage(msg) {
     const b = dash.summary?.boards.find((x) => x.project.id === pid);
     if (!b) return;
     b.project.autopilot = msg.on ? 1 : 0;
+    if (!msg.on) dash.nudged.delete(pid); // no "nudged just now" without a badge
     replaceDashTile(b);
   } else if (msg.type === 'autopilot_nudge') {
     const b = dash.summary?.boards.find((x) => x.project.id === pid);
@@ -1898,6 +1899,7 @@ function openDashboard() {
 }
 
 function closeDashboard() {
+  dash.nudged.clear(); // the socket closes → the clearing status could be missed
   clearTimeout(dash.retryTimer);
   clearTimeout(dash.refetchTimer);
   dash.retryTimer = null;
