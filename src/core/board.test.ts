@@ -23,6 +23,9 @@ import {
   getTask,
   getActiveCards,
   getActivePhase,
+  getAgentBoard,
+  getNowBuilding,
+  getUpNext,
   getAttention,
   findProject,
   getWorkspace,
@@ -1766,5 +1769,186 @@ describe('cross-board depends_on', () => {
     const login = createTask(db, b.id, 'Mobile login', { depends_on: [self.id] });
     const removed = deleteTask(db, self.id);
     assert.deepEqual(removed.unblocked, [login.id]);
+  });
+});
+
+describe('home view reads', () => {
+  function home() {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-home-'));
+    for (const sub of ['mobile', 'web']) mkdirSync(join(dir, sub));
+    const db = openDb();
+    const ws = getOrCreateProject(db, dir, 'Shop');
+    const cleanup = () => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    };
+    const verticals = () => ({
+      mobile: createVertical(db, ws.id, 'Mobile', join(dir, 'mobile')),
+      web: createVertical(db, ws.id, 'Web', join(dir, 'web')),
+    });
+    return { db, ws, verticals, cleanup };
+  }
+
+  it('up next: queued first, then pick order; waiting cards included with their deps', (t) => {
+    const { db, ws, verticals, cleanup } = home();
+    t.after(cleanup);
+    const { mobile } = verticals();
+    const other = createTask(db, mobile.id, 'Other board dep', { requirements: 'x' });
+    const done = createTask(db, ws.id, 'Done dep');
+    moveTask(db, done.id, 'done');
+    const b1 = createTask(db, ws.id, 'Backlog 1', { tag: 'api' });
+    const b2 = createTask(db, ws.id, 'Backlog 2 waits', { depends_on: [b1.id, other.id, 'ghost', done.id] });
+    const q = createTask(db, ws.id, 'Queued', { tag: 'ui' });
+    moveTask(db, q.id, 'queued');
+    const b3 = createTask(db, ws.id, 'Backlog 3');
+
+    const { items, total_pending } = getUpNext(db, mobile.id, 10); // vertical id → that board only
+    assert.deepEqual(items.map((i) => i.id), [other.id]);
+    assert.equal(total_pending, 1);
+
+    // workspace id covers workspace + mobile + web: queued first, then round-robin backlog
+    const single = getUpNext(db, ws.id, 3);
+    assert.deepEqual(single.items.map((i) => i.id), [q.id, b1.id, other.id]);
+    assert.equal(single.total_pending, 5); // q + b1 b2 b3 + other
+    assert.deepEqual(single.items[0], {
+      id: q.id,
+      title: 'Queued',
+      lane: 'queued',
+      tag: 'ui',
+      board: { id: ws.id, name: 'Shop' },
+      ready: true,
+      waiting_on: [],
+    });
+
+    const all = getUpNext(db, ws.id, 10).items;
+    assert.deepEqual(all.map((i) => i.id), [q.id, b1.id, other.id, b2.id, b3.id]);
+    const waiting = all.find((i) => i.id === b2.id)!;
+    assert.equal(waiting.ready, false);
+    assert.deepEqual(waiting.waiting_on, [
+      { id: b1.id, title: 'Backlog 1', board_name: 'Shop' },
+      { id: other.id, title: 'Other board dep', board_name: 'Mobile' }, // cross-board
+      { id: 'ghost', title: null, board_name: null }, // unknown dep
+    ]); // the done dep is not waited on
+  });
+
+  it('up next: pick order is phase-scoped; default n = 3', (t) => {
+    const { db, ws, cleanup } = home();
+    t.after(cleanup);
+    const phase = createPhase(db, ws.id, 'P1');
+    advancePhase(db, ws.id);
+    createTask(db, ws.id, 'Unphased');
+    const ids = [1, 2, 3, 4].map((i) => createTask(db, ws.id, `In phase ${i}`, { phase_id: phase.id }).id);
+    const { items, total_pending } = getUpNext(db, ws.id);
+    assert.deepEqual(items.map((i) => i.id), ids.slice(0, 3));
+    assert.equal(total_pending, 4); // the out-of-phase card isn't pending pick
+  });
+
+  it('up next workspace merge: all queued (board order) first, then backlog round-robin', (t) => {
+    const { db, ws, verticals, cleanup } = home();
+    t.after(cleanup);
+    const { mobile, web } = verticals();
+    const wb1 = createTask(db, ws.id, 'ws b1');
+    const wb2 = createTask(db, ws.id, 'ws b2');
+    const mq = createTask(db, mobile.id, 'mobile q');
+    moveTask(db, mq.id, 'queued');
+    const mb1 = createTask(db, mobile.id, 'mobile b1');
+    const webq = createTask(db, web.id, 'web q');
+    moveTask(db, webq.id, 'queued');
+    const wsq = createTask(db, ws.id, 'ws q');
+    moveTask(db, wsq.id, 'queued');
+    const webb1 = createTask(db, web.id, 'web b1');
+    const webb2 = createTask(db, web.id, 'web b2');
+    const { items, total_pending } = getUpNext(db, ws.id, 20);
+    assert.deepEqual(
+      items.map((i) => i.id),
+      [wsq.id, mq.id, webq.id, wb1.id, mb1.id, webb1.id, wb2.id, webb2.id],
+    );
+    assert.equal(total_pending, 8);
+    assert.deepEqual(items[1].board, { id: mobile.id, name: 'Mobile' });
+  });
+
+  it('now building: in_progress then in_review, subtasks, next criterion, since, blocked; workspace-wide', (t) => {
+    const { db, ws, verticals, cleanup } = home();
+    t.after(cleanup);
+    const { mobile } = verticals();
+    const rev = createTask(db, ws.id, 'Reviewing');
+    moveTask(db, rev.id, 'in_review');
+    const a = createTask(db, mobile.id, 'Building');
+    assignCard(db, a.id, 'Ada', '.trees/a', 'card/a');
+    setSubtasks(db, a.id, ['one', 'two', 'three']);
+    checkSubtask(db, a.id, 0);
+    raiseBlocker(db, a.id, 'which db?');
+    const b = createTask(db, ws.id, 'Plain');
+    moveTask(db, b.id, 'in_progress');
+    createTask(db, ws.id, 'Not active');
+    // pin the move-into-lane times; the latest move into the current lane wins
+    db.prepare(`UPDATE task_events SET created_at = 1000 WHERE task_id = ? AND type = 'move'`).run(a.id);
+    moveTask(db, a.id, 'in_review');
+    moveTask(db, a.id, 'in_progress');
+    db.prepare(
+      `UPDATE task_events SET created_at = 5000 WHERE id = (SELECT MAX(id) FROM task_events WHERE task_id = ? AND type = 'move')`,
+    ).run(a.id);
+    // no move event at all → falls back to updated_at
+    db.prepare(`DELETE FROM task_events WHERE task_id = ? AND type = 'move'`).run(b.id);
+    const bUpdated = getTask(db, b.id).updated_at;
+
+    const items = getNowBuilding(db, ws.id);
+    assert.deepEqual(items.map((i) => i.id), [b.id, a.id, rev.id]);
+    assert.deepEqual(items[1], {
+      id: a.id,
+      title: 'Building',
+      lane: 'in_progress',
+      board: { id: mobile.id, name: 'Mobile' },
+      agent: 'Ada',
+      subtasks: { done: 1, total: 3 },
+      next_criterion: 'two',
+      since: 5000,
+      blocked: true,
+    });
+    assert.equal(items[0].since, bUpdated);
+    assert.deepEqual(items[0].subtasks, { done: 0, total: 0 });
+    assert.equal(items[0].next_criterion, null);
+    assert.equal(items[2].lane, 'in_review');
+    // a vertical id covers just that board
+    assert.deepEqual(getNowBuilding(db, mobile.id).map((i) => i.id), [a.id]);
+  });
+
+  it('agent board: every member, zeros included, workspace sums, lines desc then name', (t) => {
+    const { db, ws, verticals, cleanup } = home();
+    t.after(cleanup);
+    const { mobile } = verticals();
+    const ada = createTeamMember(db, 'Ada', { skill: 'frontend', color: '#f00' });
+    createTeamMember(db, 'Zed');
+    createTeamMember(db, 'Bob');
+    const c1 = createTask(db, ws.id, 'c1');
+    const c2 = createTask(db, mobile.id, 'c2');
+    const run = (project_id: string, task_id: string, agent: string, lines_added: number, ms: number) =>
+      recordActivity(db, { project_id, task_id, agent, tokens: 1, tokens_out: 1, lines_added, lines_removed: 2, ms });
+    run(ws.id, c1.id, 'Ada', 10, 3_600_000);
+    run(ws.id, c1.id, 'Ada', 5, 1_800_000);
+    run(mobile.id, c2.id, 'Ada', 20, 360_000);
+    run(mobile.id, c2.id, 'stranger', 999, 1); // not a team member → not listed
+
+    const board = getAgentBoard(db, ws.id);
+    assert.deepEqual(board.map((m) => m.name), ['Ada', 'Bob', 'Zed']);
+    assert.deepEqual(board[0], {
+      id: ada.id,
+      name: 'Ada',
+      skill: 'frontend',
+      color: '#f00',
+      avatar: null,
+      lines_added: 35,
+      lines_removed: 6,
+      hours: 1.6,
+      cards: 2,
+    });
+    assert.deepEqual(
+      { lines_added: board[1].lines_added, lines_removed: board[1].lines_removed, hours: board[1].hours, cards: board[1].cards },
+      { lines_added: 0, lines_removed: 0, hours: 0, cards: 0 },
+    );
+    const mobileOnly = getAgentBoard(db, mobile.id)[0];
+    assert.equal(mobileOnly.lines_added, 20);
+    assert.equal(mobileOnly.cards, 1);
+    assert.equal(mobileOnly.hours, 0.1);
   });
 });

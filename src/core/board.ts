@@ -6,6 +6,7 @@ import { buildWhere } from './sql-util.js';
 import {
   LANES,
   PHASE_STATUSES,
+  type AgentBoardEntry,
   type AgentStat,
   type AttentionItem,
   type AttentionSeverity,
@@ -15,6 +16,7 @@ import {
   type ProjectStats,
   type EventType,
   type Lane,
+  type NowBuildingItem,
   type Phase,
   type PhaseStatus,
   type PhaseView,
@@ -25,7 +27,10 @@ import {
   type Task,
   type TaskEvent,
   type TeamMember,
+  type UpNext,
+  type UpNextItem,
   type Verdict,
+  type WaitingOn,
   type WorkspaceAttentionItem,
   type WorkspaceSummary,
   type WorkspaceView,
@@ -772,13 +777,11 @@ export function getActiveCards(db: DB, projectId: string): CardSummary[] {
   ).map(toSummary);
 }
 
-/**
- * Top backlog card whose depends_on are all done, or null. Scoped to the active
- * phase when the project has one; otherwise (flat/legacy) the whole backlog.
- */
-export function getNextCard(db: DB, projectId: string): Task | null {
+/** The backlog cards getNextCard picks from, in pick order: scoped to the
+ *  active phase when the project has one, else the whole backlog; by position. */
+function backlogInPickOrder(db: DB, projectId: string): Task[] {
   const active = getActivePhase(db, projectId);
-  const backlog = (
+  return (
     active
       ? db.prepare(
           `SELECT * FROM tasks WHERE project_id = ? AND lane = 'backlog' AND phase_id = ? ORDER BY position`,
@@ -787,6 +790,14 @@ export function getNextCard(db: DB, projectId: string): Task | null {
           `SELECT * FROM tasks WHERE project_id = ? AND lane = 'backlog' ORDER BY position`,
         ).all(projectId)
   ) as Task[];
+}
+
+/**
+ * Top backlog card whose depends_on are all done, or null. Scoped to the active
+ * phase when the project has one; otherwise (flat/legacy) the whole backlog.
+ */
+export function getNextCard(db: DB, projectId: string): Task | null {
+  const backlog = backlogInPickOrder(db, projectId);
   const isDone = db.prepare(`SELECT 1 FROM tasks WHERE id = ? AND lane = 'done'`);
   for (const task of backlog) {
     const deps: string[] = task.depends_on ? JSON.parse(task.depends_on) : [];
@@ -1168,6 +1179,134 @@ export function getWorkspaceSummary(db: DB, projectId: string): WorkspaceSummary
       attention,
     };
   })();
+}
+
+// ── home view: one read for "now building", "up next" and the agent board ──
+
+/** The boards a Home read covers: a workspace id → the workspace + its
+ *  verticals; a vertical or standalone project id → just that board. */
+export function homeScope(db: DB, projectId: string): Project[] {
+  const project = getProject(db, projectId);
+  return project.parent_id === null ? [project, ...listVerticals(db, project.id)] : [project];
+}
+
+/** A card's unfinished depends_on, cross-board; an unknown id reads as {id, null, null}. */
+function waitingOn(db: DB, dependsOn: string | null): WaitingOn[] {
+  const deps: string[] = dependsOn ? JSON.parse(dependsOn) : [];
+  const lookup = db.prepare(
+    `SELECT t.title, t.lane, p.name AS board_name FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = ?`,
+  );
+  const waiting: WaitingOn[] = [];
+  for (const id of deps) {
+    const dep = lookup.get(id) as { title: string; lane: Lane; board_name: string } | undefined;
+    if (!dep) waiting.push({ id, title: null, board_name: null });
+    else if (dep.lane !== 'done') waiting.push({ id, title: dep.title, board_name: dep.board_name });
+  }
+  return waiting;
+}
+
+/**
+ * The next `n` cards to be worked, with their dependency status. Per board:
+ * queued cards first (by position), then the backlog in getNextCard's pick
+ * order (active-phase scoping + position) — cards with unfinished deps are
+ * included as waiting (ready: false), not skipped.
+ *
+ * Workspace merge rule (workspace id): boards in order workspace, then its
+ * verticals. ALL queued cards come first (by board order, then position); then
+ * backlog cards round-robin across boards — each board's 1st pick, then each
+ * board's 2nd pick, … — so one busy board can't crowd out the others.
+ *
+ * total_pending = queued + pickable (phase-scoped) backlog across the scope.
+ */
+export function getUpNext(db: DB, projectId: string, n = 3): UpNext {
+  const boards = homeScope(db, projectId);
+  const queuedStmt = db.prepare(`SELECT * FROM tasks WHERE project_id = ? AND lane = 'queued' ORDER BY position`);
+  const perBoard = boards.map((p) => ({
+    board: p,
+    queued: queuedStmt.all(p.id) as Task[],
+    backlog: backlogInPickOrder(db, p.id),
+  }));
+  const ordered: { task: Task; board: Project }[] = [];
+  for (const b of perBoard) for (const task of b.queued) ordered.push({ task, board: b.board });
+  const rounds = Math.max(0, ...perBoard.map((b) => b.backlog.length));
+  for (let i = 0; i < rounds; i++)
+    for (const b of perBoard) if (b.backlog[i]) ordered.push({ task: b.backlog[i], board: b.board });
+  const items = ordered.slice(0, n).map(({ task, board }): UpNextItem => {
+    const waiting = waitingOn(db, task.depends_on);
+    return {
+      id: task.id,
+      title: task.title,
+      lane: task.lane,
+      tag: task.tag,
+      board: { id: board.id, name: board.name },
+      ready: waiting.length === 0,
+      waiting_on: waiting,
+    };
+  });
+  return { items, total_pending: ordered.length };
+}
+
+/** in_progress then in_review cards across the scope (lane, then board order, then position). */
+export function getNowBuilding(db: DB, projectId: string): NowBuildingItem[] {
+  const boards = homeScope(db, projectId);
+  const stmt = db.prepare(`SELECT * FROM tasks WHERE project_id = ? AND lane = ? ORDER BY position`);
+  // moveTask logs payload {from, to}; the latest move into the current lane is when it got there
+  const enteredAt = db.prepare(
+    `SELECT MAX(created_at) AS t FROM task_events WHERE task_id = ? AND type = 'move' AND json_extract(payload, '$.to') = ?`,
+  );
+  const items: NowBuildingItem[] = [];
+  for (const lane of ['in_progress', 'in_review'] as const) {
+    for (const p of boards) {
+      for (const t of stmt.all(p.id, lane) as Task[]) {
+        const subs: Subtask[] = t.subtasks ? JSON.parse(t.subtasks) : [];
+        const entered = enteredAt.get(t.id, lane) as { t: number | null };
+        items.push({
+          id: t.id,
+          title: t.title,
+          lane: t.lane,
+          board: { id: p.id, name: p.name },
+          agent: t.assigned_agent,
+          subtasks: { done: subs.filter((s) => s.done).length, total: subs.length },
+          next_criterion: subs.find((s) => !s.done)?.text ?? null,
+          since: entered.t ?? t.updated_at,
+          blocked: t.blocked_at != null,
+        });
+      }
+    }
+  }
+  return items;
+}
+
+/** Every team member with their activity (card_activity.agent = member name)
+ *  summed across the scope; members without activity get zeros. */
+export function getAgentBoard(db: DB, projectId: string): AgentBoardEntry[] {
+  const byAgent = new Map<string, { lines_added: number; lines_removed: number; ms: number; cards: number }>();
+  for (const p of homeScope(db, projectId)) {
+    for (const s of getStats(db, p.id).agents) {
+      const acc = byAgent.get(s.agent) ?? { lines_added: 0, lines_removed: 0, ms: 0, cards: 0 };
+      acc.lines_added += s.lines_added;
+      acc.lines_removed += s.lines_removed;
+      acc.ms += s.ms;
+      acc.cards += s.cards; // task ids are per-board, so per-board distinct counts add up
+      byAgent.set(s.agent, acc);
+    }
+  }
+  return listTeam(db)
+    .map((m): AgentBoardEntry => {
+      const a = byAgent.get(m.name) ?? { lines_added: 0, lines_removed: 0, ms: 0, cards: 0 };
+      return {
+        id: m.id,
+        name: m.name,
+        skill: m.skill,
+        color: m.color,
+        avatar: m.avatar,
+        lines_added: a.lines_added,
+        lines_removed: a.lines_removed,
+        hours: Math.round(a.ms / 3.6e5) / 10,
+        cards: a.cards,
+      };
+    })
+    .sort((a, b) => b.lines_added - a.lines_added || a.name.localeCompare(b.name));
 }
 
 // ── sync_links: local<->remote link state for the bridge (Phase 5 foundations) ──

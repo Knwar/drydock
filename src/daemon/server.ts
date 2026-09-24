@@ -17,7 +17,7 @@ import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
 import { sessionCwd, sessionEnv } from './pty-env.js';
 import { ptyGroups, shellInfo, stillOurs, ttyGroups, type ShellInfo } from './pty-groups.js';
-import { SessionStates } from './session-state.js';
+import { SessionStates, type SessionView, type StatusEntry } from './session-state.js';
 
 const PORT = Number(process.env.PORT ?? 7890);
 // Bind loopback by DEFAULT so the daemon (incl. the unauthenticated overlay
@@ -746,6 +746,57 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return json(res, 200, {
       ...summary,
       boards: summary.boards.map((b) => ({ ...b, session: states.view(b.project.id, now) })),
+    });
+  }
+  if (method === 'GET' && pathname === '/home') {
+    const project = url.searchParams.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const now = Date.now();
+    const view = board.getWorkspace(db, project);
+    const self = view.workspace.id === project ? view.workspace : view.verticals.find((v) => v.id === project)!;
+    const standalone = self.parent_id === null && view.verticals.length === 0;
+    const scope = board.homeScope(db, project);
+    const sessions = new Map(scope.map((p) => [p.id, states.view(p.id, now)]));
+    const activity = (e: StatusEntry | null | undefined) => (e ? `${e.verb} ${e.detail}`.trim() : null);
+    const latest = (entries: StatusEntry[]): StatusEntry | undefined => [...entries].sort((a, b) => b.at - a.at)[0];
+    // Status pings name the agent TYPE (e.g. 'builder') while cards store the team
+    // member name, so task_id (derived by the hook from the .trees/<id> cwd) is the
+    // primary join key; the label match is the fallback.
+    const entriesOf = (s: SessionView) => (s.main ? [s.main, ...s.agents] : s.agents);
+    const allEntries = [...sessions.values()].flatMap(entriesOf);
+    const nowBuilding = board.getNowBuilding(db, project).map((card) => {
+      const session = sessions.get(card.board.id)!;
+      let entry =
+        latest(entriesOf(session).filter((e) => e.task_id === card.id)) ??
+        session.agents.find((a) => a.agent === card.agent);
+      if (!entry) {
+        // the main session is working the card when it's the board's only in_progress card
+        const building = board.getActiveCards(db, card.board.id);
+        if (building.length === 1 && building[0].id === card.id) entry = session.main ?? undefined;
+      }
+      return { ...card, activity: activity(entry) };
+    });
+    const cardAgent = new Map(scope.flatMap((p) => board.getBoard(db, p.id).map((c) => [c.id, c.agent] as const)));
+    const agents = board.getAgentBoard(db, project).map((m) => {
+      const entry =
+        latest(allEntries.filter((e) => e.task_id !== null && cardAgent.get(e.task_id) === m.name)) ??
+        latest([...sessions.values()].flatMap((s) => s.agents).filter((a) => a.agent === m.name));
+      return { ...m, now: activity(entry) };
+    });
+    return json(res, 200, {
+      project: { id: self.id, name: self.name, parent_id: self.parent_id },
+      workspace: standalone ? null : view,
+      now_building: nowBuilding,
+      up_next: board.getUpNext(db, project),
+      agents,
+      verticals: standalone
+        ? []
+        : board.getWorkspaceSummary(db, project).boards.map((b) => ({
+            project: { id: b.project.id, name: b.project.name },
+            lanes: b.lanes,
+            session: states.view(b.project.id, now),
+          })),
     });
   }
 
