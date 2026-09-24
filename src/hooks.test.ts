@@ -155,13 +155,15 @@ describe('hook project resolution', () => {
   });
 
   // run on-notify.js asynchronously so the ws client keeps receiving meanwhile
-  const notify = (cwd: string, projectId?: string) =>
+  const notify = (
+    cwd: string,
+    projectId?: string,
+    extra: Record<string, string> = { message: 'Claude needs your permission to use Bash' },
+  ) =>
     new Promise<number | null>((resolve) => {
       const child = spawn(process.execPath, [join(HOOKS, 'on-notify.js')], { cwd, env: env(projectId) });
       child.on('exit', (code) => resolve(code));
-      child.stdin.end(
-        JSON.stringify({ hook_event_name: 'Notification', message: 'Claude needs your permission to use Bash', cwd }),
-      );
+      child.stdin.end(JSON.stringify({ hook_event_name: 'Notification', cwd, ...extra }));
     });
   const statusSocket = async () => {
     const ws = new WebSocket(`${daemon!.base.replace('http', 'ws')}/ws`);
@@ -187,6 +189,26 @@ describe('hook project resolution', () => {
       ws.close();
     }
   });
+
+  for (const [label, extra, verb] of [
+    ['idle_prompt type', { notification_type: 'idle_prompt', message: 'Claude is waiting for your input' }, 'idle'],
+    ['message-only idle text', { message: 'Claude is waiting for your input' }, 'idle'],
+    ['permission_prompt type', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' }, 'needs you'],
+    ['message-only permission text', { message: 'Claude needs your permission to use Bash' }, 'needs you'],
+  ] as const) {
+    it(`on-notify: ${label} → '${verb}'`, async () => {
+      const { ws, statuses } = await statusSocket();
+      try {
+        assert.equal(await notify(wsRoot, verticalId, extra), 0);
+        for (let i = 0; i < 50 && statuses.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+        assert.equal(statuses.length, 1, JSON.stringify(statuses));
+        assert.equal(statuses[0].verb, verb);
+        if (verb === 'idle') assert.equal(statuses[0].detail, 'waiting for user');
+      } finally {
+        ws.close();
+      }
+    });
+  }
 
   it('on-notify: no resolvable project exits 0 and broadcasts nothing', async () => {
     const stray = mkdtempSync(join(tmpdir(), 'kankan-notify-'));

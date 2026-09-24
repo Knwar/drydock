@@ -250,9 +250,10 @@ let lastAgent = '';
 
 function setStatus({ agent, verb, detail, task_id }) {
   statusAt = Date.now();
-  statusIdle = verb === 'idle';
+  // idle and 'needs you' are sticky: no 8s decay to thinking… while blocked on the user
+  statusIdle = verb === 'idle' || verb === 'needs you';
   lastAgent = agent;
-  statusEl.className = statusIdle ? 'idle' : '';
+  statusEl.className = verb === 'idle' ? 'idle' : verb === 'needs you' ? 'needs-you' : '';
   statusEl.innerHTML = `● <span class="who">${esc(agent)}</span> — ${esc(verb)}${detail ? ` ${esc(detail)}` : ''}`;
   if (task_id) pulse(task_id);
 }

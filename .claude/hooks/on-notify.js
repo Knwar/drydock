@@ -11,7 +11,13 @@ try {
     let detail = String(data.message ?? '').replace(/\s+/g, ' ').trim();
     if (detail.length > 64) detail = `${detail.slice(0, 64)}…`;
     // the main session is the one that prompts the human
-    await api('POST', '/status', { project_id: projectId, agent: 'orchestrator', verb: 'needs you', detail });
+    // a finished session waiting for input is idle, not blocked; everything
+    // else (permission prompts, elicitation, unknown types) needs the human
+    const idle =
+      data.notification_type === 'idle_prompt' ||
+      (data.notification_type === undefined && /waiting for your input/i.test(detail));
+    const status = idle ? { verb: 'idle', detail: 'waiting for user' } : { verb: 'needs you', detail };
+    await api('POST', '/status', { project_id: projectId, agent: 'orchestrator', ...status });
   }
 } catch {
   // best-effort
