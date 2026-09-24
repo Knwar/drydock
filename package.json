@@ -44,7 +44,7 @@
     "!**/*.test.*"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "test": "node --import tsx --test \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
     "test:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-exclude=\"**/*.test.ts\" --test-coverage-exclude=\"src/overlay/**\" \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",

@@ -1035,6 +1035,12 @@ describe('deliveries (read-only listing + DLQ)', () => {
     for (let i = 121; i <= 600; i++) insertDelivery(db, { outbox_id: i, subscription_id: 'sub-a' });
     assert.equal(listDeliveries(db, { limit: 9999 }).length, 500);
   });
+
+  it('falls back to the default limit for a non-numeric limit (?limit=abc)', () => {
+    const { db } = setup();
+    for (let i = 1; i <= 120; i++) insertDelivery(db, { outbox_id: i, subscription_id: 'sub-a' });
+    assert.equal(listDeliveries(db, { limit: Number('abc') }).length, 100);
+  });
 });
 
 describe('sync_links (CRUD)', () => {

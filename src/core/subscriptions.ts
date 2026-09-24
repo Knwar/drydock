@@ -169,7 +169,8 @@ export function listDeliveries(
     subscription_id: opts.subscription_id,
     status: opts.status,
   });
-  const limit = Math.min(Math.max(1, opts.limit ?? DELIVERY_LIMIT_DEFAULT), DELIVERY_LIMIT_MAX);
+  const requested = Number.isFinite(opts.limit) ? opts.limit! : DELIVERY_LIMIT_DEFAULT;
+  const limit = Math.min(Math.max(1, requested), DELIVERY_LIMIT_MAX);
   return db
     .prepare(
       `SELECT id, outbox_id, subscription_id, status, attempts, last_status_code, last_error, next_attempt_at, created_at, updated_at
