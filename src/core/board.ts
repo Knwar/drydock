@@ -4,6 +4,7 @@ import type { DB } from './db.js';
 import { buildWhere } from './sql-util.js';
 import {
   LANES,
+  PHASE_STATUSES,
   type AgentStat,
   type AttentionItem,
   type AttentionSeverity,
@@ -519,6 +520,53 @@ export function advancePhase(db: DB, projectId: string): Phase | null {
   if (active) setPhaseStatus(db, active.id, 'done', 'phase_done');
   const next = getNextPhase(db, projectId);
   return next ? setPhaseStatus(db, next.id, 'active', 'phase_activate') : null;
+}
+
+const PHASE_EVENTS: Record<PhaseStatus, EventType> = {
+  planned: 'phase_park',
+  active: 'phase_activate',
+  done: 'phase_done',
+};
+
+/**
+ * Judgment move: park, activate, close, or reorder a phase. Activating parks
+ * any other active phase (at most one active per project). `position` is a
+ * 1-based target index, clamped; all phases are renumbered 1..n.
+ */
+export function updatePhase(
+  db: DB,
+  phaseId: string,
+  patch: { status?: PhaseStatus; position?: number },
+): Phase {
+  const { status, position } = patch;
+  if (status !== undefined && !(PHASE_STATUSES as readonly string[]).includes(status)) {
+    throw new Error(`invalid phase status: ${status}`);
+  }
+  const phase = getPhase(db, phaseId);
+  db.transaction(() => {
+    if (position !== undefined) {
+      const ids = (
+        db.prepare('SELECT id FROM phases WHERE project_id = ? ORDER BY position').all(phase.project_id) as {
+          id: string;
+        }[]
+      )
+        .map((r) => r.id)
+        .filter((id) => id !== phaseId);
+      const idx = Math.min(Math.max(Math.trunc(position), 1), ids.length + 1) - 1;
+      ids.splice(idx, 0, phaseId);
+      const upd = db.prepare('UPDATE phases SET position = ?, updated_at = ? WHERE id = ?');
+      const ts = now();
+      ids.forEach((id, i) => upd.run(i + 1, ts, id));
+    }
+    if (status !== undefined && status !== phase.status) {
+      if (status === 'active') {
+        const active = getActivePhase(db, phase.project_id);
+        if (active && active.id !== phaseId) setPhaseStatus(db, active.id, 'planned', 'phase_park');
+      }
+      setPhaseStatus(db, phaseId, status, PHASE_EVENTS[status]);
+    }
+  })();
+  return getPhase(db, phaseId);
 }
 
 /** Acceptance-criteria progress for a card's subtasks JSON, or null if none. */
