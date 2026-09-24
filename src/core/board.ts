@@ -11,6 +11,7 @@ import {
   type AttentionItem,
   type AttentionSeverity,
   type BoardSummary,
+  type CardPlacement,
   type CardSummary,
   type CardTotals,
   type ProjectStats,
@@ -18,6 +19,7 @@ import {
   type Lane,
   type NowBuildingItem,
   type Phase,
+  type PlacementTarget,
   type PhaseStatus,
   type PhaseView,
   type Project,
@@ -765,6 +767,101 @@ export function getBoard(db: DB, projectId: string): CardSummary[] {
       .prepare(`SELECT ${CARD_COLUMNS} FROM tasks WHERE project_id = ? ORDER BY lane, position`)
       .all(projectId) as CardRow[]
   ).map(toSummary);
+}
+
+/** First two path segments, e.g. 'apps/web/src/x.ts' → 'apps/web'. */
+function topFolder(file: string): string {
+  return file.split('/').slice(0, 2).join('/');
+}
+
+/** Most common topFolder among files; ties go to the first seen. */
+function commonFolder(files: string[]): string {
+  const counts = new Map<string, number>();
+  for (const f of files) counts.set(topFolder(f), (counts.get(topFolder(f)) ?? 0) + 1);
+  let best = '';
+  let bestN = 0;
+  for (const [k, n] of counts) if (n > bestN) [best, bestN] = [k, n];
+  return best;
+}
+
+/** Index of the target with the longest segment-aware folder prefix of file, or -1. */
+function matchTarget(file: string, targets: PlacementTarget[]): number {
+  let best = -1;
+  for (let i = 0; i < targets.length; i++) {
+    const f = targets[i].folder;
+    if (f !== '' && file !== f && !file.startsWith(f + '/')) continue;
+    if (best === -1 || f.length > targets[best].folder.length) best = i;
+  }
+  return best;
+}
+
+/**
+ * Suggest which target folder each open (non-done) card belongs to, from the
+ * distinct files its Edit/Write/MultiEdit/NotebookEdit tool events touched.
+ * Cards in board order (lane, then position).
+ */
+export function suggestCardPlacement(
+  db: DB,
+  projectId: string,
+  targets: PlacementTarget[],
+): CardPlacement[] {
+  const cards = db
+    .prepare(`SELECT id, title, lane FROM tasks WHERE project_id = ? AND lane != 'done' ORDER BY position`)
+    .all(projectId) as { id: string; title: string; lane: Lane }[];
+  cards.sort((a, b) => LANES.indexOf(a.lane) - LANES.indexOf(b.lane));
+  // Normalise folders once: './x' → 'x', '.' → '' (root), no trailing slashes.
+  targets = targets.map((t) => {
+    const folder = t.folder.replace(/^\.\//, '').replace(/\/+$/, '');
+    return { ...t, folder: folder === '.' ? '' : folder };
+  });
+  // json_valid guard: json_extract throws on malformed JSON.
+  const eventsStmt = db.prepare(
+    `SELECT payload FROM task_events WHERE task_id = ? AND type = 'tool'
+       AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.tool') END
+           IN ('Edit', 'Write', 'MultiEdit', 'NotebookEdit')
+     ORDER BY id`,
+  );
+  return cards.map((card) => {
+    const files = new Set<string>();
+    for (const { payload } of eventsStmt.all(card.id) as { payload: string | null }[]) {
+      let p: unknown;
+      try {
+        p = JSON.parse(payload ?? '');
+      } catch {
+        continue;
+      }
+      if (!p || typeof p !== 'object') continue;
+      const { file } = p as { file?: unknown };
+      // Absolute paths are scratch files outside the repo (/private/tmp, ~/.claude) — ignore.
+      if (typeof file === 'string' && file && !file.startsWith('/')) files.add(file);
+    }
+    if (files.size === 0) return { card, suggestion: null, confidence: 'none', evidence: 'no file history', files: 0 };
+    const byTarget: string[][] = targets.map(() => []);
+    const shared: string[] = [];
+    for (const f of files) {
+      const i = matchTarget(f, targets);
+      (i === -1 ? shared : byTarget[i]).push(f);
+    }
+    let top = -1;
+    for (let i = 0; i < byTarget.length; i++) if (top === -1 || byTarget[i].length > byTarget[top].length) top = i;
+    const topN = top === -1 ? 0 : byTarget[top].length;
+    if (shared.length > topN) {
+      return {
+        card,
+        suggestion: null,
+        confidence: 'mixed',
+        evidence: `touches shared files (${commonFolder(shared)})`,
+        files: files.size,
+      };
+    }
+    return {
+      card,
+      suggestion: targets[top].key,
+      confidence: topN / files.size >= 0.75 ? 'strong' : 'mixed',
+      evidence: commonFolder(byTarget[top]),
+      files: files.size,
+    };
+  });
 }
 
 export function getActiveCards(db: DB, projectId: string): CardSummary[] {

@@ -325,3 +325,18 @@ export interface AgentBoardEntry {
   hours: number; // build time, 1 decimal
   cards: number;
 }
+
+/** A folder a card could be placed under (Split dialog). folder is repo-relative, '' = repo root. */
+export interface PlacementTarget {
+  key: string;
+  folder: string;
+}
+
+/** Where an open card most likely belongs, judged from the files it edited. */
+export interface CardPlacement {
+  card: { id: string; title: string; lane: Lane };
+  suggestion: string | null; // a PlacementTarget.key
+  confidence: 'strong' | 'mixed' | 'none';
+  evidence: string;
+  files: number; // distinct edited file paths counted
+}
