@@ -1266,7 +1266,7 @@ async function newTermSession() {
   const project = currentProject();
   if (!project) return;
   try {
-    await fetch(`/pty/reset?project=${encodeURIComponent(project)}`, { method: 'POST' });
+    await fetch(`/pty/reset?project=${encodeURIComponent(project)}&token=${encodeURIComponent(term.token)}`, { method: 'POST' });
   } catch {
     // ignore — reconnecting still spawns a fresh shell if the old one is gone
   }

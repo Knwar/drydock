@@ -46,7 +46,7 @@ if (process.env.KANKAN_TERMINAL === '1') {
 }
 const terminalReady = (): boolean => ptySpawn !== null && terminalToken !== null;
 
-interface PtySession { proc: any; buffer: string; clients: Set<WebSocket> }
+interface PtySession { proc: any; buffer: string; clients: Set<WebSocket>; agentStartedAt?: number }
 const PTY_BUFFER_CAP = 200_000; // scrollback replayed to (re)attaching clients
 const ptySessions = new Map<string, PtySession>();
 
@@ -546,9 +546,27 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return json(res, 200, board.getAttention(db, project));
   }
 
+  if (method === 'POST' && pathname === '/pty/agent') {
+    // launch `claude` in the project's shell — command execution, so gated
+    // exactly like the /pty upgrade.
+    if (!terminalReady()) return json(res, 409, { error: 'terminal disabled' });
+    if (!authTerminal(req, url)) return json(res, 403, { error: 'forbidden' });
+    const project = url.searchParams.get('project');
+    const root = project ? projectRoot(project) : null;
+    if (!project || !root) return json(res, 404, { error: 'unknown project' });
+    const session = getPtySession(project, root);
+    // sessions leave the map on exit, so a set flag means the shell is alive
+    if (session.agentStartedAt) return json(res, 200, { started: false, reason: 'already running' });
+    session.agentStartedAt = Date.now();
+    session.proc.write('claude\r');
+    return json(res, 200, { started: true });
+  }
+
   if (method === 'POST' && pathname === '/pty/reset') {
     // kill the project's shared shell; onExit drops the session, so the next
     // /pty connect spawns a fresh one.
+    if (!terminalReady()) return json(res, 409, { error: 'terminal disabled' });
+    if (!authTerminal(req, url)) return json(res, 403, { error: 'forbidden' });
     const project = url.searchParams.get('project');
     const session = project ? ptySessions.get(project) : undefined;
     if (session) session.proc.kill();
