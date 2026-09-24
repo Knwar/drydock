@@ -217,10 +217,14 @@ function applyEvent(msg) {
   } else if (msg.type === 'verticals') {
     onVerticals(msg);
   }
+  if (activeView === 'home') onHomeMessage(msg);
 }
 
 // ── subscription usage bars (fed by the statusline script) ─────────
+let lastUsage = null;
 function renderUsage(usage) {
+  lastUsage = usage ?? null;
+  if (activeView === 'home') renderHomeHead();
   const windows = [
     ['usage-5h', usage?.five_hour],
     ['usage-wk', usage?.seven_day],
@@ -412,15 +416,18 @@ const railScm = document.getElementById('rail-scm');
 const railPhases = document.getElementById('rail-phases');
 const railStats = document.getElementById('rail-stats');
 const railDashboard = document.getElementById('rail-dashboard');
+const railHome = document.getElementById('rail-home');
+const homeView = document.getElementById('home-view');
 const attentionView = document.getElementById('attention-view');
 const scmView = document.getElementById('scm-view');
 const phasesView = document.getElementById('phases-view');
 const statsView = document.getElementById('stats-view');
 const dashboardView = document.getElementById('dashboard-view');
-let activeView = 'kanban'; // 'attention' | 'kanban' | 'scm' | 'phases' | 'stats' | 'dashboard'
+let activeView = 'kanban'; // 'home' | 'attention' | 'kanban' | 'scm' | 'phases' | 'stats' | 'dashboard'
 
 // Non-kanban views take over the whole board area (full-screen).
 function setView(name) {
+  const prev = activeView;
   activeView = name;
   railAttention.classList.toggle('active', name === 'attention');
   railKanban.classList.toggle('active', name === 'kanban');
@@ -428,18 +435,21 @@ function setView(name) {
   railPhases.classList.toggle('active', name === 'phases');
   railStats.classList.toggle('active', name === 'stats');
   railDashboard.classList.toggle('active', name === 'dashboard');
+  railHome.classList.toggle('active', name === 'home');
   attentionView.classList.toggle('hidden', name !== 'attention');
   boardEl.classList.toggle('hidden', name !== 'kanban');
   scmView.classList.toggle('hidden', name !== 'scm');
   phasesView.classList.toggle('hidden', name !== 'phases');
   statsView.classList.toggle('hidden', name !== 'stats');
   dashboardView.classList.toggle('hidden', name !== 'dashboard');
+  homeView.classList.toggle('hidden', name !== 'home');
   if (name === 'scm') refreshFiles();
   if (name === 'phases') renderPhaseDetail();
   if (name === 'attention') renderAttention();
   if (name === 'stats') loadStats();
   if (name === 'dashboard') openDashboard();
-  else closeDashboard();
+  else if (!(name === 'home' && prev === 'home')) closeDashboard(); // also drops Home's all-projects socket on leave
+  if (name === 'home' && prev !== 'home') openHome();
 }
 
 railAttention.onclick = () => setView('attention');
@@ -448,6 +458,7 @@ railScm.onclick = () => setView('scm');
 railPhases.onclick = () => setView('phases');
 railStats.onclick = () => setView('stats');
 railDashboard.onclick = () => setView('dashboard');
+railHome.onclick = () => setView('home');
 
 // ── project stats: tokens / lines / time, per agent ─────────────────
 const fmtTokens = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n | 0));
@@ -515,8 +526,10 @@ async function refreshAttention() {
     if (URL_VIEW === 'dashboard') await dashProbe;
     if (initialViewSet) return;
     initialViewSet = true;
+    if (URL_VIEW && URL_VIEW !== 'dashboard' && URL_VIEWS.includes(URL_VIEW)) return setView(URL_VIEW); // ?view= wins
     const dv = SETTINGS.defaultView;
-    if (dv === 'attention' || (dv === 'smart' && blockers)) setView('attention');
+    if (dv === 'home') setView('home');
+    else if (dv === 'attention' || (dv === 'smart' && blockers)) setView('attention');
   }
 }
 
@@ -1242,6 +1255,7 @@ async function initTerminal() {
   if (h) termPanel.style.height = `${h}px`;
   if (localStorage.getItem('term.open') === '1') openTerm();
   if (activeView === 'dashboard') renderDashboard(); // tiles gain their ❯_ buttons
+  if (activeView === 'home') renderHome(); // Send to agent + Watch terminal appear
 }
 
 function makeTab(id, name) {
@@ -1517,7 +1531,7 @@ $('term-resize').addEventListener('mousedown', (e) => {
 const SETTINGS = {
   accent: localStorage.getItem('settings.accent') || '#5dd3a8',
   reduceMotion: localStorage.getItem('settings.reduceMotion') === '1',
-  defaultView: localStorage.getItem('settings.defaultView') || 'smart',
+  defaultView: localStorage.getItem('settings.defaultView') || 'home', // never changed → Home
   office: localStorage.getItem('settings.office') === '1',
 };
 const ACCENTS = ['#5dd3a8', '#61afef', '#b57edc', '#e5c07b', '#e06c75', '#56b6c2'];
@@ -1760,8 +1774,9 @@ $('team-add-btn').onclick = addTeamMember;
 // Also its own URL for an OBS scene: ?project=<id>&view=dashboard[&embed=1].
 // Every user-controlled string goes in via textContent (node() below) — never innerHTML.
 const URL_VIEW = new URLSearchParams(location.search).get('view');
+const URL_VIEWS = ['home', 'attention', 'kanban', 'scm', 'phases', 'stats'];
 const EMBED = new URLSearchParams(location.search).get('embed') === '1';
-const dash = { checked: false, workspace: null, summary: null, failed: false, fetchRetry: 1000, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null, skipOpenFetch: false, nudged: new Map() };
+const dash = { checked: false, workspace: null, summary: null, failed: false, fetchRetry: 1000, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null, refetchFirst: null, skipOpenFetch: false, nudged: new Map() };
 const DASH_LANES = [['backlog', 'backlog'], ['queued', 'queued'], ['in_progress', 'in prog'], ['in_review', 'review'], ['done', 'done']];
 const DASH_STATE = { working: 'working', idle: 'idle', needs_you: '⚠ needs you', offline: 'offline' };
 const DASH_MAX_CARDS = 5;
@@ -1828,9 +1843,20 @@ async function loadDashboard() {
   if (activeView === 'dashboard') renderDashboard();
 }
 
+// Debounced refetch of whichever socket-fed view is showing (dashboard or Home):
+// 400ms after the last trigger, but never later than 1.5s after the first
+// pending one, so steady traffic can't starve the refetch.
+const REFETCH_DEBOUNCE_MS = 400;
+const REFETCH_MAX_WAIT_MS = 1500;
 function scheduleDashboardRefetch() {
   clearTimeout(dash.refetchTimer);
-  dash.refetchTimer = setTimeout(loadDashboard, 400);
+  const now = Date.now();
+  dash.refetchFirst ??= now;
+  const wait = Math.max(0, Math.min(REFETCH_DEBOUNCE_MS, dash.refetchFirst + REFETCH_MAX_WAIT_MS - now));
+  dash.refetchTimer = setTimeout(() => {
+    dash.refetchFirst = null;
+    (activeView === 'home' ? loadHome : loadDashboard)();
+  }, wait);
 }
 
 function dashConnect() {
@@ -1842,7 +1868,7 @@ function dashConnect() {
     // anything missed while disconnected) or when that fetch failed.
     const skip = dash.skipOpenFetch && !dash.failed;
     dash.skipOpenFetch = false;
-    if (!skip) loadDashboard();
+    if (!skip) (activeView === 'home' ? loadHome : loadDashboard)();
   };
   ws.onmessage = (e) => onDashboardMessage(JSON.parse(e.data));
   ws.onclose = () => {
@@ -1856,6 +1882,8 @@ function dashConnect() {
 function onDashboardMessage(msg) {
   const pid = msg.type === 'event' ? msg.event?.project_id : msg.project_id;
   if (!pid || !dash.ids.has(pid)) return;
+  // the current project's messages come in on the board socket already
+  if (activeView === 'home') return void (pid !== projectId && onHomeMessage(msg));
   if (msg.type === 'status') {
     const b = dash.summary?.boards.find((x) => x.project.id === pid);
     if (!b || !msg.session) return;
@@ -1902,6 +1930,7 @@ function closeDashboard() {
   dash.nudged.clear(); // the socket closes → the clearing status could be missed
   clearTimeout(dash.retryTimer);
   clearTimeout(dash.refetchTimer);
+  dash.refetchFirst = null;
   dash.retryTimer = null;
   dash.retry = 1000;
   dash.fetchRetry = 1000;
@@ -2105,6 +2134,476 @@ function dashTile(b, isMain) {
   tile.append(foot);
   return tile;
 }
+
+// ── Home: default landing — now building, verticals, agents, up next, send ──
+// One read (GET /home) re-fetched on live board messages; status messages are
+// applied in place first. Every user-controlled string goes in via node().
+const home = { data: null, failed: false, sessions: new Map(), target: null };
+// status is applied in place (applyHomeStatus), never refetched; init = board socket (re)connected
+const HOME_REFETCH = ['init', 'card', 'card_removed', 'phases', 'event', 'verticals', 'autopilot'];
+const HOME_MAX_UP_NEXT = 3;
+
+function fmtElapsed(since) {
+  const m = Math.max(0, Math.floor((Date.now() - since) / 60000));
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return m % 60 ? `${h} h ${m % 60} min` : `${h} h`;
+  return `${Math.floor(h / 24)} d`;
+}
+tick.add(() => {
+  if (activeView !== 'home') return;
+  for (const el of homeView.querySelectorAll('[data-since]')) el.textContent = fmtElapsed(Number(el.dataset.since));
+});
+
+function openHome() {
+  renderHome(); // last good data, or the loading state
+  loadHome();
+}
+
+async function loadHome() {
+  const project = currentProject();
+  if (!project) return;
+  let data;
+  try {
+    const res = await fetch(`/home?project=${encodeURIComponent(project)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+    home.sessions = new Map(data.verticals.map((v) => [v.project.id, v.session]));
+    if (!data.verticals.length) {
+      // standalone: /home carries no session → read it for the Send box's state
+      const s = await fetch(`/session?project=${encodeURIComponent(data.project.id)}`);
+      if (s.ok) home.sessions.set(data.project.id, await s.json());
+    }
+  } catch {
+    home.failed = true;
+    if (activeView !== 'home') return;
+    renderHome();
+    clearTimeout(dash.refetchTimer);
+    dash.refetchTimer = setTimeout(loadHome, dash.fetchRetry);
+    dash.fetchRetry = Math.min(dash.fetchRetry * 2, 10000);
+    return;
+  }
+  home.failed = false;
+  dash.fetchRetry = 1000;
+  home.data = data;
+  if (activeView !== 'home') return;
+  renderHome();
+  // in a workspace, the other boards' traffic arrives on the all-projects socket
+  if (data.verticals.length) {
+    dash.ids = new Set(data.verticals.map((v) => v.project.id));
+    if (!dash.ws && !dash.retryTimer) {
+      dash.skipOpenFetch = true;
+      dashConnect();
+    }
+  }
+}
+
+// Board WS (this project) and the all-projects socket (workspace boards) both land here.
+function onHomeMessage(msg) {
+  if (msg.type === 'status') applyHomeStatus(msg);
+  if (HOME_REFETCH.includes(msg.type)) scheduleDashboardRefetch();
+}
+
+// Cheap in-place update: session state (pills, Send box) + activity text.
+function applyHomeStatus(msg) {
+  const d = home.data;
+  if (!d || !msg.status) return;
+  const pid = msg.project_id;
+  if (msg.session && pid) {
+    home.sessions.set(pid, msg.session);
+    const v = d.verticals.find((x) => x.project.id === pid);
+    if (v) v.session = msg.session;
+  }
+  const st = msg.status;
+  const act = `${st.verb} ${st.detail ?? ''}`.trim();
+  for (const nb of d.now_building) {
+    if (nb.id !== st.task_id) continue;
+    nb.activity = act;
+    for (const a of d.agents) if (nb.agent && a.name === nb.agent) a.now = act;
+  }
+  renderHome();
+}
+
+const homeBoardName = (board) => (board.id === home.data?.workspace?.workspace.id ? 'Main' : board.name);
+
+function homeChip(cls, text, color) {
+  const c = node('span', `home-pill ${cls}`, text);
+  if (color) c.style.setProperty('--chip', color);
+  return c;
+}
+const homeLaneChip = (lane) => {
+  const c = homeChip('home-lane', LANE_NAME(lane));
+  c.dataset.lane = lane;
+  return c;
+};
+const homeBoardChip = (board) => homeChip('board', homeBoardName(board), accentFor(board.name));
+
+function homeLabel(text, extra) {
+  const el = node('div', 'home-label', text);
+  if (extra) el.append(node('span', 'home-label-n', extra));
+  return el;
+}
+
+function homeOpenCard(card) {
+  if (card.board.id === projectId) openCardModal(card.id);
+  else location.search = `?project=${encodeURIComponent(card.board.id)}&card=${encodeURIComponent(card.id)}`;
+}
+
+async function homeQueue(id, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Queuing…';
+  btn.parentElement.querySelector('.home-qerr')?.remove();
+  let error = null;
+  try {
+    const res = await fetch(`/task/${encodeURIComponent(id)}/move`, { method: 'POST', body: JSON.stringify({ lane: 'queued' }) });
+    if (!res.ok) error = (await res.json().catch(() => ({}))).error || 'Couldn’t queue — try again';
+  } catch {
+    error = 'Couldn’t queue — try again';
+  }
+  if (error) {
+    btn.disabled = false;
+    btn.textContent = 'Queue it';
+    btn.before(node('span', 'home-qerr', error));
+    return;
+  }
+  scheduleDashboardRefetch();
+}
+
+function homeQueueBtn(item) {
+  if (!item.ready || item.lane !== 'backlog') return null;
+  const b = node('button', 'home-btn', 'Queue it');
+  b.onclick = () => homeQueue(item.id, b);
+  return b;
+}
+
+// Placeholder hook for the agent editor (a later card replaces it).
+function openAgentEditor(member) {
+  console.debug('openAgentEditor', member?.id);
+}
+
+function renderHome() {
+  const d = home.data;
+  if (!d) {
+    $('home-name').textContent = '';
+    $('home-sub').textContent = home.failed ? 'Couldn’t load Home — retrying…' : 'Loading…';
+    for (const id of ['home-now', 'home-verticals', 'home-agents', 'home-upnext']) $(id).replaceChildren();
+    $('home-verticals').classList.add('hidden');
+    $('home-send').classList.add('hidden');
+    return;
+  }
+  renderHomeHead();
+  renderHomeNow();
+  renderHomeVerticals();
+  renderHomeAgents();
+  renderHomeUpNext();
+  renderHomeSend();
+}
+
+function renderHomeHead() {
+  const d = home.data;
+  if (!d) return;
+  $('home-name').textContent = d.project.name;
+  const parts = [];
+  if (d.workspace) {
+    const n = d.workspace.verticals.length;
+    parts.push(`workspace · ${n} vertical${n === 1 ? '' : 's'}`);
+  }
+  const i = phases.findIndex((p) => p.status === 'active');
+  if (i >= 0) parts.push(`Phase ${i + 1} of ${phases.length}: ${phases[i].title}`);
+  if (home.failed) parts.push('reconnecting…');
+  $('home-sub').textContent = parts.join(' · ');
+  const u = [];
+  if (typeof lastUsage?.five_hour?.used_percentage === 'number') u.push(`5h ${Math.round(lastUsage.five_hour.used_percentage)}%`);
+  if (typeof lastUsage?.seven_day?.used_percentage === 'number') u.push(`week ${Math.round(lastUsage.seven_day.used_percentage)}%`);
+  $('home-usage').textContent = u.length ? `usage ${u.join(' · ')}` : '';
+}
+
+function renderHomeNow() {
+  const d = home.data;
+  const host = $('home-now');
+  const [cur, ...rest] = d.now_building;
+  host.replaceChildren(homeLabel('Now building', d.now_building.length > 1 ? `${d.now_building.length}` : null));
+  host.classList.toggle('empty', !cur);
+  if (!cur) {
+    host.append(node('div', 'home-hero-title muted', 'Nothing in flight'));
+    const top = d.up_next.items[0];
+    if (top) {
+      const row = node('div', 'home-hero-next');
+      const txt = node('div', 'home-hero-next-txt');
+      txt.append(node('span', 'home-dim', 'Up next: '), node('span', '', top.title));
+      row.append(txt);
+      const q = homeQueueBtn(top);
+      if (q) row.append(q);
+      host.append(row);
+    }
+    return;
+  }
+  const chips = node('div', 'home-chips-row');
+  if (d.workspace) chips.append(homeBoardChip(cur.board));
+  chips.append(homeLaneChip(cur.lane));
+  if (cur.blocked) chips.append(homeChip('blocked', '✋ blocked'));
+  const el = node('span', 'home-elapsed', fmtElapsed(cur.since));
+  el.dataset.since = cur.since;
+  chips.append(el);
+  host.append(chips, node('div', 'home-hero-title', cur.title));
+
+  const who = node('div', `home-activity${cur.activity ? ' on' : ''}`);
+  who.append(node('span', 'home-dot'));
+  const text = cur.agent
+    ? cur.activity ? `${cur.agent} · ${cur.activity}` : cur.agent
+    : cur.activity ? `unassigned · ${cur.activity}` : 'unassigned';
+  who.append(node('span', '', text));
+  host.append(who);
+
+  const { done, total } = cur.subtasks;
+  if (total) {
+    const prog = node('div', 'home-progress');
+    const bar = node('div', 'home-bar');
+    const fill = node('span', 'home-bar-fill');
+    fill.style.width = `${Math.round((100 * done) / total)}%`;
+    bar.append(fill);
+    prog.append(bar, node('span', 'home-progress-n', `${done}/${total}`));
+    host.append(prog);
+    if (cur.next_criterion) {
+      const nx = node('div', 'home-next');
+      nx.append(node('span', 'home-dim', 'Next up: '), node('span', '', cur.next_criterion));
+      host.append(nx);
+    }
+  }
+
+  const actions = node('div', 'home-actions');
+  const open = node('button', 'home-btn primary', 'Open card');
+  open.onclick = () => homeOpenCard(cur);
+  actions.append(open);
+  if (term.enabled) {
+    const watch = node('button', 'home-btn', 'Watch terminal');
+    watch.onclick = () => openBoardTerminal(cur.board.id);
+    actions.append(watch);
+  }
+  host.append(actions);
+
+  if (rest.length) {
+    const list = node('div', 'home-others');
+    for (const c of rest) {
+      const row = node('button', 'home-other');
+      if (d.workspace) row.append(homeBoardChip(c.board));
+      row.append(node('span', 'home-other-title', c.title));
+      if (c.blocked) row.append(node('span', 'home-blocked-mark', '✋'));
+      row.append(homeLaneChip(c.lane));
+      row.onclick = () => homeOpenCard(c);
+      list.append(row);
+    }
+    host.append(list);
+  }
+}
+
+function renderHomeVerticals() {
+  const d = home.data;
+  const host = $('home-verticals');
+  const on = d.verticals.length > 0;
+  host.classList.toggle('hidden', !on);
+  $('home-top').classList.toggle('solo', !on);
+  if (!on) return host.replaceChildren();
+  const list = node('div', 'home-vlist');
+  for (const v of d.verticals) {
+    const s = v.session ?? { state: 'offline' };
+    const row = node('div', 'home-vrow');
+    row.dataset.state = s.state;
+    const head = node('div', 'home-vhead');
+    const pill = node('span', 'dt-pill');
+    pill.append(node('span', 'dt-dot'), node('span', '', DASH_STATE[s.state] ?? s.state));
+    head.append(node('span', 'home-vname', homeBoardName(v.project)), pill);
+    const lanes = DASH_LANES.map(([lane, label]) => `${v.lanes?.[lane] ?? 0} ${label}`).join(' · ');
+    row.append(head, node('div', 'home-vlanes', lanes));
+    list.append(row);
+  }
+  const foot = node('button', 'home-link', 'Dashboard →');
+  foot.onclick = () => setView('dashboard');
+  host.replaceChildren(homeLabel('Verticals', `${d.verticals.length}`), list, foot);
+}
+
+function homeAvatar(m) {
+  const av = node('span', 'home-avatar');
+  if (m.avatar) {
+    const img = document.createElement('img');
+    img.src = `/avatars/${encodeURIComponent(m.avatar)}`;
+    img.alt = '';
+    av.append(img);
+  } else {
+    av.textContent = ((m.name || '?').trim()[0] ?? '?').toUpperCase();
+    av.style.background = m.color || accentFor(m.name);
+  }
+  return av;
+}
+
+function renderHomeAgents() {
+  const d = home.data;
+  const host = $('home-agents');
+  if (!d.agents.length) {
+    host.replaceChildren(node('div', 'home-empty', 'No team members yet — add them in Settings → Team.'));
+    return;
+  }
+  host.replaceChildren(
+    ...d.agents.map((m) => {
+      const card = node('div', 'home-agent');
+      const top = node('div', 'home-agent-top');
+      const id = node('div', 'home-agent-id');
+      id.append(node('div', 'home-agent-name', m.name), node('div', 'home-agent-skill', m.skill ?? 'no skill'));
+      const edit = node('button', 'home-edit', '✎');
+      edit.setAttribute('aria-label', `Edit ${m.name}`);
+      edit.title = `Edit ${m.name}`;
+      edit.onclick = () => openAgentEditor(m);
+      top.append(homeAvatar(m), id, edit);
+      const stats = node('div', 'home-agent-stats');
+      const stat = (val, label, cls) => {
+        const s = node('div', 'home-stat');
+        s.append(node('div', `home-stat-val ${cls ?? ''}`, val), node('div', 'home-stat-label', label));
+        return s;
+      };
+      stats.append(stat(`+${m.lines_added}`, 'lines written', 'add'), stat(`${m.hours}`, 'hours worked'));
+      const now = node('div', `home-activity${m.now ? ' on' : ''}`);
+      now.append(node('span', 'home-dot'), node('span', 'home-agent-now', m.now ?? 'idle'));
+      card.append(top, stats, now);
+      return card;
+    }),
+  );
+}
+
+function renderHomeUpNext() {
+  const d = home.data;
+  const host = $('home-upnext');
+  const items = d.up_next.items.slice(0, HOME_MAX_UP_NEXT);
+  host.replaceChildren(homeLabel('Up next'));
+  const list = node('div', 'home-uplist');
+  if (!items.length) list.append(node('div', 'home-empty', 'Nothing waiting — the board is clear.'));
+  for (const it of items) {
+    const row = node('div', 'home-uprow');
+    const main = node('div', 'home-upmain');
+    const top = node('div', 'home-chips-row');
+    if (d.workspace) top.append(homeBoardChip(it.board));
+    top.append(homeLaneChip(it.lane));
+    main.append(top, node('div', 'home-uptitle', it.title));
+    let status;
+    if (it.ready) status = node('div', 'home-status ready', 'Ready');
+    else {
+      const w = it.waiting_on
+        .map((x) => (x.title == null ? 'an unknown card' : `${x.title} (${x.board_name})`))
+        .join(', ');
+      status = node('div', 'home-status waiting', w === 'an unknown card' ? 'Waiting on an unknown card' : `Waiting on: ${w}`);
+    }
+    main.append(status);
+    row.append(main);
+    const q = homeQueueBtn(it);
+    if (q) row.append(q);
+    list.append(row);
+  }
+  const all = node('button', 'home-link', `View all ${d.up_next.total_pending} in Kanban →`);
+  all.onclick = () => setView('kanban');
+  host.append(list, all);
+}
+
+// The Send box is static markup (so typing survives re-renders): only the
+// target options, the needs-you gate and visibility are refreshed here.
+function homeTargets() {
+  const d = home.data;
+  if (!d) return [];
+  return d.verticals.length
+    ? d.verticals.map((v) => ({ id: v.project.id, name: homeBoardName(v.project) }))
+    : [{ id: d.project.id, name: d.project.name }];
+}
+
+function renderHomeSend() {
+  const box = $('home-send');
+  const on = term.enabled && !!term.token && !!home.data;
+  box.classList.toggle('hidden', !on);
+  $('home-bottom').classList.toggle('solo', !on);
+  if (!on) return;
+  const targets = homeTargets();
+  if (!targets.some((t) => t.id === home.target)) {
+    home.target = (targets.find((t) => t.id === currentProject()) ?? targets[0])?.id ?? null;
+  }
+  const sel = $('home-send-target');
+  sel.replaceChildren(
+    ...targets.map((t) => {
+      const st = home.sessions.get(t.id)?.state ?? 'offline';
+      return Object.assign(document.createElement('option'), { value: t.id, textContent: `${t.name} — ${DASH_STATE[st] ?? st}` });
+    }),
+  );
+  sel.value = home.target ?? '';
+  const needs = home.sessions.get(home.target)?.state === 'needs_you';
+  $('home-send-btn').disabled = needs || home.sending === true;
+  const res = $('home-send-result');
+  if (needs) {
+    res.textContent = 'Waiting for a decision — answer it in the terminal';
+    res.className = 'warn';
+  } else if (res.dataset.gate === '1') {
+    res.textContent = '';
+    res.className = '';
+  }
+  res.dataset.gate = needs ? '1' : '';
+}
+
+async function homeSend() {
+  const text = $('home-send-text').value.trim();
+  const res = $('home-send-result');
+  if (!text || !home.target) return;
+  home.sending = true;
+  $('home-send-btn').disabled = true;
+  res.textContent = 'Sending…';
+  res.className = '';
+  try {
+    const post = () => fetch(`/pty/send?${ptyQuery(home.target)}`, { method: 'POST', body: JSON.stringify({ text }) });
+    let r = await post();
+    if (r.status === 403) {
+      // daemon restarted → the cached token is stale: refresh it once and retry
+      try {
+        const cfg = await (await fetch('/config')).json();
+        if (cfg.token) term.token = cfg.token;
+      } catch {
+        /* fall through to the retry, which reports the failure */
+      }
+      r = await post();
+    }
+    const out = await r.json().catch(() => ({}));
+    if (r.status === 403) {
+      res.textContent = 'Couldn’t reach the terminal — reload the page';
+      res.className = 'err';
+    } else if (r.ok && out.sent) {
+      res.textContent = 'Sent';
+      res.className = 'ok';
+      $('home-send-text').value = '';
+    } else {
+      res.textContent = out.error || `error ${r.status}`;
+      res.className = 'err';
+    }
+  } catch {
+    res.textContent = 'Could not reach the daemon';
+    res.className = 'err';
+  }
+  res.dataset.gate = '';
+  home.sending = false;
+  renderHomeSend();
+}
+
+$('home-send-target').onchange = (e) => {
+  home.target = e.target.value;
+  $('home-send-result').textContent = '';
+  renderHomeSend();
+};
+for (const chip of document.querySelectorAll('#home-send .home-chip')) {
+  chip.onclick = () => {
+    $('home-send-text').value = chip.dataset.text;
+    $('home-send-text').focus();
+  };
+}
+$('home-send-btn').onclick = homeSend;
+
+// Show the landing view at once — no Kanban flash while the first board data and
+// attention fetch are in flight. 'smart' and ?view=dashboard still wait for data;
+// scm needs the project id before it can load.
+const EARLY_VIEW = URL_VIEW === 'dashboard' ? null : URL_VIEWS.includes(URL_VIEW) ? URL_VIEW : SETTINGS.defaultView === 'home' ? 'home' : null;
+if (EARLY_VIEW && EARLY_VIEW !== 'scm') setView(EARLY_VIEW);
 
 connect();
 if (!EMBED) initTerminal(); // an OBS scene gets no terminal (and no pty sockets)
