@@ -33,23 +33,28 @@ const broadcaster = new Broadcaster();
 // live agent session state per project: memory only, never persisted
 const states = new SessionStates();
 
-// ── embedded terminal (opt-in via KANKAN_TERMINAL=1) ────────────────
+// ── embedded terminal (on by default; KANKAN_TERMINAL=0 disables) ───
 // node-pty is an OPTIONAL native dep: the board runs fine without it, and a
 // failed compile just leaves the terminal off. A per-start token (handed only
 // to same-origin overlay loads via /config) gates every /pty connection.
 type PtySpawn = (file: string, args: string[], opts: Record<string, unknown>) => any;
 let ptySpawn: PtySpawn | null = null;
 let terminalToken: string | null = null;
-if (process.env.KANKAN_TERMINAL === '1') {
+if (process.env.KANKAN_TERMINAL !== '0') {
   try {
     const mod: any = await import('node-pty');
     ptySpawn = (mod.spawn ?? mod.default?.spawn) as PtySpawn;
     terminalToken = randomBytes(24).toString('hex');
   } catch (err) {
-    console.warn(`KANKAN_TERMINAL set but node-pty is unavailable — terminal disabled (${(err as Error).message})`);
+    console.warn(`terminal disabled: node-pty unavailable (${(err as Error).message})`);
   }
 }
 const terminalReady = (): boolean => ptySpawn !== null && terminalToken !== null;
+if (terminalReady() && !['127.0.0.1', '::1', 'localhost'].includes(HOST)) {
+  console.warn(
+    `WARNING: embedded terminal is reachable on ${HOST} — protected only by the per-start token; set KANKAN_TERMINAL=0 to disable`,
+  );
+}
 
 interface PtySession { proc: any; buffer: string; clients: Set<WebSocket>; agentLaunch?: Promise<unknown> }
 const PTY_BUFFER_CAP = 200_000; // scrollback replayed to (re)attaching clients

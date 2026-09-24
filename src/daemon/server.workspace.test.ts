@@ -58,7 +58,7 @@ describe('daemon workspace/vertical routes', () => {
   before(async () => {
     daemon = await startDaemon({
       // GIT_ENV: init (run by POST /vertical for separate repos) may commit
-      env: { HOST: '127.0.0.1', KANKAN_DISPATCHER: '0', KANKAN_TERMINAL: '', ...GIT_ENV },
+      env: { HOST: '127.0.0.1', KANKAN_DISPATCHER: '0', KANKAN_TERMINAL: '0', ...GIT_ENV },
     });
     port = daemon.port;
     dir = daemon.dbDir;

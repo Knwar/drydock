@@ -19,6 +19,8 @@ export interface TestDaemon {
   stop(): Promise<void>;
   /** The daemon's exit code once it has exited (null if still running or killed by a signal). */
   exitCode(): number | null;
+  /** Everything the daemon has written to stdout + stderr so far. */
+  output(): string;
 }
 
 /** A free TCP port (bind :0, read it back, release it). */
@@ -55,22 +57,28 @@ function waitForUp(base: string, exited: () => boolean, timeoutMs = START_TIMEOU
   });
 }
 
-export async function startDaemon(opts: { env?: Record<string, string> } = {}): Promise<TestDaemon> {
+/** opts.env overrides the child env; a value of `undefined` DELETES that var. */
+export async function startDaemon(opts: { env?: Record<string, string | undefined> } = {}): Promise<TestDaemon> {
   const port = await freePort();
   const dbDir = mkdtempSync(join(tmpdir(), 'kankan-test-daemon-'));
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    HOST: '127.0.0.1',
+    KANKAN_DISPATCHER: '0',
+    KANKAN_TERMINAL: '0',
+    KANKAN_AUTOPILOT: '0', // never type into a pty unless a test opts in
+    ...opts.env,
+    PORT: String(port),
+    DB_PATH: join(dbDir, 'board.db'),
+  };
+  for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
   const proc = spawn(process.execPath, ['--import', 'tsx', SERVER], {
-    env: {
-      ...process.env,
-      HOST: '127.0.0.1',
-      KANKAN_DISPATCHER: '0',
-      KANKAN_TERMINAL: '',
-      KANKAN_AUTOPILOT: '0', // never type into a pty unless a test opts in
-      ...opts.env,
-      PORT: String(port),
-      DB_PATH: join(dbDir, 'board.db'),
-    },
-    stdio: 'ignore',
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  let out = '';
+  proc.stdout!.setEncoding('utf8').on('data', (d: string) => (out += d));
+  proc.stderr!.setEncoding('utf8').on('data', (d: string) => (out += d));
   let exited = false;
   let code: number | null = null;
   const exit = new Promise<void>((resolve) => {
@@ -100,5 +108,5 @@ export async function startDaemon(opts: { env?: Record<string, string> } = {}): 
     await stop();
     throw err;
   }
-  return { base, port, dbDir, stop, exitCode: () => code };
+  return { base, port, dbDir, stop, exitCode: () => code, output: () => out };
 }
