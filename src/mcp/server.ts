@@ -267,6 +267,20 @@ server.registerTool(
 );
 
 server.registerTool(
+  'update_phase',
+  {
+    description:
+      'Park, activate, close, or reorder a roadmap phase. Activating demotes the current active phase to planned. Judgment move — use advance_phase for the normal phase loop.',
+    inputSchema: {
+      phase_id: z.string(),
+      status: z.enum(['planned', 'active', 'done']).optional(),
+      position: z.number().int().min(1).optional(),
+    },
+  },
+  ({ phase_id, status, position }) => api('POST', `/phase/${phase_id}`, { status, position }),
+);
+
+server.registerTool(
   'create_subscription',
   {
     description:

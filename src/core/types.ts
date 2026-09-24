@@ -96,6 +96,7 @@ export const EVENT_TYPES = [
   'phase_create',
   'phase_activate',
   'phase_done',
+  'phase_park',
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];

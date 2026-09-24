@@ -38,6 +38,7 @@ import {
   resolveBlocker,
   resolveSyncConflict,
   setSubtasks,
+  updatePhase,
   taskContentHash,
   updateSyncLink,
   updateTask,
@@ -548,6 +549,55 @@ describe('phases', () => {
     const [view] = getPhases(db, project.id);
     assert.deepEqual(view.progress, { done: 1, total: 2 });
     assert.equal(getBoard(db, project.id)[0].phase_id, p1.id);
+  });
+
+  it('update_phase activate parks the current active phase', () => {
+    const { db, project } = setup();
+    const p1 = createPhase(db, project.id, 'One');
+    const p2 = createPhase(db, project.id, 'Two');
+    advancePhase(db, project.id); // p1 active
+    assert.equal(updatePhase(db, p2.id, { status: 'active' }).status, 'active');
+    assert.equal(getPhase(db, p1.id).status, 'planned');
+    assert.equal(getPhases(db, project.id).filter((p) => p.status === 'active').length, 1);
+    const types = getRecentEvents(db, project.id).slice(0, 2).map((e) => e.type);
+    assert.deepEqual(types.sort(), ['phase_activate', 'phase_park']);
+  });
+
+  it('update_phase closes a non-active phase without touching the active one', () => {
+    const { db, project } = setup();
+    const p1 = createPhase(db, project.id, 'One');
+    const p2 = createPhase(db, project.id, 'Two');
+    advancePhase(db, project.id); // p1 active
+    assert.equal(updatePhase(db, p2.id, { status: 'done' }).status, 'done');
+    assert.equal(getActivePhase(db, project.id)!.id, p1.id);
+  });
+
+  it('update_phase reorders to contiguous positions and clamps out-of-range', () => {
+    const { db, project } = setup();
+    const a = createPhase(db, project.id, 'A');
+    const b = createPhase(db, project.id, 'B');
+    const c = createPhase(db, project.id, 'C');
+    updatePhase(db, c.id, { position: 1 });
+    let order = getPhases(db, project.id);
+    assert.deepEqual(order.map((p) => p.id), [c.id, a.id, b.id]);
+    assert.deepEqual(order.map((p) => p.position), [1, 2, 3]);
+    updatePhase(db, c.id, { position: 99 });
+    order = getPhases(db, project.id);
+    assert.deepEqual(order.map((p) => p.id), [a.id, b.id, c.id]);
+    assert.deepEqual(order.map((p) => p.position), [1, 2, 3]);
+    updatePhase(db, c.id, { position: 0 });
+    assert.equal(getPhases(db, project.id)[0].id, c.id);
+  });
+
+  it('update_phase rejects an invalid status; same status is a no-op', () => {
+    const { db, project } = setup();
+    const p1 = createPhase(db, project.id, 'One');
+    assert.throws(() => updatePhase(db, p1.id, { status: 'bogus' as never }), /invalid phase status/);
+    assert.throws(() => updatePhase(db, 'nope', { status: 'done' }), /no such phase/);
+    const before = getRecentEvents(db, project.id).length;
+    updatePhase(db, p1.id, { status: 'planned' });
+    assert.equal(getRecentEvents(db, project.id).length, before);
+    assert.equal(getPhase(db, p1.id).status, 'planned');
   });
 });
 

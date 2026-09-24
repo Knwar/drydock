@@ -662,6 +662,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     announcePhases(b.project_id);
     return json(res, 200, phase);
   }
+  // after /phase/advance, so 'advance' is never taken as a phase id
+  const phaseMatch = pathname.match(/^\/phase\/([^/]+)$/);
+  if (method === 'POST' && phaseMatch) {
+    const b = await readBody(req);
+    const phase = board.updatePhase(db, phaseMatch[1], { status: b.status, position: b.position });
+    announcePhases(phase.project_id);
+    return json(res, 200, phase);
+  }
 
   const taskMatch = pathname.match(/^\/task\/([^/]+)(?:\/(move|review|check|redirect|activity|block|unblock))?$/);
   if (taskMatch) {
