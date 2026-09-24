@@ -240,12 +240,12 @@ describe('init-project.sh: first commit + registration', { timeout: 180_000 }, (
   let daemon: TestDaemon | undefined;
   let tmp: string;
   const script = join(HOOKS, '..', '..', 'scripts', 'init-project.sh');
-  const init = (target: string) =>
+  const init = (target: string, update = '') =>
     spawnSync('sh', [script, target, 'init-test'], {
       env: {
         ...process.env,
         DAEMON_URL: daemon!.base,
-        KANKAN_UPDATE: '',
+        KANKAN_UPDATE: update,
         GIT_AUTHOR_NAME: 't',
         GIT_AUTHOR_EMAIL: 't@t',
         GIT_COMMITTER_NAME: 't',
@@ -329,6 +329,23 @@ describe('init-project.sh: first commit + registration', { timeout: 180_000 }, (
     assert.ok(
       settings.hooks.Stop.some((e: { hooks: { command: string }[] }) => e.hooks.some((h) => h.command === 'echo mine')),
     );
+  });
+
+  it('kankan update refreshes the protocol block (workspace mode) and the kit agents', () => {
+    const target = join(tmp, 'updated');
+    mkdirSync(target);
+    assert.equal(init(target).status, 0);
+    // Simulate a project installed from an older kit.
+    const md = join(target, 'CLAUDE.md');
+    writeFileSync(md, '# mine\n\n<!-- kankan:begin -->\n# Kankan protocol\nold\n<!-- kankan:end -->\n');
+    for (const a of ['manager.md', 'planner.md']) writeFileSync(join(target, '.claude', 'agents', a), 'old\n');
+    const r = init(target, '1');
+    assert.equal(r.status, 0, r.stderr);
+    const text = readFileSync(md, 'utf8');
+    assert.ok(text.includes('## Workspace mode (projects with verticals)'));
+    assert.ok(text.startsWith('# mine'));
+    for (const a of ['manager.md', 'planner.md'])
+      assert.match(readFileSync(join(target, '.claude', 'agents', a), 'utf8'), /vertical/);
   });
 
   it('a path with & and a space registers under the right root', async () => {
