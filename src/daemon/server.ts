@@ -58,7 +58,15 @@ if (terminalReady() && !isLoopbackHost(HOST)) {
   console.warn(`note: daemon bound to ${HOST}; the embedded terminal only accepts connections from this machine`);
 }
 
-interface PtySession { proc: any; buffer: string; clients: Set<WebSocket>; agentLaunch?: Promise<unknown> }
+interface PtySession {
+  proc: any;
+  buffer: string;
+  clients: Set<WebSocket>;
+  agentLaunch?: Promise<unknown>;
+  /** Tail of the per-session chain that serializes typing into Claude
+   *  (autopilot nudges + /pty/send), so two writes never interleave. */
+  typing?: Promise<unknown>;
+}
 const PTY_BUFFER_CAP = 200_000; // scrollback replayed to (re)attaching clients
 const ptySessions = new Map<string, PtySession>();
 
@@ -117,6 +125,34 @@ async function launchAgent(session: PtySession, fresh: boolean) {
     await new Promise((r) => setTimeout(r, 50));
   }
   return { started: true };
+}
+
+/** True iff the pty's foreground process group leader looks like Claude Code
+ *  (not the shell, vim, a dev server, a nested shell…). */
+async function claudeIsForeground(session: PtySession): Promise<boolean> {
+  const fg = await foregroundPgid(session);
+  if (fg <= 0 || fg === session.proc.pid) return false;
+  try {
+    const { stdout } = await execFileAsync('ps', ['-ww', '-o', 'command=', '-p', String(fg)]);
+    return looksLikeClaude(stdout);
+  } catch {
+    return false; // process gone → not in foreground
+  }
+}
+
+/** Type `text` into Claude Code's input (not a shell → no Ctrl-U line-kill),
+ *  then Enter. The short gap keeps the Enter from being read as part of a paste. */
+async function typeIntoClaude(session: PtySession, text: string): Promise<void> {
+  session.proc.write(text);
+  await new Promise((r) => setTimeout(r, 100));
+  session.proc.write('\r');
+}
+
+/** Run `fn` after any earlier typing into this session has finished. */
+function withTypingLock<T>(session: PtySession, fn: () => Promise<T>): Promise<T> {
+  const run = (session.typing ?? Promise.resolve()).then(fn);
+  session.typing = run.catch(() => undefined);
+  return run;
 }
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -237,29 +273,19 @@ async function evaluateAutopilot(projectId: string): Promise<void> {
     };
     const session = ptySessions.get(projectId);
     if (!shouldNudge(input).nudge || !session) return;
-    // Only type into Claude Code itself: the pty's foreground process group
-    // leader must look like claude (not vim, a dev server, a nested shell…).
-    const fg = await foregroundPgid(session);
-    let claudeForeground = false;
-    if (fg > 0 && fg !== session.proc.pid) {
-      try {
-        const { stdout } = await execFileAsync('ps', ['-ww', '-o', 'command=', '-p', String(fg)]);
-        claudeForeground = looksLikeClaude(stdout);
-      } catch {
-        /* process gone → not in foreground */
-      }
-    }
-    if (!shouldNudge({ ...input, claudeForeground }).nudge) return;
-    // the async checks took time: re-confirm the same idle period is still current
-    const fresh = states.view(projectId, Date.now());
-    if (fresh.state !== 'idle' || fresh.main === null || idleSince(fresh) !== input.mainIdleSince) return;
-    if (ptySessions.get(projectId) !== session) return;
-    lastNudgedIdleAt.set(projectId, input.mainIdleSince!);
-    // typed into Claude Code's input (not a shell) → no Ctrl-U line-kill. The
-    // short gap keeps the Enter from being read as part of a paste.
-    session.proc.write(NUDGE_PROMPT);
-    await new Promise((r) => setTimeout(r, 100));
-    session.proc.write('\r');
+    // Only type into Claude Code itself (serialized with /pty/send typing).
+    const typed = await withTypingLock(session, async () => {
+      const claudeForeground = await claudeIsForeground(session);
+      if (!shouldNudge({ ...input, claudeForeground }).nudge) return false;
+      // the async checks took time: re-confirm the same idle period is still current
+      const fresh = states.view(projectId, Date.now());
+      if (fresh.state !== 'idle' || fresh.main === null || idleSince(fresh) !== input.mainIdleSince) return false;
+      if (ptySessions.get(projectId) !== session) return false;
+      lastNudgedIdleAt.set(projectId, input.mainIdleSince!);
+      await typeIntoClaude(session, NUDGE_PROMPT);
+      return true;
+    });
+    if (!typed) return;
     broadcaster.send(projectId, { type: 'autopilot_nudge', project_id: projectId, at: now });
     board.appendEvent(db, { project_id: projectId, type: 'autopilot', payload: { nudged: true } });
     flushEvents();
@@ -752,6 +778,37 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const launch = prev.then(() => launchAgent(session, fresh));
     session.agentLaunch = launch.catch(() => undefined);
     return json(res, 200, await launch);
+  }
+
+  if (method === 'POST' && pathname === '/pty/send') {
+    // types text into the project's Claude session — gated like /pty/agent, and
+    // only into a verified, idle Claude Code foreground (same bar as autopilot).
+    if (!terminalReady()) return json(res, 409, { error: 'terminal disabled' });
+    if (!authTerminal(req, url)) return json(res, 403, { error: 'forbidden' });
+    const project = url.searchParams.get('project');
+    if (!project || !projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const b = await readBody(req);
+    const text =
+      typeof b.text === 'string'
+        ? b.text
+            .replace(/[\r\n]+/g, ' ')
+            .replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+            .trim()
+        : '';
+    if (text.length < 1 || text.length > 2000) return json(res, 400, { error: 'text must be 1-2000 characters' });
+    const session = ptySessions.get(project);
+    if (!session) return json(res, 409, { error: 'no claude session' });
+    const result = await withTypingLock(session, async () => {
+      if (ptySessions.get(project) !== session || !(await claudeIsForeground(session))) return 'no claude session';
+      const state = states.view(project, Date.now()).state;
+      if (state !== 'idle' && state !== 'needs_you') return state === 'working' ? 'agent busy' : 'no claude session';
+      await typeIntoClaude(session, text);
+      return null;
+    });
+    if (result) return json(res, 409, { error: result });
+    board.appendEvent(db, { project_id: project, type: 'note', payload: { text, via: 'home' } });
+    flushEvents();
+    return json(res, 200, { sent: true });
   }
 
   if (method === 'POST' && pathname === '/pty/reset') {
