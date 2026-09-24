@@ -104,7 +104,8 @@ describe('daemon GET /home', () => {
     const q = await task(webId, 'Web queued');
     await post(`/task/${q}/move`, { lane: 'queued' });
     await task(wsId, 'Workspace backlog');
-    await post('/status', { project_id: mobileId, agent: 'Ada', agent_id: 'x1', verb: 'Write', detail: 'app.tsx' });
+    // the real hook sends the agent TYPE plus the task_id it derived from the worktree cwd
+    await post('/status', { project_id: mobileId, agent: 'builder', agent_id: 'x1', task_id: a, verb: 'Write', detail: 'app.tsx' });
 
     for (const id of [wsId, mobileId]) {
       const h = await home(id);
