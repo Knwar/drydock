@@ -174,6 +174,15 @@ function announcePhases(projectId: string): void {
   flushEvents();
 }
 
+function announceVerticals(workspaceId: string): void {
+  broadcaster.send(workspaceId, {
+    type: 'verticals',
+    project_id: workspaceId,
+    verticals: board.listVerticals(db, workspaceId),
+  });
+  flushEvents();
+}
+
 // ── git (for the overlay's commit modal) ────────────────────────────
 const execFileAsync = promisify(execFile);
 
@@ -424,14 +433,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // at their root (what `kankan init` writes). Stray cwds (neither) stay hidden.
     const rows = db
       .prepare(
-        `SELECT p.id, p.name, p.root_path AS root,
+        `SELECT p.id, p.name, p.root_path AS root, p.parent_id,
                 EXISTS (SELECT 1 FROM tasks t WHERE t.project_id = p.id) AS has_cards
          FROM projects p ORDER BY p.created_at DESC`,
       )
-      .all() as { id: string; name: string; root: string; has_cards: number }[];
+      .all() as { id: string; name: string; root: string; parent_id: string | null; has_cards: number }[];
+    const setUp = new Set(rows.filter((r) => r.has_cards || existsSync(join(r.root, '.mcp.json'))).map((r) => r.id));
+    // a vertical has no .mcp.json and may have no cards → shown whenever its workspace is
     const visible = rows
-      .filter((r) => r.has_cards || existsSync(join(r.root, '.mcp.json')))
-      .map((r) => ({ id: r.id, name: r.name }));
+      .filter((r) => setUp.has(r.id) || (r.parent_id !== null && setUp.has(r.parent_id)))
+      .map((r) => ({ id: r.id, name: r.name, parent_id: r.parent_id }));
     return json(res, 200, visible);
   }
 
@@ -475,12 +486,38 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return json(res, 200, { project_id: project.id, name: project.name, path: root });
   }
 
+  // ── workspaces / verticals ──────────────────────────────────────────
+  if (method === 'POST' && pathname === '/vertical') {
+    const b = await readBody(req);
+    if (!b.workspace_id || !b.name || !b.root)
+      return json(res, 400, { error: 'workspace_id, name and root required' });
+    const v = board.createVertical(db, b.workspace_id, b.name, b.root);
+    announceVerticals(b.workspace_id);
+    return json(res, 200, { project_id: v.id, name: v.name, root_path: v.root_path, parent_id: v.parent_id });
+  }
+  if (method === 'GET' && pathname === '/verticals') {
+    const project = url.searchParams.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    return json(res, 200, board.listVerticals(db, project));
+  }
+  if (method === 'GET' && pathname === '/workspace') {
+    const project = url.searchParams.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    // clean 404 (not the catch-all 400) so hooks can validate an env-provided id
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    return json(res, 200, board.getWorkspace(db, project));
+  }
+
   const projMatch = pathname.match(/^\/project\/([^/]+)(?:\/(repo))?$/);
   if (projMatch && projMatch[1] !== 'new' && projMatch[1] !== 'pick') {
     const [, pid, action] = projMatch;
     if (method === 'DELETE' && !action) {
+      const parent = db.prepare('SELECT parent_id FROM projects WHERE id = ?').get(pid) as
+        | { parent_id: string | null }
+        | undefined;
       board.deleteProject(db, pid);
       broadcaster.send(pid, { type: 'project_removed', project_id: pid });
+      if (parent?.parent_id) announceVerticals(parent.parent_id); // a vertical left its workspace
       return json(res, 200, { deleted: pid });
     }
     if (method === 'POST' && action === 'repo') {
@@ -666,6 +703,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const phaseMatch = pathname.match(/^\/phase\/([^/]+)$/);
   if (method === 'POST' && phaseMatch) {
     const b = await readBody(req);
+    if (b.position !== undefined && !(Number.isInteger(b.position) && b.position >= 1))
+      return json(res, 400, { error: 'position must be an integer >= 1' });
     const phase = board.updatePhase(db, phaseMatch[1], { status: b.status, position: b.position });
     announcePhases(phase.project_id);
     return json(res, 200, phase);
