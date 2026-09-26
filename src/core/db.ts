@@ -46,6 +46,8 @@ export function migrate(db: DB): void {
   // Activity role: the subagent type that ran a build, kept apart from the credited agent.
   const activityCols = (db.pragma('table_info(card_activity)') as { name: string }[]).map((c) => c.name);
   if (!activityCols.includes('role')) db.exec('ALTER TABLE card_activity ADD COLUMN role TEXT');
+  if (!activityCols.includes('estimated'))
+    db.exec('ALTER TABLE card_activity ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0');
   if (cols.includes('assigned_agent')) backfillActivityAgents(db); // absent only on hand-built test tables
 }
 
