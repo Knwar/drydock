@@ -237,6 +237,29 @@ server.registerTool(
 );
 
 server.registerTool(
+  'get_forecast',
+  {
+    description:
+      'Monte Carlo finish-date forecast for the not-done cards of a committed plan (plan_id), a phase (project_id + phase_id), or the whole board (project_id), resampling the scope\'s daily throughput over the last `weeks` (default 6) calendar weeks. Returns p50/p85/p95 {days, date} + a days histogram, or status insufficient_history (need 10 history days and 5 done cards). tz: IANA zone, default the daemon\'s.',
+    inputSchema: {
+      project_id: z.string().optional(),
+      phase_id: z.string().optional(),
+      plan_id: z.string().optional(),
+      tag: z.enum(['ui', 'api', 'db', 'infra']).optional(),
+      weeks: z.number().int().min(2).max(52).optional(),
+      tz: z.string().optional(),
+    },
+  },
+  ({ project_id, phase_id, plan_id, tag, weeks, tz }) => {
+    const params = new URLSearchParams();
+    for (const [k, v] of [['project', project_id], ['phase', phase_id], ['plan', plan_id], ['tag', tag], ['weeks', weeks?.toString()], ['tz', tz]] as const) {
+      if (v) params.set(k, v);
+    }
+    return api('GET', `/metrics/forecast?${params}`);
+  },
+);
+
+server.registerTool(
   'get_team',
   {
     description:

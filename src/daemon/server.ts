@@ -12,6 +12,7 @@ import * as board from '../core/board.js';
 import * as subscriptions from '../core/subscriptions.js';
 import * as drafts from '../core/plan-drafts.js';
 import * as metrics from '../core/metrics.js';
+import * as forecast from '../core/forecast.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
 import { cardLines } from '../core/lines.js';
@@ -1336,6 +1337,44 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return json(res, 200, view(db, filter, { tz, now }));
     } catch (err) {
       // bad params → 400; anything else is ours → 500 (route()'s outer catch would say 400)
+      const status = err instanceof metrics.MetricsParamError ? 400 : 500;
+      return json(res, status, { error: (err as Error).message });
+    }
+  }
+
+  // ── forecast: Monte Carlo finish dates (core/forecast.ts). Target: plan, else phase, else the whole board ──
+  if (method === 'GET' && pathname === '/metrics/forecast') {
+    const q = url.searchParams;
+    const planId = q.get('plan');
+    const phaseId = q.get('phase');
+    let project = q.get('project');
+    if (planId && phaseId) return json(res, 400, { error: 'give plan or phase, not both' });
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
+    try {
+      const weeks = forecast.intParam(q.get('weeks'), 'weeks', 2, 52);
+      const seed = forecast.intParam(q.get('seed'), 'seed', 0, 2 ** 32 - 1);
+      let target: forecast.ForecastTarget = { kind: 'board' };
+      if (planId) {
+        const draft = drafts.getDraft(db, planId);
+        if (!draft) return json(res, 404, { error: 'unknown plan' });
+        if (project && project !== draft.workspace_id) return json(res, 400, { error: 'plan is not on this project' });
+        if (draft.committed_version === null) return json(res, 409, { error: 'plan is not committed' });
+        project = draft.workspace_id;
+        target = { kind: 'plan', cardIds: Object.values(draft.data.committed) };
+      }
+      if (!project) return json(res, 400, { error: 'project required' });
+      if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+      if (phaseId) {
+        const phase = db.prepare('SELECT project_id FROM phases WHERE id = ?').get(phaseId) as { project_id: string } | undefined;
+        if (!phase) return json(res, 404, { error: 'unknown phase' });
+        const boards = [project, ...board.listVerticals(db, project).map((v) => v.id)];
+        if (!boards.includes(phase.project_id)) return json(res, 400, { error: 'phase is not on this project' });
+        target = { kind: 'phase', phaseId };
+      }
+      const tag = q.get('tag') || undefined;
+      return json(res, 200, forecast.forecast(db, { projectId: project, tag }, target, { tz, now: Date.now(), weeks, seed }));
+    } catch (err) {
       const status = err instanceof metrics.MetricsParamError ? 400 : 500;
       return json(res, status, { error: (err as Error).message });
     }
