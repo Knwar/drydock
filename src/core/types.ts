@@ -342,3 +342,83 @@ export interface CardPlacement {
   evidence: string;
   files: number; // distinct edited file paths counted
 }
+
+// ── visual planner drafts (plans kept off the board until committed) ──
+
+export const PLAN_TAGS = ['ui', 'api', 'db', 'infra'] as const;
+export type PlanTag = (typeof PLAN_TAGS)[number];
+
+/** One planned card. `id` is client-generated and unique within its draft. */
+export interface PlanNode {
+  id: string;
+  title: string;
+  requirements?: string;
+  subtasks?: string[];
+  tag?: PlanTag;
+  board_id: string; // the workspace itself or one of its verticals
+  phase?: string; // a phase NAME
+  touches?: string[]; // repo-relative paths/globs the card is expected to change
+}
+
+/** `to` depends on `from`. */
+export interface PlanEdge {
+  from: string;
+  to: string;
+}
+
+/** The JSON stored in plan_drafts.data. */
+export interface PlanData {
+  nodes: PlanNode[];
+  edges: PlanEdge[];
+  committed: Record<string, string>; // nodeId -> cardId, maintained by commit
+}
+
+export interface PlanDraft {
+  id: string;
+  workspace_id: string;
+  title: string;
+  version: number;
+  data: PlanData;
+  committed_version: number | null;
+  committed_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/** A draft without its heavy data, for lists. */
+export interface PlanDraftSummary extends Omit<PlanDraft, 'data'> {
+  node_count: number;
+  edge_count: number;
+}
+
+export interface PlanIssue {
+  code: string;
+  message: string;
+  nodes?: string[];
+  edges?: PlanEdge[];
+}
+
+export interface PlanValidation {
+  errors: PlanIssue[]; // block commit
+  warnings: PlanIssue[];
+}
+
+/** A board a node can target. root is relative to the workspace root ('' for the workspace). */
+export interface PlanBoard {
+  id: string;
+  name: string;
+  root: string;
+}
+
+export interface PlanContext {
+  boards: PlanBoard[];
+}
+
+/** One edit to a draft; applied in batches by applyDraftOps. */
+export type DraftOp =
+  | { op: 'add_node'; node: PlanNode }
+  | { op: 'update_node'; id: string; patch: Partial<Omit<PlanNode, 'id'>> }
+  | { op: 'remove_node'; id: string }
+  | { op: 'add_edge'; from: string; to: string }
+  | { op: 'remove_edge'; from: string; to: string }
+  | { op: 'set_title'; title: string };
