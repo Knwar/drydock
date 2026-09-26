@@ -400,7 +400,10 @@ export interface PlanIssue {
 
 export interface PlanValidation {
   errors: PlanIssue[]; // block commit
-  warnings: PlanIssue[];
+  warnings: PlanIssue[]; // incl. one `shared_file` per pair of cards (full detail)
+  /** The `shared_file` warnings grouped per path (code `shared_file_group`): one issue
+   *  per touched path, listing every card involved. What the planner strip shows. */
+  groups: PlanIssue[];
 }
 
 /** A board a node can target. root is relative to the workspace root ('' for the workspace). */

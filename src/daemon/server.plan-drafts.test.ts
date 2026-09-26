@@ -70,7 +70,7 @@ describe('/plan-drafts routes', () => {
     const view = await get(d.id);
     assert.equal(view.draft.id, d.id);
     assert.deepEqual(view.layout, { columns: {}, longestChain: [] });
-    assert.deepEqual(view.validation, { errors: [], warnings: [] });
+    assert.deepEqual(view.validation, { errors: [], warnings: [], groups: [] });
     assert.deepEqual(
       view.boards.map((b) => [b.id, b.root]),
       [

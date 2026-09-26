@@ -17,7 +17,7 @@ import {
   setCardLines,
 } from './board.js';
 import { openDb, type DB } from './db.js';
-import { applyRecount, cardLines, isCountedPath, planRecount, sumNumstat } from './lines.js';
+import { applyRecount, cardLines, isCountedPath, mergeCommit, planRecount, sumNumstat } from './lines.js';
 
 const WORKTREE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'worktree.js');
 
@@ -106,6 +106,20 @@ describe('line counting', () => {
     assert.equal(git(repo, 'config', '--get', `branch.card/${task.id}.kankanbase`), 'feat');
     git(repo, 'checkout', 'main'); // the root checkout moved: the recorded base still wins
     assert.deepEqual(await cardLines(repo, task.id), { added: 12, removed: 0, source: 'branch' });
+  });
+
+  it('merge lookup searches for the one card; a longer id sharing the prefix is not a match', async (t) => {
+    const repo = fixtureRepo(t);
+    buildCard(repo, 'abc-long', { 'src/long.ts': lines(4) });
+    wt(repo, 'merge', 'abc-long');
+    assert.equal(await mergeCommit(repo, 'abc'), null);
+    buildCard(repo, 'abc', { 'src/short.ts': lines(2) });
+    assert.equal(await mergeCommit(repo, 'abc'), null); // unmerged: counted from its branch
+    assert.deepEqual(await cardLines(repo, 'abc'), { added: 2, removed: 0, source: 'branch' });
+    wt(repo, 'merge', 'abc');
+    assert.equal(await mergeCommit(repo, 'abc'), git(repo, 'rev-parse', 'HEAD'));
+    assert.deepEqual(await cardLines(repo, 'abc'), { added: 2, removed: 0, source: 'merge' });
+    assert.deepEqual(await cardLines(repo, 'abc-long'), { added: 4, removed: 0, source: 'merge' });
   });
 
   it('a card built twice is counted once (the latest diff, not the sum of runs)', async (t) => {

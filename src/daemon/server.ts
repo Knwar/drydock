@@ -14,6 +14,7 @@ import * as drafts from '../core/plan-drafts.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
 import { cardLines } from '../core/lines.js';
+import { cachedCodeVersion, readCodeVersion } from './code-version.js';
 import type { PlanDraft, Project, Task } from '../core/types.js';
 import { looksLikeClaude, NUDGE_PROMPT, resetsAtMs, shouldNudge, type NudgeInput } from './autopilot.js';
 import { Broadcaster } from './broadcast.js';
@@ -31,6 +32,11 @@ const HOST = process.env.HOST ?? '127.0.0.1';
 const DB_PATH = process.env.DB_PATH ?? join(process.cwd(), 'data', 'board.db');
 const OVERLAY_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'overlay');
 const INIT_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'init-project.sh');
+
+// the code this daemon runs (recorded at startup) vs what is on disk now (GET /version)
+const CODE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const RUNNING_VERSION = await readCodeVersion(CODE_ROOT);
+const diskVersion = cachedCodeVersion(CODE_ROOT);
 
 const db = openDb(DB_PATH);
 const broadcaster = new Broadcaster();
@@ -556,11 +562,17 @@ async function git(root: string, ...args: string[]): Promise<string> {
 }
 
 /** Replace a card's line counts with its git-derived change (merge commit, else
- *  branch vs its base). Best-effort: leaves them as-is when git has nothing. */
-async function recountCard(task: Task): Promise<void> {
-  const root = projectRoot(task.project_id);
-  const lines = root ? await cardLines(root, task.id) : null;
-  if (lines) board.setCardLines(db, task.id, lines.added, lines.removed);
+ *  branch vs its base), then announce the card. Best-effort: leaves them as-is
+ *  when git has nothing. Called AFTER the response is sent (git can be slow);
+ *  errors are logged, never thrown. */
+function recountCard(task: Task): void {
+  void (async () => {
+    const root = projectRoot(task.project_id);
+    const lines = root ? await cardLines(root, task.id) : null;
+    if (!lines) return;
+    board.setCardLines(db, task.id, lines.added, lines.removed);
+    announce(board.getTask(db, task.id));
+  })().catch((err) => console.error(`line recount for ${task.id} failed: ${(err as Error).message}`));
 }
 
 async function gitStatus(root: string) {
@@ -717,7 +729,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (method === 'GET' && pathname === '/config') {
     // token goes to loopback callers only (a LAN host could otherwise curl it),
     // and same-origin only (no CORS headers) → stays out of cross-origin pages.
-    return json(res, 200, { terminal: terminalReady(), token: isLoopback(req) ? terminalToken : null });
+    return json(res, 200, {
+      terminal: terminalReady(),
+      token: isLoopback(req) ? terminalToken : null,
+      version: isLoopback(req) ? RUNNING_VERSION : null,
+    });
+  }
+  if (method === 'GET' && pathname === '/version') {
+    // loopback-only: the code version on disk now (cached a few seconds), to compare with /config's
+    if (!isLoopback(req)) return json(res, 403, { error: 'loopback only' });
+    return json(res, 200, await diskVersion());
   }
 
   if (method === 'GET' && pathname === '/project') {
@@ -1535,9 +1556,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (method === 'POST' && action === 'move') {
       if (!b.lane) return json(res, 400, { error: 'lane required' });
       const task = board.moveTask(db, taskId, b.lane, b.agent);
-      if (task.lane === 'done') await recountCard(task); // merged by now: final numbers from the merge commit
       announce(task);
-      return json(res, 200, { task_id: task.id, lane: task.lane });
+      json(res, 200, { task_id: task.id, lane: task.lane });
+      if (task.lane === 'done') recountCard(task); // merged by now: final numbers from the merge commit
+      return;
     }
     if (method === 'POST' && action === 'redirect') {
       const task = board.redirectTask(db, taskId, { requirements: b.requirements, note: b.note });
@@ -1576,8 +1598,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         lines_removed: 0,
         ms: startEv ? Date.now() - startEv.t : 0,
       });
-      await recountCard(task);
-      return json(res, 200, { ok: true });
+      json(res, 200, { ok: true });
+      return recountCard(task);
     }
     if (method === 'POST' && action === 'review') {
       if (!b.verdict) return json(res, 400, { error: 'verdict required' });

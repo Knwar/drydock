@@ -1068,6 +1068,37 @@ async function initTerminal() {
   if (activeView === 'home') renderHome(); // Send to agent + Watch terminal appear
 }
 
+// ── out-of-date daemon banner ──
+// /config carries the code version the daemon started with, /version what is on
+// disk now; they differ once the code changed under a running daemon. Checked on
+// load and every few minutes; dismissed for the rest of the browser session.
+const VERSION_DISMISS_KEY = 'kankan.versionBannerDismissed';
+const VERSION_CHECK_MS = 3 * 60_000;
+async function checkDaemonVersion() {
+  const banner = $('version-banner');
+  $('version-banner-close').onclick = () => {
+    sessionStorage.setItem(VERSION_DISMISS_KEY, '1');
+    banner.classList.add('hidden');
+  };
+  const check = async () => {
+    if (sessionStorage.getItem(VERSION_DISMISS_KEY)) return;
+    try {
+      const cfg = await (await fetch('/config')).json();
+      // no version field at all: the daemon predates this check, so it is older than this page
+      if (!('version' in cfg)) return banner.classList.remove('hidden');
+      if (!cfg.version) return; // not on this machine (loopback only)
+      const res = await fetch('/version');
+      if (!res.ok) return;
+      const disk = await res.json();
+      banner.classList.toggle('hidden', disk.sha === cfg.version.sha && disk.mtime === cfg.version.mtime);
+    } catch {
+      /* daemon unreachable: the offline badge covers it */
+    }
+  };
+  await check();
+  setInterval(check, VERSION_CHECK_MS);
+}
+
 function makeTab(id, name) {
   return { id, name, xterm: null, fit: null, ws: null, pane: null, btn: null, conn: { text: 'connecting…', cls: '' }, dead: false };
 }
@@ -4298,7 +4329,10 @@ function renderPlanStrip(v, m) {
     return;
   }
   const titles = new Map(m.nodes.map((n) => [n.id, n.title || n.id]));
-  const { errors, warnings } = v.validation;
+  const { errors } = v.validation;
+  // shared files: the per-path groups stand in for the per-pair warnings (an older daemon has no groups)
+  const groups = v.validation.groups;
+  const warnings = groups ? [...groups, ...v.validation.warnings.filter((w) => w.code !== 'shared_file')] : v.validation.warnings;
   const loops = errors.filter((it) => it.code === 'cycle' || it.code === 'self_loop');
   const key = JSON.stringify([
     v.draft.id,
@@ -6438,3 +6472,4 @@ teamCacheLoad.then(() => {
   if (activeView === 'dashboard') renderDashboard();
 });
 if (!EMBED) initTerminal(); // an OBS scene gets no terminal (and no pty sockets)
+if (!EMBED) checkDaemonVersion();

@@ -489,7 +489,7 @@ server.registerTool(
   'get_plan',
   {
     description:
-      'One plan draft: {draft (nodes, edges, version, committed map), layout (dependency columns + longest chain, null while there is a cycle), validation {errors (block commit), warnings}, boards (valid board_ids), dirty}.',
+      'One plan draft: {draft (nodes, edges, version, committed map), layout (dependency columns + longest chain, null while there is a cycle), validation {errors (block commit), warnings (per pair of cards for shared files), groups (the shared-file warnings grouped per path)}, boards (valid board_ids), dirty}.',
     inputSchema: { plan_id: z.string() },
   },
   ({ plan_id }) => api('GET', `/plan-drafts/${encodeURIComponent(plan_id)}`),
