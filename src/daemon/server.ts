@@ -24,7 +24,7 @@ import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
 import { sessionCwd, sessionEnv } from './pty-env.js';
 import { ptyGroups, shellInfo, stillOurs, ttyGroups, type ShellInfo } from './pty-groups.js';
-import { OFFLINE_MS, SessionStates, type SessionView, type StatusEntry } from './session-state.js';
+import { NEEDS_YOU_MAX_MS, SessionStates, type SessionView, type StatusEntry } from './session-state.js';
 import { suggestVerticals } from './vertical-suggest.js';
 
 const PORT = Number(process.env.PORT ?? 7890);
@@ -45,7 +45,7 @@ const db = openDb(DB_PATH);
 const broadcaster = new Broadcaster();
 // live agent session state per project: memory only, never persisted; its
 // needs_you intervals are (wait_intervals). A restart closes the ones left open.
-waitTime.closeOpenWaits(db, Date.now(), OFFLINE_MS);
+waitTime.closeOpenWaits(db, Date.now(), NEEDS_YOU_MAX_MS);
 const states = new SessionStates((change) => {
   try {
     waitTime.recordSessionChange(db, change);
@@ -114,6 +114,8 @@ function getPtySession(projectId: string, root: string): PtySession {
   proc.onExit(() => {
     for (const ws of session.clients) ws.send(JSON.stringify({ t: 'x' }));
     ptySessions.delete(projectId);
+    // a session waiting in this terminal died with it: end the wait (closed_by 'pty_exit')
+    if (states.view(projectId, Date.now()).state === 'needs_you') states.forget(projectId, Date.now(), 'pty_exit');
   });
   return session;
 }
@@ -1800,6 +1802,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (status.task_id === null && b.agent_id) {
       const prev = states.view(b.project_id, now).agents.find((a) => a.agent_id === b.agent_id);
       if (prev) status.task_id = prev.task_id;
+    }
+    // the Notification hook's idle_prompt fires while a prompt is still on screen:
+    // it does not end a needs_you wait (see core/wait-time.ts)
+    if (b.source === 'notification' && status.verb === 'idle' && states.view(b.project_id, now).state === 'needs_you') {
+      broadcaster.send(b.project_id, { type: 'status', project_id: b.project_id, status, session: states.view(b.project_id, now) });
+      return json(res, 200, { ok: true, ignored: 'still needs you' });
     }
     if (status.agent === 'orchestrator') {
       const wasIdle = states.view(b.project_id, now).main?.verb === 'idle';

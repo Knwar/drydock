@@ -3,10 +3,19 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
-import { createPhase, createTask, createVertical, getOrCreateProject, raiseBlocker, resolveBlocker } from './board.js';
+import {
+  createPhase,
+  createTask,
+  createVertical,
+  deleteProject,
+  getOrCreateProject,
+  mergeVerticals,
+  raiseBlocker,
+  resolveBlocker,
+} from './board.js';
 import { openDb, type DB } from './db.js';
 import { MetricsParamError } from './metrics.js';
-import { SessionStates, OFFLINE_MS, type StatusEntry } from '../daemon/session-state.js';
+import { NEEDS_YOU_MAX_MS, OFFLINE_MS, SessionStates, type StatusEntry } from '../daemon/session-state.js';
 import {
   closeOpenWaits,
   computeWait,
@@ -74,66 +83,113 @@ describe('needs_you intervals (persistence)', () => {
     db.close();
   });
 
-  it('closes at the offline moment on a silent timeout (sweep or the next ping)', () => {
+  it('outlives the offline rule: closes at the next main ping, however late', () => {
     const db = openDb();
     const s = wired(db);
     s.record('p', ping('needs you', T));
-    s.sweep(T + OFFLINE_MS - 1);
+    s.sweep(T + 20 * MIN); // well past OFFLINE_MS: still waiting
     assert.equal(rows(db)[0].ended_at, null);
-    s.sweep(T + OFFLINE_MS + 5 * MIN);
-    assert.deepEqual([rows(db)[0].ended_at, rows(db)[0].closed_by], [T + OFFLINE_MS, 'offline']);
+    assert.equal(s.view('p', T + 20 * MIN).state, 'needs_you');
+    s.record('p', ping('Bash', T + 30 * MIN));
+    assert.deepEqual([rows(db)[0].ended_at! - rows(db)[0].started_at, rows(db)[0].closed_by], [30 * MIN, 'working']);
+    db.close();
+  });
 
-    // no sweep: the next ping notices it went offline first
+  it('a subagent ping does not end it (a parallel subagent is not an answer)', () => {
+    const db = openDb();
+    const s = wired(db);
+    s.record('p', ping('needs you', T));
+    s.record('p', { ...ping('Bash', T + MIN), agent: 'builder', agent_id: 'b1' });
+    s.record('p', { ...ping('finished', T + 2 * MIN), agent: 'builder', agent_id: 'b1' });
+    assert.equal(rows(db)[0].ended_at, null);
+    s.record('p', ping('idle', T + 3 * MIN));
+    assert.deepEqual([rows(db)[0].ended_at, rows(db)[0].closed_by], [T + 3 * MIN, 'idle']);
+    db.close();
+  });
+
+  it('is abandoned after 24h without a main ping (sweep or the next ping)', () => {
+    const db = openDb();
+    const s = wired(db);
+    s.record('p', ping('needs you', T));
+    s.sweep(T + NEEDS_YOU_MAX_MS - 1);
+    assert.equal(rows(db)[0].ended_at, null);
+    s.sweep(T + 25 * 60 * MIN);
+    assert.deepEqual([rows(db)[0].ended_at, rows(db)[0].closed_by], [T + NEEDS_YOU_MAX_MS, 'abandoned']);
+    assert.equal(s.view('p', T + 25 * 60 * MIN).state, 'offline');
+
+    // no sweep: the next ping notices the abandonment first
     s.record('q', ping('needs you', T));
-    s.record('q', ping('Edit', T + 3 * OFFLINE_MS));
+    s.record('q', ping('Edit', T + 25 * 60 * MIN));
     const q = rows(db).find((r) => r.project_id === 'q')!;
-    assert.deepEqual([q.ended_at, q.closed_by], [T + OFFLINE_MS, 'offline']);
+    assert.deepEqual([q.ended_at, q.closed_by], [T + NEEDS_YOU_MAX_MS, 'abandoned']);
     db.close();
   });
 
-  it('a live subagent keeps it open past the main session going stale', () => {
+  it('a live subagent keeps it open past the ceiling', () => {
     const db = openDb();
     const s = wired(db);
     s.record('p', ping('needs you', T));
-    s.record('p', { ...ping('Bash', T + OFFLINE_MS - MIN), agent: 'builder', agent_id: 'b1' });
-    s.sweep(T + OFFLINE_MS + MIN);
+    s.record('p', { ...ping('Bash', T + NEEDS_YOU_MAX_MS - MIN), agent: 'builder', agent_id: 'b1' });
+    s.sweep(T + NEEDS_YOU_MAX_MS + MIN);
     assert.equal(rows(db)[0].ended_at, null);
-    s.sweep(T + 2 * OFFLINE_MS);
-    assert.equal(rows(db)[0].ended_at, T + 2 * OFFLINE_MS - MIN);
+    s.sweep(T + NEEDS_YOU_MAX_MS + 2 * OFFLINE_MS);
+    assert.deepEqual([rows(db)[0].ended_at, rows(db)[0].closed_by], [T + NEEDS_YOU_MAX_MS - MIN + OFFLINE_MS, 'abandoned']);
     db.close();
   });
 
-  it('forget closes an open interval', () => {
+  it('forget closes an open interval with its cause', () => {
     const db = openDb();
     const s = wired(db);
     s.record('p', ping('needs you', T));
     s.forget('p', T + MIN);
-    assert.deepEqual([rows(db)[0].ended_at, rows(db)[0].closed_by], [T + MIN, 'offline']);
+    s.record('q', ping('needs you', T));
+    s.forget('q', T + 2 * MIN, 'pty_exit');
+    assert.deepEqual(
+      rows(db).map((r) => [r.project_id, r.ended_at, r.closed_by]),
+      [
+        ['p', T + MIN, 'forget'],
+        ['q', T + 2 * MIN, 'pty_exit'],
+      ],
+    );
     db.close();
   });
 
-  it('closeOpenWaits closes leftovers at startup (capped), marked restart', () => {
+  it('a stray open row is closed as superseded when a new wait opens', () => {
+    const db = openDb();
+    db.prepare(`INSERT INTO wait_intervals (project_id, kind, started_at) VALUES ('p', 'needs_you', ?)`).run(T - MIN);
+    wired(db).record('p', ping('needs you', T));
+    assert.deepEqual(
+      rows(db).map((r) => [r.started_at, r.ended_at, r.closed_by]),
+      [
+        [T - MIN, T, 'superseded'],
+        [T, null, null],
+      ],
+    );
+    db.close();
+  });
+
+  it('closeOpenWaits closes leftovers at startup (capped at 24h), marked restart', () => {
     const db = openDb();
     const s = wired(db);
     s.record('a', ping('needs you', T));
     s.record('b', ping('needs you', T + 9 * MIN));
     s.record('c', ping('needs you', T));
     s.record('c', ping('Edit', T + MIN));
-    assert.equal(closeOpenWaits(db, T + 10 * MIN, OFFLINE_MS), 2);
+    assert.equal(closeOpenWaits(db, T + 60 * MIN, NEEDS_YOU_MAX_MS), 2);
     const r = rows(db);
     assert.deepEqual(
       r.map((x) => [x.project_id, x.ended_at, x.closed_by]),
       [
-        ['a', T + 10 * MIN, 'restart'],
-        ['b', T + 10 * MIN, 'restart'],
+        ['a', T + 60 * MIN, 'restart'],
+        ['b', T + 60 * MIN, 'restart'],
         ['c', T + MIN, 'working'],
       ],
     );
-    // a long downtime is capped at started_at + cap
+    // a long downtime is capped at started_at + 24h
     s.record('d', ping('needs you', T));
-    closeOpenWaits(db, T + 1000 * MIN, OFFLINE_MS);
-    assert.equal(rows(db).find((x) => x.project_id === 'd')!.ended_at, T + OFFLINE_MS);
-    assert.equal(closeOpenWaits(db, T + 2000 * MIN, OFFLINE_MS), 0);
+    closeOpenWaits(db, T + 3 * NEEDS_YOU_MAX_MS, NEEDS_YOU_MAX_MS);
+    assert.equal(rows(db).find((x) => x.project_id === 'd')!.ended_at, T + NEEDS_YOU_MAX_MS);
+    assert.equal(closeOpenWaits(db, T + 4 * NEEDS_YOU_MAX_MS, NEEDS_YOU_MAX_MS), 0);
     db.close();
   });
 });
@@ -281,5 +337,27 @@ describe('wait-time DB readers', () => {
     assert.equal(w.byBoard.find((x) => x.project_id === v.id)?.name, 'api');
     assert.equal(w.byPhase.find((x) => x.phase_id === phase.id)?.title, 'P1');
     assert.throws(() => waitMetrics(db, { projectIds: [ws.id], from: now + 1, to: now }, { tz: 'UTC', now }), MetricsParamError);
+  });
+
+  it('deleteProject drops a board\'s waits; mergeVerticals moves them (ending the open one)', (t) => {
+    const { db, ws, v } = setup(t);
+    const s = wired(db);
+    const now = Date.now();
+    s.record(v.id, ping('needs you', now - 3 * MIN));
+    s.record(v.id, ping('Edit', now - 2 * MIN));
+    s.record(v.id, ping('needs you', now - MIN)); // open
+    s.record(ws.id, ping('needs you', now - MIN));
+    const dir = mkdtempSync(join(tmpdir(), 'wait-web-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const web = createVertical(db, ws.id, 'web', dir);
+    mergeVerticals(db, v.id, web.id, { phases: 'append' });
+    const moved = rows(db).filter((r) => r.project_id === web.id);
+    assert.equal(moved.length, 2);
+    assert.ok(moved.every((r) => r.ended_at !== null));
+    assert.equal(moved[1].closed_by, 'forget');
+    assert.equal(rows(db).filter((r) => r.project_id === v.id).length, 0);
+
+    deleteProject(db, web.id);
+    assert.deepEqual(rows(db).map((r) => r.project_id), [ws.id]);
   });
 });

@@ -17,7 +17,9 @@ try {
       data.notification_type === 'idle_prompt' ||
       (data.notification_type === undefined && /waiting for your input/i.test(detail));
     const status = idle ? { verb: 'idle', detail: 'waiting for user' } : { verb: 'needs you', detail };
-    await api('POST', '/status', { project_id: projectId, agent: 'orchestrator', ...status });
+    // source: the daemon keeps a needs_you wait open through an idle_prompt
+    // (it fires ~60s into the same wait), unlike the Stop hook's idle
+    await api('POST', '/status', { project_id: projectId, agent: 'orchestrator', source: 'notification', ...status });
   }
 } catch {
   // best-effort

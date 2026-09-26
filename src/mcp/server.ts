@@ -237,7 +237,8 @@ server.registerTool(
     const waitParams = new URLSearchParams({ project: project_id });
     if (phase_id) waitParams.set('phase', phase_id);
     const wait = await api('GET', `/metrics/wait?${waitParams}`);
-    if (wait.isError) return wait;
+    // the flow summary stands on its own: a failed wait lookup only drops `waiting`
+    if (wait.isError) return { content: [...summary.content, { type: 'text' as const, text: `waiting unavailable: ${wait.content[0]?.text}` }] };
     const { count, longestMs } = JSON.parse(wait.content[0].text).waiting;
     const merged = { ...JSON.parse(summary.content[0].text), waiting: { count, longestMs } };
     return { content: [{ type: 'text' as const, text: JSON.stringify(merged) }] };

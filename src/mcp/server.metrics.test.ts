@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdirSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, before, describe, it } from 'node:test';
@@ -121,5 +122,32 @@ describe('MCP get_metrics', () => {
     const unknown = (await client!.callTool({ name: 'get_forecast', arguments: { plan_id: 'nope' } })) as ToolOut;
     assert.equal(unknown.isError, true);
     assert.match(unknown.content[0].text, /unknown plan/);
+  });
+});
+
+describe('MCP get_metrics without /metrics/wait', () => {
+  it('returns the summary without `waiting`, plus a note, when the wait lookup fails', async (t) => {
+    // a stub daemon: the summary works, /metrics/wait does not
+    const stub = createServer((req, res) => {
+      const ok = req.url?.startsWith('/metrics/summary');
+      res.writeHead(ok ? 200 : 500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(ok ? { cards: 3 } : { error: 'boom' }));
+    });
+    await new Promise<void>((r) => stub.listen(0, '127.0.0.1', () => r()));
+    t.after(() => stub.close());
+    const client = new Client({ name: 'metrics-test', version: '0.0.0' });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ['--import', 'tsx', SERVER],
+        env: { ...(process.env as Record<string, string>), DAEMON_URL: `http://127.0.0.1:${(stub.address() as { port: number }).port}` },
+        stderr: 'ignore',
+      }),
+    );
+    t.after(() => client.close());
+    const r = (await client.callTool({ name: 'get_metrics', arguments: { project_id: 'p' } })) as ToolOut;
+    assert.ok(!r.isError);
+    assert.deepEqual(JSON.parse(r.content[0].text), { cards: 3 });
+    assert.match(r.content[1].text, /waiting unavailable: .*boom/);
   });
 });

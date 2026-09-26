@@ -65,6 +65,22 @@ describe('daemon GET /metrics/wait', () => {
     assert.equal(w.byBoard[0].project_id, project);
     assert.equal(w.byBoard[0].name, 'app');
 
+    // the Notification hook's idle_prompt (source 'notification') does not end a wait; a Stop idle does
+    await status('needs you', { detail: 'perm' });
+    assert.equal((await status('idle', { detail: 'waiting for user', source: 'notification' })).status, 200);
+    w = await ok(`/metrics/wait?project=${project}`);
+    assert.equal(w.waiting.needsYou.length, 1);
+    assert.equal((await ok(`/session?project=${project}`)).state, 'needs_you');
+    await status('idle', { detail: 'waiting for user' });
+    w = await ok(`/metrics/wait?project=${project}`);
+    assert.equal(w.waiting.needsYou.length, 0);
+    assert.equal(w.needsYou.count, 2);
+    assert.equal(w.needsYou.duration.count, 2);
+    // outside needs_you a notification idle is an ordinary idle ping
+    await status('Edit');
+    await status('idle', { source: 'notification' });
+    assert.equal((await ok(`/session?project=${project}`)).state, 'idle');
+
     // blockers: raise on A and B, resolve B
     assert.equal((await send('POST', `/task/${a}/block`, { reason: 'which db?' })).status, 200);
     assert.equal((await send('POST', `/task/${b}/block`, { reason: 'naming?' })).status, 200);
@@ -81,6 +97,7 @@ describe('daemon GET /metrics/wait', () => {
     // phase filter: only card A's needs_you + blocker
     w = await ok(`/metrics/wait?project=${project}&phase=${phase}`);
     assert.equal(w.needsYou.count, 1);
+    assert.equal(w.needsYou.duration.count, 1);
     assert.equal(w.blocked.count, 1);
 
     // a window entirely in the past sees nothing but still reports what is waiting now

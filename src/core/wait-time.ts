@@ -4,9 +4,27 @@
  *
  *  - needs_you intervals are persisted in wait_intervals from the daemon's
  *    in-memory session state changes (recordSessionChange); a daemon restart
- *    closes the ones left open (closeOpenWaits).
+ *    closes the ones left open (closeOpenWaits). needs_you is exempt from the
+ *    10-minute offline rule (a session on a prompt sends no pings): it ends at
+ *    the main session's next ping, a forget, or a 24h ceiling.
+ *  - The Notification hook (.claude/hooks/on-notify.js) maps permission_prompt,
+ *    elicitation_dialog and unknown types to 'needs you', and idle_prompt (or a
+ *    "waiting for your input" message) to 'idle'. Its idle ping is marked
+ *    source 'notification', and the daemon ignores it while the session is in
+ *    needs_you: Claude Code fires idle_prompt after ~60s on screen, so during
+ *    the same waiting period it means "still waiting", not "answered". (An
+ *    unmarked idle, i.e. the Stop hook or an older hook copy, ends the wait.)
  *  - Blocker intervals are derived from task_events by metrics.ts
  *    (deriveLaneHistory: block -> unblock / assign / redirect / done / delete).
+ *
+ * closed_by values:
+ *  - 'working' | 'idle': the next main-session ping moved the session there
+ *  - 'abandoned': no main ping for 24h (NEEDS_YOU_MAX_MS); ends at started + 24h
+ *    (later only if a subagent stayed live past that)
+ *  - 'forget': the project was removed / merged away
+ *  - 'pty_exit': the project's embedded terminal exited while waiting
+ *  - 'restart': left open by a previous daemon run; ends at min(startup, started + 24h)
+ *  - 'superseded': defensive close of a stray open row when a new wait opens
  *
  * Window rules (for [from, to]; open intervals run to `now`):
  *  - count / totalMs: intervals overlapping the window; time clipped to it.
@@ -33,6 +51,7 @@ export interface SessionChange {
   from: string;
   to: string;
   at: number;
+  cause?: string;
   view: { main: { agent: string; agent_id: string | null; task_id: string | null; detail: string } | null };
 }
 
@@ -85,9 +104,9 @@ export interface WaitMetrics {
 /** Open / close a project's needs_you interval on a session state change. */
 export function recordSessionChange(db: DB, c: SessionChange): void {
   if (c.from === c.to) return;
-  if (c.from === 'needs_you') closeWait(db, c.projectId, c.at, c.to);
+  if (c.from === 'needs_you') closeWait(db, c.projectId, c.at, c.cause ?? c.to);
   if (c.to === 'needs_you') {
-    closeWait(db, c.projectId, c.at, c.to); // never two open at once
+    closeWait(db, c.projectId, c.at, 'superseded'); // never two open at once
     const main = c.view.main;
     db.prepare(
       `INSERT INTO wait_intervals (project_id, agent_id, task_id, kind, started_at, reason)
@@ -109,8 +128,8 @@ export function closeWait(db: DB, projectId: string, at: number, closedBy: strin
 /**
  * On daemon start: close every interval a previous run left open, marked
  * closed_by 'restart'. Each ends at `at`, capped at started_at + capMs (the
- * live state machine would have read the session offline by then without
- * further pings), so a long downtime does not inflate the wait.
+ * daemon passes the 24h needs_you ceiling), so a long downtime does not
+ * inflate the wait beyond what the live ceiling would allow.
  */
 export function closeOpenWaits(db: DB, at: number, capMs: number): number {
   return db

@@ -8,6 +8,14 @@
 export const OFFLINE_MS = 10 * 60 * 1000;
 /** A subagent ping this recent keeps an idle main session reading as working. */
 export const RECENT_AGENT_MS = 2 * 60 * 1000;
+/**
+ * A session waiting on the human sends no pings, so needs_you is exempt from
+ * OFFLINE_MS: it lasts until the main session's next ping (any verb), a
+ * forget, or this safety ceiling for abandoned sessions (kept open past it
+ * only while a subagent is still live). Subagent pings do not end it: a
+ * parallel subagent at work does not mean the prompt was answered.
+ */
+export const NEEDS_YOU_MAX_MS = 24 * 60 * 60 * 1000;
 
 export interface StatusEntry {
   agent: string; // agent type, for display
@@ -39,9 +47,11 @@ export interface StateChange {
   projectId: string;
   from: SessionState;
   to: SessionState;
-  /** When it changed: the ping time, or for a silent offline timeout the moment it went offline. */
+  /** When it changed: the ping time, or for a silent timeout the moment it went offline. */
   at: number;
   view: SessionView;
+  /** Why, when not a ping: 'abandoned' (needs_you past NEEDS_YOU_MAX_MS), or forget()'s cause. */
+  cause?: string;
 }
 
 export class SessionStates {
@@ -67,7 +77,7 @@ export class SessionStates {
     this.settle(projectId, entry.at);
   }
 
-  /** Report offline timeouts (no ping for OFFLINE_MS) that no ping has observed yet. */
+  /** Report timeouts (offline, abandoned needs_you) that no ping has observed yet. */
   sweep(now: number): void {
     for (const projectId of [...this.observed.keys()]) this.settle(projectId, now);
   }
@@ -78,11 +88,18 @@ export class SessionStates {
     const view = this.view(projectId, now);
     const from = this.observed.get(projectId) ?? 'offline';
     if (view.state === from) return;
-    // offline began OFFLINE_MS after the last ping of any agent, not when we noticed
-    const at = view.state === 'offline' ? Math.min(now, this.lastSeen(projectId) + OFFLINE_MS) : now;
+    // A main ping ends needs_you (and the state is then not offline), so leaving
+    // it for offline here is the NEEDS_YOU_MAX_MS ceiling: abandoned.
+    const abandoned = from === 'needs_you' && view.state === 'offline';
+    // offline began at the timeout, not when we noticed
+    const offlineAt = Math.max(
+      this.lastSeen(projectId) + OFFLINE_MS,
+      abandoned ? this.projects.get(projectId)!.main!.at + NEEDS_YOU_MAX_MS : -Infinity,
+    );
+    const at = view.state === 'offline' ? Math.min(now, offlineAt) : now;
     if (view.state === 'offline') this.observed.delete(projectId);
     else this.observed.set(projectId, view.state);
-    this.onChange({ projectId, from, to: view.state, at, view });
+    this.onChange({ projectId, from, to: view.state, at, view, ...(abandoned ? { cause: 'abandoned' } : {}) });
   }
 
   private lastSeen(projectId: string): number {
@@ -92,6 +109,7 @@ export class SessionStates {
     return at;
   }
 
+
   view(projectId: string, now: number): SessionView {
     const s = this.projects.get(projectId);
     const main = s?.main ?? null;
@@ -100,19 +118,20 @@ export class SessionStates {
       : [];
     const mainLive = main !== null && now - main.at < OFFLINE_MS;
     let state: SessionState;
-    if (!mainLive && agents.length === 0) state = 'offline';
-    else if (main?.verb === 'needs you') state = 'needs_you';
+    if (main?.verb === 'needs you' && (now - main.at < NEEDS_YOU_MAX_MS || agents.length > 0)) state = 'needs_you';
+    else if (!mainLive && agents.length === 0) state = 'offline';
     else if (main?.verb === 'idle' && !agents.some((a) => now - a.at < RECENT_AGENT_MS)) state = 'idle';
     else state = 'working';
     return { state, main, agents };
   }
 
-  forget(projectId: string, now = Date.now()): void {
+  /** Drop a project's session (removed project, exited terminal); reported as a change to offline. */
+  forget(projectId: string, now = Date.now(), cause = 'forget'): void {
     this.projects.delete(projectId);
     const from = this.observed.get(projectId);
     this.observed.delete(projectId);
     if (from && this.onChange) {
-      this.onChange({ projectId, from, to: 'offline', at: now, view: { state: 'offline', main: null, agents: [] } });
+      this.onChange({ projectId, from, to: 'offline', at: now, view: { state: 'offline', main: null, agents: [] }, cause });
     }
   }
 }
