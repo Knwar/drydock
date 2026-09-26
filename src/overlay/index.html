@@ -44,6 +44,9 @@
       <button id="rail-kanban" class="rail-tab active" title="Board">
         <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor"><path d="M2 2.75A.75.75 0 0 1 2.75 2h2a.75.75 0 0 1 .75.75v10.5a.75.75 0 0 1-.75.75h-2a.75.75 0 0 1-.75-.75V2.75Zm4.5 0A.75.75 0 0 1 7.25 2h2a.75.75 0 0 1 .75.75v6.5a.75.75 0 0 1-.75.75h-2a.75.75 0 0 1-.75-.75v-6.5Zm4.5 0A.75.75 0 0 1 11.75 2h2a.75.75 0 0 1 .75.75v8.5a.75.75 0 0 1-.75.75h-2a.75.75 0 0 1-.75-.75v-8.5Z"/></svg>
       </button>
+      <button id="rail-planner" class="rail-tab" title="Planner" aria-label="Planner">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.2"/><circle cx="5" cy="18" r="2.2"/><circle cx="19" cy="12" r="2.2"/><path d="M7.2 6.9l9.6 4.2"/><path d="M7.2 17.1l9.6-4.2"/></svg>
+      </button>
       <button id="rail-scm" class="rail-tab" title="Source Control">
         <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg>
       </button>
@@ -201,6 +204,59 @@
     </section>
     <section id="dashboard-view" class="view hidden">
       <div id="dashboard-body"></div>
+    </section>
+    <section id="planner-view" class="view hidden">
+      <aside class="pl-side" aria-label="Plans">
+        <div class="pl-side-head">
+          <span class="pl-kicker">PLANS</span>
+          <button id="pl-new" class="pl-btn" type="button">+ New plan</button>
+        </div>
+        <form id="pl-new-form" class="pl-new-form hidden">
+          <input id="pl-new-title" maxlength="120" placeholder="Plan title" aria-label="New plan title" autocomplete="off" />
+          <div id="pl-new-err" class="pl-new-err" role="alert"></div>
+        </form>
+        <div id="pl-list" class="pl-list"></div>
+        <p class="pl-side-hint">Plans stay off the board until you commit them. Edits after a commit show as “edited”.</p>
+      </aside>
+      <div class="pl-main">
+        <div id="pl-empty" class="pl-empty"></div>
+        <div id="pl-open" class="pl-open hidden">
+          <div class="pl-head">
+            <h1 id="pl-title"></h1>
+            <span id="pl-chip" class="pl-chip"></span>
+            <span id="pl-saved" class="pl-saved"></span>
+            <div class="pl-grow"></div>
+            <span id="pl-errcount" class="pl-errcount"></span>
+            <button id="pl-run" class="pl-run" type="button" disabled title="Coming soon"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg>Run</button>
+            <button id="pl-commit" class="pl-commit" type="button" disabled title="Coming soon">Commit</button>
+          </div>
+          <div class="pl-tools">
+            <button id="pl-add" class="pl-btn pl-btn-solid" type="button" disabled title="Coming soon">+ Card</button>
+            <div class="pl-zoom" role="group" aria-label="Zoom">
+              <button id="pl-zoom-out" type="button" aria-label="Zoom out">−</button>
+              <span id="pl-zoom-pct">100%</span>
+              <button id="pl-zoom-in" type="button" aria-label="Zoom in">+</button>
+            </div>
+            <button id="pl-fit" class="pl-btn" type="button">Fit</button>
+            <div class="pl-colorby" role="group" aria-label="Colour by">
+              <span>Colour by</span>
+              <button id="pl-by-board" type="button" aria-pressed="true">Board</button>
+              <button id="pl-by-phase" type="button" aria-pressed="false">Phase</button>
+            </div>
+            <div class="pl-grow"></div>
+            <div id="pl-legend" class="pl-legend"></div>
+          </div>
+          <div id="pl-canvas" class="pl-canvas" tabindex="0" role="group" aria-label="Plan graph" aria-roledescription="canvas">
+            <span id="pl-paused" class="pl-paused hidden"></span>
+            <div id="pl-world" class="pl-world"></div>
+            <div id="pl-canvas-empty" class="pl-canvas-empty hidden">
+              <div class="pl-ce-title">Add your first card</div>
+              <div class="pl-ce-sub">Cards land here as steps: every card in a step can be built at once.</div>
+            </div>
+          </div>
+          <div id="pl-strip" class="pl-strip"></div>
+        </div>
+      </div>
     </section>
   </div>
   <section id="terminal-panel" class="hidden">
