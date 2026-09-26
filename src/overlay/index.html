@@ -57,8 +57,8 @@
       <button id="rail-phases" class="rail-tab" title="Phases">
         <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor"><path d="M2.5 1.75A.75.75 0 0 1 3.25 1h9.5a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-.75.75h-9.5a.75.75 0 0 1-.75-.75v-3Zm0 5.75A.75.75 0 0 1 3.25 6.75h9.5a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-.75.75h-9.5a.75.75 0 0 1-.75-.75v-3Zm.75 4.75a.75.75 0 0 0-.75.75v.25c0 .414.336.75.75.75h9.5a.75.75 0 0 0 .75-.75V13a.75.75 0 0 0-.75-.75h-9.5Z"/></svg>
       </button>
-      <button id="rail-stats" class="rail-tab" title="Stats">
-        <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor"><path d="M1.75 13.5a.75.75 0 0 1-.75-.75v-9.5a.75.75 0 0 1 1.5 0v8.75h11a.75.75 0 0 1 0 1.5h-11.75Zm3-2.75a.75.75 0 0 1-.75-.75v-2.5a.75.75 0 0 1 1.5 0v2.5a.75.75 0 0 1-.75.75Zm3.25 0a.75.75 0 0 1-.75-.75v-5a.75.75 0 0 1 1.5 0v5a.75.75 0 0 1-.75.75Zm3.25 0a.75.75 0 0 1-.75-.75v-3.5a.75.75 0 0 1 1.5 0v3.5a.75.75 0 0 1-.75.75Z"/></svg>
+      <button id="rail-metrics" class="rail-tab" title="Metrics" aria-label="Metrics">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M3 20h18"/></svg>
       </button>
     </nav>
     <main id="board"></main>
@@ -94,9 +94,7 @@
       </div>
       <div id="phase-detail" class="view-detail"></div>
     </section>
-    <section id="stats-view" class="view hidden">
-      <div id="stats-body" class="view-detail"></div>
-    </section>
+    <section id="metrics-view" class="view hidden" aria-label="Metrics"></section>
     <section id="home-view" class="view hidden">
       <div id="home-body">
         <div class="home-head">

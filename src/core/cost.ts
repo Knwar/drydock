@@ -203,6 +203,9 @@ export const LEGACY_TOKEN_INFLATION = 1.97;
 export const ESTIMATE_METHOD =
   `rows without a token breakdown: tokens divided by ${LEGACY_TOKEN_INFLATION} (the old hook counted each transcript line, ~${LEGACY_TOKEN_INFLATION}x inflated on average, 1.56x-2.42x per run), then non-output tokens priced at the cache-read rate and output at the output rate, of the scope's dominant model (else the default rate); a single run's estimate can be off either way`;
 
+export const TOKENS_CAVEAT =
+  `totals.tokens and estimated.tokens include the rows without a token breakdown at their stored (legacy, ~${LEGACY_TOKEN_INFLATION}x inflated) counts, while their cost uses the deflated count`;
+
 export const OUTPUT_CAVEAT =
   'output tokens come from transcripts: a message logged only mid-stream carries a streaming snapshot, so output (and its cost) undercounts';
 
@@ -510,10 +513,12 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
   }
 
   const breakdownAts = scoped.filter((r) => !r.estimated).map((r) => r.created_at);
-  const tokenBasisChangedAt = breakdownAts.length ? Math.min(...breakdownAts) : null;
+  // a reduce, not Math.min(...xs): spreading a large scope's runs overflows the call stack (RangeError)
+  const tokenBasisChangedAt = breakdownAts.length ? breakdownAts.reduce((m, t) => Math.min(m, t), Infinity) : null;
   const byModelList = [...models].map(([model, m]) => ({ model, ...m, cost: round(m.cost) }));
   const caveats = [OUTPUT_CAVEAT];
   if (est.runs) caveats.push(`estimated cost (${est.runs} runs without a token breakdown): ${ESTIMATE_METHOD}`);
+  if (est.runs) caveats.push(TOKENS_CAVEAT);
 
   // budgets: all-time actual per phase, projected with the median done-card cost
   const allTime = new Map<string, { cost: number; phase: string | null; done: boolean }>();

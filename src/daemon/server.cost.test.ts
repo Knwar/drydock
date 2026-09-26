@@ -110,7 +110,7 @@ describe('daemon cost routes', () => {
     assert.deepEqual(m.unknownModels, [{ model: 'mystery-1', tokens: M, cost: 100 }]);
     assert.deepEqual(m.fallbackMatches, []);
     assert.equal(typeof m.tokenBasisChangedAt, 'number');
-    assert.equal(m.caveats.length, 2);
+    assert.equal(m.caveats.length, 3);
     assert.deepEqual(m.byPhase.map((p: any) => [p.phase_id, p.cost]), [[phaseId, 234]]);
     assert.deepEqual(m.byCard.map((c: any) => [c.id, c.cost, c.estimated]), [[cardA, 134, true], [cardB, 100, false]]);
     assert.equal(m.byBoard[0].project_id, pid);
