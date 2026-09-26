@@ -290,9 +290,9 @@ export function draftContext(db: DB, workspaceId: string): PlanContext {
 // ── commit: turn a draft into board state ──
 //
 // Each node commits onto its own board; `committed` maps node → card. Only
-// backlog/queued cards are editable: a started or done card is never changed,
-// moved or deleted by a commit (it's reported as locked or kept instead).
-// Phases match by name per board (new names are appended). A node without a
+// unblocked backlog/queued cards are editable: a started, done or blocked card is
+// never changed, moved or deleted by a commit (it's reported as locked or kept
+// instead). Phases match by trimmed name per board (new names are appended). A node without a
 // phase leaves its card's phase alone (a new/moved card goes to the board's
 // active phase, else its first planned one, so it can be picked).
 
@@ -312,12 +312,16 @@ export interface BoardDiff {
   phases: { name: string; position: number }[];
   create: { node_id: string; title: string; phase: string | null }[];
   update: DiffUpdate[];
-  /** Removed nodes whose card is still in backlog/queued. */
+  /** Removed nodes whose card is still in backlog/queued (and not blocked). */
   delete: { node_id: string; card_id: string; title: string }[];
   /** Removed nodes whose card has started or is done: left on the board. */
   kept: { node_id: string; card_id: string; title: string; lane: Lane; note: string }[];
-  /** Nodes that differ from a started/done card: not updated. */
-  locked: { node_id: string; card_id: string; title: string; lane: Lane; fields: DiffField[] }[];
+  /**
+   * Cards a commit won't touch: nodes that differ from a started/done card
+   * (reason 'started'), or nodes that differ from or were removed while their card
+   * is blocked (reason 'blocked'; `fields` is empty for a removed node).
+   */
+  locked: { node_id: string; card_id: string; title: string; lane: Lane; fields: DiffField[]; reason: LockReason }[];
 }
 
 export interface DraftDiff {
@@ -340,7 +344,11 @@ export interface CommitResult {
   boards: string[];
 }
 
+export type LockReason = 'started' | 'blocked';
+
 const EDITABLE: readonly Lane[] = ['backlog', 'queued'];
+/** Why a commit may not change/move/delete this card, or null if it may. */
+const lockOf = (t: Task): LockReason | null => (t.blocked_at ? 'blocked' : EDITABLE.includes(t.lane) ? null : 'started');
 const KEPT_NOTE = 'kept, no longer in plan';
 
 const reqOf = (n: PlanNode): string | null => (n.requirements && n.requirements.trim() ? n.requirements : null);
@@ -383,7 +391,7 @@ function planCommit(db: DB, draft: PlanDraft): CommitPlan {
 
   const cardById = (id: string) => db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Task | undefined;
   const phaseTitle = (id: string | null) =>
-    id ? ((db.prepare('SELECT title FROM phases WHERE id = ?').get(id) as { title: string } | undefined)?.title ?? null) : null;
+    id ? ((db.prepare('SELECT title FROM phases WHERE id = ?').get(id) as { title: string } | undefined)?.title.trim() ?? null) : null;
 
   const nodeIds = new Set(nodes.map((n) => n.id));
   const planCards = new Set<string>();
@@ -432,20 +440,24 @@ function planCommit(db: DB, draft: PlanDraft): CommitPlan {
     if (card.project_id !== n.board_id) changes.board = { from: card.project_id, to: n.board_id };
     const fields = Object.keys(changes) as DiffField[];
     if (!fields.length) continue;
-    if (EDITABLE.includes(card.lane)) {
+    const reason = lockOf(card);
+    if (!reason) {
       updates.set(n.id, fields);
       boardDiff(n.board_id).update.push({ node_id: n.id, card_id: card.id, title: n.title, changes });
     } else {
-      boardDiff(card.project_id).locked.push({ node_id: n.id, card_id: card.id, title: card.title, lane: card.lane, fields });
+      boardDiff(card.project_id).locked.push({ node_id: n.id, card_id: card.id, title: card.title, lane: card.lane, fields, reason });
     }
   }
 
   const deletes: Task[] = [];
   for (const [nodeId, card] of liveAll) {
     if (nodeIds.has(nodeId)) continue;
-    if (EDITABLE.includes(card.lane)) {
+    const reason = lockOf(card);
+    if (!reason) {
       deletes.push(card);
       boardDiff(card.project_id).delete.push({ node_id: nodeId, card_id: card.id, title: card.title });
+    } else if (reason === 'blocked') {
+      boardDiff(card.project_id).locked.push({ node_id: nodeId, card_id: card.id, title: card.title, lane: card.lane, fields: [], reason });
     } else {
       boardDiff(card.project_id).kept.push({ node_id: nodeId, card_id: card.id, title: card.title, lane: card.lane, note: KEPT_NOTE });
     }
@@ -460,7 +472,7 @@ function planCommit(db: DB, draft: PlanDraft): CommitPlan {
     if (!name || !(creates.has(n.id) || fields?.includes('phase') || fields?.includes('board'))) continue;
     if (!known.has(n.board_id)) {
       const existing = boardPhases(db, n.board_id);
-      known.set(n.board_id, new Set(existing.map((p) => p.title)));
+      known.set(n.board_id, new Set(existing.map((p) => p.title.trim())));
       nextPos.set(n.board_id, existing.reduce((m, p) => Math.max(m, p.position), 0));
     }
     const names = known.get(n.board_id)!;
@@ -526,11 +538,11 @@ export function commitDraft(db: DB, id: string, expectedVersion: number): Commit
     const boards = new Set<string>();
     const moved: CommitResult['moved'] = [];
 
-    // phases: existing by name (first by position), then the new ones appended
+    // phases: existing by trimmed name (first by position), then the new ones appended
     const phaseIds = new Map<string, string>();
     const phaseKey = (board: string, name: string) => `${board}\u0000${name}`;
     for (const b of plan.diff.boards) {
-      for (const p of boardPhases(db, b.board_id).reverse()) phaseIds.set(phaseKey(b.board_id, p.title), p.id);
+      for (const p of boardPhases(db, b.board_id).reverse()) phaseIds.set(phaseKey(b.board_id, p.title.trim()), p.id);
       for (const p of b.phases) {
         phaseIds.set(phaseKey(b.board_id, p.name), createPhase(db, b.board_id, p.name).id);
         boards.add(b.board_id);
@@ -642,16 +654,20 @@ export interface RunResult {
   /** Autopilot report ('autopilot' mode only; empty lists for 'queue'). */
   autopilot: {
     enabled: { board_id: string; already_on: boolean }[];
-    not_enabled: { board_id: string; reason: string }[];
+    /** reason is 'main_session' (with a message) or 'no queued cards to work'. */
+    not_enabled: { board_id: string; reason: string; message?: string }[];
   };
 }
+
+const MAIN_SESSION_MESSAGE = 'Autopilot never drives the main session; its cards are queued for you';
 
 /**
  * Queue a committed, clean draft's spec'd backlog cards (requirements AND ≥1
  * subtask); the rest are skipped as "needs spec". 'autopilot' also turns on
- * autopilot for each involved board that has queued cards for it to work. The
- * daemon's engine is board-agnostic (it nudges any board's idle orchestrator
- * session in a daemon terminal), so the workspace board qualifies like a vertical.
+ * autopilot for each involved VERTICAL board that has queued cards for it to
+ * work. The workspace (or a standalone project) is the main session, which is
+ * never auto-prompted: it's reported as not enabled ('main_session'), its cards
+ * still queued for the human.
  */
 export function runDraft(db: DB, id: string, mode: RunMode): RunResult {
   if (mode !== 'queue' && mode !== 'autopilot') throw new DraftError('invalid_op', "mode must be 'queue' or 'autopilot'");
@@ -687,6 +703,11 @@ export function runDraft(db: DB, id: string, mode: RunMode): RunResult {
         (a, b) => (rank.get(a) ?? Infinity) - (rank.get(b) ?? Infinity),
       );
       for (const boardId of involved) {
+        const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(boardId) as Project;
+        if (project.parent_id === null) {
+          result.autopilot.not_enabled.push({ board_id: boardId, reason: 'main_session', message: MAIN_SESSION_MESSAGE });
+          continue;
+        }
         const { n } = db
           .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE project_id = ? AND lane = 'queued'`)
           .get(boardId) as { n: number };
@@ -694,7 +715,6 @@ export function runDraft(db: DB, id: string, mode: RunMode): RunResult {
           result.autopilot.not_enabled.push({ board_id: boardId, reason: 'no queued cards to work' });
           continue;
         }
-        const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(boardId) as Project;
         if (project.autopilot !== 1) setAutopilot(db, boardId, true);
         result.autopilot.enabled.push({ board_id: boardId, already_on: project.autopilot === 1 });
       }

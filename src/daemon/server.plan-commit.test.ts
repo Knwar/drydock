@@ -124,7 +124,7 @@ describe('/plan-drafts commit + run routes', () => {
     const v2 = (await patch(id, [{ op: 'update_node', id: 'b', patch: { title: 'Nope' } }])).draft.version;
     const r3 = await commit(id, v2);
     const locked = (r3.diff.boards as unknown as { locked: { card_id: string; fields: string[] }[] }[]).flatMap((x) => x.locked);
-    assert.deepEqual(locked, [{ node_id: 'b', card_id: m.b, title: 'Web client v2', lane: 'in_progress', fields: ['title'] }]);
+    assert.deepEqual(locked, [{ node_id: 'b', card_id: m.b, title: 'Web client v2', lane: 'in_progress', fields: ['title'], reason: 'started' }]);
     assert.equal((await card(m.b)).title, 'Web client v2');
   });
 
@@ -194,7 +194,7 @@ describe('/plan-drafts commit + run routes', () => {
     assert.equal(Object.keys(r.draft.draft.data.committed).length, 2);
   });
 
-  it('run: dirty → 409; queue queues only spec’d cards; autopilot sets the flag; WS announcements', async () => {
+  it('run: dirty → 409; queue queues only spec’d cards; autopilot sets the vertical flag only; WS announcements', async () => {
     const id = await seed('Run');
     assert.equal((await send('POST', `/plan-drafts/${id}/run`, { mode: 'queue' })).status, 409, 'never committed');
     const m = (await commit(id, 2)).draft.draft.data.committed;
@@ -231,18 +231,22 @@ describe('/plan-drafts commit + run routes', () => {
       assert.equal((await card(m.c)).lane, 'backlog');
       await waitFor((x) => x.type === 'card' && x.card.id === m.a && x.card.lane === 'queued');
 
-      const ap = await ok<{ autopilot: { enabled: { board_id: string }[]; not_enabled: { board_id: string }[] } }>(
-        send('POST', `/plan-drafts/${id}/run`, { mode: 'autopilot' }),
-      );
-      assert.deepEqual(ap.autopilot.enabled.map((e) => e.board_id).sort(), [wsId, webId].sort());
-      await waitFor((x) => x.type === 'autopilot' && x.project_id === wsId && x.on === true);
+      const ap = await ok<{
+        autopilot: { enabled: { board_id: string }[]; not_enabled: { board_id: string; reason: string; message?: string }[] };
+      }>(send('POST', `/plan-drafts/${id}/run`, { mode: 'autopilot' }));
+      assert.deepEqual(ap.autopilot.enabled.map((e) => e.board_id), [webId]);
+      assert.deepEqual(ap.autopilot.not_enabled, [
+        { board_id: wsId, reason: 'main_session', message: 'Autopilot never drives the main session; its cards are queued for you' },
+      ]);
+      assert.equal((await card(m.a)).lane, 'queued', "the workspace's card stays queued for the human");
       const flags = await ok<{ verticals: { id: string; autopilot: number }[]; workspace: { autopilot: number } }>(
         fetch(`${base}/workspace?project=${wsId}`),
       );
-      assert.equal(flags.workspace.autopilot, 1);
+      assert.equal(flags.workspace.autopilot, 0);
       assert.equal(flags.verticals.find((x) => x.id === webId)!.autopilot, 1);
       const verticals = await waitFor((x) => x.type === 'verticals');
       assert.equal(verticals.verticals.find((x: { id: string }) => x.id === webId).autopilot, 1);
+      assert.ok(!seen.some((x) => x.type === 'autopilot' && x.project_id === wsId), 'no autopilot toggle on the workspace');
     } finally {
       sock.terminate();
     }
