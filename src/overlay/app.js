@@ -192,6 +192,7 @@ function applyEvent(msg) {
     phases = msg.phases ?? [];
     setProject(msg.project);
     projectId = msg.project?.id ?? null;
+    loadBoardSettings();
     initDashboard();
     loadProjects();
     refreshScmBadge();
@@ -248,6 +249,10 @@ function applyEvent(msg) {
     renderUsage(msg.usage);
   } else if (msg.type === 'verticals') {
     onVerticals(msg);
+  } else if (msg.type === 'settings' && msg.project_id === projectId) {
+    boardSettings = msg.settings;
+    renderBoard();
+    if (!$('settings-modal').classList.contains('hidden')) renderBoardSettings();
   }
   if (activeView === 'home') onHomeMessage(msg);
   if (mergeDlg && MV_REFRESH_ON.includes(msg.type)) mergeDlg.refresh();
@@ -350,6 +355,14 @@ function renderBoard() {
       laneEl.className = 'lane';
       laneEl.dataset.lane = lane;
       laneEl.innerHTML = `<div class="lane-head"><span class="lane-chevron"></span><span class="lane-name">${LANE_LABELS[lane]}</span><span class="lane-count">${inLane.length}</span></div>`;
+      // WIP counts the whole lane (every phase), like the dashboard tile
+      const wip = wipOf(lane, [...cards.values()].filter((c) => c.lane === lane).length, kanbanSettings());
+      if (wip) {
+        const countEl = laneEl.querySelector('.lane-count');
+        countEl.textContent = `${wip.n} / ${wip.limit}`;
+        countEl.classList.toggle('wip-over', wip.over);
+        countEl.title = wip.over ? `Over the WIP limit: ${wip.n} cards, limit ${wip.limit}` : `WIP limit ${wip.limit}`;
+      }
       applyLaneState(laneEl, lane);
       laneEl.querySelector('.lane-head').addEventListener('click', () => toggleLane(lane, laneEl));
       const cardsEl = document.createElement('div');
@@ -440,6 +453,83 @@ function visibleCards() {
   const apid = activePhaseId();
   const all = [...cards.values()];
   return phases.length && apid ? all.filter((c) => c.phase_id === apid) : all;
+}
+
+// ── lane health: age in lane, stuck flags, WIP limits ───────────────
+// Per-board config lives server-side (GET/PUT /project/:id/settings); the
+// Kanban uses the current board's, each dashboard tile its own board's.
+const DEFAULT_BOARD_SETTINGS = {
+  stuck_hours: { queued: 72, in_progress: 24, in_review: 24 },
+  wip: { in_progress: null, in_review: null },
+};
+const AGE_LANES = { queued: 'Queued', in_progress: 'In progress', in_review: 'In review' };
+let boardSettings = null; // the current board's settings, once loaded
+const kanbanSettings = () => boardSettings ?? DEFAULT_BOARD_SETTINGS;
+
+async function loadBoardSettings() {
+  if (!projectId) return;
+  try {
+    const res = await fetch(`/project/${encodeURIComponent(projectId)}/settings`);
+    if (!res.ok) return;
+    boardSettings = await res.json();
+  } catch {
+    return; // daemon hiccup — defaults until the next load
+  }
+  renderBoard();
+}
+
+/** Compact age: "4m", "3h", "2d". */
+function fmtAge(ms) {
+  const m = Math.max(0, Math.floor(ms / 60000));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
+}
+
+/** Long age for tooltips: "2d 4h", "5h 12m", "40m" (zero parts dropped). */
+function fmtAgeLong(ms) {
+  const m = Math.max(0, Math.floor(ms / 60000));
+  const d = Math.floor(m / 1440);
+  const h = Math.floor((m % 1440) / 60);
+  const mm = m % 60;
+  const parts = d ? [d && `${d}d`, h && `${h}h`] : h ? [`${h}h`, mm && `${mm}m`] : [`${mm}m`];
+  return parts.filter(Boolean).join(' ');
+}
+
+/** Age-in-lane badge for an in-flight card, or null for other lanes. Painted by paintAge. */
+function ageBadge(lane, since, settings) {
+  if (!(lane in AGE_LANES) || !since) return null;
+  const el = document.createElement('span');
+  el.className = 'age';
+  el.dataset.lane = lane;
+  el.dataset.since = since;
+  el.dataset.limitH = settings.stuck_hours[lane];
+  paintAge(el);
+  return el;
+}
+
+function paintAge(el) {
+  const age = Date.now() - Number(el.dataset.since);
+  const limit = Number(el.dataset.limitH) * 3600000;
+  const stuck = age > limit;
+  const lane = AGE_LANES[el.dataset.lane];
+  el.classList.toggle('stuck', stuck);
+  el.textContent = stuck ? `stuck ${fmtAge(age)}` : fmtAge(age);
+  el.title = stuck
+    ? `${lane} for ${fmtAgeLong(age)}, over the ${fmtAgeLong(limit)} limit`
+    : `${lane} for ${fmtAgeLong(age)} (stuck after ${fmtAgeLong(limit)})`;
+}
+
+// Ages tick once a minute in place — no refetch, no re-render.
+let ageTicks = 0;
+tick.add(() => {
+  if (++ageTicks % 60 === 0) for (const el of document.querySelectorAll('.age[data-since]')) paintAge(el);
+});
+
+/** { n, limit, over } for a lane with a WIP limit set, else null. */
+function wipOf(lane, n, settings) {
+  const limit = settings.wip?.[lane];
+  return limit ? { n, limit, over: n > limit } : null;
 }
 
 // ── activity rail: view switcher (Attention / Kanban / Git / Phases) ─
@@ -693,7 +783,10 @@ function cardEl(card) {
   const bar = card.subs
     ? `<div class="bar"><div class="bar-fill" style="width:${(100 * card.subs.done) / card.subs.total}%"></div></div>`
     : '';
-  el.innerHTML = `<div class="title">${esc(card.title)}</div>${meta ? `<div class="meta">${meta}</div>` : ''}${bar}`;
+  el.innerHTML = `<div class="title">${esc(card.title)}</div><div class="meta">${meta}</div>${bar}`;
+  const age = ageBadge(card.lane, card.lane_since, kanbanSettings());
+  if (age) el.querySelector('.meta').append(age);
+  if (!el.querySelector('.meta').childElementCount) el.querySelector('.meta').remove();
   el.onclick = () => openCardModal(card.id);
   return el;
 }
@@ -1387,6 +1480,57 @@ function showSettingsTab(tab) {
   for (const p of document.querySelectorAll('.st-panel')) p.classList.toggle('hidden', p.dataset.panel !== tab);
   if (tab === 'skills') loadSkills();
   if (tab === 'team') loadTeam();
+  if (tab === 'board') renderBoardSettings();
+}
+
+// Board tab: this board's stuck thresholds (hours) + WIP limits, saved server-side on change.
+function renderBoardSettings() {
+  const host = $('board-settings');
+  if (!projectId) return void host.replaceChildren(node('div', 'st-rowsub', 'Open a board first.'));
+  const s = kanbanSettings();
+  const row = (title, sub, value, placeholder, save) => {
+    const r = node('div', 'st-list-row');
+    const text = node('div', 'st-rowtext');
+    text.append(node('div', 'st-rowtitle', title), node('div', 'st-rowsub', sub));
+    const input = node('input', 'st-num');
+    input.type = 'number';
+    input.min = '1';
+    input.value = value ?? '';
+    input.placeholder = placeholder;
+    input.setAttribute('aria-label', title);
+    input.onchange = () => save(input);
+    r.append(text, input);
+    return r;
+  };
+  const put = async (patch, input) => {
+    input.classList.remove('bad');
+    try {
+      const res = await fetch(`/project/${encodeURIComponent(projectId)}/settings`, { method: 'PUT', body: JSON.stringify(patch) });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+      boardSettings = await res.json();
+      renderBoard();
+    } catch (err) {
+      input.classList.add('bad');
+      input.title = err.message;
+    }
+  };
+  const rows = [];
+  for (const [lane, label] of Object.entries(AGE_LANES)) {
+    rows.push(
+      row(`${label} stuck after`, 'Hours a card can sit in this lane before it is flagged stuck', s.stuck_hours[lane], 'hours', (input) => {
+        const v = Number(input.value);
+        put({ stuck_hours: { [lane]: v } }, input);
+      }),
+    );
+  }
+  for (const lane of ['in_progress', 'in_review']) {
+    rows.push(
+      row(`${AGE_LANES[lane]} WIP limit`, 'Warn when the lane holds more cards than this (empty = no limit)', s.wip[lane], 'none', (input) => {
+        put({ wip: { [lane]: input.value === '' ? null : Number(input.value) } }, input);
+      }),
+    );
+  }
+  host.replaceChildren(...rows);
 }
 
 function renderGeneral() {
@@ -1744,6 +1888,11 @@ function onDashboardMessage(msg) {
     setTimeout(() => {
       $('dashboard-body').querySelector(`.dash-tile[data-id="${CSS.escape(pid)}"] .dt-autopilot`)?.classList.remove('nudged');
     }, DASH_NUDGE_PULSE_MS);
+  } else if (msg.type === 'settings') {
+    const b = dash.summary?.boards.find((x) => x.project.id === pid);
+    if (!b) return;
+    b.settings = msg.settings; // this board's tile only
+    replaceDashTile(b);
   } else if (['card', 'card_removed', 'phases', 'verticals', 'event'].includes(msg.type)) {
     scheduleDashboardRefetch();
   }
@@ -1924,7 +2073,13 @@ function dashTile(b, isMain) {
   for (const [lane, label] of DASH_LANES) {
     const l = node('div', 'dt-lane');
     l.dataset.lane = lane;
-    l.append(node('span', 'dt-lane-n', b.lanes?.[lane] ?? 0), node('span', 'dt-lane-l', label));
+    const n = b.lanes?.[lane] ?? 0;
+    const wip = wipOf(lane, n, b.settings ?? DEFAULT_BOARD_SETTINGS);
+    l.append(node('span', 'dt-lane-n', wip ? `${n}/${wip.limit}` : n), node('span', 'dt-lane-l', label));
+    if (wip?.over) {
+      l.classList.add('wip-over');
+      l.title = `Over the WIP limit: ${n} cards, limit ${wip.limit}`;
+    }
     lanes.append(l);
   }
   tile.append(lanes);
@@ -1950,6 +2105,8 @@ function dashTile(b, isMain) {
     const row = node('div', `dt-card${c.blocked ? ' blocked' : ''}`);
     row.dataset.lane = c.lane;
     row.append(node('span', 'dt-card-mark'), node('span', 'dt-card-title', c.title));
+    const age = ageBadge(c.lane, c.lane_since, b.settings ?? DEFAULT_BOARD_SETTINGS);
+    if (age) row.append(age);
     if (c.blocked) {
       const flag = node('span', 'dt-card-blocked', '✋');
       flag.title = 'blocked';

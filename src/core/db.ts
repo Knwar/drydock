@@ -34,6 +34,7 @@ export function migrate(db: DB): void {
   if (!projectCols.includes('parent_id')) db.exec('ALTER TABLE projects ADD COLUMN parent_id TEXT');
   if (!projectCols.includes('autopilot'))
     db.exec('ALTER TABLE projects ADD COLUMN autopilot INTEGER NOT NULL DEFAULT 0');
+  if (!projectCols.includes('board_settings')) db.exec('ALTER TABLE projects ADD COLUMN board_settings TEXT');
   // Index lives here, not schema.sql: on a legacy DB schema.sql runs before the ALTER above.
   db.exec('CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_id)');
   // Loop-prevention origin tag (Phase 5): add to outbox tables created before it existed.

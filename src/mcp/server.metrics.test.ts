@@ -111,4 +111,15 @@ describe('MCP get_metrics', () => {
     assert.equal(unknown.isError, true);
     assert.match(unknown.content[0].text, /unknown project/);
   });
+
+  it('get_forecast passes its target through (1 done card: insufficient history)', async () => {
+    const r = (await client!.callTool({ name: 'get_forecast', arguments: { project_id: projectId, tz: 'UTC' } })) as ToolOut;
+    assert.ok(!r.isError, r.content[0]?.text);
+    const f = JSON.parse(r.content[0].text);
+    assert.equal(f.status, 'insufficient_history');
+    assert.equal(f.remaining, 1);
+    const unknown = (await client!.callTool({ name: 'get_forecast', arguments: { plan_id: 'nope' } })) as ToolOut;
+    assert.equal(unknown.isError, true);
+    assert.match(unknown.content[0].text, /unknown plan/);
+  });
 });
