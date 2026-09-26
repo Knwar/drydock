@@ -72,6 +72,7 @@ describe('MCP get_metrics', () => {
     assert.equal(s.oldestInFlight.id, wipId);
     assert.equal(s.points, undefined, 'no full series');
     assert.equal(s.cfd, undefined, 'no full series');
+    assert.deepEqual(s.waiting, { count: 0, longestMs: null });
 
     const api = JSON.parse((await call({ project_id: projectId, tag: 'api' })).content[0].text);
     assert.equal(api.cycleTime.count, 0);
@@ -83,6 +84,18 @@ describe('MCP get_metrics', () => {
     const ranged = await call({ project_id: projectId, from: '2026-01-01', to: today, tz: 'Asia/Kolkata' });
     assert.ok(!ranged.isError, ranged.content[0]?.text);
     assert.equal(JSON.parse(ranged.content[0].text).range.tz, 'Asia/Kolkata');
+  });
+
+  it('adds what is waiting on the human now (needs-you sessions + open blockers)', async () => {
+    await send('POST', `/task/${wipId}/block`, { reason: 'which db?' });
+    await send('POST', '/status', { project_id: projectId, agent: 'orchestrator', verb: 'needs you', detail: 'perm' });
+    const s = JSON.parse((await call({ project_id: projectId })).content[0].text);
+    assert.equal(s.waiting.count, 2);
+    assert.ok(s.waiting.longestMs >= 0);
+    await send('POST', `/task/${wipId}/unblock`, {});
+    await send('POST', '/status', { project_id: projectId, agent: 'orchestrator', verb: 'Edit' });
+    const after = JSON.parse((await call({ project_id: projectId })).content[0].text);
+    assert.deepEqual(after.waiting, { count: 0, longestMs: null });
   });
 
   it('surfaces bad params and unknown projects as tool errors', async () => {

@@ -12,6 +12,7 @@ import * as board from '../core/board.js';
 import * as subscriptions from '../core/subscriptions.js';
 import * as drafts from '../core/plan-drafts.js';
 import * as metrics from '../core/metrics.js';
+import * as waitTime from '../core/wait-time.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
 import { cardLines } from '../core/lines.js';
@@ -22,7 +23,7 @@ import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
 import { sessionCwd, sessionEnv } from './pty-env.js';
 import { ptyGroups, shellInfo, stillOurs, ttyGroups, type ShellInfo } from './pty-groups.js';
-import { SessionStates, type SessionView, type StatusEntry } from './session-state.js';
+import { OFFLINE_MS, SessionStates, type SessionView, type StatusEntry } from './session-state.js';
 import { suggestVerticals } from './vertical-suggest.js';
 
 const PORT = Number(process.env.PORT ?? 7890);
@@ -41,8 +42,16 @@ const diskVersion = cachedCodeVersion(CODE_ROOT);
 
 const db = openDb(DB_PATH);
 const broadcaster = new Broadcaster();
-// live agent session state per project: memory only, never persisted
-const states = new SessionStates();
+// live agent session state per project: memory only, never persisted; its
+// needs_you intervals are (wait_intervals). A restart closes the ones left open.
+waitTime.closeOpenWaits(db, Date.now(), OFFLINE_MS);
+const states = new SessionStates((change) => {
+  try {
+    waitTime.recordSessionChange(db, change);
+  } catch (err) {
+    console.error(`wait interval not recorded: ${(err as Error).message}`);
+  }
+});
 
 // ── embedded terminal (on by default; KANKAN_TERMINAL=0 disables) ───
 // node-pty is an OPTIONAL native dep: the board runs fine without it, and a
@@ -1341,6 +1350,31 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
   }
 
+  // ── wait time (needs_you + blockers): aggregation lives in core/wait-time.ts ──
+  if (method === 'GET' && pathname === '/metrics/wait') {
+    const q = url.searchParams;
+    const project = q.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
+    const now = Date.now();
+    try {
+      states.sweep(now); // close needs_you intervals whose session has silently gone offline
+      const filter: waitTime.WaitFilter = { projectIds: [project] };
+      const phase = q.get('phase');
+      if (phase) filter.phaseId = phase;
+      const from = q.get('from');
+      const to = q.get('to');
+      if (from) filter.from = metrics.parseTime(from, tz, 'from');
+      if (to) filter.to = metrics.parseTime(to, tz, 'to');
+      return json(res, 200, waitTime.waitMetrics(db, filter, { tz, now }));
+    } catch (err) {
+      const status = err instanceof metrics.MetricsParamError ? 400 : 500;
+      return json(res, status, { error: (err as Error).message });
+    }
+  }
+
   if (method === 'GET' && pathname === '/skills') {
     const project = url.searchParams.get('project');
     return json(res, 200, listSkills(project ? projectRoot(project) : null));
@@ -1850,6 +1884,9 @@ if (process.env.KANKAN_DISPATCHER !== '0') {
     dispatcher.runOnce().catch((err) => console.error(`dispatcher tick failed: ${(err as Error).message}`));
   }, 1000).unref());
 }
+
+// ── session sweep: persist silent offline timeouts (closes needs_you intervals) ──
+intervals.push(setInterval(() => states.sweep(Date.now()), 60_000).unref());
 
 // ── autopilot sweep ─────────────────────────────────────────────────
 // Every 30s, re-evaluate projects that opted in (catches idle sessions whose

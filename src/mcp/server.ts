@@ -216,7 +216,7 @@ server.registerTool(
   'get_metrics',
   {
     description:
-      'Flow metrics summary: throughput per ISO week for the last 4 ISO weeks ending at `to` (default now; the current week partial), cycle time p50/p85 (ms) over the same window, WIP by lane, and the oldest in-flight card. A workspace id includes its verticals. from/to: epoch ms, YYYY-MM-DD, or a datetime (read in `tz` when it has no zone). tz: IANA zone, default the daemon\'s.',
+      'Flow metrics summary: throughput per ISO week for the last 4 ISO weeks ending at `to` (default now; the current week partial), cycle time p50/p85 (ms) over the same window, WIP by lane, the oldest in-flight card, and `waiting` (work waiting on the human right now: needs-you sessions + open blockers, count and longest wait in ms). A workspace id includes its verticals. from/to: epoch ms, YYYY-MM-DD, or a datetime (read in `tz` when it has no zone). tz: IANA zone, default the daemon\'s.',
     inputSchema: {
       project_id: z.string(),
       phase_id: z.string().optional(),
@@ -227,12 +227,20 @@ server.registerTool(
       tz: z.string().optional(),
     },
   },
-  ({ project_id, phase_id, tag, agent, from, to, tz }) => {
+  async ({ project_id, phase_id, tag, agent, from, to, tz }) => {
     const params = new URLSearchParams({ project: project_id });
     for (const [k, v] of [['phase', phase_id], ['tag', tag], ['agent', agent], ['from', from], ['to', to], ['tz', tz]] as const) {
       if (v) params.set(k, v);
     }
-    return api('GET', `/metrics/summary?${params}`);
+    const summary = await api('GET', `/metrics/summary?${params}`);
+    if (summary.isError) return summary;
+    const waitParams = new URLSearchParams({ project: project_id });
+    if (phase_id) waitParams.set('phase', phase_id);
+    const wait = await api('GET', `/metrics/wait?${waitParams}`);
+    if (wait.isError) return wait;
+    const { count, longestMs } = JSON.parse(wait.content[0].text).waiting;
+    const merged = { ...JSON.parse(summary.content[0].text), waiting: { count, longestMs } };
+    return { content: [{ type: 'text' as const, text: JSON.stringify(merged) }] };
   },
 );
 
