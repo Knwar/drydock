@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it, type TestContext } from 'node:test';
 import {
   assignCard,
   createPhase,
@@ -115,11 +115,19 @@ describe('deriveLaneHistory / cardMetrics', () => {
     assert.equal(m.cycleTimeMs, 50);
   });
 
-  it('review rounds fall back to in_review entries, then the task column', () => {
+  it('review rounds fall back to completed in_review entries, then the task column', () => {
     const c = card({ lane: 'in_review' });
     const events = [ev('create', 0), move('backlog', 'in_review', 5)];
+    // sitting in its first review: nothing completed yet
     assert.equal(cardMetrics({ card: c, events }, 10).reviewRoundsSource, 'in_review_entries');
-    assert.equal(cardMetrics({ card: c, events }, 10).reviewRounds, 1);
+    assert.equal(cardMetrics({ card: c, events }, 10).reviewRounds, 0);
+    const back = [...events, move('in_review', 'in_progress', 8), move('in_progress', 'in_review', 9)];
+    assert.equal(cardMetrics({ card: c, events: back }, 10).reviewRounds, 1);
+    const done = [...back, move('in_review', 'done', 12)];
+    assert.equal(cardMetrics({ card: card({ lane: 'done' }), events: done }, 20).reviewRounds, 2);
+    // a delete while in review is not a completed review
+    const deleted = [...events, ev('delete', 9, { id: 'c1', title: 'Card' })];
+    assert.equal(cardMetrics({ card: c, events: deleted }, 10).reviewRounds, 0);
     const c2 = card({ review_rounds: 3 });
     const m2 = cardMetrics({ card: c2, events: [ev('create', 0)] }, 10);
     assert.equal(m2.reviewRoundsSource, 'task');
@@ -249,6 +257,94 @@ describe('deriveLaneHistory / cardMetrics', () => {
     assert.equal(m.timeInLaneMs.backlog, 20);
   });
 
+  it('a redirect is a fresh start for cycle start and review rounds', () => {
+    const c = card({ lane: 'done', review_rounds: 1 });
+    const events = [
+      ev('create', 0),
+      move('backlog', 'queued', 5),
+      move('queued', 'in_progress', 10),
+      move('in_progress', 'in_review', 20),
+      ev('review', 25, { verdict: 'fail', round: 1 }),
+      ev('redirect', 30, { from: 'in_review' }),
+      move('backlog', 'in_progress', 50),
+      move('in_progress', 'in_review', 60),
+      ev('review', 65, { verdict: 'pass', round: 1 }),
+      move('in_review', 'done', 70),
+    ];
+    const h = deriveLaneHistory(c, events);
+    assert.equal(h.partial, false);
+    assert.deepEqual(h.lastRedirect, { at: 30, interval: 4, review: 1 });
+    const m = cardMetrics({ card: c, events }, 100);
+    assert.equal(m.cycleStartAt, 50, 'the pre-redirect queued entry does not count');
+    assert.equal(m.cycleTimeMs, 20);
+    assert.equal(m.leadTimeMs, 70, 'lead time still runs from creation');
+    assert.equal(m.reviewRounds, 1);
+    assert.equal(m.reviewRoundsSource, 'reviews');
+  });
+
+  it('a redirect with no later reviews falls back past the old review events', () => {
+    const c = card({ lane: 'in_review' });
+    const events = [
+      ev('create', 0),
+      move('backlog', 'in_review', 5),
+      ev('review', 6, { verdict: 'fail', round: 1 }),
+      move('in_review', 'in_progress', 7),
+      ev('redirect', 8, { from: 'in_progress' }),
+      move('backlog', 'in_review', 9),
+    ];
+    const m = cardMetrics({ card: c, events }, 10);
+    assert.equal(m.reviewRoundsSource, 'in_review_entries');
+    assert.equal(m.reviewRounds, 0);
+    assert.equal(m.cycleStartAt, 9);
+  });
+
+  it('a done card that skipped queued and in_progress never has a null cycle time', () => {
+    const viaReview = [ev('create', 0), move('backlog', 'in_review', 10), move('in_review', 'done', 40)];
+    const m = cardMetrics({ card: card({ lane: 'done' }), events: viaReview }, 50);
+    assert.equal(m.cycleStartAt, 10);
+    assert.equal(m.cycleTimeMs, 30);
+    const straight = [ev('create', 0), move('backlog', 'done', 40)];
+    const m2 = cardMetrics({ card: card({ lane: 'done' }), events: straight }, 50);
+    assert.equal(m2.cycleStartAt, 40);
+    assert.equal(m2.cycleTimeMs, 0);
+    // after a redirect the old in_progress entry does not count either
+    const redirected = [
+      ev('create', 0),
+      move('backlog', 'in_progress', 5),
+      ev('redirect', 10, { from: 'in_progress' }),
+      move('backlog', 'done', 30),
+    ];
+    const m3 = cardMetrics({ card: card({ lane: 'done' }), events: redirected }, 50);
+    assert.equal(m3.cycleTimeMs, 0);
+    // no events at all but done: still a cycle time
+    const m4 = cardMetrics({ card: card({ lane: 'done', created_at: 7 }), events: [] }, 50);
+    assert.equal(m4.cycleTimeMs, 0);
+  });
+
+  it('rowid wins when created_at goes backwards; the stamp is clamped (no negative spans)', () => {
+    const c = card({ lane: 'done' });
+    const a = ev('create', 0);
+    const b = move('backlog', 'in_progress', 50);
+    const d = move('in_progress', 'in_review', 40); // clock stepped back 10ms
+    const e = move('in_review', 'done', 60);
+    const shuffled = [e, d, b, a];
+    assert.deepEqual(sortEvents(shuffled).map((x) => x.id), [a.id, b.id, d.id, e.id]);
+    const h = deriveLaneHistory(c, shuffled);
+    assert.equal(h.partial, false);
+    assert.deepEqual(
+      h.intervals.map((i) => [i.lane, i.from, i.to]),
+      [
+        ['backlog', 0, 50],
+        ['in_progress', 50, 50],
+        ['in_review', 50, 60],
+        ['done', 60, null],
+      ],
+    );
+    const m = cardMetrics({ card: c, events: shuffled }, 60);
+    assert.ok(Object.values(m.timeInLaneMs).every((v) => v >= 0));
+    assert.equal(m.cycleTimeMs, 10);
+  });
+
   it('a delete event closes the history', () => {
     const c = card({ lane: 'in_progress', blocked_at: 15 });
     const events = [
@@ -277,9 +373,13 @@ describe('deriveLaneHistory / cardMetrics', () => {
 });
 
 describe('loadCardHistories', () => {
-  const setup = () => {
+  const setup = (t: TestContext) => {
     const db = openDb();
     const root = mkdtempSync(join(tmpdir(), 'metrics-'));
+    t.after(() => {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    });
     mkdirSync(join(root, 'ws', 'api'), { recursive: true });
     const ws = getOrCreateProject(db, join(root, 'ws'), 'ws');
     const v = createVertical(db, ws.id, 'api', join(root, 'ws', 'api'));
@@ -297,8 +397,8 @@ describe('loadCardHistories', () => {
     return { db, ws, v, other, phase, a, b, c };
   };
 
-  it('returns cards with their events; workspace expands to its verticals', () => {
-    const { db, ws, a, b } = setup();
+  it('returns cards with their events; workspace expands to its verticals', (t) => {
+    const { db, ws, a, b } = setup(t);
     const hs = loadCardHistories(db, { projectIds: [ws.id] });
     assert.deepEqual(hs.map((h) => h.card.id).sort(), [a.id, b.id].sort());
     const ha = hs.find((h) => h.card.id === a.id)!;
@@ -315,8 +415,8 @@ describe('loadCardHistories', () => {
     assert.equal(mb.blocked, true);
   });
 
-  it('filters by vertical id alone, phase, tag, agent, and empty projectIds', () => {
-    const { db, v, phase, a, b, c } = setup();
+  it('filters by vertical id alone, phase, tag, agent, and empty projectIds', (t) => {
+    const { db, v, phase, a, b, c } = setup(t);
     assert.deepEqual(loadCardHistories(db, { projectIds: [v.id] }).map((h) => h.card.id), [b.id]);
     assert.deepEqual(loadCardHistories(db, { phaseId: phase.id }).map((h) => h.card.id), [a.id]);
     assert.deepEqual(loadCardHistories(db, { tag: 'ui' }).map((h) => h.card.id).sort(), [a.id, c.id].sort());
@@ -327,8 +427,8 @@ describe('loadCardHistories', () => {
     assert.equal(loadCardHistories(db).length, 3);
   });
 
-  it('date range drops cards done before the window and cards created after it', () => {
-    const { db, a, b, c } = setup();
+  it('date range drops cards done before the window and cards created after it', (t) => {
+    const { db, a, b, c } = setup(t);
     const doneAt = cardMetrics(loadCardHistories(db, { tag: 'ui' }).find((h) => h.card.id === a.id)!, 0).doneAt!;
     // backdate A so it finished well before the window
     db.prepare('UPDATE task_events SET created_at = created_at - 100000 WHERE task_id = ?').run(a.id);

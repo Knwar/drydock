@@ -15,6 +15,22 @@
  *  - review   {verdict, round, findings}
  *  - delete   {id, title}              task_id is NULL and the card's own
  *                                       events are deleted with it
+ *
+ * Rules the derivation applies:
+ *  - Event order: (created_at, rowid). rowid is the true insertion order within
+ *    a task, so while clocks are monotonic the two agree; when created_at goes
+ *    backwards within a task (a clock step), rowid wins and the event's time is
+ *    clamped up to the previous event's, so no interval ever has a negative
+ *    span. In effect: sort by rowid, clamp times to be non-decreasing.
+ *  - Redirect = fresh start: redirectTask resets review_rounds, so cycle start
+ *    and review rounds count only from the last redirect (lead time still runs
+ *    from creation).
+ *  - Cycle start: first entry (after the last redirect) into queued, else
+ *    in_progress, else in_review; a done card that skipped all three starts at
+ *    its done time (cycle time 0). A done card never has a null cycle time.
+ *  - Review rounds: review events (after the last redirect); without any, the
+ *    completed reviews, i.e. in_review entries followed by a move out of
+ *    in_review (a card sitting in its first review has 0); else the task column.
  */
 import type { DB } from './db.js';
 import { LANES, type Lane, type Task } from './types.js';
@@ -68,6 +84,8 @@ export interface LaneHistory {
   intervals: LaneInterval[];
   blocked: BlockedInterval[];
   reviews: { at: number; verdict: string | null; round: number | null }[];
+  /** The last redirect: its time and the interval / review index the fresh start begins at. */
+  lastRedirect: { at: number; interval: number; review: number } | null;
   /** true when the history had to be reconstructed from created_at/updated_at or had gaps. */
   partial: boolean;
   deletedAt: number | null;
@@ -84,8 +102,8 @@ export interface CardMetrics {
   createdAt: number; // start of the first interval
   doneAt: number | null; // last entry into 'done', only if the card is currently done
   leadTimeMs: number | null; // created -> done
-  cycleStartAt: number | null; // first queued, else first in_progress
-  cycleTimeMs: number | null; // cycleStartAt -> done
+  cycleStartAt: number | null; // since the last redirect: first queued, else in_progress, else in_review (done: else doneAt)
+  cycleTimeMs: number | null; // cycleStartAt -> done; never null for a done card
   timeInLaneMs: Record<Lane, number>; // open intervals count up to `now`
   blockedMs: number; // open blocker counts up to `now`
   blocked: boolean; // currently blocked
@@ -125,9 +143,13 @@ function parsePayload(p: MetricsEvent['payload']): Record<string, unknown> {
   }
 }
 
-/** Events in true order: by timestamp, ties (and equal ms) broken by rowid. */
+/**
+ * Events in true order. (created_at, rowid) with rowid authoritative when
+ * created_at goes backwards, which is exactly rowid order (see the header);
+ * deriveLaneHistory clamps the out-of-step timestamps.
+ */
 export function sortEvents<E extends MetricsEvent>(events: E[]): E[] {
-  return [...events].sort((a, b) => a.created_at - b.created_at || a.id - b.id);
+  return [...events].sort((a, b) => a.id - b.id);
 }
 
 /**
@@ -144,6 +166,7 @@ export function deriveLaneHistory(card: MetricsCard, events: MetricsEvent[]): La
   const blocked: BlockedInterval[] = [];
   const reviews: LaneHistory['reviews'] = [];
   let deletedAt: number | null = null;
+  let lastRedirect: LaneHistory['lastRedirect'] = null;
 
   const start = Math.min(card.created_at, sorted.length ? sorted[0].created_at : card.created_at);
 
@@ -175,10 +198,12 @@ export function deriveLaneHistory(card: MetricsCard, events: MetricsEvent[]): La
     if (b) b.to = at;
   };
 
+  let prevAt = -Infinity;
   for (const e of sorted) {
     if (deletedAt !== null) break;
     const p = parsePayload(e.payload);
-    const at = e.created_at;
+    const at = Math.max(e.created_at, prevAt); // clock stepped back: rowid order wins
+    prevAt = at;
     switch (e.type) {
       case 'move': {
         if (isLane(p.from) && p.from !== current().lane) partial = true; // a transition is missing
@@ -194,6 +219,7 @@ export function deriveLaneHistory(card: MetricsCard, events: MetricsEvent[]): La
         if (isLane(p.from) && p.from !== current().lane) partial = true;
         enter('backlog', at);
         closeBlock(at);
+        lastRedirect = { at, interval: intervals.length - 1, review: reviews.length };
         break;
       case 'assign':
         closeBlock(at); // assignCard clears the blocker without an unblock event
@@ -224,7 +250,7 @@ export function deriveLaneHistory(card: MetricsCard, events: MetricsEvent[]): La
   }
 
   if (deletedAt === null) {
-    const lastTs = sorted.length ? sorted[sorted.length - 1].created_at : start;
+    const lastTs = sorted.length ? Math.max(prevAt, start) : start;
     const fixAt = Math.max(card.updated_at, lastTs);
     // The row's lane is authoritative: reconcile a history that ends elsewhere.
     if (current().lane !== card.lane) {
@@ -241,14 +267,14 @@ export function deriveLaneHistory(card: MetricsCard, events: MetricsEvent[]): La
     }
   }
 
-  return { intervals, blocked, reviews, partial, deletedAt };
+  return { intervals, blocked, reviews, lastRedirect, partial, deletedAt };
 }
 
 const span = (from: number, to: number | null, now: number) => Math.max(0, (to ?? now) - from);
 
 /** Per-card metrics from a derived history. `now` closes any open interval. */
 export function computeCardMetrics(card: MetricsCard, history: LaneHistory, now: number): CardMetrics {
-  const { intervals, blocked, reviews, deletedAt } = history;
+  const { intervals, blocked, deletedAt, lastRedirect } = history;
   const last = intervals[intervals.length - 1];
   const createdAt = intervals[0].from;
 
@@ -256,17 +282,22 @@ export function computeCardMetrics(card: MetricsCard, history: LaneHistory, now:
   for (const i of intervals) timeInLaneMs[i.lane] += span(i.from, i.to, now);
 
   const doneAt = last.lane === 'done' && deletedAt === null ? last.from : null;
-  const firstEntry = (lane: Lane) => intervals.find((i) => i.lane === lane)?.from ?? null;
-  const cycleStartAt = firstEntry('queued') ?? firstEntry('in_progress');
+  // A redirect is a fresh start: cycle start and review rounds count from it.
+  const freshFrom = lastRedirect?.interval ?? 0;
+  const fresh = intervals.slice(freshFrom);
+  const reviews = history.reviews.slice(lastRedirect?.review ?? 0);
+  const firstEntry = (lane: Lane) => fresh.find((i) => i.lane === lane)?.from ?? null;
+  const cycleStartAt = firstEntry('queued') ?? firstEntry('in_progress') ?? firstEntry('in_review') ?? doneAt;
 
   let reviewRounds: number;
   let reviewRoundsSource: CardMetrics['reviewRoundsSource'];
-  const inReviewEntries = intervals.filter((i) => i.lane === 'in_review').length;
+  const inReviewIdx = intervals.flatMap((i, idx) => (idx >= freshFrom && i.lane === 'in_review' ? [idx] : []));
   if (reviews.length) {
     reviewRounds = reviews.length;
     reviewRoundsSource = 'reviews';
-  } else if (inReviewEntries) {
-    reviewRounds = inReviewEntries;
+  } else if (inReviewIdx.length) {
+    // completed reviews only: an in_review entry followed by a move out of it
+    reviewRounds = inReviewIdx.filter((idx) => idx < intervals.length - 1).length;
     reviewRoundsSource = 'in_review_entries';
   } else {
     reviewRounds = card.review_rounds;
@@ -371,7 +402,7 @@ export function loadCardHistories(db: DB, filter: MetricsFilter = {}): CardHisto
     .prepare(
       `SELECT e.id, e.task_id, e.type, e.payload, e.agent, e.created_at
        FROM task_events e JOIN tasks t ON t.id = e.task_id ${sql}
-       ORDER BY e.created_at, e.id`,
+       ORDER BY e.id`,
     )
     .all(...params) as (MetricsEvent & { task_id: string })[];
 
