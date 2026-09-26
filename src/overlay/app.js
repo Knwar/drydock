@@ -3913,6 +3913,8 @@ const plan = {
   patching: 0, // PATCHes in flight
   deferVersion: 0, // highest plan_draft version heard while patching (checked once they land)
   boardPhases: new Map(), // board id → its existing phase titles (fetched on demand, per planner visit)
+  lostSaves: new Set(), // `${draft}\0${node}\0${field}` whose last save failed after its editor closed
+  actionBusy: false, // Commit / Run is flushing edits before its dialog opens
 };
 
 function svgEl(tag, attrs) {
@@ -4636,8 +4638,14 @@ function planSaving() {
 
 function renderPlanSaved() {
   const saving = planSaving();
-  if (plan.view) $('pl-saved').textContent = saving ? 'Saving…' : `Saved · v${plan.view.draft.version}`;
+  const v = plan.view;
+  if (v) {
+    const lost = [...plan.lostSaves].some((k) => k.startsWith(`${v.draft.id}\u0000`));
+    $('pl-saved').textContent = saving ? 'Saving…' : lost ? `Not saved · v${v.draft.version}` : `Saved · v${v.draft.version}`;
+    $('pl-saved').classList.toggle('lost', !saving && lost);
+  }
   if (plan.ed) plan.ed.els.status.textContent = saving ? 'Saving…' : 'Changes save as you type';
+  renderPlanActions();
 }
 
 function planNodeById(id) {
@@ -4646,6 +4654,10 @@ function planNodeById(id) {
 
 function selectPlanNode(id) {
   plan.selected = id;
+  if (id && plan.selEdge) {
+    plan.selEdge = null; // Delete / Backspace must not remove an arrow selected before this card
+    markPlanEdge();
+  }
   updatePlanMarks();
   renderPlanEditor();
   if (!id) return;
@@ -4687,7 +4699,7 @@ function planXIcon(size) {
 }
 
 function buildPlanEditor(id, draftId) {
-  const ed = { id, draft: draftId, pending: {}, inflight: new Map(), timer: null, errs: {}, els: { err: {} }, phaseOpen: false, phaseIdx: 0, phaseOpts: [], keys: {} };
+  const ed = { id, draft: draftId, pending: {}, inflight: new Map(), saveSeq: 0, latest: {}, timer: null, errs: {}, els: { err: {} }, phaseOpen: false, phaseIdx: 0, phaseOpts: [], keys: {} };
   const { els } = ed;
   const errEl = (f) => {
     const e = node('div', 'pl-ed-err');
@@ -4831,12 +4843,6 @@ function buildPlanEditor(id, draftId) {
     errEl('delete'),
     foot,
   );
-  // a field that was held while focused catches up once focus leaves it
-  $('pl-editor').addEventListener('focusout', () =>
-    setTimeout(() => {
-      if (plan.ed === ed) syncPlanEditor(ed);
-    }),
-  );
   if (!planNodeById(id)?.board_id) return ed;
   loadBoardPhases(planNodeById(id).board_id);
   return ed;
@@ -4864,15 +4870,38 @@ async function flushPlanEdits(ed) {
   if (!fields.length) return;
   ed.pending = {};
   if (plan.view?.draft.id === ed.draft && !planNodeById(ed.id)) return renderPlanSaved(); // the card is gone
-  for (const f of fields) ed.inflight.set(f, (ed.inflight.get(f) ?? 0) + 1);
+  const seq = ++ed.saveSeq;
+  for (const f of fields) {
+    ed.inflight.set(f, (ed.inflight.get(f) ?? 0) + 1);
+    ed.latest[f] = seq;
+  }
+  const title = planNodeById(ed.id)?.title || 'Untitled';
   const r = await planPatch(ed.draft, [{ op: 'update_node', id: ed.id, patch }]);
   for (const f of fields) ed.inflight.set(f, ed.inflight.get(f) - 1);
-  if (!r.ok) for (const f of fields) ed.errs[f] = `Couldn’t save: ${r.error}`;
-  if (plan.ed !== ed) return;
+  // only the latest save of a field decides its error / revert: an older failure
+  // must not undo a newer value, and a newer success clears an older error
+  const mine = fields.filter((f) => ed.latest[f] === seq);
+  for (const f of mine) {
+    const key = `${ed.draft}\u0000${ed.id}\u0000${f}`;
+    if (r.ok) {
+      delete ed.errs[f];
+      plan.lostSaves.delete(key);
+    } else ed.errs[f] = `Couldn’t save: ${r.error}`;
+    if (!r.ok && plan.ed !== ed) plan.lostSaves.add(key);
+  }
+  if (plan.ed !== ed) {
+    // the editor moved on: nothing shows the field error, so say it here
+    if (!r.ok && mine.length) svFlash(`Couldn’t save ${mine.map((f) => PL_FIELD_NAME[f] ?? f).join(', ')} on “${title}”`);
+    renderPlanSaved();
+    return r;
+  }
   // a failed field reverts to the saved value (unless it has been edited again since)
-  syncPlanEditor(ed, r.ok ? [] : fields.filter((f) => !(f in ed.pending)));
+  syncPlanEditor(ed, r.ok ? [] : mine.filter((f) => !(f in ed.pending)));
   renderPlanSaved();
+  return r;
 }
+
+const PL_FIELD_NAME = { title: 'title', board_id: 'board', phase: 'phase', requirements: 'requirements', subtasks: 'acceptance criteria', touches: 'touches' };
 
 function syncPlanEditor(ed, force = []) {
   const v = plan.view;
@@ -5205,7 +5234,8 @@ async function deletePlanNode(ed) {
 async function addPlanCard() {
   const v = plan.view;
   if (EMBED || !v || v.draft.id !== plan.openId) return;
-  const ids = new Set(v.draft.data.nodes.map((n) => n.id));
+  // never reuse a removed node's id: its `committed` entry would map the new node onto the old card
+  const ids = new Set([...v.draft.data.nodes.map((n) => n.id), ...Object.keys(v.draft.data.committed ?? {})]);
   let id;
   do id = Math.random().toString(36).slice(2, 8);
   while (!id || ids.has(id));
@@ -5345,6 +5375,442 @@ function endPlanLink() {
   for (const b of $('pl-world').querySelectorAll('.pl-node.drop')) b.classList.remove('drop');
 }
 
+// ── commit / run ──
+// Commit is live while the draft is dirty (or never committed) and has no errors;
+// Run only once the committed plan has no edits since.
+function renderPlanActions() {
+  const v = plan.view;
+  if (!v || v.draft.id !== plan.openId) return;
+  const errs = v.validation.errors.length;
+  const saving = planSaving();
+  const commit = $('pl-commit');
+  commit.disabled = EMBED || errs > 0 || !(v.dirty || saving);
+  commit.title = errs ? `Fix ${errs} error${errs === 1 ? '' : 's'} to commit` : commit.disabled ? 'No edits since the last commit' : '';
+  const run = $('pl-run');
+  run.disabled = EMBED || v.draft.committed_version === null || v.dirty || saving;
+  run.title = run.disabled ? 'Commit your edits to run' : '';
+}
+
+// Flush the editor's pending autosave and wait for every PATCH to land, so what
+// Commit sees includes the last keystrokes. Resolves to false when a save failed.
+async function planDrain() {
+  let ok = true;
+  const flushed = plan.ed ? flushPlanEdits(plan.ed) : null;
+  for (let q; q !== plan.queue; ) {
+    q = plan.queue;
+    await q;
+  }
+  const r = await flushed;
+  if (r && !r.ok) ok = false;
+  while (plan.patching) await new Promise((res) => setTimeout(res, 50));
+  return ok;
+}
+
+const plBold = (s) => node('b', '', s);
+const plDim = (s) => node('span', 'pl-dlg-dim', s);
+const plCount = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const PL_DIFF_FIELD = { title: 'title', requirements: 'requirements', subtasks: 'acceptance criteria', tag: 'tag', phase: 'phase', depends_on: 'depends on', board: 'board' };
+const PL_LANE = { backlog: 'Backlog', queued: 'Queued', in_progress: 'In progress', in_review: 'In review', done: 'Done' };
+
+async function plJson(url, opts) {
+  let res;
+  let out = {};
+  try {
+    res = await fetch(url, opts);
+    out = await res.json().catch(() => ({}));
+  } catch {
+    /* handled by the caller */
+  }
+  const error = !res ? 'couldn’t reach the daemon' : typeof out.error === 'string' && out.error ? out.error : `the daemon answered ${res.status}`;
+  return { res, out, ok: !!res?.ok, error };
+}
+
+function plDlgButton(cls, text) {
+  const b = node('button', cls, text);
+  b.type = 'button';
+  return b;
+}
+
+async function openCommitModal() {
+  const v0 = plan.view;
+  if (EMBED || !v0 || v0.draft.id !== plan.openId || svModal || plan.actionBusy) return;
+  const id = v0.draft.id;
+  plan.actionBusy = true;
+  let saved;
+  try {
+    saved = await planDrain();
+  } finally {
+    plan.actionBusy = false;
+  }
+  const v = plan.view;
+  if (svModal || plan.openId !== id || v?.draft.id !== id) return;
+  if (!saved) return svFlash('Couldn’t save your last edit — fix it, then commit');
+  renderPlanActions();
+  if ($('pl-commit').disabled) return; // the flushed edits left errors (or nothing to commit)
+
+  const st = { diff: null, error: '', note: '', loading: true, busy: false, seq: 0, closed: false };
+  const { dlg, close, mount } = openModal({
+    labelledBy: 'pl-cm-title',
+    describedBy: 'pl-cm-sub',
+    busy: () => st.busy,
+    onClose: () => {
+      st.closed = true;
+      st.seq++;
+    },
+    fallbackFocus: () => $('pl-commit'),
+  });
+  dlg.classList.add('pl-dlg', 'pl-cm');
+  const head = node('div', 'pl-dlg-head');
+  const title = node('h2', 'pl-dlg-title', `Commit ${v.draft.title}`);
+  title.id = 'pl-cm-title';
+  const sub = node('p', 'pl-dlg-sub', 'Writes the plan onto its boards in one step. Nothing is queued until you Run.');
+  sub.id = 'pl-cm-sub';
+  head.append(title, sub);
+  const note = node('div', 'pl-dlg-note');
+  note.setAttribute('role', 'status');
+  const chips = node('div', 'pl-cm-chips');
+  const body = node('div', 'pl-cm-body');
+  const err = node('div', 'pl-dlg-err');
+  err.setAttribute('role', 'alert');
+  const foot = node('div', 'pl-dlg-foot');
+  const ver = node('span', 'pl-cm-ver');
+  const btns = node('div', 'pl-dlg-btns');
+  const cancel = plDlgButton('pl-dlg-btn', 'Cancel');
+  cancel.onclick = () => !st.busy && close();
+  const go = plDlgButton('pl-dlg-btn primary', 'Commit');
+  btns.append(cancel, go);
+  foot.append(ver, btns);
+  dlg.append(head, note, chips, body, err, foot);
+
+  const render = () => {
+    const d = st.diff;
+    note.textContent = st.note;
+    err.textContent = st.error;
+    const cv = plan.view?.draft.id === id ? plan.view.draft.committed_version : v.draft.committed_version;
+    go.textContent = st.busy ? 'Committing…' : d ? `Commit v${d.version}` : 'Commit';
+    go.disabled = st.busy || st.loading || !d || d.errors.length > 0;
+    cancel.disabled = st.busy;
+    ver.textContent = d ? `${cv === null || cv === undefined ? 'first commit' : `v${cv} → v${d.version}`} · all or nothing` : '';
+    if (st.loading) {
+      chips.replaceChildren();
+      return body.replaceChildren(node('div', 'pl-dlg-empty', 'Working out what changes…'));
+    }
+    if (!d) return void (chips.replaceChildren(), body.replaceChildren());
+    const sum = (k) => d.boards.reduce((a, b) => a + b[k].length, 0);
+    const chip = (n, text, cls) => (n ? [node('span', `pl-cm-chip ${cls}`, text)] : []);
+    const np = sum('phases');
+    const nc = sum('create');
+    chips.replaceChildren(
+      ...chip(np, `+${np} phase${np === 1 ? '' : 's'}`, 'add'),
+      ...chip(nc, `+${nc} card${nc === 1 ? '' : 's'}`, 'add'),
+      ...chip(sum('update'), `~${sum('update')} updated`, 'edit'),
+      ...chip(sum('delete'), `−${sum('delete')} deleted`, 'del'),
+      ...chip(sum('kept'), `${sum('kept')} kept`, 'kept'),
+      ...chip(sum('locked'), `${sum('locked')} locked`, 'lock'),
+    );
+    const parts = [];
+    if (d.errors.length) {
+      const box = node('div', 'pl-cm-errors');
+      box.append(node('b', '', `Fix ${plCount(d.errors.length, 'error')} to commit`), ...d.errors.map((e) => node('div', '', e.message)));
+      parts.push(box);
+    }
+    const boards = planBoards(plan.view?.draft.id === id ? plan.view : v);
+    const roots = new Map((plan.view?.draft.id === id ? plan.view : v).boards.map((b) => [b.id, b.root]));
+    for (const b of d.boards) {
+      const info = boards.get(b.board_id);
+      const sec = node('section', 'pl-cm-board');
+      const bh = node('div', 'pl-cm-bhead');
+      const dot = node('span', 'pl-dot');
+      dot.style.background = info?.color ?? PL_NONE_COLOR;
+      const root = roots.get(b.board_id);
+      bh.append(dot, node('span', 'pl-cm-bname', info?.name ?? 'Unknown board'), node('span', 'pl-cm-bfolder', root === '' ? 'workspace' : root ?? ''));
+      sec.append(bh);
+      const row = (kind, label, ...content) => {
+        const r = node('div', 'pl-cm-row');
+        const t = node('span', 'pl-cm-text');
+        t.append(...content);
+        r.append(node('span', `pl-cm-k ${kind}`, label), t);
+        sec.append(r);
+      };
+      const existing = st.phases?.get(b.board_id);
+      let prev = existing?.length ? existing[existing.length - 1] : null;
+      for (const p of b.phases) {
+        row('add', '+ phase', 'New phase ', plBold(p.name), ...(prev ? [' ', plDim(`after ${prev}`)] : existing ? [' ', plDim('first on this board')] : []));
+        prev = p.name;
+      }
+      if (b.create.length) row('add', `+ ${b.create.length}`, b.create.map((c) => c.title || 'Untitled').join(' · '));
+      for (const u of b.update) row('edit', '~ edit', plBold(u.title || 'Untitled'), ' ', plDim(Object.keys(u.changes).map((f) => PL_DIFF_FIELD[f] ?? f).join(', ')));
+      for (const x of b.delete) {
+        const lane = st.lanes?.get(x.card_id);
+        row('del', '− delete', plBold(x.title || 'Untitled'), ' ', plDim(lane ? `was in ${PL_LANE[lane] ?? lane}, removed from the plan` : 'removed from the plan'));
+      }
+      for (const x of b.kept) {
+        const why = x.reason === 'blocked' ? 'is blocked' : x.lane === 'in_progress' ? 'is in progress' : 'has started';
+        row('kept', 'kept', plBold(x.title || 'Untitled'), ' ', plDim(`${why}, so it stays on the board (no longer in this plan)`));
+      }
+      for (const x of b.locked) {
+        const why = x.reason === 'blocked' ? 'is blocked' : 'has started';
+        row('lock', 'locked', plBold(x.title || 'Untitled'), ' ', plDim(`${why}, so your edits aren’t applied`));
+      }
+      parts.push(sec);
+    }
+    if (!d.boards.length && !d.errors.length) parts.push(node('div', 'pl-dlg-empty', 'Nothing changes on the boards.'));
+    body.replaceChildren(...parts);
+  };
+
+  const load = async () => {
+    const seq = ++st.seq;
+    st.loading = true;
+    st.error = '';
+    render();
+    const r = await plJson(`/plan-drafts/${encodeURIComponent(id)}/diff`);
+    let phases = null;
+    let lanes = null;
+    if (r.ok) {
+      // the explanatory text: which phase a new one follows, and where a deleted card was
+      const withPhases = r.out.boards.filter((b) => b.phases.length).map((b) => b.board_id);
+      const dels = r.out.boards.flatMap((b) => b.delete.map((x) => x.card_id));
+      const [ph, ln] = await Promise.all([
+        Promise.all(withPhases.map((b) => plJson(`/phases?project=${encodeURIComponent(b)}`))),
+        Promise.all(dels.map((c) => plJson(`/task/${encodeURIComponent(c)}`))),
+      ]);
+      phases = new Map();
+      withPhases.forEach((b, i) => {
+        if (ph[i].ok && Array.isArray(ph[i].out)) phases.set(b, [...ph[i].out].sort((x, y) => x.position - y.position).map((p) => p.title));
+      });
+      lanes = new Map();
+      dels.forEach((c, i) => ln[i].ok && lanes.set(c, ln[i].out.lane));
+    }
+    if (seq !== st.seq || st.closed) return;
+    st.loading = false;
+    st.diff = r.ok ? r.out : null;
+    st.phases = phases;
+    st.lanes = lanes;
+    if (!r.ok) st.error = `Couldn’t load the changes: ${r.error}`;
+    render();
+  };
+
+  go.onclick = async () => {
+    const d = st.diff;
+    if (!d || st.busy || st.loading) return; // double-submit guard
+    st.busy = true;
+    st.error = '';
+    render();
+    const r = await plJson(`/plan-drafts/${encodeURIComponent(id)}/commit`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ version: d.version }),
+    });
+    st.busy = false;
+    if (st.closed) return;
+    if (r.res?.status === 409) {
+      // stale (the plan changed while this was open) or new errors: show the latest
+      st.note = 'The plan changed — review again';
+      if (plan.openId === id) openPlan(id, true);
+      return load();
+    }
+    if (!r.ok) {
+      st.error = `Couldn’t commit: ${r.error}`;
+      return render();
+    }
+    close();
+    svFlash(`Committed v${r.out.draft.draft.version}`);
+    if (plan.openId === id) setPlanView(r.out.draft); // the draft stays open: only its commit mark moved
+    schedulePlanList();
+  };
+
+  mount();
+  cancel.focus();
+  load();
+}
+
+async function openRunModal() {
+  const v = plan.view;
+  if (EMBED || !v || v.draft.id !== plan.openId || svModal || plan.actionBusy || $('pl-run').disabled) return;
+  const id = v.draft.id;
+  const st = { mode: 'queue', loading: true, busy: false, error: '', closed: false, cards: null, sessions: new Map() };
+  const { dlg, close, mount } = openModal({
+    labelledBy: 'pl-run-title',
+    describedBy: 'pl-run-sub',
+    busy: () => st.busy,
+    onClose: () => (st.closed = true),
+    fallbackFocus: () => $('pl-run'),
+  });
+  dlg.classList.add('pl-dlg', 'pl-rn');
+  const boards = planBoards(v);
+  const verts = new Set(v.boards.filter((b) => b.root !== '').map((b) => b.id));
+  const head = node('div', 'pl-dlg-head');
+  const title = node('h2', 'pl-dlg-title', `Run ${v.draft.title}`);
+  title.id = 'pl-run-title';
+  const sub = node('p', 'pl-dlg-sub', 'How should agents take over?');
+  sub.id = 'pl-run-sub';
+  head.append(title, sub);
+
+  const fs = node('fieldset', 'pl-rn-modes');
+  fs.append(node('legend', 'pl-sr', 'Take-over mode'));
+  const option = (mode, label) => {
+    const l = node('label', 'pl-rn-opt');
+    const r = node('input');
+    r.type = 'radio';
+    r.name = 'pl-run-mode';
+    r.value = mode;
+    r.checked = st.mode === mode;
+    r.onchange = () => {
+      st.mode = mode;
+      render();
+    };
+    const text = node('span', 'pl-rn-opt-text');
+    text.append(node('span', 'pl-rn-opt-title', label));
+    l.append(r, text);
+    fs.append(l);
+    return { l, r, text, titleEl: text.firstChild };
+  };
+  const q = option('queue', 'Queue the cards');
+  const qDesc = node('span', 'pl-rn-opt-desc');
+  q.text.append(qDesc);
+  const a = option('autopilot', 'Queue + autopilot');
+  const aDesc = node('span', 'pl-rn-opt-desc', 'Idle sessions are prompted to work their next card automatically. Autopilot pauses while 5-hour usage is above 80%.');
+  const aSess = node('span', 'pl-rn-sessions');
+  const aMain = node('span', 'pl-rn-main');
+  a.text.append(aDesc, aSess, aMain);
+
+  const spec = node('div', 'pl-rn-spec hidden');
+  const err = node('div', 'pl-dlg-err');
+  err.setAttribute('role', 'alert');
+  const foot = node('div', 'pl-dlg-foot');
+  const started = node('span', 'pl-rn-started');
+  const btns = node('div', 'pl-dlg-btns');
+  const cancel = plDlgButton('pl-dlg-btn', 'Cancel');
+  cancel.onclick = () => !st.busy && close();
+  const go = plDlgButton('pl-dlg-btn primary', 'Queue');
+  btns.append(cancel, go);
+  foot.append(started, btns);
+  dlg.append(head, fs, spec, err, foot);
+
+  const render = () => {
+    const cards = st.cards ?? [];
+    const queue = cards.filter((c) => c.lane === 'backlog' && c.spec);
+    const need = cards.filter((c) => c.lane === 'backlog' && !c.spec);
+    const begun = cards.filter((c) => c.lane !== 'backlog' && c.lane !== 'queued');
+    const n = queue.length;
+    qDesc.textContent = st.loading
+      ? 'Counting cards…'
+      : `${plCount(n, 'card')} move${n === 1 ? 's' : ''} to Queued. Each vertical picks them up when you prompt its session in the terminal tab.`;
+    // autopilot: the plan's vertical boards (never Main: it's the human's session)
+    const onBoards = [...new Set(cards.map((c) => c.board))].filter((b) => verts.has(b)).sort(
+      (x, y) => v.boards.findIndex((b) => b.id === x) - v.boards.findIndex((b) => b.id === y),
+    );
+    a.titleEl.textContent = onBoards.length ? `Queue + autopilot on ${onBoards.map((b) => boards.get(b)?.name ?? 'Unknown board').join(', ')}` : 'Queue + autopilot';
+    a.r.disabled = !st.loading && !onBoards.length;
+    if (a.r.disabled && st.mode === 'autopilot') {
+      st.mode = 'queue';
+      q.r.checked = true;
+    }
+    aDesc.textContent = !st.loading && !onBoards.length
+      ? 'No vertical board in this plan: autopilot only drives vertical sessions.'
+      : 'Idle sessions are prompted to work their next card automatically. Autopilot pauses while 5-hour usage is above 80%.';
+    aSess.replaceChildren(
+      ...onBoards.map((b) => {
+        const s = node('span', 'pl-rn-sess');
+        const dot = node('span', 'pl-dot');
+        dot.style.background = boards.get(b)?.color ?? PL_NONE_COLOR;
+        const state = st.sessions.get(b) ?? 'offline';
+        s.append(dot, `${boards.get(b)?.name ?? 'Unknown board'} · ${state === 'needs_you' ? 'needs you' : state}`);
+        return s;
+      }),
+    );
+    const hasMain = cards.some((c) => !verts.has(c.board));
+    aMain.textContent = hasMain ? 'Main’s cards are queued for you. Autopilot never drives the main session.' : '';
+    for (const o of [q, a]) o.l.classList.toggle('on', o.r.checked);
+
+    spec.classList.toggle('hidden', !need.length);
+    spec.replaceChildren(
+      node('span', 'pl-rn-spec-head', `${plCount(need.length, 'card')} need${need.length === 1 ? 's' : ''} a spec and won’t be queued`),
+      ...need.map((c) => {
+        const r = node('div', 'pl-rn-spec-row');
+        const dot = node('span', 'pl-dot');
+        dot.style.background = boards.get(c.board)?.color ?? PL_NONE_COLOR;
+        const t = node('span', 'pl-rn-spec-title', c.title || 'Untitled');
+        t.append(' ', node('span', 'pl-rn-spec-board', boards.get(c.board)?.name ?? 'Unknown board'));
+        const add = plDlgButton('pl-rn-addspec', 'Add spec');
+        add.setAttribute('aria-label', `Add spec: ${c.title || 'Untitled'}`);
+        add.onclick = () => {
+          if (st.busy) return;
+          close();
+          if (plan.openId !== id || !planNodeById(c.node)) return;
+          selectPlanNode(c.node);
+          $('pl-ed-req')?.focus();
+        };
+        r.append(dot, t, add);
+        return r;
+      }),
+    );
+    const names = begun.map((c) => c.title || 'Untitled');
+    started.textContent = !names.length
+      ? ''
+      : names.length <= 2
+        ? `${names.join(', ')} ${names.length === 1 ? 'has' : 'have'} already started · left as is`
+        : `${names.length} cards have already started · left as is`;
+    err.textContent = st.error;
+    go.textContent = st.busy ? 'Queueing…' : st.loading ? 'Queue' : `Queue ${plCount(n, 'card')}`;
+    go.disabled = st.busy || st.loading || n === 0;
+    cancel.disabled = st.busy;
+  };
+
+  go.onclick = async () => {
+    if (st.busy || st.loading || go.disabled) return; // double-submit guard
+    st.busy = true;
+    st.error = '';
+    render();
+    const mode = st.mode;
+    const r = await plJson(`/plan-drafts/${encodeURIComponent(id)}/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    st.busy = false;
+    if (st.closed) return;
+    if (!r.ok) {
+      st.error = `Couldn’t run the plan: ${r.error}`;
+      return render();
+    }
+    close();
+    const out = r.out;
+    const name = (b) => boards.get(b)?.name ?? 'Unknown board';
+    const parts = [`Queued ${plCount(out.queued.length, 'card')}`];
+    if (out.skipped.length) parts.push(`${out.skipped.length} need${out.skipped.length === 1 ? 's' : ''} a spec`);
+    if (mode === 'autopilot') {
+      if (out.autopilot.enabled.length) parts.push(`autopilot on ${out.autopilot.enabled.map((x) => name(x.board_id)).join(', ')}`);
+      const idle = out.autopilot.not_enabled.filter((x) => x.reason !== 'main_session');
+      if (idle.length) parts.push(`not on ${idle.map((x) => name(x.board_id)).join(', ')} (nothing queued)`);
+      if (out.autopilot.not_enabled.some((x) => x.reason === 'main_session')) parts.push('Main’s cards are queued for you');
+    }
+    svFlash(parts.join(' · '));
+  };
+
+  mount();
+  q.r.focus();
+  render();
+
+  // the plan's mapped cards as they are now, and each board's session
+  const mapped = Object.entries(v.draft.data.committed ?? {});
+  const [tasks, sum] = await Promise.all([
+    Promise.all(mapped.map(([, cardId]) => plJson(`/task/${encodeURIComponent(cardId)}`))),
+    plJson(`/workspace/summary?project=${encodeURIComponent(v.draft.workspace_id)}`),
+  ]);
+  if (st.closed) return;
+  st.cards = mapped.flatMap(([nodeId], i) => {
+    const t = tasks[i];
+    if (!t.ok) return []; // deleted elsewhere
+    const c = t.out;
+    return [{ node: nodeId, id: c.id, title: c.title, board: c.project_id, lane: c.lane, spec: !!c.requirements?.trim() && (c.subtasks?.length ?? 0) > 0 }];
+  });
+  if (sum.ok) for (const b of sum.out.boards ?? []) st.sessions.set(b.project.id, b.session?.state ?? 'offline');
+  if (tasks.some((t) => !t.ok && t.res?.status !== 400)) st.error = 'Couldn’t read every card — the count may be off.';
+  st.loading = false;
+  render();
+}
+
 // ── pan / zoom ──
 function applyPlanXf() {
   const { x, y, k } = plan.xf;
@@ -5405,7 +5871,8 @@ function planReveal(ids) {
   let drag = null;
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
-    const handle = !EMBED && !plan.link && e.target.closest('.pl-handle');
+    if (plan.link) endPlanLink(); // a press while a link is still armed: its release was never seen
+    const handle = !EMBED && e.target.closest('.pl-handle');
     if (handle) return startPlanLink(handle.dataset.id, e);
     if (e.target.closest('.pl-node, .pl-edge-hit, .pl-edge-x')) return;
     if (plan.selEdge) {
@@ -5424,11 +5891,21 @@ function planReveal(ids) {
     applyPlanXf();
   });
   const end = (e) => {
-    if (!drag || e.pointerId !== drag.id) return;
+    if (!drag || (e && e.pointerId !== drag.id)) return;
     drag = null;
     canvas.classList.remove('panning');
   };
   canvas.addEventListener('pointerup', end);
+  // a lost capture (or the window losing focus) never sees the release: end the drag here,
+  // so neither a pan nor an armed link outlives the gesture
+  canvas.addEventListener('lostpointercapture', (e) => {
+    end(e);
+    if (plan.link && e.pointerId === plan.link.pointer) endPlanLink();
+  });
+  window.addEventListener('blur', () => {
+    end();
+    endPlanLink();
+  });
   canvas.addEventListener('pointermove', (e) => {
     if (plan.link && e.pointerId === plan.link.pointer) movePlanLink(e);
   });
@@ -5493,6 +5970,15 @@ function planReveal(ids) {
     selectPlanNode(null);
   });
   $('pl-add').onclick = () => addPlanCard();
+  $('pl-commit').onclick = () => openCommitModal();
+  $('pl-run').onclick = () => openRunModal();
+  // a field that was held while focused catches up once focus leaves it (bound once: #pl-editor persists)
+  $('pl-editor').addEventListener('focusout', () => {
+    const ed = plan.ed;
+    setTimeout(() => {
+      if (ed && plan.ed === ed) syncPlanEditor(ed);
+    });
+  });
   $('pl-show-plans').onclick = () => {
     plan.listOpen = !plan.listOpen;
     renderPlanEditor();
