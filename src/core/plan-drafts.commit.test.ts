@@ -406,6 +406,7 @@ describe('diffDraft / commitDraft', () => {
       { name: 'Reporting', position: 4, after: 'Flow' },
     ]);
     assert.equal(diff.boards[0].activate, null, 'a board with an active phase keeps it');
+    assert.equal(diff.boards[0].active, 'Board UX');
     commitDraft(db, d.id, 1);
     assert.deepEqual(phasesOf(db, ws.id).map((p) => [p.title, p.position, p.status]), [
       ['Setup', 1, 'done'],
@@ -430,6 +431,7 @@ describe('diffDraft / commitDraft', () => {
       ['Reporting', 3, 'Flow'],
     ]);
     assert.equal(diff.boards[0].activate, 'Flow');
+    assert.equal(diff.boards[0].active, 'Flow');
     const committed = commitDraft(db, d.id, 1).draft.data.committed;
     const phases = phasesOf(db, ws.id);
     assert.deepEqual(phases.map((p) => [p.title, p.status]), [

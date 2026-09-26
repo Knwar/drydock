@@ -316,6 +316,8 @@ export interface BoardDiff {
   phases: { name: string; position: number; after: string | null }[];
   /** The phase this commit activates (the board has no active phase), or null. */
   activate: string | null;
+  /** The board's active phase after this commit, or null (then every card shows). */
+  active: string | null;
   create: { node_id: string; title: string; phase: string | null }[];
   update: DiffUpdate[];
   /** Removed nodes whose card is still in backlog/queued (and not blocked). */
@@ -412,7 +414,7 @@ function planCommit(db: DB, draft: PlanDraft): CommitPlan {
   const boardDiff = (id: string) => {
     let b = byBoard.get(id);
     if (!b) {
-      b = { board_id: id, phases: [], activate: null, create: [], update: [], delete: [], kept: [], locked: [] };
+      b = { board_id: id, phases: [], activate: null, active: null, create: [], update: [], delete: [], kept: [], locked: [] };
       byBoard.set(id, b);
     }
     return b;
@@ -476,6 +478,8 @@ function planCommit(db: DB, draft: PlanDraft): CommitPlan {
   for (const [boardId, names] of fresh) {
     if (names.length) placePhases(boardDiff(boardId), boardPhases(db, boardId), names, phaseDependencies(nodes, edges, boardId));
   }
+
+  for (const b of byBoard.values()) b.active = b.activate ?? getActivePhase(db, b.board_id)?.title.trim() ?? null;
 
   const rank = new Map(ctx.boards.map((b, i) => [b.id, i]));
   const boards = [...byBoard.values()].sort(

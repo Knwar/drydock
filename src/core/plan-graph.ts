@@ -369,7 +369,7 @@ export function validatePlan(data: Pick<PlanData, 'nodes' | 'edges'>, ctx: PlanC
   }
 
   for (const n of unique) {
-    const noReq =!n.requirements || !n.requirements.trim();
+    const noReq = !n.requirements || !n.requirements.trim();
     const noSubs = !n.subtasks || !n.subtasks.length;
     if (noReq || noSubs)
       warnings.push({
