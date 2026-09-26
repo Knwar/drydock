@@ -5,23 +5,31 @@
  * trend. Built on metrics.ts's derived histories (review events, a redirect
  * is a fresh start); the aggregation is pure, `qualityMetrics` loads.
  *
- * Definitions (per card, reviews = the review events after the last redirect):
- *  - reviewed:   at least one review. Cards without one are `unreviewed` and
- *                excluded from every rate.
+ * Everything counts from the last redirect (a fresh start): reviews are the
+ * review events after it, rework the loops after it. Per card:
+ *  - reviewed:   at least one review.
  *  - firstPass:  the first review passed.
- *  - rounds:     the number of reviews; averaged over reviewed DONE cards only.
+ *  - rounds:     the number of reviews.
  *  - capped:     two or more failed reviews.
  *  - rework:     fail reviews followed by a move back into in_progress (before
- *                the next review or redirect), over the card's whole history.
+ *                the next review or redirect).
  *  - finalAt:    the last review's time; it picks the trend week and, for
  *                reviewed cards, is what the from/to window applies to.
  *                Unreviewed cards are windowed by life overlap (inDateRange).
+ *
+ * Aggregate bases (QualityStats):
+ *  - firstPassRate, avgRounds and capped are all over the REVIEWED cards (any
+ *    lane); `done` is how many of those reached done.
+ *  - unreviewedDone (reached done without a review) and notYetReviewed (no
+ *    review, not done) are counted but excluded from every rate.
+ *  - rework sums the loops of every card in the set.
  */
 import type { DB } from './db.js';
 import {
   addDays,
   checkRange,
   dayKey,
+  MAX_RANGE_DAYS,
   deriveCards,
   inDateRange,
   isoWeek,
@@ -47,22 +55,27 @@ export interface CardQuality {
 
 export interface QualityStats {
   reviewed: number;
-  unreviewed: number;
+  /** Reviewed cards that reached done. */
+  done: number;
+  /** Reached done without a review (excluded from the rates). */
+  unreviewedDone: number;
+  /** No review yet and not done (excluded from the rates). */
+  notYetReviewed: number;
   /** Share (0..1) of reviewed cards whose first review passed; null with none reviewed. */
   firstPassRate: number | null;
-  /** Mean review rounds over reviewed done cards; null with none. */
+  /** Mean review rounds over reviewed cards; null with none. */
   avgRounds: number | null;
   capped: number;
   rework: number;
 }
 
+/** Cards bucketed by the ISO week of their final review (so reviewed cards only). */
 export interface QualityWeek {
   week: string;
   start: string;
   reviewed: number;
-  firstPassRate: number | null;
-  /** Reviewed done cards in the week (the avgRounds denominator). */
   done: number;
+  firstPassRate: number | null;
   avgRounds: number | null;
 }
 
@@ -87,13 +100,16 @@ function field(payload: unknown, key: string): unknown {
   return p && typeof p === 'object' ? (p as Record<string, unknown>)[key] : null;
 }
 
-/** fail → back to in_progress loops over the whole event history. */
+/** fail → back to in_progress loops since the last redirect. */
 function countRework(x: DerivedCard): number {
   let pending = false;
   let n = 0;
   for (const e of sortEvents(x.h.events)) {
     if (e.type === 'review') pending = field(e.payload, 'verdict') === 'fail';
-    else if (e.type === 'redirect') pending = false;
+    else if (e.type === 'redirect') {
+      pending = false;
+      n = 0; // a fresh start
+    }
     else if (e.type === 'move' && pending && field(e.payload, 'to') === 'in_progress') {
       n++;
       pending = false;
@@ -123,12 +139,14 @@ const ratio = (n: number, d: number) => (d ? n / d : null);
 
 export function qualityStats(cs: CardQuality[]): QualityStats {
   const reviewed = cs.filter((c) => c.reviewed);
-  const done = reviewed.filter((c) => c.done);
+  const unreviewed = cs.filter((c) => !c.reviewed);
   return {
     reviewed: reviewed.length,
-    unreviewed: cs.length - reviewed.length,
+    done: reviewed.filter((c) => c.done).length,
+    unreviewedDone: unreviewed.filter((c) => c.done).length,
+    notYetReviewed: unreviewed.filter((c) => !c.done).length,
     firstPassRate: ratio(reviewed.filter((c) => c.firstPass).length, reviewed.length),
-    avgRounds: ratio(done.reduce((s, c) => s + c.rounds, 0), done.length),
+    avgRounds: ratio(reviewed.reduce((s, c) => s + c.rounds, 0), reviewed.length),
     capped: reviewed.filter((c) => c.capped).length,
     rework: cs.reduce((s, c) => s + c.rework, 0),
   };
@@ -146,7 +164,7 @@ function groupBy<K extends string | null>(cs: CardQuality[], key: (c: CardQualit
 
 /**
  * Aggregate derived cards. The window [from, to] (default: the earliest final
- * review, else now, to now) keeps reviewed cards whose final review falls in
+ * review, else `to`, clamped to the range cap; `to` defaults to now) keeps reviewed cards whose final review falls in
  * it and unreviewed cards whose life overlaps it; the weekly trend covers the
  * window's ISO weeks, zero-filled.
  */
@@ -157,7 +175,12 @@ export function qualityFromDerived(
   const { tz, now } = opts;
   const to = opts.to ?? now;
   const all = ds.map((x) => ({ x, q: cardQuality(x) }));
-  const from = opts.from ?? all.reduce((min, { q }) => (q.finalAt === null ? min : Math.min(min, q.finalAt)), to);
+  const from =
+    opts.from ??
+    Math.max(
+      all.reduce((min, { q }) => (q.finalAt === null ? min : Math.min(min, q.finalAt)), to),
+      to - (MAX_RANGE_DAYS - 1) * 86_400_000,
+    );
   checkRange(from, to);
 
   const cs = all
@@ -185,8 +208,7 @@ export function qualityFromDerived(
     byTag: groupBy(cs, (c) => c.tag).map(([tag, g]) => ({ tag, ...qualityStats(g) })),
     weekly: weeks.map((w) => {
       const s = qualityStats(byWeek.get(w.week)!);
-      const done = byWeek.get(w.week)!.filter((c) => c.done).length;
-      return { ...w, reviewed: s.reviewed, firstPassRate: s.firstPassRate, done, avgRounds: s.avgRounds };
+      return { ...w, reviewed: s.reviewed, done: s.done, firstPassRate: s.firstPassRate, avgRounds: s.avgRounds };
     }),
   };
 }

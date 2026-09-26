@@ -1320,8 +1320,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return json(res, 200, board.getStats(db, project));
   }
 
-  // ── flow metrics: aggregation lives in core/metrics.ts; these only parse + load ──
-  if (method === 'GET' && ['/metrics/flow', '/metrics/burn', '/metrics/summary'].includes(pathname)) {
+  // ── flow + quality metrics: aggregation lives in core/metrics.ts / core/quality.ts; these only parse + load ──
+  if (method === 'GET' && ['/metrics/flow', '/metrics/burn', '/metrics/summary', '/metrics/quality'].includes(pathname)) {
     const q = url.searchParams;
     const project = q.get('project');
     if (!project) return json(res, 400, { error: 'project required' });
@@ -1349,35 +1349,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const to = q.get('to');
       if (from) filter.from = metrics.parseTime(from, tz, 'from');
       if (to) filter.to = metrics.parseTime(to, tz, 'to');
-      const view = pathname === '/metrics/flow' ? metrics.flowMetrics : metrics.summaryMetrics;
+      const view =
+        pathname === '/metrics/flow' ? metrics.flowMetrics : pathname === '/metrics/quality' ? quality.qualityMetrics : metrics.summaryMetrics;
       return json(res, 200, view(db, filter, { tz, now }));
     } catch (err) {
       // bad params → 400; anything else is ours → 500 (route()'s outer catch would say 400)
-      const status = err instanceof metrics.MetricsParamError ? 400 : 500;
-      return json(res, status, { error: (err as Error).message });
-    }
-  }
-
-  // ── quality metrics (reviews): aggregation lives in core/quality.ts ──
-  if (method === 'GET' && pathname === '/metrics/quality') {
-    const q = url.searchParams;
-    const project = q.get('project');
-    if (!project) return json(res, 400, { error: 'project required' });
-    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
-    const tz = q.get('tz') || metrics.localTimeZone();
-    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
-    try {
-      const filter: metrics.MetricsFilter = { projectIds: [project] };
-      for (const [key, param] of [['phaseId', 'phase'], ['tag', 'tag'], ['agent', 'agent']] as const) {
-        const v = q.get(param);
-        if (v) filter[key] = v;
-      }
-      const from = q.get('from');
-      const to = q.get('to');
-      if (from) filter.from = metrics.parseTime(from, tz, 'from');
-      if (to) filter.to = metrics.parseTime(to, tz, 'to');
-      return json(res, 200, quality.qualityMetrics(db, filter, { tz, now: Date.now() }));
-    } catch (err) {
       const status = err instanceof metrics.MetricsParamError ? 400 : 500;
       return json(res, status, { error: (err as Error).message });
     }

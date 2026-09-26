@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { deriveCards, MetricsParamError, type MetricsCard, type MetricsEvent } from './metrics.js';
+import { deriveCards, MAX_RANGE_DAYS, MetricsParamError, type MetricsCard, type MetricsEvent } from './metrics.js';
 import { cardQuality, qualityFromDerived } from './quality.js';
 
 const DAY = 86_400_000;
@@ -56,6 +56,7 @@ const twoFails = (id: string, t = MON + 10, over = {}) =>
     over,
   );
 const unreviewed = (id: string, over = {}) => history(id, 'in_review', [], over);
+const doneUnreviewed = (id: string) => history(id, 'done', [move('in_review', 'done', MON + 10)]);
 
 const opts = { tz: 'UTC', now: MON + 6 * DAY };
 const q = (hs: ReturnType<typeof history>[], extra: { from?: number; to?: number } = {}) =>
@@ -104,29 +105,33 @@ describe('cardQuality', () => {
     assert.equal(c.rounds, 1);
     assert.equal(c.firstPass, true);
     assert.equal(c.capped, false);
-    assert.equal(c.rework, 1); // the fail right before the redirect is not a loop
+    assert.equal(c.rework, 0); // the loop before the redirect is dropped with it
   });
 
-  it('a fail followed only by a redirect is not rework', () => {
+  it('reviews and rework only before a redirect contribute nothing', () => {
     const h = history('a', 'in_progress', [
       review('fail', MON + 10),
-      ev('redirect', MON + 11, { from: 'in_review' }),
-      move('backlog', 'in_progress', MON + 12),
+      move('in_review', 'in_progress', MON + 11),
+      move('in_progress', 'in_review', MON + 12),
+      review('fail', MON + 13),
+      ev('redirect', MON + 14, { from: 'in_review' }),
+      move('backlog', 'in_progress', MON + 15),
     ]);
     const c = cardQuality(deriveCards([h], opts.now)[0]);
-    assert.equal(c.rework, 0);
-    assert.equal(c.reviewed, false); // no review since the redirect
+    assert.deepEqual([c.reviewed, c.rounds, c.capped, c.rework, c.finalAt], [false, 0, false, 0, null]);
   });
 });
 
 describe('qualityFromDerived', () => {
   it('totals across the synthetic mix; unreviewed excluded from rates', () => {
-    const r = q([passFirst('a'), failThenPass('b'), twoFails('c'), unreviewed('d')]);
+    const r = q([passFirst('a'), failThenPass('b'), twoFails('c'), unreviewed('d'), doneUnreviewed('e')]);
     assert.deepEqual(r.totals, {
       reviewed: 3,
-      unreviewed: 1,
+      done: 2,
+      unreviewedDone: 1,
+      notYetReviewed: 1,
       firstPassRate: 1 / 3,
-      avgRounds: 1.5, // done + reviewed: a (1), b (2)
+      avgRounds: 5 / 3, // every reviewed card: a (1), b (2), c (2, not done)
       capped: 1,
       rework: 3,
     });
@@ -134,12 +139,22 @@ describe('qualityFromDerived', () => {
 
   it('empty data: null rates, not NaN, one zero-filled week', () => {
     const r = q([]);
-    assert.deepEqual(r.totals, { reviewed: 0, unreviewed: 0, firstPassRate: null, avgRounds: null, capped: 0, rework: 0 });
+    assert.deepEqual(r.totals, {
+      reviewed: 0,
+      done: 0,
+      unreviewedDone: 0,
+      notYetReviewed: 0,
+      firstPassRate: null,
+      avgRounds: null,
+      capped: 0,
+      rework: 0,
+    });
     assert.deepEqual(r.byPhase, []);
     assert.equal(r.weekly.length, 1);
-    assert.deepEqual(r.weekly[0], { week: '2026-W23', start: '2026-06-01', reviewed: 0, firstPassRate: null, done: 0, avgRounds: null });
-    const onlyUnreviewed = q([unreviewed('d')]);
-    assert.equal(onlyUnreviewed.totals.unreviewed, 1);
+    assert.deepEqual(r.weekly[0], { week: '2026-W23', start: '2026-06-01', reviewed: 0, done: 0, firstPassRate: null, avgRounds: null });
+    const onlyUnreviewed = q([unreviewed('d'), doneUnreviewed('e')], { from: MON });
+    assert.equal(onlyUnreviewed.totals.notYetReviewed, 1);
+    assert.equal(onlyUnreviewed.totals.unreviewedDone, 1);
     assert.equal(onlyUnreviewed.totals.firstPassRate, null);
     assert.equal(JSON.stringify(onlyUnreviewed).includes('NaN'), false);
   });
@@ -164,13 +179,14 @@ describe('qualityFromDerived', () => {
     assert.equal(phase('P1').avgRounds, 1.5);
     assert.equal(phase('P2').title, null);
     assert.equal(phase('P2').capped, 1);
-    assert.equal(phase('P2').avgRounds, null); // not done
-    assert.equal(phase(null).unreviewed, 1);
+    assert.equal(phase('P2').avgRounds, 2); // not done, still counted
+    assert.equal(phase('P2').done, 0);
+    assert.equal(phase(null).notYetReviewed, 1);
     const alice = r.byAgent.find((x) => x.agent === 'alice')!;
-    assert.deepEqual([alice.reviewed, alice.firstPassRate, alice.capped, alice.rework], [2, 0.5, 1, 2]);
+    assert.deepEqual([alice.reviewed, alice.done, alice.firstPassRate, alice.avgRounds, alice.capped, alice.rework], [2, 1, 0.5, 1.5, 1, 2]);
     assert.equal(r.byAgent.find((x) => x.agent === 'bob')!.firstPassRate, 0);
     assert.equal(r.byTag.find((x) => x.tag === 'ui')!.reviewed, 2);
-    assert.equal(r.byTag.find((x) => x.tag === null)!.unreviewed, 1);
+    assert.equal(r.byTag.find((x) => x.tag === null)!.notYetReviewed, 1);
   });
 
   it('weekly: bucketed by the final review week in tz, zero-filled', () => {
@@ -198,7 +214,16 @@ describe('qualityFromDerived', () => {
     const later = passFirst('b', MON + 3 * DAY);
     const r = q([early, later, unreviewed('d')], { from: MON + 2 * DAY, to: MON + 4 * DAY });
     assert.equal(r.totals.reviewed, 1);
-    assert.equal(r.totals.unreviewed, 1); // still open, so its life overlaps
+    assert.equal(r.totals.notYetReviewed, 1); // still open, so its life overlaps
     assert.throws(() => q([], { from: 2, to: 1 }), MetricsParamError);
+  });
+
+  it('default from is clamped to the range cap instead of failing', () => {
+    const to = MON + 4000 * DAY;
+    const r = q([passFirst('a', MON + 10), passFirst('b', to - DAY)], { to });
+    assert.equal(r.range.from, to - (MAX_RANGE_DAYS - 1) * DAY);
+    assert.equal(r.totals.reviewed, 1); // a's review is older than the window
+    // an explicit from is still validated
+    assert.throws(() => q([], { from: MON, to }), /range too long/);
   });
 });

@@ -60,12 +60,22 @@ describe('daemon GET /metrics/quality', () => {
     await move(c, 'in_progress');
     await move(c, 'in_review');
     await review(c, 'fail');
-    // d: never reviewed
+    // d: never reviewed; e: reached done without a review
     await task('D', { tag: 'ui' });
+    await move(await task('E', {}), 'done');
 
     const r = await ok(`/metrics/quality?project=${project}&tz=UTC`);
     assert.deepEqual(Object.keys(r).sort(), ['byAgent', 'byPhase', 'byTag', 'range', 'totals', 'weekly']);
-    assert.deepEqual(r.totals, { reviewed: 3, unreviewed: 1, firstPassRate: 1 / 3, avgRounds: 1.5, capped: 1, rework: 2 });
+    assert.deepEqual(r.totals, {
+      reviewed: 3,
+      done: 2,
+      unreviewedDone: 1,
+      notYetReviewed: 1,
+      firstPassRate: 1 / 3,
+      avgRounds: 5 / 3,
+      capped: 1,
+      rework: 2,
+    });
     const phase = r.byPhase.find((p: any) => p.phase_id === phaseId);
     assert.equal(phase.title, 'P1');
     assert.equal(phase.firstPassRate, 0.5);
@@ -83,7 +93,16 @@ describe('daemon GET /metrics/quality', () => {
     assert.deepEqual([bob.reviewed, bob.firstPassRate, bob.avgRounds, bob.rework], [1, 0, 2, 1]);
     const old = Date.now() - 30 * 86_400_000;
     const past = await f(`from=${old - 86_400_000}&to=${old}`);
-    assert.deepEqual(past.totals, { reviewed: 0, unreviewed: 0, firstPassRate: null, avgRounds: null, capped: 0, rework: 0 });
+    assert.deepEqual(past.totals, {
+      reviewed: 0,
+      done: 0,
+      unreviewedDone: 0,
+      notYetReviewed: 0,
+      firstPassRate: null,
+      avgRounds: null,
+      capped: 0,
+      rework: 0,
+    });
     assert.ok(past.weekly.every((w: any) => w.reviewed === 0 && w.firstPassRate === null));
 
     // bad params
