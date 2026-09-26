@@ -89,7 +89,7 @@ describe('cardQuality', () => {
     assert.equal(c.done, false);
   });
 
-  it('a redirect resets rounds (a fresh start); rework before it still counts', () => {
+  it('a redirect resets rounds and rework (a fresh start)', () => {
     const h = history('a', 'done', [
       review('fail', MON + 10),
       move('in_review', 'in_progress', MON + 11),

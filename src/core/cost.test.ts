@@ -213,9 +213,10 @@ describe('cost metrics (DB)', () => {
     );
     const firstBreakdown = (db.prepare('SELECT MIN(created_at) AS t FROM card_activity WHERE usage IS NOT NULL').get() as { t: number }).t;
     assert.equal(m.tokenBasisChangedAt, firstBreakdown);
-    assert.equal(m.caveats.length, 2);
+    assert.equal(m.caveats.length, 3);
     assert.match(m.caveats[0], /streaming snapshot/);
     assert.match(m.caveats[1], /1 runs without a token breakdown/);
+    assert.match(m.caveats[2], /totals\.tokens and estimated\.tokens include .* inflated/);
     assert.deepEqual(m.byAgent, [
       { agent: 'Ada', cost: 136, runs: 2, cards: 1 },
       { agent: 'Bob', cost: 101.2, runs: 2, cards: 2 },

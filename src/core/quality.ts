@@ -23,6 +23,12 @@
  *  - unreviewedDone (reached done without a review) and notYetReviewed (no
  *    review, not done) are counted but excluded from every rate.
  *  - rework sums the loops of every card in the set.
+ *
+ * Default window: with no `from`, the window starts at the earliest final
+ * review in the loaded set (else `to`). Unreviewed cards are then only kept if
+ * their life overlaps that window, so unreviewedDone can miss cards done before
+ * the first review. Pass an explicit `from` for a complete count (the overlay's
+ * Metrics view always does).
  */
 import type { DB } from './db.js';
 import {
