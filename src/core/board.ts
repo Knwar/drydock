@@ -747,6 +747,11 @@ function teamMemberByLabel(db: DB, label: string): TeamMember | undefined {
     | undefined;
 }
 
+/** The team member name a label (member id or name) refers to; other labels pass through. */
+export function memberName(db: DB, label: string): string {
+  return teamMemberByLabel(db, label)?.name ?? label;
+}
+
 export function assignCard(
   db: DB,
   taskId: string,
@@ -1279,6 +1284,7 @@ export function recordActivity(
     project_id: string;
     task_id: string;
     agent?: string | null;
+    role?: string | null;
     agent_id?: string | null;
     tokens: number;
     tokens_out: number;
@@ -1288,12 +1294,13 @@ export function recordActivity(
   },
 ): void {
   db.prepare(
-    `INSERT INTO card_activity (project_id, task_id, agent, agent_id, tokens, tokens_out, lines_added, lines_removed, ms, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO card_activity (project_id, task_id, agent, role, agent_id, tokens, tokens_out, lines_added, lines_removed, ms, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     a.project_id,
     a.task_id,
     a.agent ?? null,
+    a.role ?? null,
     a.agent_id ?? null,
     a.tokens,
     a.tokens_out,

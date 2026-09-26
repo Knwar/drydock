@@ -1,7 +1,7 @@
 // Live agent status for the stream overlay. Ephemeral: POST /status is
 // broadcast and cached in memory by the daemon, never persisted. Registered on PreToolUse (all tools),
 // UserPromptSubmit, Stop, SubagentStart and SubagentStop.
-import { api, cardIdFrom, contextFor, readStdin } from './lib.js';
+import { api, cardIdFrom, cardIdFromEvent, contextFor, readStdin } from './lib.js';
 
 const data = await readStdin();
 const { projectId, cardId } = await contextFor(data.cwd ?? process.cwd());
@@ -58,5 +58,9 @@ await api('POST', '/status', {
   agent_id: data.agent_id ?? null,
   verb,
   detail,
-  task_id: cardId ?? cardIdFrom(JSON.stringify(data.tool_input ?? data)),
+  // a subagent's first ping names its card (dispatch prompt); the daemon carries
+  // it forward to later pings that don't mention a .trees/<id> path
+  task_id:
+    cardId ??
+    (data.hook_event_name === 'SubagentStart' ? cardIdFromEvent(data) : cardIdFrom(JSON.stringify(data.tool_input ?? data))),
 });

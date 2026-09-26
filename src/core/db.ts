@@ -43,4 +43,33 @@ export function migrate(db: DB): void {
   // Agent profile avatars: image file name on team members created before it existed.
   const teamCols = (db.pragma('table_info(team_members)') as { name: string }[]).map((c) => c.name);
   if (!teamCols.includes('avatar')) db.exec('ALTER TABLE team_members ADD COLUMN avatar TEXT');
+  // Activity role: the subagent type that ran a build, kept apart from the credited agent.
+  const activityCols = (db.pragma('table_info(card_activity)') as { name: string }[]).map((c) => c.name);
+  if (!activityCols.includes('role')) db.exec('ALTER TABLE card_activity ADD COLUMN role TEXT');
+  if (cols.includes('assigned_agent')) backfillActivityAgents(db); // absent only on hand-built test tables
+}
+
+/** Subagent types that older hooks recorded as card_activity.agent. */
+const SUBAGENT_TYPES = ['builder', 'reviewer', 'planner', 'manager'];
+
+/**
+ * Re-credit build runs recorded under a subagent type (or no agent) to the
+ * card's assigned team member, keeping the type in `role`. Idempotent: a
+ * rewritten row names the member, so it no longer matches. Rows on unassigned
+ * cards, and rows already naming someone else, are left alone. Returns the
+ * number of rows changed.
+ */
+export function backfillActivityAgents(db: DB): number {
+  return db
+    .prepare(
+      `UPDATE card_activity
+         SET role = COALESCE(role, agent),
+             agent = (SELECT COALESCE(m.name, t.assigned_agent) FROM tasks t
+                        LEFT JOIN team_members m ON m.id = t.assigned_agent
+                       WHERE t.id = card_activity.task_id)
+       WHERE (agent IS NULL OR agent IN (${SUBAGENT_TYPES.map(() => '?').join(', ')}))
+         AND EXISTS (SELECT 1 FROM tasks WHERE tasks.id = card_activity.task_id AND tasks.assigned_agent IS NOT NULL
+                     AND tasks.assigned_agent NOT IN (${SUBAGENT_TYPES.map(() => '?').join(', ')}))`,
+    )
+    .run(...SUBAGENT_TYPES, ...SUBAGENT_TYPES).changes;
 }

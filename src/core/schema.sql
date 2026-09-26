@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS card_activity (  -- one row per build run: cost + chu
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id    TEXT NOT NULL,
   task_id       TEXT NOT NULL,
-  agent         TEXT,                      -- label / persona name
+  agent         TEXT,                      -- team member credited (card's assigned_agent), else the subagent type
+  role          TEXT,                      -- subagent type that ran it (builder, reviewer, ...)
   agent_id      TEXT,                      -- subagent id
   tokens        INTEGER NOT NULL DEFAULT 0,   -- total billable tokens for the run
   tokens_out    INTEGER NOT NULL DEFAULT 0,   -- output tokens (subset of tokens)
