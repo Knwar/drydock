@@ -255,6 +255,18 @@ export function placePhaselessCards(db: DB, projectId: string): number {
     .run(home.id, projectId).changes;
 }
 
+/**
+ * A card moved to another board: its card_activity, task_events and sync_links
+ * follow it, as do undelivered outbox rows (processed rows stay as history).
+ * The tasks row itself (project_id/phase_id/position) is the caller's job.
+ */
+export function relocateCardHistory(db: DB, taskId: string, projectId: string): void {
+  db.prepare('UPDATE card_activity SET project_id = ? WHERE task_id = ?').run(projectId, taskId);
+  db.prepare('UPDATE task_events SET project_id = ? WHERE task_id = ?').run(projectId, taskId);
+  db.prepare('UPDATE sync_links SET project_id = ? WHERE local_id = ?').run(projectId, taskId);
+  db.prepare(`UPDATE outbox SET project_id = ? WHERE task_id = ? AND status = 'pending'`).run(projectId, taskId);
+}
+
 /** A split precondition failed; nothing was changed. `cardIds` are the offending cards. */
 export class SplitError extends Error {
   cardIds: string[];
@@ -352,11 +364,7 @@ export function splitIntoVerticals(
         position,
         c.id,
       );
-      db.prepare('UPDATE card_activity SET project_id = ? WHERE task_id = ?').run(target, c.id);
-      db.prepare('UPDATE task_events SET project_id = ? WHERE task_id = ?').run(target, c.id);
-      db.prepare('UPDATE sync_links SET project_id = ? WHERE local_id = ?').run(target, c.id);
-      // undelivered outbox rows follow the card; processed rows stay as history
-      db.prepare(`UPDATE outbox SET project_id = ? WHERE task_id = ? AND status = 'pending'`).run(target, c.id);
+      relocateCardHistory(db, c.id, target);
       moved[c.id] = target;
     }
 
