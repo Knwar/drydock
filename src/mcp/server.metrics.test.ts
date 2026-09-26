@@ -101,10 +101,10 @@ describe('MCP get_metrics', () => {
   });
 
   it('adds the cost of the window: USD spent + the estimated share', async () => {
-    // placeholder rates: claude-opus-5-5 input 15/M; the tokens-only run is estimated at its cache-read rate (1.5/M)
+    // placeholder rates: claude-opus-5-5 input 15/M; the tokens-only run (1.97M, deflated /1.97 to 1M) is estimated at its cache-read rate (1.5/M)
     await send('POST', `/task/${doneId}/activity`, { agent: 'builder', usage: { 'claude-opus-5-5': { input: 1_000_000 } } });
     assert.deepEqual(JSON.parse((await call({ project_id: projectId })).content[0].text).cost, { period: 15, estimatedShare: 0 });
-    await send('POST', `/task/${doneId}/activity`, { agent: 'builder', tokens: 1_000_000, tokens_out: 0 });
+    await send('POST', `/task/${doneId}/activity`, { agent: 'builder', tokens: 1_970_000, tokens_out: 0 });
     const s = JSON.parse((await call({ project_id: projectId })).content[0].text);
     assert.deepEqual(s.cost, { period: 16.5, estimatedShare: Math.round((1.5 / 16.5) * 1e6) / 1e6 });
     // filters pass through: nothing credited to this agent
@@ -166,13 +166,19 @@ describe('MCP get_forecast seed', () => {
   });
 });
 
-describe('MCP get_metrics without /metrics/wait', () => {
-  it('returns the summary without `waiting`, plus a note, when the wait lookup fails', async (t) => {
-    // a stub daemon: the summary works, /metrics/wait does not
+describe('MCP get_metrics when a side lookup fails', () => {
+  // a stub daemon: the summary works; `failing` routes return 500
+  const withStub = async (t: { after: (fn: () => unknown) => void }, failing: string[]) => {
     const stub = createServer((req, res) => {
-      const ok = req.url?.startsWith('/metrics/summary');
-      res.writeHead(ok ? 200 : 500, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(ok ? { cards: 3 } : { error: 'boom' }));
+      const path = req.url ?? '';
+      const body = path.startsWith('/metrics/summary')
+        ? { cards: 3, range: { from: 1, to: 2, tz: 'UTC' } }
+        : path.startsWith('/metrics/wait')
+          ? { waiting: { count: 1, longestMs: 5, items: [] } }
+          : { totals: { cost: 7 }, estimated: { share: 0.5 } };
+      const fail = failing.some((f) => path.startsWith(f));
+      res.writeHead(fail ? 500 : 200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(fail ? { error: 'boom' } : body));
     });
     await new Promise<void>((r) => stub.listen(0, '127.0.0.1', () => r()));
     t.after(() => stub.close());
@@ -188,7 +194,27 @@ describe('MCP get_metrics without /metrics/wait', () => {
     t.after(() => client.close());
     const r = (await client.callTool({ name: 'get_metrics', arguments: { project_id: 'p' } })) as ToolOut;
     assert.ok(!r.isError);
-    assert.deepEqual(JSON.parse(r.content[0].text), { cards: 3 });
-    assert.match(r.content[1].text, /waiting unavailable: .*boom/);
+    return { summary: JSON.parse(r.content[0].text), notes: r.content.slice(1).map((c) => c.text) };
+  };
+  const range = { from: 1, to: 2, tz: 'UTC' };
+
+  it('a failed wait lookup drops `waiting` with a note, and cost is still looked up', async (t) => {
+    const { summary, notes } = await withStub(t, ['/metrics/wait']);
+    assert.deepEqual(summary, { cards: 3, range, cost: { period: 7, estimatedShare: 0.5 } });
+    assert.equal(notes.length, 1);
+    assert.match(notes[0], /waiting unavailable: .*boom/);
+  });
+
+  it('a failed cost lookup drops `cost` with a note', async (t) => {
+    const { summary, notes } = await withStub(t, ['/metrics/cost']);
+    assert.deepEqual(summary, { cards: 3, range, waiting: { count: 1, longestMs: 5 } });
+    assert.equal(notes.length, 1);
+    assert.match(notes[0], /cost unavailable: .*boom/);
+  });
+
+  it('both failing: two notes', async (t) => {
+    const { summary, notes } = await withStub(t, ['/metrics/wait', '/metrics/cost']);
+    assert.deepEqual(summary, { cards: 3, range });
+    assert.equal(notes.length, 2);
   });
 });

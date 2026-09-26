@@ -7,15 +7,19 @@
  * samples (the LIMITS pill shows the latest). Everything here is pure.
  *
  * Rate (percentage points per hour), per window:
- *  - recent: the samples of the CURRENT window (same resets_at) within the
- *    lookback (5-hour: last hour, weekly: last 24 hours) of the latest one; the
- *    first-to-last slope when they span >= MIN_SPAN_MS.
+ *  - recent: the samples of the CURRENT window within the lookback (5-hour:
+ *    last hour, weekly: last 24 hours) of the latest one; the first-to-last
+ *    slope when they span >= MIN_SPAN_MS. The current window = same resets_at,
+ *    and after the last drop in used% (a drop is a reset, which is how a window
+ *    without resets_at is told apart).
  *  - else window_average: used% / time since the window opened
  *    (resets_at - window length), which works from a single sample.
- *  - a window whose resets_at has passed is stale (it has reset since the last
- *    push): no projection.
- * hitsAt = latest sample time + (100 - used%) / rate; it only matters when it
- * falls before resets_at (`beforeReset`).
+ * Stale (no projection): the window's resets_at has passed since the last
+ * push, or the last push is older than the window's lookback.
+ * hitsAt = latest sample time + (100 - used%) / rate, never in the past: a
+ * projection at or before now is `at_risk` with hitsAt = now; used >= 100 is
+ * `reached` (hitsAt null). It only matters when it falls before resets_at
+ * (`beforeReset`).
  */
 import { dayKey } from './metrics.js';
 
@@ -49,8 +53,16 @@ export interface LimitProjection {
   usedPct: number;
   resetsAt: number | null;
   sampledAt: number;
-  /** The window has reset since the last push: the numbers are old, nothing is projected. */
+  /** The numbers are too old to project: the window has reset since the last push, or the push is older than the lookback. */
   stale: boolean;
+  /** Why it is stale: the window reset since the push, or the push is older than the lookback. */
+  staleReason: 'reset' | 'old_sample' | null;
+  /**
+   * projected: hitsAt is ahead; at_risk: at this rate it would already be hit (hitsAt = now);
+   * reached: used >= 100%; resets_first: the window resets before hitsAt; not_burning: rate 0;
+   * no_rate: no way to measure one; stale: see `stale`.
+   */
+  state: 'projected' | 'at_risk' | 'reached' | 'resets_first' | 'not_burning' | 'no_rate' | 'stale';
   ratePctPerHour: number | null;
   rateSource: 'recent' | 'window_average' | null;
   /** When usage reaches 100% at this rate; null = not burning / no rate. */
@@ -79,22 +91,38 @@ export function projectLimit(samples: UsageSample[], key: LimitKey, now: number)
   if (!last) return null;
   const w = last[key]!;
   const cfg = WINDOWS[key];
+  const staleReason = w.resetsAt !== null && now >= w.resetsAt ? 'reset' : now - last.at > cfg.lookbackMs ? 'old_sample' : null;
+  const stale = staleReason !== null;
   const base: LimitProjection = {
     window: key,
     label: cfg.label,
     usedPct: w.used,
     resetsAt: w.resetsAt,
     sampledAt: last.at,
-    stale: w.resetsAt !== null && now >= w.resetsAt,
+    stale,
+    staleReason,
+    state: stale ? 'stale' : 'no_rate',
     ratePctPerHour: null,
     rateSource: null,
     hitsAt: null,
     beforeReset: null,
   };
-  if (base.stale) return base;
+  if (stale) return base;
+  if (w.used >= 100) {
+    base.state = 'reached';
+    return base;
+  }
 
+  // the current window: same resets_at, and after the last drop in used% (a reset)
+  let current = have.filter((s) => sameWindow(s[key]!, w));
+  for (let i = current.length - 1; i > 0; i--) {
+    if (current[i][key]!.used < current[i - 1][key]!.used) {
+      current = current.slice(i);
+      break;
+    }
+  }
   let rate: number | null = null; // % per ms
-  const recent = have.filter((s) => s.at >= last.at - cfg.lookbackMs && sameWindow(s[key]!, w));
+  const recent = current.filter((s) => s.at >= last.at - cfg.lookbackMs);
   const first = recent[0];
   if (first && last.at - first.at >= MIN_SPAN_MS) {
     rate = Math.max(0, (w.used - first[key]!.used) / (last.at - first.at));
@@ -108,9 +136,17 @@ export function projectLimit(samples: UsageSample[], key: LimitKey, now: number)
   }
   if (rate === null) return base;
   base.ratePctPerHour = Math.round(rate * 3_600_000 * 1000) / 1000;
-  if (w.used >= 100) base.hitsAt = last.at;
-  else if (rate > 0) base.hitsAt = Math.round(last.at + (100 - w.used) / rate);
-  if (base.hitsAt !== null && w.resetsAt !== null) base.beforeReset = base.hitsAt < w.resetsAt;
+  if (rate === 0) {
+    base.state = 'not_burning';
+    return base;
+  }
+  const hitsAt = Math.round(last.at + (100 - w.used) / rate);
+  base.hitsAt = Math.max(hitsAt, now); // never in the past
+  base.state = hitsAt <= now ? 'at_risk' : 'projected';
+  if (w.resetsAt !== null) {
+    base.beforeReset = base.hitsAt < w.resetsAt;
+    if (!base.beforeReset) base.state = 'resets_first';
+  }
   return base;
 }
 
@@ -167,27 +203,40 @@ export function describeLimit(p: LimitProjection, f: PhaseForecastDates | null, 
   const name = `the ${p.label} limit`;
   let vsForecast: ForecastRelation | null = null;
   let message: string;
-  if (p.stale) {
-    message = `The ${p.label} window has reset since the last usage update (${p.usedPct}% then): no projection.`;
-  } else if (p.usedPct >= 100) {
-    message = `The ${p.label} limit is reached (${p.usedPct}%)${p.resetsAt !== null ? `; it resets ${at(p.resetsAt)}` : ''}.`;
-  } else if (p.hitsAt === null) {
-    message = `The ${p.label} limit is not being burned at a measurable rate (${p.usedPct}% used).`;
-  } else if (p.beforeReset === false) {
-    message = `At this rate ${name} resets (${at(p.resetsAt!)}) before it is reached (${p.usedPct}% used).`;
-  } else {
-    message = `At this rate ${name} is reached ${at(p.hitsAt)}`;
-    if (f) {
-      const hitDay = dayKey(p.hitsAt, tz);
-      vsForecast = hitDay <= f.p50.date ? 'before_p50' : hitDay <= f.p85.date ? 'before_p85' : 'after_p85';
-      message +=
-        vsForecast === 'before_p50'
-          ? `, before the phase's 50% forecast (${formatDay(f.p50.date)})`
-          : vsForecast === 'before_p85'
-            ? `, before the phase's 85% forecast (${formatDay(f.p85.date)})`
-            : `, after the phase's 85% forecast (${formatDay(f.p85.date)})`;
+  switch (p.state) {
+    case 'stale':
+      message =
+        p.staleReason === 'reset'
+          ? `The ${p.label} window has reset since the last usage update (${p.usedPct}% then): no projection.`
+          : `The last ${p.label} usage update (${at(p.sampledAt)}, ${p.usedPct}%) is too old to project from.`;
+      break;
+    case 'reached':
+      message = `The ${p.label} limit is reached (${p.usedPct}%)${p.resetsAt !== null ? `; it resets ${at(p.resetsAt)}` : ''}.`;
+      break;
+    case 'no_rate':
+    case 'not_burning':
+      message = `The ${p.label} limit is not being burned at a measurable rate (${p.usedPct}% used).`;
+      break;
+    case 'resets_first':
+      message = `At this rate ${name} resets (${at(p.resetsAt!)}) before it is reached (${p.usedPct}% used).`;
+      break;
+    default: {
+      message =
+        p.state === 'at_risk'
+          ? `At this rate ${name} is being reached now (${p.usedPct}% at the last update, ${at(p.sampledAt)})`
+          : `At this rate ${name} is reached ${at(p.hitsAt!)}`;
+      if (f) {
+        const hitDay = dayKey(p.hitsAt!, tz);
+        vsForecast = hitDay <= f.p50.date ? 'before_p50' : hitDay <= f.p85.date ? 'before_p85' : 'after_p85';
+        message +=
+          vsForecast === 'before_p50'
+            ? `, before the phase's 50% forecast (${formatDay(f.p50.date)})`
+            : vsForecast === 'before_p85'
+              ? `, before the phase's 85% forecast (${formatDay(f.p85.date)})`
+              : `, after the phase's 85% forecast (${formatDay(f.p85.date)})`;
+      }
+      message += '.';
     }
-    message += '.';
   }
   return { ...p, vsForecast, message };
 }

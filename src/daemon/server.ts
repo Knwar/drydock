@@ -1726,7 +1726,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (method === 'PUT' && budgetMatch) {
     if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
     const b = await readBody(req);
-    if (!('budget_usd' in b)) return json(res, 400, { error: 'budget_usd required (USD, or null to clear)' });
+    if (typeof b !== 'object' || b === null || Array.isArray(b) || !('budget_usd' in b))
+      return json(res, 400, { error: 'body must be {budget_usd: USD, or null to clear}' });
     if (!db.prepare('SELECT 1 FROM phases WHERE id = ?').get(budgetMatch[1])) return json(res, 404, { error: 'unknown phase' });
     try {
       const phase = board.setPhaseBudget(db, budgetMatch[1], b.budget_usd);

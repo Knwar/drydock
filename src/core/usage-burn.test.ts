@@ -67,15 +67,36 @@ describe('projectLimit', () => {
 
   it('no rate without resets_at and a short span; flat usage never hits; stale windows are not projected', () => {
     const noReset = projectLimit([{ at: now, five_hour: { used: 10, resetsAt: null }, seven_day: null }], 'five_hour', now)!;
-    assert.deepEqual([noReset.rateSource, noReset.hitsAt, noReset.beforeReset], [null, null, null]);
+    assert.deepEqual([noReset.state, noReset.rateSource, noReset.hitsAt, noReset.beforeReset], ['no_rate', null, null, null]);
     const flat = projectLimit([week(30, now - 5 * H), week(30, now)], 'seven_day', now)!;
-    assert.deepEqual([flat.ratePctPerHour, flat.hitsAt], [0, null]);
-    const stale = projectLimit([week(30, now - 2 * DAY, now - DAY)], 'seven_day', now)!;
-    assert.equal(stale.stale, true);
-    assert.equal(stale.hitsAt, null);
-    const full = projectLimit([five(100, now - H)], 'five_hour', now)!;
-    assert.equal(full.hitsAt, now - H);
+    assert.deepEqual([flat.state, flat.ratePctPerHour, flat.hitsAt], ['not_burning', 0, null]);
+    const reset = projectLimit([week(30, now - 2 * DAY, now - DAY)], 'seven_day', now)!;
+    assert.deepEqual([reset.stale, reset.staleReason, reset.state, reset.hitsAt], [true, 'reset', 'stale', null]);
+    // the last push is older than the lookback (5-hour: 1 hour)
+    const old = projectLimit([five(50, now - 2 * H, now + H)], 'five_hour', now)!;
+    assert.deepEqual([old.stale, old.staleReason, old.hitsAt], [true, 'old_sample', null]);
+    const full = projectLimit([five(100, now - 10 * 60_000)], 'five_hour', now)!;
+    assert.deepEqual([full.state, full.hitsAt], ['reached', null]);
     assert.equal(projectLimit([five(10, now)], 'seven_day', now), null);
+  });
+
+  it('never projects a hit in the past: at this rate it is being hit now (at_risk)', () => {
+    // 50% -> 95% in 5 minutes, last push 45 minutes ago: the projection (~0.5 min later) is already past
+    const p = projectLimit([five(50, now - 50 * 60_000), five(95, now - 45 * 60_000)], 'five_hour', now)!;
+    assert.equal(p.state, 'at_risk');
+    assert.equal(p.hitsAt, now);
+    assert.equal(p.beforeReset, true);
+    const r = describeLimit(p, null, tz);
+    assert.equal(r.message, 'At this rate the 5-hour limit is being reached now (95% at the last update, Sat 26 Sep, 11:15).');
+  });
+
+  it('without resets_at, a drop in used% marks a reset: only the samples after it count', () => {
+    const s = (used: number, minsAgo: number): UsageSample => ({ at: now - minsAgo * 60_000, five_hour: { used, resetsAt: null }, seven_day: null });
+    const p = projectLimit([s(80, 50), s(90, 40), s(5, 30), s(10, 20)], 'five_hour', now)!;
+    assert.equal(p.rateSource, 'recent');
+    assert.equal(p.ratePctPerHour, 30); // 5% in 10 minutes, not the (10 - 80) slope across the reset
+    assert.equal(p.hitsAt, now - 20 * 60_000 + 3 * H);
+    assert.equal(p.state, 'projected');
   });
 
   it('pruneSamples drops old samples and caps the count', () => {

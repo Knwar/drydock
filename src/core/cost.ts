@@ -11,18 +11,31 @@
  *
  * Estimated cost: a row without a breakdown (recorded before it existed, or by
  * an older hook that only sends `tokens`/`tokens_out`) has cost_estimated = 1.
- * Its cost is estimated as ESTIMATE_METHOD says: the non-output tokens
- * (tokens - tokens_out) at the cache-read rate, and tokens_out at the output
- * rate, of the scope's dominant model (most tokens among the rows that do have
- * a breakdown; none → the table's default rate). Cache reads are the bulk of
- * the input side of an agent run, so this is a close lower bound, where pricing
- * the total as input would overstate it many times over. Estimated cost is
- * included in every total and reported separately (`estimated`), with its share.
+ * Its cost is estimated as ESTIMATE_METHOD says. Those rows' tokens come from
+ * the old hook, which summed every transcript line, and a message is logged as
+ * several lines that repeat its usage: measured over 210 local subagent
+ * transcripts that inflated totals LEGACY_TOKEN_INFLATION = 1.97x overall
+ * (p10 1.56x, p90 2.42x per run). So the tokens are first divided by that
+ * factor; then the non-output part (tokens - tokens_out) is priced at the
+ * cache-read rate and tokens_out at the output rate, of the scope's dominant
+ * model (most tokens among the rows that do have a breakdown; none → the
+ * table's default rate). Cache reads are the bulk of an agent run's input
+ * side; pricing the total as input would overstate it many times over. Even
+ * deflated, a single run's estimate can be off either way (the inflation varies
+ * per run). Estimated cost is included in every total and reported separately
+ * (`estimated`), with its share; `tokenBasisChangedAt` marks where token counts
+ * switched from the inflated basis to the per-message one.
  *
  * Rates are USD per million tokens. The shipped defaults are PLACEHOLDERS
  * (`placeholder: true`, "set your rates"), not published prices: PUT
  * /settings/prices with your real rates. An unknown model is priced at the
- * `default` rate and listed in `unknownModels`.
+ * `default` rate and listed in `unknownModels`; one priced only through a
+ * shorter family key (a key "claude-opus-5" pricing "claude-opus-5-5") is
+ * listed in `fallbackMatches`.
+ *
+ * Output tokens in a breakdown can undercount (see the hook's usageByModel):
+ * messages the transcript only logged mid-stream carry a streaming snapshot.
+ * Reported in `caveats`.
  */
 import type { DB } from './db.js';
 import {
@@ -125,6 +138,7 @@ export function setPrices(db: DB, body: unknown, now = Date.now()): PriceTable {
   for (const [key, v] of entries) {
     const id = key.trim().toLowerCase();
     if (!id || id.length > MAX_MODEL_KEY) throw new CostParamError(`model ids must be 1-${MAX_MODEL_KEY} characters`);
+    if (Object.hasOwn(models, id)) throw new CostParamError(`duplicate model id (case-insensitive): ${key}`);
     models[id] = parseRates(v, `models.${key}`);
   }
   const stored = { models, default: parseRates(body.default, 'default'), updated_at: now };
@@ -138,14 +152,20 @@ export function setPrices(db: DB, body: unknown, now = Date.now()): PriceTable {
 /** Canonical model id: lowercased, a context suffix like "[1m]" dropped. */
 const normModel = (model: string) => model.trim().toLowerCase().replace(/\[[^\]]*\]$/, '');
 
-/** The rates for a model: the longest table key equal to it or a prefix of it ("<key>-..."), else the default. */
-export function ratesFor(table: PriceTable, model: string): { rates: Rates; key: string | null } {
+/**
+ * The rates for a model: the longest table key equal to it or a prefix of it
+ * ("<key>-..."), else the default (key null). `exact` = the key names this very
+ * model, maybe with a dated snapshot suffix ("-20251001"); false = a shorter
+ * family key, or the default.
+ */
+export function ratesFor(table: PriceTable, model: string): { rates: Rates; key: string | null; exact: boolean } {
   const m = normModel(model);
   let best: string | null = null;
   for (const key of Object.keys(table.models)) {
     if ((m === key || m.startsWith(`${key}-`)) && (best === null || key.length > best.length)) best = key;
   }
-  return best === null ? { rates: table.default, key: null } : { rates: table.models[best], key: best };
+  if (best === null) return { rates: table.default, key: null, exact: false };
+  return { rates: table.models[best], key: best, exact: m === best || /^-\d{8}$/.test(m.slice(best.length)) };
 }
 
 /** USD for token counts at per-million rates. */
@@ -177,8 +197,14 @@ export function parseUsage(raw: unknown): UsageBreakdown | null {
   return Object.keys(out).length ? out : null;
 }
 
+/** Measured duplicate-line inflation of the old hook's token totals (see the header). */
+export const LEGACY_TOKEN_INFLATION = 1.97;
+
 export const ESTIMATE_METHOD =
-  "rows without a token breakdown: non-output tokens (tokens - tokens_out) priced at the cache-read rate and tokens_out at the output rate, of the scope's dominant model (else the default rate)";
+  `rows without a token breakdown: tokens divided by ${LEGACY_TOKEN_INFLATION} (the old hook counted each transcript line, ~${LEGACY_TOKEN_INFLATION}x inflated on average, 1.56x-2.42x per run), then non-output tokens priced at the cache-read rate and output at the output rate, of the scope's dominant model (else the default rate); a single run's estimate can be off either way`;
+
+export const OUTPUT_CAVEAT =
+  'output tokens come from transcripts: a message logged only mid-stream carries a streaming snapshot, so output (and its cost) undercounts';
 
 // ---------- rows ----------
 
@@ -272,17 +298,26 @@ export function loadCostRows(db: DB, projectIds: string[], phaseId?: string): Co
 
 // ---------- pricing rows (pure) ----------
 
+/** One model's share of a priced run. */
+export interface PricedModel {
+  model: string;
+  priceKey: string | null;
+  exact: boolean;
+  tokens: number;
+  cost: number;
+}
+
 export interface PricedRow extends CostRow {
   cost: number;
   estimated: boolean;
+  /** Per-model pricing of a breakdown row ([] for an estimated row). */
+  models: PricedModel[];
 }
 
 export interface Pricing {
   rows: PricedRow[];
   /** The model whose rates priced the estimated rows (null = the default rate). */
   estimateModel: string | null;
-  unknownModels: Map<string, { tokens: number; cost: number }>;
-  byModel: Map<string, { priceKey: string | null; tokens: number; cost: number }>;
 }
 
 /** The model with the most tokens across the rows that have a breakdown, or null. */
@@ -298,34 +333,20 @@ export function dominantModel(rows: CostRow[]): string | null {
 export function priceRows(rows: CostRow[], table: PriceTable): Pricing {
   const estimateModel = dominantModel(rows);
   const estRates = estimateModel === null ? table.default : ratesFor(table, estimateModel).rates;
-  const unknownModels: Pricing['unknownModels'] = new Map();
-  const byModel: Pricing['byModel'] = new Map();
   const priced = rows.map((r): PricedRow => {
     if (!r.usage) {
-      const out = Math.min(r.tokens_out, r.tokens);
-      const cost = usageCost({ input: 0, output: out, cache_read: r.tokens - out, cache_creation: 0 }, estRates);
-      return { ...r, cost, estimated: true };
+      const tokens = r.tokens / LEGACY_TOKEN_INFLATION;
+      const out = Math.min(r.tokens_out / LEGACY_TOKEN_INFLATION, tokens);
+      const cost = usageCost({ input: 0, output: out, cache_read: tokens - out, cache_creation: 0 }, estRates);
+      return { ...r, cost, estimated: true, models: [] };
     }
-    let cost = 0;
-    for (const [model, u] of Object.entries(r.usage)) {
-      const { rates: rt, key } = ratesFor(table, model);
-      const c = usageCost(u, rt);
-      const n = usageTokens(u);
-      cost += c;
-      const bm = byModel.get(model) ?? { priceKey: key, tokens: 0, cost: 0 };
-      bm.tokens += n;
-      bm.cost += c;
-      byModel.set(model, bm);
-      if (key === null) {
-        const um = unknownModels.get(model) ?? { tokens: 0, cost: 0 };
-        um.tokens += n;
-        um.cost += c;
-        unknownModels.set(model, um);
-      }
-    }
-    return { ...r, cost, estimated: false };
+    const models = Object.entries(r.usage).map(([model, u]): PricedModel => {
+      const { rates: rt, key, exact } = ratesFor(table, model);
+      return { model, priceKey: key, exact, tokens: usageTokens(u), cost: usageCost(u, rt) };
+    });
+    return { ...r, cost: models.reduce((s, m) => s + m.cost, 0), estimated: false, models };
   });
-  return { rows: priced, estimateModel, unknownModels, byModel };
+  return { rows: priced, estimateModel };
 }
 
 // ---------- aggregation ----------
@@ -376,7 +397,13 @@ export interface CostMetrics {
   byType: Record<TokenType, { tokens: number; cost: number }>;
   estimated: { runs: number; tokens: number; cost: number; share: number | null; method: string; model: string | null };
   unknownModels: { model: string; tokens: number; cost: number }[];
+  /** Models priced only through a shorter family key of the table (not their own). */
+  fallbackMatches: { model: string; priceKey: string; tokens: number; cost: number }[];
   byModel: { model: string; priceKey: string | null; tokens: number; cost: number }[];
+  /** When token counts switched basis: the scope's first run with a breakdown (null = none yet). */
+  tokenBasisChangedAt: number | null;
+  /** Known limits of the numbers. */
+  caveats: string[];
   byPhase: { phase_id: string | null; title: string | null; cost: number; runs: number; cards: number }[];
   byAgent: { agent: string | null; cost: number; runs: number; cards: number }[];
   byBoard: { project_id: string; name: string | null; cost: number; runs: number; cards: number }[];
@@ -429,6 +456,7 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
   const agents = new Map<string, Bucket>();
   const boards = new Map<string, Bucket>();
   const cards = new Map<string, Bucket & { tokens: number; estimated: boolean; row: PricedRow }>();
+  const models = new Map<string, Omit<PricedModel, 'model'>>();
   let cost = 0;
   let tokens = 0;
   const est = { runs: 0, tokens: 0, cost: 0 };
@@ -446,6 +474,12 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
           byType[t].tokens += u[t];
           byType[t].cost += (u[t] * rt[t]) / 1e6;
         }
+      }
+      for (const pm of r.models) {
+        const m = models.get(pm.model) ?? { priceKey: pm.priceKey, exact: pm.exact, tokens: 0, cost: 0 };
+        m.tokens += pm.tokens;
+        m.cost += pm.cost;
+        models.set(pm.model, m);
       }
     }
     addTo(bucket(phases, r.card?.phase_id ?? ''), r);
@@ -474,6 +508,12 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
     const i = weekIndex.get(isoWeek(dayKey(r.created_at, opts.tz)).week);
     if (i !== undefined) weekly[i].cost += r.cost;
   }
+
+  const breakdownAts = scoped.filter((r) => !r.estimated).map((r) => r.created_at);
+  const tokenBasisChangedAt = breakdownAts.length ? Math.min(...breakdownAts) : null;
+  const byModelList = [...models].map(([model, m]) => ({ model, ...m, cost: round(m.cost) }));
+  const caveats = [OUTPUT_CAVEAT];
+  if (est.runs) caveats.push(`estimated cost (${est.runs} runs without a token breakdown): ${ESTIMATE_METHOD}`);
 
   // budgets: all-time actual per phase, projected with the median done-card cost
   const allTime = new Map<string, { cost: number; phase: string | null; done: boolean }>();
@@ -538,8 +578,13 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
       method: ESTIMATE_METHOD,
       model: pricing.estimateModel,
     },
-    unknownModels: sorted([...pricing.unknownModels].map(([model, u]) => ({ model, tokens: u.tokens, cost: round(u.cost) }))),
-    byModel: sorted([...pricing.byModel].map(([model, m]) => ({ model, priceKey: m.priceKey, tokens: m.tokens, cost: round(m.cost) }))),
+    unknownModels: sorted(byModelList.filter((m) => m.priceKey === null).map(({ model, tokens, cost }) => ({ model, tokens, cost }))),
+    fallbackMatches: sorted(
+      byModelList.flatMap(({ model, priceKey, exact, tokens, cost }) => (priceKey !== null && !exact ? [{ model, priceKey, tokens, cost }] : [])),
+    ),
+    byModel: sorted(byModelList.map(({ model, priceKey, tokens, cost }) => ({ model, priceKey, tokens, cost }))),
+    tokenBasisChangedAt,
+    caveats,
     byPhase: sorted(
       [...phases].map(([id, b]) => ({
         phase_id: id || null,

@@ -386,22 +386,27 @@ describe('on-build-stop: per-model token breakdown', () => {
   let dir: string;
   let fixture: string;
 
-  // A subagent transcript: a message streamed as two lines under one id (only
-  // the last counts), a second model, a zero-usage synthetic message, a
-  // malformed line, and a message without an id.
-  const line = (model: string, id: string | undefined, u: Record<string, number>) =>
-    JSON.stringify({ type: 'assistant', message: { id, model, role: 'assistant', usage: u } });
+  // A subagent transcript: a message logged as several lines under one id,
+  // counted once (its stop_reason line has the final usage, whatever the line
+  // order); one with no stop_reason line (max output snapshot); a second model;
+  // a zero-usage synthetic message; a malformed line; a message without an id.
+  const line = (model: string, id: string | undefined, u: Record<string, number>, stop_reason: string | null = null) =>
+    JSON.stringify({ type: 'assistant', message: { id, model, role: 'assistant', stop_reason, usage: u } });
+  const m1 = { input_tokens: 2, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000 };
   const TRANSCRIPT = [
     JSON.stringify({ type: 'user', message: { role: 'user', content: 'build it' } }),
-    line('claude-opus-5-5', 'm1', { input_tokens: 2, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: 4 }),
-    line('claude-opus-5-5', 'm1', { input_tokens: 2, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: 50 }),
-    line('claude-haiku-4-5', 'm2', { input_tokens: 10, output_tokens: 5 }),
+    line('claude-opus-5-5', 'm1', { ...m1, output_tokens: 4 }),
+    line('claude-opus-5-5', 'm1', { ...m1, output_tokens: 50 }, 'tool_use'),
+    line('claude-opus-5-5', 'm1', { ...m1, output_tokens: 60 }), // after the final line: ignored
+    line('claude-haiku-4-5', 'm2', { input_tokens: 10, output_tokens: 5 }, 'end_turn'),
+    line('claude-opus-5-5', 'm5', { input_tokens: 1, output_tokens: 9 }),
+    line('claude-opus-5-5', 'm5', { input_tokens: 1, output_tokens: 12 }),
     line('<synthetic>', 'm3', { input_tokens: 0, output_tokens: 0 }),
     'not json',
     line('claude-opus-5-5', undefined, { input_tokens: 1, output_tokens: 1 }),
   ].join('\n');
   const EXPECTED = {
-    'claude-opus-5-5': { input: 3, output: 51, cache_read: 1000, cache_creation: 100 },
+    'claude-opus-5-5': { input: 4, output: 63, cache_read: 1000, cache_creation: 100 },
     'claude-haiku-4-5': { input: 10, output: 5, cache_read: 0, cache_creation: 0 },
   };
 
@@ -417,10 +422,10 @@ describe('on-build-stop: per-model token breakdown', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('usageByModel / sumTokens: deduped by message id, per model, totals from the breakdown', async () => {
+  it('usageByModel / sumTokens: once per message (final line, else max), per model, totals from the breakdown', async () => {
     const lib = await import(pathToFileURL(join(HOOKS, 'lib.js')).href);
     assert.deepEqual(lib.usageByModel(fixture), EXPECTED);
-    assert.deepEqual(lib.sumTokens(fixture), { tokens: 1154 + 15, tokens_out: 56, usage: EXPECTED });
+    assert.deepEqual(lib.sumTokens(fixture), { tokens: 1167 + 15, tokens_out: 68, usage: EXPECTED });
     assert.deepEqual(lib.sumTokens(join(dir, 'missing.jsonl')), { tokens: 0, tokens_out: 0, usage: {} });
   });
 
@@ -444,7 +449,7 @@ describe('on-build-stop: per-model token breakdown', () => {
         usage: string;
         cost_estimated: number;
       };
-      assert.deepEqual([row.tokens, row.tokens_out, row.cost_estimated], [1169, 56, 0]);
+      assert.deepEqual([row.tokens, row.tokens_out, row.cost_estimated], [1182, 68, 0]);
       assert.deepEqual(JSON.parse(row.usage), EXPECTED);
     } finally {
       db.close();

@@ -237,21 +237,29 @@ server.registerTool(
     const waitParams = new URLSearchParams({ project: project_id });
     if (phase_id) waitParams.set('phase', phase_id);
     const wait = await api('GET', `/metrics/wait?${waitParams}`);
-    // the flow summary stands on its own: a failed wait lookup only drops `waiting`
-    if (wait.isError) return { content: [...summary.content, { type: 'text' as const, text: `waiting unavailable: ${wait.content[0]?.text}` }] };
-    const { count, longestMs } = JSON.parse(wait.content[0].text).waiting;
-    const merged = { ...JSON.parse(summary.content[0].text), waiting: { count, longestMs } };
-    // cost over the summary's own window; like `waiting`, a failed lookup only drops it
+    // the flow summary stands on its own: a failed wait or cost lookup only drops
+    // `waiting` / `cost`, with a note saying so
+    const merged = JSON.parse(summary.content[0].text);
+    const notes: string[] = [];
+    if (wait.isError) notes.push(`waiting unavailable: ${wait.content[0]?.text}`);
+    else {
+      const { count, longestMs } = JSON.parse(wait.content[0].text).waiting;
+      merged.waiting = { count, longestMs };
+    }
+    // cost over the summary's own window
     const costParams = new URLSearchParams(params);
-    costParams.set('from', String(merged.range.from));
-    costParams.set('to', String(merged.range.to));
+    if (merged.range) {
+      costParams.set('from', String(merged.range.from));
+      costParams.set('to', String(merged.range.to));
+    }
     costParams.set('limit', '1');
     const spent = await api('GET', `/metrics/cost?${costParams}`);
-    if (!spent.isError) {
+    if (spent.isError) notes.push(`cost unavailable: ${spent.content[0]?.text}`);
+    else {
       const c = JSON.parse(spent.content[0].text);
       merged.cost = { period: c.totals.cost, estimatedShare: c.estimated.share };
     }
-    return { content: [{ type: 'text' as const, text: JSON.stringify(merged) }] };
+    return { content: [{ type: 'text' as const, text: JSON.stringify(merged) }, ...notes.map((text) => ({ type: 'text' as const, text }))] };
   },
 );
 

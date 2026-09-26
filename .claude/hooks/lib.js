@@ -121,9 +121,16 @@ export function subagentTranscriptPath(data) {
 
 /**
  * Per-model token breakdown of a transcript's assistant messages:
- * { "<model>": { input, output, cache_read, cache_creation } }. A message
- * streamed as several lines (one per content block) repeats its usage under
- * one message.id, so only its last line counts (its output count is final).
+ * { "<model>": { input, output, cache_read, cache_creation } }.
+ * A message is logged as several lines under one message.id (one per content
+ * block), each repeating its usage: count each message once. Input and cache
+ * counts are the same on every line; output_tokens is a streaming snapshot
+ * unless the line carries a stop_reason, which has the final usage. So per
+ * message: the stop_reason line's usage when there is one, else the max of
+ * each field. Messages logged without a stop_reason line still UNDERCOUNT
+ * output (the API reports this as a caveat). No final per-type figure exists
+ * elsewhere: the SubagentStop payload carries no usage, and the completion
+ * notification only has a single subagent_tokens total.
  * Models with no tokens at all (e.g. "<synthetic>") are dropped.
  */
 export function usageByModel(file) {
@@ -138,15 +145,24 @@ export function usageByModel(file) {
       continue;
     }
     if (!m?.usage) continue;
-    byMessage.set(m.id ?? `line-${anon++}`, { model: m.model || 'unknown', u: m.usage });
+    const u = {
+      input: m.usage.input_tokens || 0,
+      output: m.usage.output_tokens || 0,
+      cache_read: m.usage.cache_read_input_tokens || 0,
+      cache_creation: m.usage.cache_creation_input_tokens || 0,
+    };
+    const key = m.id ?? `line-${anon++}`;
+    const prev = byMessage.get(key);
+    if (!prev || (!prev.final && m.stop_reason)) {
+      byMessage.set(key, { model: m.model || 'unknown', u, final: !!m.stop_reason });
+    } else if (!prev.final) {
+      for (const k of Object.keys(u)) prev.u[k] = Math.max(prev.u[k], u[k]);
+    }
   }
   const usage = {};
   for (const { model, u } of byMessage.values()) {
     const acc = (usage[model] ??= { input: 0, output: 0, cache_read: 0, cache_creation: 0 });
-    acc.input += u.input_tokens || 0;
-    acc.output += u.output_tokens || 0;
-    acc.cache_read += u.cache_read_input_tokens || 0;
-    acc.cache_creation += u.cache_creation_input_tokens || 0;
+    for (const k of Object.keys(acc)) acc[k] += u[k];
   }
   for (const [model, u] of Object.entries(usage)) {
     if (!(u.input + u.output + u.cache_read + u.cache_creation)) delete usage[model];

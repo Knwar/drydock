@@ -70,6 +70,8 @@ describe('daemon cost routes', () => {
     assert.equal((await send('PUT', '/settings/prices', { models: {}, default: { input: -1 } })).status, 400);
     assert.equal((await send('PUT', '/settings/prices', { models: 'x', default: PRICES.default })).status, 400);
     assert.equal((await send('PUT', '/settings/prices', { ...PRICES, bogus: 1 })).status, 400);
+    const clash = { models: { 'Claude-Opus-5-5': PRICES.default, 'claude-opus-5-5': PRICES.default }, default: PRICES.default };
+    assert.equal((await send('PUT', '/settings/prices', clash)).status, 400);
     const set = await ok('PUT', '/settings/prices', PRICES);
     assert.equal(set.placeholder, false);
     assert.deepEqual((await ok('GET', '/settings/prices')).models, PRICES.models);
@@ -83,7 +85,8 @@ describe('daemon cost routes', () => {
       usage: { 'claude-opus-5-5': { input: M, output: M, cache_read: 10 * M, cache_creation: M } }, // 82
     });
     await ok('POST', `/task/${cardB}/activity`, { agent: 'builder', usage: { 'mystery-1': { input: M } } }); // 100, tokens derived
-    await ok('POST', `/task/${cardA}/activity`, { agent: 'builder', tokens: 3 * M, tokens_out: M }); // old hook: estimated 2 + 50
+    // old hook: 5.91M / 1.97 = 3M (1M out) estimated at opus: 2 + 50
+    await ok('POST', `/task/${cardA}/activity`, { agent: 'builder', tokens: 5_910_000, tokens_out: 1_970_000 });
     const bad = await json(send('POST', `/task/${cardA}/activity`, { tokens: 1, usage: { m: { input: -5 } } }));
     assert.equal(bad.status, 400);
     const db = openDb(join(daemon!.dbDir, 'board.db'));
@@ -101,10 +104,13 @@ describe('daemon cost routes', () => {
 
   it('/metrics/cost: totals, estimated share, breakdowns; 400/404', async () => {
     const m = await ok('GET', `/metrics/cost?project=${pid}&tz=UTC`);
-    assert.deepEqual(m.totals, { cost: 234, tokens: 17 * M, runs: 3, cards: 2 });
+    assert.deepEqual(m.totals, { cost: 234, tokens: 19_910_000, runs: 3, cards: 2 });
     assert.equal(m.estimated.cost, 52);
     assert.equal(m.estimated.share, Math.round((52 / 234) * 1e6) / 1e6);
     assert.deepEqual(m.unknownModels, [{ model: 'mystery-1', tokens: M, cost: 100 }]);
+    assert.deepEqual(m.fallbackMatches, []);
+    assert.equal(typeof m.tokenBasisChangedAt, 'number');
+    assert.equal(m.caveats.length, 2);
     assert.deepEqual(m.byPhase.map((p: any) => [p.phase_id, p.cost]), [[phaseId, 234]]);
     assert.deepEqual(m.byCard.map((c: any) => [c.id, c.cost, c.estimated]), [[cardA, 134, true], [cardB, 100, false]]);
     assert.equal(m.byBoard[0].project_id, pid);
@@ -127,6 +133,7 @@ describe('daemon cost routes', () => {
     assert.equal((await send('PUT', `/phase/${phaseId}/budget`, { budget_usd: -3 })).status, 400);
     assert.equal((await send('PUT', `/phase/${phaseId}/budget`, { budget_usd: 'lots' })).status, 400);
     assert.equal((await send('PUT', `/phase/${phaseId}/budget`, {})).status, 400);
+    for (const body of [5, 'x', null, [1]]) assert.equal((await send('PUT', `/phase/${phaseId}/budget`, body)).status, 400, JSON.stringify(body));
     assert.equal((await send('PUT', '/phase/nope/budget', { budget_usd: 1 })).status, 404);
     await ok('POST', `/task/${cardA}/move`, { lane: 'done' });
     const m = await ok('GET', `/metrics/cost?project=${pid}&tz=UTC`);

@@ -11,6 +11,8 @@ import {
   costMetrics,
   DEFAULT_PRICES,
   dominantModel,
+  ESTIMATE_METHOD,
+  LEGACY_TOKEN_INFLATION,
   getPrices,
   loadCostRows,
   parseUsage,
@@ -66,6 +68,7 @@ describe('price table', () => {
       { models: { x: { ...PRICES.default, bogus: 1 } }, default: PRICES.default },
       { models: { ' ': PRICES.default }, default: PRICES.default },
       { models: {}, default: { ...PRICES.default, output: 1e9 } },
+      { models: { 'Claude-Opus-5-5': PRICES.default, 'claude-opus-5-5 ': PRICES.default }, default: PRICES.default }, // case-insensitive collision
     ];
     for (const b of bad) assert.throws(() => setPrices(db, b), CostParamError, JSON.stringify(b));
     assert.equal(getPrices(db).placeholder, true, 'nothing stored');
@@ -74,12 +77,17 @@ describe('price table', () => {
   it('matches a model by its longest key prefix; unknown models fall back to the default', () => {
     const t = table();
     t.models['claude-opus-5'] = u(7, 7, 7, 7);
-    assert.equal(ratesFor(t, 'claude-opus-5-5').key, 'claude-opus-5-5');
-    assert.equal(ratesFor(t, 'claude-opus-5-5[1m]').key, 'claude-opus-5-5');
-    assert.equal(ratesFor(t, 'Claude-Opus-5-5-20260901').key, 'claude-opus-5-5');
-    assert.equal(ratesFor(t, 'claude-opus-5-1').key, 'claude-opus-5');
-    assert.equal(ratesFor(t, 'claude-opus-55').key, null);
-    assert.deepEqual(ratesFor(t, 'gpt-x'), { rates: PRICES.default, key: null });
+    const match = (m: string) => {
+      const r = ratesFor(t, m);
+      return [r.key, r.exact];
+    };
+    assert.deepEqual(match('claude-opus-5-5'), ['claude-opus-5-5', true]);
+    assert.deepEqual(match('claude-opus-5-5[1m]'), ['claude-opus-5-5', true]);
+    assert.deepEqual(match('Claude-Opus-5-5-20260901'), ['claude-opus-5-5', true]); // a dated snapshot is still exact
+    assert.deepEqual(match('claude-opus-5-1'), ['claude-opus-5', false]); // family fallback
+    assert.deepEqual(match('claude-opus-5-5-fast'), ['claude-opus-5-5', false]);
+    assert.deepEqual(match('claude-opus-55'), [null, false]);
+    assert.deepEqual(ratesFor(t, 'gpt-x'), { rates: PRICES.default, key: null, exact: false });
   });
 });
 
@@ -116,28 +124,40 @@ describe('pricing rows', () => {
     );
     assert.equal(p.rows[0].cost, 84);
     assert.equal(p.rows[0].estimated, false);
-    assert.deepEqual(p.byModel.get('claude-haiku-4-5-20251001'), { priceKey: 'claude-haiku-4-5', tokens: 2 * M, cost: 2 });
-    assert.equal(p.unknownModels.size, 0);
+    assert.deepEqual(p.rows[0].models, [
+      { model: 'claude-opus-5-5[1m]', priceKey: 'claude-opus-5-5', exact: true, tokens: 13 * M, cost: 82 },
+      { model: 'claude-haiku-4-5-20251001', priceKey: 'claude-haiku-4-5', exact: true, tokens: 2 * M, cost: 2 },
+    ]);
     assert.equal(usageCost(u(M, 0, 0, 0), PRICES.default), 100);
   });
 
-  it('estimates rows without a breakdown at the dominant model: cache-read rate + output rate', () => {
-    const rows = [row(1, { 'claude-haiku-4-5': u(M, 0, 0, 0) }), row(2, { 'claude-opus-5-5': u(0, 0, 5 * M, 0) }), row(3, null, 3 * M, M)];
+  it('estimates rows without a breakdown: deflated by the legacy inflation, then the dominant model\'s cache-read + output rates', () => {
+    // 5.91M / 1.97 = 3M tokens, of which 1.97M / 1.97 = 1M output
+    const rows = [row(1, { 'claude-haiku-4-5': u(M, 0, 0, 0) }), row(2, { 'claude-opus-5-5': u(0, 0, 5 * M, 0) }), row(3, null, 5_910_000, 1_970_000)];
     assert.equal(dominantModel(rows), 'claude-opus-5-5');
     const p = priceRows(rows, table());
     assert.equal(p.estimateModel, 'claude-opus-5-5');
     assert.equal(p.rows[2].estimated, true);
-    assert.equal(p.rows[2].cost, 2 * 1 + 1 * 50); // 2M non-output at cache_read 1, 1M out at 50
+    assert.ok(Math.abs(p.rows[2].cost - (2 * 1 + 1 * 50)) < 1e-9); // 2M non-output at cache_read 1, 1M out at 50
+    assert.equal(LEGACY_TOKEN_INFLATION, 1.97);
+    assert.match(ESTIMATE_METHOD, /1\.97/);
     // no breakdown anywhere: the default rate
-    const legacy = priceRows([row(1, null, 2 * M, M)], table());
+    const legacy = priceRows([row(1, null, 3_940_000, 1_970_000)], table());
     assert.equal(legacy.estimateModel, null);
-    assert.equal(legacy.rows[0].cost, 200);
+    assert.ok(Math.abs(legacy.rows[0].cost - 200) < 1e-9);
   });
 
-  it('reports unknown models, priced at the default rate', () => {
-    const p = priceRows([row(1, { 'mystery-1': u(M, 0, 0, 0) }), row(2, { 'mystery-1': u(M, 0, 0, 0) })], table());
-    assert.deepEqual(p.unknownModels.get('mystery-1'), { tokens: 2 * M, cost: 200 });
-    assert.equal(p.byModel.get('mystery-1')!.priceKey, null);
+  it('flags unknown models (default rate) and family-key matches', () => {
+    const t = table();
+    t.models['claude-sonnet-5'] = u(3, 15, 0.3, 3.75);
+    const p = priceRows([row(1, { 'mystery-1': u(M, 0, 0, 0), 'claude-sonnet-5-1': u(M, 0, 0, 0) })], t);
+    assert.deepEqual(p.rows[0].models, [
+      { model: 'mystery-1', priceKey: null, exact: false, tokens: M, cost: 100 },
+      { model: 'claude-sonnet-5-1', priceKey: 'claude-sonnet-5', exact: false, tokens: M, cost: 3 },
+    ]);
+    const m = aggregateCost(p, t, {}, { tz, now: DAY });
+    assert.deepEqual(m.unknownModels, [{ model: 'mystery-1', tokens: M, cost: 100 }]);
+    assert.deepEqual(m.fallbackMatches, [{ model: 'claude-sonnet-5-1', priceKey: 'claude-sonnet-5', tokens: M, cost: 3 }]);
   });
 });
 
@@ -160,7 +180,7 @@ describe('cost metrics (DB)', () => {
       recordActivity(db, { project_id: p.id, task_id, agent, tokens, tokens_out, lines_added: 0, lines_removed: 0, ms: 1, usage });
     run(a.id, 'Ada', { 'claude-opus-5-5[1m]': u(M, M, 10 * M, M), 'claude-haiku-4-5-20251001': u(2 * M, 0, 0, 0) }, 15 * M, M); // 84
     run(b.id, 'Bob', { 'mystery-model': u(M, 0, 0, 0) }, M, 0); // 100, unknown
-    run(a.id, 'Ada', null, 3 * M, M); // legacy: 2M at opus cache_read 1 + 1M at output 50 = 52
+    run(a.id, 'Ada', null, 5_910_000, 1_970_000); // legacy, deflated /1.97 to 3M (1M out): 2M at opus cache_read 1 + 1M at output 50 = 52
     run(loose.id, 'Bob', { 'claude-haiku-4-5': u(0, 0, 0, M) }, M, 0); // 1.2
     return { db, p, phase, other, a, b, c, loose };
   };
@@ -171,7 +191,7 @@ describe('cost metrics (DB)', () => {
     const m = costMetrics(db, { projectIds: [p.id] }, { tz, now });
     assert.equal(m.currency, 'USD');
     assert.deepEqual(m.prices, { placeholder: false, updated_at: getPrices(db).updated_at });
-    assert.deepEqual(m.totals, { cost: 237.2, tokens: 20 * M, runs: 4, cards: 3 });
+    assert.deepEqual(m.totals, { cost: 237.2, tokens: 22_910_000, runs: 4, cards: 3 });
     assert.equal(m.estimated.runs, 1);
     assert.equal(m.estimated.cost, 52);
     assert.equal(m.estimated.share, Math.round((52 / 237.2) * 1e6) / 1e6);
@@ -181,6 +201,21 @@ describe('cost metrics (DB)', () => {
     assert.deepEqual(m.byType.cache_creation, { tokens: 2 * M, cost: 13.2 });
     assert.deepEqual(m.byType.input, { tokens: 4 * M, cost: 112 });
     assert.deepEqual(m.unknownModels, [{ model: 'mystery-model', tokens: M, cost: 100 }]);
+    assert.deepEqual(m.fallbackMatches, []);
+    assert.deepEqual(
+      m.byModel.map((x) => [x.model, x.priceKey, x.cost]),
+      [
+        ['mystery-model', null, 100],
+        ['claude-opus-5-5[1m]', 'claude-opus-5-5', 82],
+        ['claude-haiku-4-5-20251001', 'claude-haiku-4-5', 2],
+        ['claude-haiku-4-5', 'claude-haiku-4-5', 1.2],
+      ],
+    );
+    const firstBreakdown = (db.prepare('SELECT MIN(created_at) AS t FROM card_activity WHERE usage IS NOT NULL').get() as { t: number }).t;
+    assert.equal(m.tokenBasisChangedAt, firstBreakdown);
+    assert.equal(m.caveats.length, 2);
+    assert.match(m.caveats[0], /streaming snapshot/);
+    assert.match(m.caveats[1], /1 runs without a token breakdown/);
     assert.deepEqual(m.byAgent, [
       { agent: 'Ada', cost: 136, runs: 2, cards: 1 },
       { agent: 'Bob', cost: 101.2, runs: 2, cards: 2 },
@@ -255,8 +290,19 @@ describe('cost metrics (DB)', () => {
     assert.equal(recent.range.from, now - 7 * DAY);
     assert.ok(recent.weekly.length >= 1 && recent.weekly.length <= 2);
     assert.equal(recent.budgets.find((x) => x.phase_id === phase.id)!.actual, 236);
+    // model lists follow the same rows as the totals
+    assert.deepEqual(recent.unknownModels, []);
+    assert.deepEqual(recent.byModel.map((x) => x.model).sort(), ['claude-haiku-4-5', 'claude-haiku-4-5-20251001', 'claude-opus-5-5[1m]']);
     const old = costMetrics(db, { projectIds: [p.id], to: now - 7 * DAY }, { tz, now });
     assert.equal(old.totals.cost, 100);
+    assert.deepEqual(old.unknownModels, [{ model: 'mystery-model', tokens: M, cost: 100 }]);
+    assert.deepEqual(old.byModel.map((x) => x.model), ['mystery-model']);
+    const ui = costMetrics(db, { projectIds: [p.id], tag: 'ui' }, { tz, now });
+    assert.deepEqual(ui.unknownModels, []);
+    assert.deepEqual(ui.byModel.map((x) => x.model).sort(), ['claude-haiku-4-5', 'claude-haiku-4-5-20251001', 'claude-opus-5-5[1m]']);
+    const api = costMetrics(db, { projectIds: [p.id], tag: 'api' }, { tz, now });
+    assert.deepEqual(api.byModel.map((x) => x.model), ['mystery-model']);
+    assert.deepEqual(api.caveats.length, 1, 'no estimated runs in the api-tagged scope');
     assert.ok(old.weekly.length >= 3, 'zero-filled from the first run (30 days back) to `to`');
     assert.equal(old.weekly.filter((w) => w.cost > 0).length, 1);
     assert.equal(costMetrics(db, { projectIds: [p.id], tag: 'ui' }, { tz, now }).totals.cost, 137.2);
