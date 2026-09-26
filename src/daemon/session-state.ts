@@ -109,7 +109,6 @@ export class SessionStates {
     return at;
   }
 
-
   view(projectId: string, now: number): SessionView {
     const s = this.projects.get(projectId);
     const main = s?.main ?? null;
