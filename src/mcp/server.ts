@@ -216,19 +216,20 @@ server.registerTool(
   'get_metrics',
   {
     description:
-      'Flow metrics summary: throughput for the last 4 ISO weeks, cycle time p50/p85 (ms), WIP by lane, and the oldest in-flight card. Default range: the 28 days before `to` (now). A workspace id includes its verticals. from/to: epoch ms, YYYY-MM-DD, or an ISO date.',
+      'Flow metrics summary: throughput per ISO week for the last 4 ISO weeks ending at `to` (default now; the current week partial), cycle time p50/p85 (ms) over the same window, WIP by lane, and the oldest in-flight card. A workspace id includes its verticals. from/to: epoch ms, YYYY-MM-DD, or a datetime (read in `tz` when it has no zone). tz: IANA zone, default the daemon\'s.',
     inputSchema: {
       project_id: z.string(),
       phase_id: z.string().optional(),
-      tag: z.string().optional(),
+      tag: z.enum(['ui', 'api', 'db', 'infra']).optional(),
       agent: z.string().optional(),
       from: z.string().optional(),
       to: z.string().optional(),
+      tz: z.string().optional(),
     },
   },
-  ({ project_id, phase_id, tag, agent, from, to }) => {
+  ({ project_id, phase_id, tag, agent, from, to, tz }) => {
     const params = new URLSearchParams({ project: project_id });
-    for (const [k, v] of [['phase', phase_id], ['tag', tag], ['agent', agent], ['from', from], ['to', to]] as const) {
+    for (const [k, v] of [['phase', phase_id], ['tag', tag], ['agent', agent], ['from', from], ['to', to], ['tz', tz]] as const) {
       if (v) params.set(k, v);
     }
     return api('GET', `/metrics/summary?${params}`);

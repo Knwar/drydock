@@ -80,14 +80,20 @@ describe('MCP get_metrics', () => {
     assert.equal(none.cards, 0);
     assert.equal(none.oldestInFlight, null);
     const today = new Date().toISOString().slice(0, 10);
-    const ranged = await call({ project_id: projectId, from: '2026-01-01', to: today });
+    const ranged = await call({ project_id: projectId, from: '2026-01-01', to: today, tz: 'Asia/Kolkata' });
     assert.ok(!ranged.isError, ranged.content[0]?.text);
+    assert.equal(JSON.parse(ranged.content[0].text).range.tz, 'Asia/Kolkata');
   });
 
   it('surfaces bad params and unknown projects as tool errors', async () => {
     const bad = await call({ project_id: projectId, from: 'whenever' });
     assert.equal(bad.isError, true);
     assert.match(bad.content[0].text, /invalid from/);
+    const badTz = await call({ project_id: projectId, tz: 'Mars/Olympus' });
+    assert.equal(badTz.isError, true);
+    assert.match(badTz.content[0].text, /invalid tz/);
+    // tag is the same enum as the other tools
+    assert.equal((await call({ project_id: projectId, tag: 'frontend' })).isError, true);
     const unknown = await call({ project_id: 'nope' });
     assert.equal(unknown.isError, true);
     assert.match(unknown.content[0].text, /unknown project/);

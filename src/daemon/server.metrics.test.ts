@@ -107,6 +107,10 @@ describe('daemon GET /metrics/*', () => {
     // a bare local day is accepted
     const today = new Date().toISOString().slice(0, 10);
     assert.equal((await f(`from=2020-01-01&to=${today}&tz=UTC`)).throughput.daily, null);
+    // a datetime without a zone is read in the requested tz
+    const kol = await f('from=2026-07-01T10:00&to=2026-07-02T10:00&tz=Asia/Kolkata');
+    assert.equal(kol.range.from, Date.UTC(2026, 6, 1, 4, 30));
+    assert.equal(kol.range.to, Date.UTC(2026, 6, 2, 4, 30));
   });
 
   it('flow: empty project is zero-filled', async () => {

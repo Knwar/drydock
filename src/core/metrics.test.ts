@@ -22,6 +22,7 @@ import {
   computeSummary,
   dayKey,
   deriveLaneHistory,
+  flowMetrics,
   inDateRange,
   isoWeek,
   isValidTimeZone,
@@ -31,6 +32,7 @@ import {
   percentiles,
   sortEvents,
   startOfDay,
+  summaryMetrics,
   type MetricsCard,
   type MetricsEvent,
 } from './metrics.js';
@@ -437,6 +439,24 @@ describe('loadCardHistories', () => {
     assert.equal(loadCardHistories(db).length, 3);
   });
 
+  it('flowMetrics: the CFD row for a day is the same with and without `from` (done baseline loaded)', (t) => {
+    const { db, a } = setup(t);
+    const DAY = 86_400_000;
+    db.prepare('UPDATE task_events SET created_at = created_at - ? WHERE task_id = ?').run(10 * DAY, a.id);
+    db.prepare('UPDATE tasks SET created_at = created_at - ?, updated_at = updated_at - ? WHERE id = ?').run(10 * DAY, 10 * DAY, a.id);
+    const now = Date.now();
+    const whole = flowMetrics(db, {}, { tz: 'UTC', now });
+    const windowed = flowMetrics(db, { from: now - 2 * DAY }, { tz: 'UTC', now });
+    const last = (f: typeof whole) => f.cfd[f.cfd.length - 1];
+    assert.deepEqual(last(windowed), last(whole));
+    assert.equal(last(windowed).done, 1);
+    assert.equal(windowed.throughput.total, 0);
+    assert.equal(windowed.cards, 2, 'a is outside the window');
+    // the summary's WIP comes from the same snapshot
+    assert.equal(summaryMetrics(db, {}, { tz: 'UTC', now }).wip.backlog, 2);
+    assert.throws(() => flowMetrics(db, { from: 0, to: now }, { tz: 'UTC', now }), /range too long/);
+  });
+
   it('date range drops cards done before the window and cards created after it', (t) => {
     const { db, a, b, c } = setup(t);
     const doneAt = cardMetrics(loadCardHistories(db, { tag: 'ui' }).find((h) => h.card.id === a.id)!, 0).doneAt!;
@@ -462,6 +482,7 @@ describe('aggregations', () => {
     const vals = Array.from({ length: 20 }, (_, i) => 20 - i); // 20..1, unsorted input
     assert.deepEqual(percentiles(vals), { p50: 10, p85: 17, p95: 19, count: 20 });
     assert.deepEqual(percentiles([7]), { p50: 7, p85: 7, p95: 7, count: 1 });
+    assert.deepEqual(percentiles([20, 10]), { p50: 10, p85: 20, p95: 20, count: 2 });
     assert.deepEqual(percentiles([]), { p50: null, p85: null, p95: null, count: 0 });
   });
 
@@ -483,6 +504,11 @@ describe('aggregations', () => {
     assert.equal(parseTime('2026-11-01', ny, 'to'), Date.UTC(2026, 10, 2, 5) - 1);
     assert.equal(parseTime('12345', ny, 'from'), 12345);
     assert.equal(parseTime('2026-11-01T00:00:00Z', ny, 'from'), Date.UTC(2026, 10, 1));
+    // no zone: wall-clock time in the requested tz, not the daemon's
+    assert.equal(parseTime('2026-11-01T10:00', ny, 'from'), Date.UTC(2026, 10, 1, 15)); // EST after fall back
+    assert.equal(parseTime('2026-07-01T10:00:30.5', ny, 'to'), Date.UTC(2026, 6, 1, 14, 0, 30, 500)); // EDT
+    assert.equal(parseTime('2026-07-01 10:00', 'Asia/Kolkata', 'from'), Date.UTC(2026, 6, 1, 4, 30));
+    assert.throws(() => parseTime('2026-07-01T25:00', ny, 'from'), /invalid from/);
     assert.throws(() => parseTime('yesterday', ny, 'to'), /invalid to/);
     assert.throws(() => parseTime('2026-02-31', ny, 'to'), /invalid to/);
     assert.equal(isValidTimeZone(ny), true);
@@ -547,6 +573,22 @@ describe('aggregations', () => {
     assert.deepEqual(f.cfd, [{ date: '2026-09-07', backlog: 0, queued: 0, in_progress: 0, in_review: 0, done: 0 }]);
     assert.equal(f.cards, 0);
     assert.equal(f.partial, 0);
+  });
+
+  it('CFD: cards done before `from` stay in the done band; a day\'s row does not depend on the window', () => {
+    const early = hist({ id: 'early', lane: 'done' }, [ev('create', T0), move('backlog', 'done', T0 + DAY)]);
+    const late = hist({ id: 'late', lane: 'done' }, [ev('create', T0), move('backlog', 'done', T0 + 5 * DAY)]);
+    const opts = { tz: 'UTC', now: T0 + 7 * DAY, to: T0 + 7 * DAY };
+    const whole = computeFlow([early, late], opts);
+    const windowed = computeFlow([early, late], { ...opts, from: T0 + 3 * DAY });
+    const row = (f: typeof whole) => f.cfd.find((r) => r.date === '2026-09-13');
+    assert.deepEqual(row(windowed), row(whole));
+    assert.equal(row(windowed)!.done, 2);
+    assert.equal(windowed.cfd[0].done, 1, 'baseline: early was done before the window');
+    // throughput, points and card counts stay window-only
+    assert.equal(windowed.throughput.total, 1);
+    assert.deepEqual(windowed.points.map((p) => p.id), ['late']);
+    assert.equal(windowed.cards, 1);
   });
 
   it('CFD: lane counts at each day end from synthetic histories; partial counted', () => {
@@ -620,9 +662,11 @@ describe('aggregations', () => {
     const young = hist({ id: 'young', lane: 'in_review' }, [ev('create', T0), move('backlog', 'in_review', T0 + 35 * DAY)]);
     const idle = hist({ id: 'idle', lane: 'backlog' }, [ev('create', T0)]);
     const s = computeSummary([...doneCards, old, young, idle], { tz: 'UTC', now });
-    assert.equal(s.range.from, now - 28 * DAY);
-    assert.equal(s.throughput.length, 4);
-    assert.equal(s.throughput.reduce((n, w) => n + w.count, 0), 2, 'd5 is outside the last 28 days');
+    // now is Sat 2026-10-17 (W42): the window is W39..W42, from Mon 2026-09-21
+    assert.equal(s.range.from, Date.UTC(2026, 8, 21));
+    assert.deepEqual(s.throughput.map((w) => w.week), ['2026-W39', '2026-W40', '2026-W41', '2026-W42']);
+    assert.equal(s.throughput.reduce((n, w) => n + w.count, 0), 2, 'd5 is outside the window');
+    assert.equal(s.throughput.reduce((n, w) => n + w.count, 0), s.cycleTime.count);
     assert.deepEqual(s.cycleTime, { p50: DAY, p85: DAY, count: 2 });
     assert.deepEqual(s.wip, { backlog: 1, queued: 0, in_progress: 1, in_review: 1 });
     assert.deepEqual(s.oldestInFlight, { id: 'old', title: 'Old', lane: 'in_progress', inFlightMs: 39 * DAY, ageInLaneMs: 10 * DAY });
