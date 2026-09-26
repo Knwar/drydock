@@ -441,4 +441,115 @@ server.registerTool(
   ({ id, enabled }) => api('PATCH', `/subscriptions/${encodeURIComponent(id)}`, { enabled }),
 );
 
+// ── plan drafts (visual plans kept off the board until committed) ──
+
+const planTag = z.enum(['ui', 'api', 'db', 'infra']);
+const planNode = z.object({
+  id: z.string(),
+  title: z.string(),
+  board_id: z.string(),
+  phase: z.string().optional(),
+  requirements: z.string().optional(),
+  subtasks: z.array(z.string()).optional(),
+  tag: planTag.optional(),
+  touches: z.array(z.string()).optional(),
+});
+const draftOp = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('add_node'), node: planNode }),
+  z.object({
+    op: z.literal('update_node'),
+    id: z.string(),
+    patch: z.object({
+      title: z.string().optional(),
+      board_id: z.string().optional(),
+      phase: z.string().nullable().optional(),
+      requirements: z.string().nullable().optional(),
+      subtasks: z.array(z.string()).nullable().optional(),
+      tag: planTag.nullable().optional(),
+      touches: z.array(z.string()).nullable().optional(),
+    }),
+  }),
+  z.object({ op: z.literal('remove_node'), id: z.string() }),
+  z.object({ op: z.literal('add_edge'), from: z.string(), to: z.string() }),
+  z.object({ op: z.literal('remove_edge'), from: z.string(), to: z.string() }),
+  z.object({ op: z.literal('set_title'), title: z.string() }),
+]);
+
+server.registerTool(
+  'list_plans',
+  {
+    description:
+      'Plan drafts of a workspace (a vertical id works too: it resolves to its workspace), most recently updated first, without their nodes (node_count/edge_count instead). Drafts are kept off the board until committed.',
+    inputSchema: { project_id: z.string() },
+  },
+  ({ project_id }) => api('GET', `/plan-drafts?workspace=${encodeURIComponent(project_id)}`),
+);
+
+server.registerTool(
+  'get_plan',
+  {
+    description:
+      'One plan draft: {draft (nodes, edges, version, committed map), layout (dependency columns + longest chain, null while there is a cycle), validation {errors (block commit), warnings}, boards (valid board_ids), dirty}.',
+    inputSchema: { plan_id: z.string() },
+  },
+  ({ plan_id }) => api('GET', `/plan-drafts/${encodeURIComponent(plan_id)}`),
+);
+
+server.registerTool(
+  'create_plan',
+  {
+    description:
+      'Create an empty plan draft on a workspace (a vertical id resolves to its workspace). Returns the draft (id, version 1). Writes a draft only, never cards.',
+    inputSchema: { project_id: z.string(), title: z.string() },
+  },
+  ({ project_id, title }) => api('POST', '/plan-drafts', { workspace: project_id, title }),
+);
+
+server.registerTool(
+  'edit_plan',
+  {
+    description: [
+      'Apply a batch of ops to a plan draft, atomically (any bad op rejects the whole batch) and bumping version once. Writes the draft only, never cards. Pass version to reject the edit (409) if the draft changed since you read it. Returns the get_plan view. Ops:',
+      '- add_node: {"op":"add_node","node":{"id":"api","title":"API contract","board_id":"<board id>","phase":"Foundation","requirements":"...","subtasks":["..."],"tag":"api","touches":["src/api/**"]}}. id is chosen by you and must be unique in the draft; board_id is the workspace or one of its verticals (see get_plan boards); phase is a phase NAME.',
+      '- update_node: {"op":"update_node","id":"api","patch":{"title":"...","phase":null}}. Partial patch; null clears an optional field; the id cannot change.',
+      '- remove_node: {"op":"remove_node","id":"api"} (also drops its edges).',
+      '- add_edge / remove_edge: {"op":"add_edge","from":"api","to":"web"} means "web depends on api".',
+      '- set_title: {"op":"set_title","title":"..."}.',
+      'Cycles are allowed while editing but block commit (see get_plan validation).',
+    ].join('\n'),
+    inputSchema: { plan_id: z.string(), ops: z.array(draftOp), version: z.number().int().optional() },
+  },
+  ({ plan_id, ops, version }) => api('PATCH', `/plan-drafts/${encodeURIComponent(plan_id)}`, { ops, version }),
+);
+
+server.registerTool(
+  'preview_plan_commit',
+  {
+    description:
+      'Preview what commit_plan would do, per board: phases to add, cards to create/update/delete, and kept/locked cards (started or done cards are never changed), plus validation errors that block commit. Read-only.',
+    inputSchema: { plan_id: z.string() },
+  },
+  ({ plan_id }) => api('GET', `/plan-drafts/${encodeURIComponent(plan_id)}/diff`),
+);
+
+server.registerTool(
+  'commit_plan',
+  {
+    description:
+      'Write a plan draft onto the boards (creates/updates/deletes backlog cards and phases, as preview_plan_commit shows). Use ONLY after the user explicitly asks to commit the plan: this is the human’s judgment gate, like advance_phase. version must be the draft version the user approved; a stale version or validation errors return 409. Returns {diff, draft}.',
+    inputSchema: { plan_id: z.string(), version: z.number().int() },
+  },
+  ({ plan_id, version }) => api('POST', `/plan-drafts/${encodeURIComponent(plan_id)}/commit`, { version }),
+);
+
+server.registerTool(
+  'run_plan',
+  {
+    description:
+      "Start a committed, clean plan: 'queue' moves its spec'd backlog cards (requirements + acceptance criteria) to queued, skipping the rest as needing spec; 'autopilot' also turns autopilot on for each involved board with queued cards. Use ONLY after the user explicitly asks to run the plan: this is the human’s judgment gate, like advance_phase. Returns {queued, skipped, autopilot}.",
+    inputSchema: { plan_id: z.string(), mode: z.enum(['queue', 'autopilot']) },
+  },
+  ({ plan_id, mode }) => api('POST', `/plan-drafts/${encodeURIComponent(plan_id)}/run`, { mode }),
+);
+
 await server.connect(new StdioServerTransport());
