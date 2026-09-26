@@ -190,6 +190,27 @@ describe('hook project resolution', () => {
     }
   });
 
+  const resetSession = () =>
+    fetch(`${daemon!.base}/status`, {
+      method: 'POST',
+      body: JSON.stringify({ project_id: verticalId, agent: 'orchestrator', verb: 'working' }),
+    });
+
+  it("on-notify: an idle_prompt during a 'needs you' wait is not broadcast (the wait goes on)", async () => {
+    assert.equal(await notify(wsRoot, verticalId), 0); // needs you
+    const { ws, statuses } = await statusSocket();
+    try {
+      const idle = { notification_type: 'idle_prompt', message: 'Claude is waiting for your input' };
+      assert.equal(await notify(wsRoot, verticalId, idle), 0);
+      await new Promise((r) => setTimeout(r, 200));
+      assert.deepEqual(statuses, []);
+      const session = (await (await fetch(`${daemon!.base}/session?project=${verticalId}`)).json()) as { state: string };
+      assert.equal(session.state, 'needs_you');
+    } finally {
+      ws.close();
+    }
+  });
+
   for (const [label, extra, verb] of [
     ['idle_prompt type', { notification_type: 'idle_prompt', message: 'Claude is waiting for your input' }, 'idle'],
     ['message-only idle text', { message: 'Claude is waiting for your input' }, 'idle'],
@@ -197,6 +218,7 @@ describe('hook project resolution', () => {
     ['message-only permission text', { message: 'Claude needs your permission to use Bash' }, 'needs you'],
   ] as const) {
     it(`on-notify: ${label} → '${verb}'`, async () => {
+      await resetSession(); // out of needs_you (left by the test above), so an idle is not ignored
       const { ws, statuses } = await statusSocket();
       try {
         assert.equal(await notify(wsRoot, verticalId, extra), 0);

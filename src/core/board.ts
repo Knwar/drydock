@@ -394,7 +394,7 @@ export class MergeError extends Error {
 /**
  * Merge vertical `fromId` into sibling vertical `intoId`: every card (renumbered
  * after into's, in from's order) with its card_activity, task_events, sync_links,
- * plus from's subscriptions and undelivered outbox rows. Phases are appended to
+ * plus from's subscriptions, wait_intervals and undelivered outbox rows. Phases are appended to
  * into's roadmap or folded into into's active phase. Optionally renames/re-roots
  * into (taking from's root is allowed). from's row is deleted. One transaction.
  */
@@ -495,6 +495,11 @@ export function mergeVerticals(
     db.prepare('UPDATE task_events SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
     db.prepare('UPDATE sync_links SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
     db.prepare('UPDATE subscriptions SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
+    // wait history follows the board; from's session is gone, so its open wait ends here
+    db.prepare(
+      `UPDATE wait_intervals SET ended_at = MAX(started_at, ?), closed_by = 'forget' WHERE project_id = ? AND ended_at IS NULL`,
+    ).run(now(), fromId);
+    db.prepare('UPDATE wait_intervals SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
     // undelivered outbox rows follow the board; processed rows stay as history
     db.prepare(
       `UPDATE outbox SET project_id = ? WHERE project_id = ? AND (status = 'pending' OR status IS NULL)`,
@@ -587,6 +592,7 @@ export function deleteProject(db: DB, projectId: string): void {
     const tasks = db.prepare('SELECT id FROM tasks WHERE project_id = ?').all(projectId) as { id: string }[];
     for (const { id } of tasks) db.prepare('DELETE FROM reviews WHERE task_id = ?').run(id);
     db.prepare('DELETE FROM card_activity WHERE project_id = ?').run(projectId);
+    db.prepare('DELETE FROM wait_intervals WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM task_events WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM tasks WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM phases WHERE project_id = ?').run(projectId);

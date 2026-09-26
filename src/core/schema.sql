@@ -153,6 +153,18 @@ CREATE TABLE IF NOT EXISTS plan_drafts (  -- visual-planner drafts: a workspace-
   updated_at        INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS wait_intervals (  -- time a session sat waiting on the human (persisted from the in-memory session state)
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id  TEXT NOT NULL,
+  agent_id    TEXT,                       -- the waiting session's agent id, else its agent name (e.g. 'orchestrator')
+  task_id     TEXT,                       -- the card the session was on, when known
+  kind        TEXT NOT NULL,              -- 'needs_you'
+  started_at  INTEGER NOT NULL,           -- epoch ms
+  ended_at    INTEGER,                    -- epoch ms, null = still waiting
+  reason      TEXT,                       -- the notification detail, when known
+  closed_by   TEXT                        -- the state it left for (working|idle|offline), or 'restart'
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_project_lane ON tasks(project_id, lane, position);
 CREATE INDEX IF NOT EXISTS idx_phases_project ON phases(project_id, position);
 CREATE INDEX IF NOT EXISTS idx_events_recent ON task_events(project_id, created_at);
@@ -163,3 +175,4 @@ CREATE INDEX IF NOT EXISTS idx_reviews_task ON reviews(task_id);
 CREATE INDEX IF NOT EXISTS idx_events_task ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task_type ON task_events(task_id, type, created_at);
 CREATE INDEX IF NOT EXISTS idx_plan_drafts_workspace ON plan_drafts(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_wait_intervals_project ON wait_intervals(project_id, started_at);

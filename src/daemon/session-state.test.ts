@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { OFFLINE_MS, RECENT_AGENT_MS, SessionStates, type StatusEntry } from './session-state.js';
+import { NEEDS_YOU_MAX_MS, OFFLINE_MS, RECENT_AGENT_MS, SessionStates, type StatusEntry } from './session-state.js';
 
 const T = 1_000_000_000;
 const entry = (agent: string, verb: string, at: number, agent_id: string | null = null): StatusEntry => ({
@@ -62,6 +62,14 @@ describe('SessionStates', () => {
     s.record('p', entry('orchestrator', 'needs you', T - 1000));
     s.record('p', entry('builder', 'Bash', T - 10));
     assert.equal(s.view('p', T).state, 'needs_you');
+  });
+
+  it('needs_you outlives the offline rule, up to the 24h ceiling', () => {
+    const s = new SessionStates();
+    s.record('p', entry('orchestrator', 'needs you', T));
+    assert.equal(s.view('p', T + 3 * OFFLINE_MS).state, 'needs_you');
+    assert.equal(s.view('p', T + NEEDS_YOU_MAX_MS - 1).state, 'needs_you');
+    assert.equal(s.view('p', T + NEEDS_YOU_MAX_MS).state, 'offline');
   });
 
   it('keeps the latest entry per agent, filters stale ones, newest first', () => {
