@@ -2027,9 +2027,9 @@ function renderDashboard() {
 const dashBoardName = (pid, name) => (pid === dash.summary?.workspace.id ? 'Main' : name);
 
 // Point the workspace terminal at a board's tab and open the panel (tile ❯_ + needs-you rows).
-function openBoardTerminal(pid) {
+function openBoardTerminal(pid, workspace = dash.workspace) {
   try {
-    localStorage.setItem(`term.tab.${dash.workspace}`, pid);
+    localStorage.setItem(`term.tab.${workspace}`, pid);
   } catch {
     /* storage unavailable */
   }
@@ -3913,8 +3913,14 @@ const plan = {
   patching: 0, // PATCHes in flight
   deferVersion: 0, // highest plan_draft version heard while patching (checked once they land)
   boardPhases: new Map(), // board id → its existing phase titles (fetched on demand, per planner visit)
-  lostSaves: new Set(), // `${draft}\0${node}\0${field}` whose last save failed after its editor closed
-  actionBusy: false, // Commit / Run is flushing edits before its dialog opens
+  lostSaves: new Map(), // `${draft}\0${node}\0${field}` → the value whose last save failed after its editor closed
+  actionBusy: false, // Commit is flushing edits before its dialog opens
+  liveStripKey: '', // Live's blocked strip, re-filled only when it changes
+  failN: 0, // failed PATCHes so far (planDrain counts the ones that land while it waits)
+  failLog: [], // { n, draft, what }: the recent failed PATCHes, newest last
+  visit: 0, // bumped on closePlanner: work started in an earlier visit never opens a dialog
+  modes: new Map(), // draftId → 'plan' | 'live' (mirrors localStorage)
+  live: { draft: null, cards: new Map(), pending: new Set(), failed: new Set(), seq: 0 }, // Live mode's card cache
 };
 
 function svgEl(tag, attrs) {
@@ -3967,6 +3973,7 @@ async function resolvePlanWorkspace() {
 }
 
 function closePlanner() {
+  plan.visit++; // a Commit still draining its saves must not open its dialog later
   plan.skipSync = false;
   clearTimeout(plan.retryTimer);
   clearTimeout(plan.listTimer);
@@ -3975,24 +3982,26 @@ function closePlanner() {
   const ws = plan.ws;
   plan.ws = null;
   ws?.close();
+  plan.live.draft = null; // no card messages while away: re-read on the next visit
   const url = new URL(location.href);
   if (url.searchParams.get('view') === 'planner') url.searchParams.delete('view');
   url.searchParams.delete('plan');
   history.replaceState(null, '', url);
 }
 
+// Subscribed to every project (like the dashboard): a plan's cards live on the
+// vertical boards too, and their card messages only go to each board's own channel.
 async function planConnect() {
   await resolvePlanWorkspace();
   if (activeView !== 'planner' || plan.ws) return;
-  // Unresolved (daemon hiccup): a draft's workspace_id or the project stands in for this socket only.
-  const sub = plan.workspace ?? plan.list?.[0]?.workspace_id ?? plan.project;
-  const ws = new WebSocket(`ws://${location.host}/ws?project=${encodeURIComponent(sub)}`);
+  const ws = new WebSocket(`ws://${location.host}/ws`);
   plan.ws = ws;
   ws.onopen = () => {
     plan.retry = 1000;
     if (plan.skipSync) return void (plan.skipSync = false); // openPlanner just fetched
     loadPlanList(); // re-connect: catch anything missed while disconnected
     if (plan.openId) openPlan(plan.openId, true);
+    if (plan.view && planIsLive(plan.view)) loadLiveCards(true); // card moves missed while disconnected
   };
   ws.onmessage = (e) => onPlannerMessage(JSON.parse(e.data));
   ws.onclose = () => {
@@ -4008,6 +4017,10 @@ async function planConnect() {
 }
 
 function onPlannerMessage(msg) {
+  if (msg.type === 'card' || msg.type === 'card_removed') return onLiveCard(msg);
+  // this workspace's drafts only (unresolved workspace: take them all, as before)
+  const ws = plan.workspace ?? plan.list?.[0]?.workspace_id;
+  if (msg.workspace_id && ws && msg.workspace_id !== ws) return;
   if (msg.type === 'plan_draft') {
     schedulePlanList();
     if (msg.id !== plan.openId) return;
@@ -4067,6 +4080,7 @@ async function openPlan(id, refresh = false) {
     plan.flagged = null;
     plan.fitted = false;
     plan.stripError = '';
+    plan.live.draft = null; // Live re-reads every card on a fresh open
     if (plan.view?.draft.id !== id) plan.view = null;
   }
   plan.openId = id;
@@ -4109,6 +4123,11 @@ function setPlanView(view) {
   const ids = new Set(draft.data.nodes.map((n) => n.id));
   if (plan.selected && !ids.has(plan.selected)) plan.selected = null;
   if (plan.flagged) plan.flagged = null; // issues are recomputed; old highlights may no longer apply
+  // a lost save of a card that's gone can never be retried: drop it
+  for (const k of plan.lostSaves.keys()) {
+    const [d, nodeId] = k.split('\u0000');
+    if (d === draft.id && !ids.has(nodeId)) plan.lostSaves.delete(k);
+  }
   const row = plan.list?.find((d) => d.id === draft.id);
   if (row)
     Object.assign(row, {
@@ -4119,6 +4138,7 @@ function setPlanView(view) {
       edge_count: draft.data.edges.length,
     });
   renderPlanner();
+  if (planIsLive(view)) loadLiveCards(); // only cards not seen yet (a node committed since): no refetch loop
 }
 
 function renderPlanner() {
@@ -4187,16 +4207,19 @@ function renderPlanMain() {
   renderPlanEditor(); // before any fit: the panel takes its width from the canvas
   if (!open) return renderPlanEmpty();
   const { draft, validation } = v;
+  const live = planIsLive(v);
   $('pl-title').textContent = draft.title;
-  const [chipLabel, chipMod] = planStatus(draft);
+  const run = live ? planRunMode(draft.id) : null;
+  const [chipLabel, chipMod] = run ? [run === 'autopilot' ? 'Running · autopilot' : 'Running · queue only', 'committed'] : planStatus(draft);
   $('pl-chip').className = `pl-chip ${chipMod}`;
   $('pl-chip').textContent = chipLabel;
+  renderPlanMode(v);
   renderPlanSaved();
-  $('pl-add').classList.toggle('hidden', EMBED);
-  $('pl-hint').classList.toggle('hidden', EMBED);
+  $('pl-add').classList.toggle('hidden', EMBED || live);
+  $('pl-hint').classList.toggle('hidden', EMBED || live);
+  document.querySelector('#planner-view .pl-colorby').classList.toggle('hidden', live);
   const n = validation.errors.length;
-  $('pl-errcount').textContent = n ? `Fix ${n} error${n === 1 ? '' : 's'} to commit` : '';
-  $('pl-commit').textContent = `Commit v${draft.version}`;
+  $('pl-errcount').textContent = n && !live ? `Fix ${n} error${n === 1 ? '' : 's'} to commit` : '';
   $('pl-by-board').setAttribute('aria-pressed', String(plan.colorBy === 'board'));
   $('pl-by-phase').setAttribute('aria-pressed', String(plan.colorBy === 'phase'));
   const model = planModel(v);
@@ -4298,6 +4321,7 @@ function legendItem(color, label) {
 }
 
 function renderPlanLegend(v, m) {
+  if (planIsLive(v)) return $('pl-legend').replaceChildren(...planLiveLegend());
   const items = [];
   if (plan.colorBy === 'phase') {
     for (const [p, c] of planPhases(v)) items.push(legendItem(c, p));
@@ -4353,6 +4377,7 @@ function planEdgePath(a, b, m, lane) {
 }
 
 function renderPlanGraph(v, m) {
+  const live = planIsLive(v); // read-only: no arrow hits, no handles, nodes coloured by lane
   const world = $('pl-world');
   const canvas = $('pl-canvas');
   const refocus = document.activeElement?.closest?.('.pl-node')?.dataset.id;
@@ -4413,7 +4438,7 @@ function renderPlanGraph(v, m) {
     }
     const d = planEdgePath(a, b, m, lane);
     const kind = m.cycleEdges.has(i) ? 'cycle' : m.chainPairs.has(`${e.from}\u0000${e.to}`) ? 'chain' : '';
-    if (!EMBED) hits.append(svgEl('path', { d, class: 'pl-edge-hit', 'data-i': i }));
+    if (!EMBED && !live) hits.append(svgEl('path', { d, class: 'pl-edge-hit', 'data-i': i }));
     if (!kind) return plain.append(svgEl('path', { d, 'marker-end': 'url(#pl-ah)', class: 'pl-edge-vis', 'data-i': i }));
     const color = kind === 'cycle' ? '#e06c75' : '#5dd3a8';
     halo.append(svgEl('path', { d, stroke: color }));
@@ -4434,9 +4459,11 @@ function renderPlanGraph(v, m) {
     b.dataset.id = n.id;
     b.style.left = `${p.x}px`;
     b.style.top = `${p.y}px`;
-    if (m.chain.has(n.id)) b.classList.add('chain');
-    if (inCycle) b.classList.add('cycle');
-    else if (m.cycle.size) b.classList.add('dim');
+    if (!live) {
+      if (m.chain.has(n.id)) b.classList.add('chain');
+      if (inCycle) b.classList.add('cycle');
+      else if (m.cycle.size) b.classList.add('dim');
+    }
     const boardName = board?.name ?? 'Unknown board';
     b.setAttribute(
       'aria-label',
@@ -4446,11 +4473,12 @@ function renderPlanGraph(v, m) {
     const dot = node('span', 'pl-dot');
     dot.style.background = color;
     const bn = node('span', 'pl-node-board', boardName);
-    if (plan.colorBy === 'board') bn.style.color = color;
-    top.append(dot, bn);
+    if (plan.colorBy === 'board' && !live) bn.style.color = color; // Live: board names go neutral grey
+    if (live) top.append(bn);
+    else top.append(dot, bn);
     if (n.phase) {
       const ph = node('span', 'pl-node-phase', `· ${n.phase}`);
-      if (plan.colorBy === 'phase') ph.style.color = color;
+      if (plan.colorBy === 'phase' && !live) ph.style.color = color;
       top.append(ph);
     }
     const noSpec = !n.requirements?.trim() || !n.subtasks?.length;
@@ -4463,7 +4491,8 @@ function renderPlanGraph(v, m) {
     b.append(top, node('span', 'pl-node-title', n.title || 'Untitled'), meta);
     b.onclick = () => selectPlanNode(n.id);
     parts.push(b);
-    if (!EMBED) {
+    if (live) applyLiveNode(b, n, v, boardName);
+    else if (!EMBED) {
       // drag from here to another card to add an arrow (startPlanLink)
       const h = node('span', 'pl-handle');
       h.dataset.id = n.id;
@@ -4507,6 +4536,16 @@ function planIssueIcon(kind) {
 // The strip's two containers are persistent (index.html) and only re-filled when
 // the issues change, so a screen reader doesn't re-announce the alert on every render.
 function renderPlanStrip(v, m) {
+  renderLiveStrip(v);
+  if (planIsLive(v)) {
+    // Live: the validation issues give way to the blocked strip
+    if (plan.stripKey !== 'live') {
+      plan.stripKey = 'live';
+      $('pl-errors').replaceChildren();
+      $('pl-warns').replaceChildren();
+    }
+    return;
+  }
   const titles = new Map(m.nodes.map((n) => [n.id, n.title || n.id]));
   const { errors, warnings } = v.validation;
   const loops = errors.filter((it) => it.code === 'cycle' || it.code === 'self_loop');
@@ -4617,11 +4656,42 @@ function planPatch(draftId, ops) {
     renderPlanSaved();
     if (res?.ok) return { ok: true };
     const error = typeof out.error === 'string' && out.error ? out.error : res ? `the daemon answered ${res.status}` : 'couldn’t reach the daemon';
+    plan.failLog.push({ n: ++plan.failN, draft: draftId, what: planOpsLabel(ops) });
+    if (plan.failLog.length > 50) plan.failLog.shift();
     return { ok: false, error };
   };
   const p = plan.queue.then(run);
   plan.queue = p.catch(() => {});
   return p;
+}
+
+// What a failed batch was trying to save, for "Not saved: …".
+function planOpsLabel(ops) {
+  const title = (id) => `“${planNodeById(id)?.title || 'Untitled'}”`;
+  return [
+    ...new Set(
+      ops.map((o) => {
+        if (o.op === 'update_node') return `${Object.keys(o.patch ?? {}).map((f) => PL_FIELD_NAME[f] ?? f).join(', ')} on ${title(o.id)}`;
+        if (o.op === 'add_node') return 'a new card';
+        if (o.op === 'remove_node') return `deleting ${title(o.id)}`;
+        return o.op === 'add_edge' ? 'a new arrow' : 'removing an arrow';
+      }),
+    ),
+  ].join('; ');
+}
+
+// This draft's lost saves: [{ key, node, field, value }].
+function planLostSaves(draftId) {
+  const out = [];
+  for (const [key, value] of plan.lostSaves) {
+    const [d, node, field] = key.split('\u0000');
+    if (d === draftId) out.push({ key, node, field, value });
+  }
+  return out;
+}
+
+function planLostLabel(l) {
+  return `${PL_FIELD_NAME[l.field] ?? l.field} on “${planNodeById(l.node)?.title || 'Untitled'}”`;
 }
 
 function planPatchSettled() {
@@ -4640,9 +4710,12 @@ function renderPlanSaved() {
   const saving = planSaving();
   const v = plan.view;
   if (v) {
-    const lost = [...plan.lostSaves].some((k) => k.startsWith(`${v.draft.id}\u0000`));
-    $('pl-saved').textContent = saving ? 'Saving…' : lost ? `Not saved · v${v.draft.version}` : `Saved · v${v.draft.version}`;
-    $('pl-saved').classList.toggle('lost', !saving && lost);
+    const lost = planLostSaves(v.draft.id).length > 0;
+    const el = $('pl-saved');
+    el.textContent = saving ? 'Saving…' : lost ? `Not saved · v${v.draft.version}` : `Saved · v${v.draft.version}`;
+    el.classList.toggle('lost', !saving && lost);
+    el.disabled = EMBED || saving || !lost; // "Not saved" opens retry / discard
+    el.title = el.disabled ? '' : 'Retry or discard the edits that weren’t saved';
   }
   if (plan.ed) plan.ed.els.status.textContent = saving ? 'Saving…' : 'Changes save as you type';
   renderPlanActions();
@@ -4660,6 +4733,7 @@ function selectPlanNode(id) {
   }
   updatePlanMarks();
   renderPlanEditor();
+  if (plan.view && planIsLive(plan.view)) syncPlanKanban(plan.view);
   if (!id) return;
   if (plan.autoFit !== null) planFit(plan.autoFit); // the panel took room from the canvas
   planReveal([id]);
@@ -4670,7 +4744,7 @@ function selectPlanNode(id) {
 // over a field that has focus or unsaved/in-flight edits, so typing stays smooth.
 function renderPlanEditor() {
   const v = plan.view;
-  const n = !EMBED && v && v.draft.id === plan.openId && plan.selected ? planNodeById(plan.selected) : null;
+  const n = !EMBED && v && v.draft.id === plan.openId && plan.selected && !planIsLive(v) ? planNodeById(plan.selected) : null;
   if (plan.ed && (plan.ed.id !== n?.id || plan.ed.draft !== v?.draft.id)) {
     const old = plan.ed;
     plan.ed = null;
@@ -4887,7 +4961,7 @@ async function flushPlanEdits(ed) {
       delete ed.errs[f];
       plan.lostSaves.delete(key);
     } else ed.errs[f] = `Couldn’t save: ${r.error}`;
-    if (!r.ok && plan.ed !== ed) plan.lostSaves.add(key);
+    if (!r.ok && plan.ed !== ed) plan.lostSaves.set(key, patch[f]);
   }
   if (plan.ed !== ed) {
     // the editor moved on: nothing shows the field error, so say it here
@@ -5233,7 +5307,7 @@ async function deletePlanNode(ed) {
 // ── add a card ──
 async function addPlanCard() {
   const v = plan.view;
-  if (EMBED || !v || v.draft.id !== plan.openId) return;
+  if (EMBED || !v || v.draft.id !== plan.openId || planIsLive(v)) return; // Live is read-only
   // never reuse a removed node's id: its `committed` entry would map the new node onto the old card
   const ids = new Set([...v.draft.data.nodes.map((n) => n.id), ...Object.keys(v.draft.data.committed ?? {})]);
   let id;
@@ -5383,27 +5457,51 @@ function renderPlanActions() {
   if (!v || v.draft.id !== plan.openId) return;
   const errs = v.validation.errors.length;
   const saving = planSaving();
+  const busy = plan.actionBusy; // Commit is draining the saves
+  const live = planIsLive(v);
   const commit = $('pl-commit');
-  commit.disabled = EMBED || errs > 0 || !(v.dirty || saving);
-  commit.title = errs ? `Fix ${errs} error${errs === 1 ? '' : 's'} to commit` : commit.disabled ? 'No edits since the last commit' : '';
+  commit.classList.toggle('hidden', live);
+  commit.textContent = busy ? 'Saving…' : `Commit v${v.draft.version}`;
+  commit.disabled = EMBED || busy || errs > 0 || !(v.dirty || saving);
+  commit.title = busy ? '' : errs ? `Fix ${errs} error${errs === 1 ? '' : 's'} to commit` : commit.disabled ? 'No edits since the last commit' : '';
+  commit.setAttribute('aria-busy', String(busy));
   const run = $('pl-run');
-  run.disabled = EMBED || v.draft.committed_version === null || v.dirty || saving;
-  run.title = run.disabled ? 'Commit your edits to run' : '';
+  run.classList.toggle('hidden', live);
+  run.disabled = EMBED || busy || v.draft.committed_version === null || v.dirty || saving;
+  run.title = busy ? '' : run.disabled ? 'Commit your edits to run' : '';
 }
 
+const PL_DRAIN_MS = 15000;
+
 // Flush the editor's pending autosave and wait for every PATCH to land, so what
-// Commit sees includes the last keystrokes. Resolves to false when a save failed.
-async function planDrain() {
-  let ok = true;
-  const flushed = plan.ed ? flushPlanEdits(plan.ed) : null;
-  for (let q; q !== plan.queue; ) {
-    q = plan.queue;
-    await q;
-  }
-  const r = await flushed;
-  if (r && !r.ok) ok = false;
-  while (plan.patching) await new Promise((res) => setTimeout(res, 50));
-  return ok;
+// Commit sees includes the last keystrokes. Fails (with a message) when any save
+// of this draft failed while it waited, a save of it is still recorded as lost,
+// or the saves don't land within PL_DRAIN_MS.
+async function planDrain(draftId) {
+  const from = plan.failN;
+  let stop = false;
+  const work = (async () => {
+    const flushed = plan.ed ? flushPlanEdits(plan.ed) : null;
+    for (let q; q !== plan.queue; ) {
+      q = plan.queue;
+      await q;
+    }
+    await flushed;
+    while (plan.patching && !stop) await new Promise((res) => setTimeout(res, 50));
+    return true;
+  })();
+  let timer;
+  const done = await Promise.race([work, new Promise((res) => (timer = setTimeout(() => res(false), PL_DRAIN_MS)))]);
+  clearTimeout(timer);
+  stop = true;
+  if (!done) return { ok: false, message: 'Saving is taking too long — check the daemon, then commit again' };
+  const what = [
+    ...new Set([
+      ...plan.failLog.filter((f) => f.n > from && f.draft === draftId).map((f) => f.what),
+      ...planLostSaves(draftId).map(planLostLabel),
+    ]),
+  ];
+  return what.length ? { ok: false, message: `Not saved: ${what.join('; ')} — fix it, then commit` } : { ok: true };
 }
 
 const plBold = (s) => node('b', '', s);
@@ -5435,20 +5533,24 @@ async function openCommitModal() {
   const v0 = plan.view;
   if (EMBED || !v0 || v0.draft.id !== plan.openId || svModal || plan.actionBusy) return;
   const id = v0.draft.id;
+  const visit = plan.visit;
   plan.actionBusy = true;
+  renderPlanActions();
   let saved;
   try {
-    saved = await planDrain();
+    saved = await planDrain(id);
   } finally {
     plan.actionBusy = false;
+    renderPlanActions();
   }
   const v = plan.view;
-  if (svModal || plan.openId !== id || v?.draft.id !== id) return;
-  if (!saved) return svFlash('Couldn’t save your last edit — fix it, then commit');
+  // only while the planner is still open on this draft (not after leaving and coming back)
+  if (svModal || plan.visit !== visit || activeView !== 'planner' || plan.openId !== id || v?.draft.id !== id) return;
+  if (!saved.ok) return svFlash(saved.message);
   renderPlanActions();
   if ($('pl-commit').disabled) return; // the flushed edits left errors (or nothing to commit)
 
-  const st = { diff: null, error: '', note: '', loading: true, busy: false, seq: 0, closed: false };
+  const st = { diff: null, error: '', note: '', keepNote: false, loading: true, busy: false, seq: 0, closed: false };
   const { dlg, close, mount } = openModal({
     labelledBy: 'pl-cm-title',
     describedBy: 'pl-cm-sub',
@@ -5572,7 +5674,7 @@ async function openCommitModal() {
       const dels = r.out.boards.flatMap((b) => b.delete.map((x) => x.card_id));
       const [ph, ln] = await Promise.all([
         Promise.all(withPhases.map((b) => plJson(`/phases?project=${encodeURIComponent(b)}`))),
-        Promise.all(dels.map((c) => plJson(`/task/${encodeURIComponent(c)}`))),
+        plFetchCards(dels),
       ]);
       phases = new Map();
       withPhases.forEach((b, i) => {
@@ -5584,6 +5686,9 @@ async function openCommitModal() {
     if (seq !== st.seq || st.closed) return;
     st.loading = false;
     st.diff = r.ok ? r.out : null;
+    // "The plan changed" belongs to the load it triggered; the next good load clears it
+    if (r.ok && !st.keepNote) st.note = '';
+    if (r.ok) st.keepNote = false;
     st.phases = phases;
     st.lanes = lanes;
     if (!r.ok) st.error = `Couldn’t load the changes: ${r.error}`;
@@ -5606,6 +5711,7 @@ async function openCommitModal() {
     if (r.res?.status === 409) {
       // stale (the plan changed while this was open) or new errors: show the latest
       st.note = 'The plan changed — review again';
+      st.keepNote = true;
       if (plan.openId === id) openPlan(id, true);
       return load();
     }
@@ -5691,8 +5797,10 @@ async function openRunModal() {
     const cards = st.cards ?? [];
     const queue = cards.filter((c) => c.lane === 'backlog' && c.spec);
     const need = cards.filter((c) => c.lane === 'backlog' && !c.spec);
-    const begun = cards.filter((c) => c.lane !== 'backlog' && c.lane !== 'queued');
+    const begun = cards.filter((c) => c.lane !== 'backlog' && c.lane !== 'queued' && c.lane !== 'done');
     const n = queue.length;
+    // nothing new to queue, but vertical boards already have queued cards: Run just turns autopilot on
+    const apOnly = st.mode === 'autopilot' && n === 0 && cards.some((c) => c.lane === 'queued' && verts.has(c.board));
     qDesc.textContent = st.loading
       ? 'Counting cards…'
       : `${plCount(n, 'card')} move${n === 1 ? 's' : ''} to Queued. Each vertical picks them up when you prompt its session in the terminal tab.`;
@@ -5752,8 +5860,8 @@ async function openRunModal() {
         ? `${names.join(', ')} ${names.length === 1 ? 'has' : 'have'} already started · left as is`
         : `${names.length} cards have already started · left as is`;
     err.textContent = st.error;
-    go.textContent = st.busy ? 'Queueing…' : st.loading ? 'Queue' : `Queue ${plCount(n, 'card')}`;
-    go.disabled = st.busy || st.loading || n === 0;
+    go.textContent = st.busy ? (apOnly ? 'Turning on…' : 'Queueing…') : st.loading ? 'Queue' : apOnly ? 'Turn on autopilot' : `Queue ${plCount(n, 'card')}`;
+    go.disabled = st.busy || st.loading || (n === 0 && !apOnly);
     cancel.disabled = st.busy;
   };
 
@@ -5777,7 +5885,7 @@ async function openRunModal() {
     close();
     const out = r.out;
     const name = (b) => boards.get(b)?.name ?? 'Unknown board';
-    const parts = [`Queued ${plCount(out.queued.length, 'card')}`];
+    const parts = out.queued.length || mode !== 'autopilot' ? [`Queued ${plCount(out.queued.length, 'card')}`] : [];
     if (out.skipped.length) parts.push(`${out.skipped.length} need${out.skipped.length === 1 ? 's' : ''} a spec`);
     if (mode === 'autopilot') {
       if (out.autopilot.enabled.length) parts.push(`autopilot on ${out.autopilot.enabled.map((x) => name(x.board_id)).join(', ')}`);
@@ -5785,7 +5893,10 @@ async function openRunModal() {
       if (idle.length) parts.push(`not on ${idle.map((x) => name(x.board_id)).join(', ')} (nothing queued)`);
       if (out.autopilot.not_enabled.some((x) => x.reason === 'main_session')) parts.push('Main’s cards are queued for you');
     }
-    svFlash(parts.join(' · '));
+    svFlash(parts.join(' · ') || 'Nothing to queue');
+    plStore(`pl.run.${id}`, mode); // the Live header's "Running · …"
+    setPlanMode(id, 'live'); // a plan that just ran opens on its live progress
+    if (plan.openId === id) $('pl-mode-live').focus(); // Run itself is hidden in Live
   };
 
   mount();
@@ -5795,7 +5906,7 @@ async function openRunModal() {
   // the plan's mapped cards as they are now, and each board's session
   const mapped = Object.entries(v.draft.data.committed ?? {});
   const [tasks, sum] = await Promise.all([
-    Promise.all(mapped.map(([, cardId]) => plJson(`/task/${encodeURIComponent(cardId)}`))),
+    plFetchCards(mapped.map(([, cardId]) => cardId)),
     plJson(`/workspace/summary?project=${encodeURIComponent(v.draft.workspace_id)}`),
   ]);
   if (st.closed) return;
@@ -5809,6 +5920,403 @@ async function openRunModal() {
   if (tasks.some((t) => !t.ok && t.res?.status !== 400)) st.error = 'Couldn’t read every card — the count may be off.';
   st.loading = false;
   render();
+}
+
+// GET /task/:id for many cards, at most `limit` at a time (Run modal, Commit's
+// deleted-card lanes, Live mode). Results come back in the ids' order.
+async function plFetchCards(ids, limit = 6) {
+  const out = new Array(ids.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < ids.length) {
+      const i = next++;
+      out[i] = await plJson(`/task/${encodeURIComponent(ids[i])}`);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, ids.length) }, worker));
+  return out;
+}
+
+function plStore(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* storage unavailable: kept for this page only */
+  }
+}
+
+function plLoad(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+// ── "Not saved": retry or discard the edits whose save was lost ──
+function openLostSavesModal() {
+  const v = plan.view;
+  if (EMBED || !v || v.draft.id !== plan.openId || svModal) return;
+  const id = v.draft.id;
+  if (!planLostSaves(id).length) return renderPlanSaved();
+  const st = { busy: false, error: '', closed: false };
+  const { dlg, close, mount } = openModal({
+    labelledBy: 'pl-lost-title',
+    describedBy: 'pl-lost-sub',
+    busy: () => st.busy,
+    onClose: () => (st.closed = true),
+    fallbackFocus: () => $('pl-saved'),
+  });
+  dlg.classList.add('pl-dlg', 'pl-lost');
+  const head = node('div', 'pl-dlg-head');
+  const title = node('h2', 'pl-dlg-title', 'Edits not saved');
+  title.id = 'pl-lost-title';
+  const sub = node('p', 'pl-dlg-sub', 'These edits didn’t reach the daemon. Retry them, or discard them and keep what’s saved.');
+  sub.id = 'pl-lost-sub';
+  head.append(title, sub);
+  const list = node('ul', 'pl-lost-list');
+  const err = node('div', 'pl-dlg-err');
+  err.setAttribute('role', 'alert');
+  const foot = node('div', 'pl-dlg-foot');
+  const btns = node('div', 'pl-dlg-btns');
+  const discard = plDlgButton('pl-dlg-btn', 'Discard');
+  const retry = plDlgButton('pl-dlg-btn primary', 'Retry');
+  btns.append(discard, retry);
+  foot.append(node('span'), btns);
+  dlg.append(head, list, err, foot);
+  const render = () => {
+    list.replaceChildren(...planLostSaves(id).map((l) => node('li', '', planLostLabel(l))));
+    err.textContent = st.error;
+    retry.textContent = st.busy ? 'Retrying…' : 'Retry';
+    retry.disabled = discard.disabled = st.busy;
+  };
+  discard.onclick = () => {
+    if (st.busy) return;
+    for (const l of planLostSaves(id)) plan.lostSaves.delete(l.key);
+    close();
+    renderPlanSaved();
+    svFlash('Discarded the unsaved edits');
+  };
+  retry.onclick = async () => {
+    if (st.busy) return;
+    const lost = planLostSaves(id).filter((l) => plan.view?.draft.id !== id || planNodeById(l.node));
+    const byNode = new Map();
+    for (const l of lost) (byNode.get(l.node) ?? byNode.set(l.node, {}).get(l.node))[l.field] = l.value;
+    st.busy = true;
+    st.error = '';
+    render();
+    const r = byNode.size ? await planPatch(id, [...byNode].map(([nid, patch]) => ({ op: 'update_node', id: nid, patch }))) : { ok: true };
+    st.busy = false;
+    // a newer value saved meanwhile (or the card was deleted) already dropped its entry: leave those alone
+    if (r.ok) for (const l of lost) if (plan.lostSaves.get(l.key) === l.value) plan.lostSaves.delete(l.key);
+    renderPlanSaved();
+    if (st.closed) return;
+    if (r.ok) {
+      close();
+      return svFlash('Saved');
+    }
+    st.error = `Still couldn’t save: ${r.error}`;
+    render();
+  };
+  mount();
+  retry.focus();
+  render();
+}
+
+// ── Live mode: a committed plan's cards, coloured by their lane as they move ──
+const PL_FLAG = 'M5 3v18h2v-7h10l-2-4 2-4H7V3z';
+
+function planFlagIcon(size, fill) {
+  const svg = svgEl('svg', { width: size, height: size, viewBox: '0 0 24 24', fill, 'aria-hidden': 'true', class: 'pl-flag' });
+  svg.append(svgEl('path', { d: PL_FLAG }));
+  return svg;
+}
+
+// Per draft, in localStorage: 'plan' (default) or 'live'.
+function planModeOf(id) {
+  if (!plan.modes.has(id)) plan.modes.set(id, plLoad(`pl.mode.${id}`) === 'live' ? 'live' : 'plan');
+  return plan.modes.get(id);
+}
+
+function planIsLive(v) {
+  const cv = v?.draft.committed_version;
+  return !!v && cv !== null && cv !== undefined && planModeOf(v.draft.id) === 'live';
+}
+
+function setPlanMode(id, mode) {
+  plan.modes.set(id, mode);
+  plStore(`pl.mode.${id}`, mode);
+  const v = plan.view;
+  if (!v || v.draft.id !== id || id !== plan.openId) return;
+  if (mode === 'live') {
+    plan.selEdge = null; // read-only: nothing to delete
+    plan.flagged = null;
+    endPlanLink();
+  }
+  renderPlanMain();
+  if (planIsLive(v)) loadLiveCards(true); // fresh lanes each time Live is switched on
+}
+
+// The "Running · …" chip: the last Run's mode for this draft, if this browser saw it.
+function planRunMode(id) {
+  const m = plLoad(`pl.run.${id}`);
+  return m === 'queue' || m === 'autopilot' ? m : null;
+}
+
+// The card ids the draft's nodes map to (a removed node's old mapping isn't shown).
+function planLiveIds(v) {
+  const c = v.draft.data.committed ?? {};
+  return [...new Set(v.draft.data.nodes.map((n) => c[n.id]).filter(Boolean))];
+}
+
+// Fetch the mapped cards: all of them (force: entering Live, a re-connect), else
+// only ids not read yet. Card messages keep them current after that.
+async function loadLiveCards(force = false) {
+  const v = plan.view;
+  if (!planIsLive(v) || v.draft.id !== plan.openId) return;
+  const L = plan.live;
+  if (L.draft !== v.draft.id) {
+    L.draft = v.draft.id;
+    L.cards = new Map();
+    L.pending = new Set();
+    L.failed = new Set();
+    L.seq++;
+  }
+  const seq = L.seq;
+  const want = planLiveIds(v).filter((id) => !L.pending.has(id) && (force || !L.cards.has(id)));
+  if (!want.length) return;
+  for (const id of want) L.pending.add(id);
+  const got = await plFetchCards(want);
+  if (seq !== L.seq) return; // the cache was reset (another draft, or the planner closed)
+  want.forEach((id, i) => {
+    L.pending.delete(id);
+    const r = got[i];
+    if (r.ok) {
+      L.failed.delete(id);
+      planLiveSet(id, r.out, false);
+    } else if (r.res?.status === 400 || r.res?.status === 404) {
+      L.failed.delete(id);
+      L.cards.set(id, null); // deleted on its board
+    } else L.failed.add(id);
+  });
+  renderPlanLive();
+}
+
+// Keep a card's live state (from GET /task/:id, or a card message's toCard shape).
+// An older read landing after a newer message is ignored.
+function planLiveSet(id, c, fromMessage) {
+  const L = plan.live;
+  const prev = L.cards.get(id);
+  if (prev && (c.updated_at ?? 0) < prev.updated_at) return false;
+  const blocked = fromMessage ? !!c.blocked : !!c.blocked_at;
+  L.cards.set(id, {
+    id,
+    lane: c.lane,
+    title: c.title,
+    board: c.project_id ?? prev?.board ?? null,
+    updated_at: c.updated_at ?? 0,
+    blocked,
+    reason: c.blocked_reason ?? '',
+    since: blocked ? (c.blocked_at ?? (prev?.blocked ? prev.since : null) ?? Date.now()) : null,
+  });
+  return true;
+}
+
+// card / card_removed from any board (the planner socket hears every project)
+function onLiveCard(msg) {
+  const v = plan.view;
+  const L = plan.live;
+  if (!v || L.draft !== v.draft.id || !planIsLive(v)) return;
+  const id = msg.type === 'card' ? msg.card?.id : msg.card_id;
+  if (!id || !planLiveIds(v).includes(id)) return;
+  if (msg.type === 'card_removed') L.cards.set(id, null);
+  else if (!planLiveSet(id, { ...msg.card, project_id: msg.project_id }, true)) return;
+  L.failed.delete(id);
+  renderPlanLive();
+}
+
+// { kind: 'none' | 'loading' | 'failed' | 'removed' | <lane>, card?, cardId? } for a node
+function planLiveOf(v, n) {
+  const cardId = v.draft.data.committed?.[n.id];
+  if (!cardId) return { kind: 'none' };
+  const L = plan.live;
+  if (L.draft !== v.draft.id || !L.cards.has(cardId)) return { kind: L.failed.has(cardId) ? 'failed' : 'loading', cardId };
+  const card = L.cards.get(cardId);
+  return card ? { kind: card.lane, card, cardId } : { kind: 'removed', cardId };
+}
+
+function planBlockedFor(since) {
+  if (!since) return '';
+  const m = Math.floor((Date.now() - since) / 60000);
+  return m < 1 ? ' · JUST NOW' : m < 60 ? ` · ${m} MIN` : ` · ${Math.floor(m / 60)} H`;
+}
+
+// Lane class, meta line, pulse ring, Blocked pill + tooltip: all inside the node
+// button, so a card message updates it in place.
+function applyLiveNode(b, n, v, boardName) {
+  const s = planLiveOf(v, n);
+  const c = s.card;
+  for (const k of [...b.classList]) if (k.startsWith('live-')) b.classList.remove(k);
+  b.classList.add('live', `live-${s.kind.replace('_', '-')}`);
+  b.classList.toggle('blocked', !!c?.blocked);
+  const label =
+    s.kind === 'none' ? 'not committed'
+    : s.kind === 'removed' ? 'removed from board'
+    : s.kind === 'loading' ? 'Loading…'
+    : s.kind === 'failed' ? 'Couldn’t load the card'
+    : s.kind === 'done' ? '✓ Done'
+    : `${PL_LANE[s.kind] ?? s.kind}${c.blocked ? ' · needs you' : ''}`;
+  const meta = b.querySelector('.pl-node-meta');
+  meta.className = 'pl-node-meta pl-live-meta';
+  meta.textContent = label;
+  b.querySelector('.pl-pulse')?.remove();
+  b.querySelector('.pl-live-pill')?.remove();
+  b.querySelector('.pl-live-tip')?.remove();
+  if (s.kind === 'in_progress') {
+    const ring = node('span', 'pl-pulse');
+    ring.setAttribute('aria-hidden', 'true');
+    b.prepend(ring);
+  }
+  b.removeAttribute('aria-describedby');
+  if (c?.blocked) {
+    const pill = node('span', 'pl-live-pill');
+    pill.setAttribute('aria-hidden', 'true');
+    pill.append(planFlagIcon(11, '#0b0d12'), 'Blocked');
+    const tip = node('span', 'pl-live-tip');
+    tip.id = `pl-tip-${encodeURIComponent(n.id)}`;
+    tip.setAttribute('role', 'tooltip');
+    if (parseFloat(b.style.top) < PL.TOP + PL.STEP) tip.classList.add('below'); // no room above the first row
+    tip.append(node('span', 'pl-live-tip-k', `BLOCKED${planBlockedFor(c.since)} · ${boardName}`), node('span', 'pl-live-tip-text', c.reason || 'No reason given'));
+    b.append(pill, tip);
+    b.setAttribute('aria-describedby', tip.id);
+  }
+  b.setAttribute('aria-label', [n.title || 'Untitled', boardName, n.phase || 'no phase', label].join(', ') + (c?.blocked ? ', blocked' : ''));
+}
+
+function planLiveCounts(v) {
+  const L = plan.live;
+  const k = { total: 0, done: 0, building: 0, blocked: 0 };
+  if (L.draft !== v.draft.id) return k;
+  for (const id of planLiveIds(v)) {
+    const c = L.cards.get(id);
+    if (!c) continue; // not read yet, or removed from its board
+    k.total++;
+    if (c.lane === 'done') k.done++;
+    if (c.lane === 'in_progress' || c.lane === 'in_review') k.building++;
+    if (c.blocked) k.blocked++;
+  }
+  return k;
+}
+
+// Header: the Plan | Live toggle (committed drafts), and Live's progress + Open in Kanban.
+function renderPlanMode(v) {
+  const cv = v.draft.committed_version;
+  const live = planIsLive(v);
+  $('pl-mode').classList.toggle('hidden', cv === null || cv === undefined);
+  $('pl-mode-plan').setAttribute('aria-pressed', String(!live));
+  $('pl-mode-live').setAttribute('aria-pressed', String(live));
+  $('pl-live-sum').classList.toggle('hidden', !live);
+  $('pl-live-bar').classList.toggle('hidden', !live);
+  $('pl-open-kanban').classList.toggle('hidden', !live || EMBED);
+  $('pl-saved').classList.toggle('hidden', live);
+  $('pl-open').classList.toggle('live', live);
+  if (!live) return;
+  const k = planLiveCounts(v);
+  const b = (t, cls = '') => node('b', cls, t);
+  $('pl-live-sum').replaceChildren(b(`${k.done}/${k.total}`), ' done · ', b(k.building), ' building · ', b(k.blocked, k.blocked ? 'hot' : ''), ' blocked');
+  const [done, busy] = $('pl-live-bar').children;
+  done.style.width = `${k.total ? (100 * k.done) / k.total : 0}%`;
+  busy.style.width = `${k.total ? (100 * k.building) / k.total : 0}%`;
+  syncPlanKanban(v);
+}
+
+function syncPlanKanban(v) {
+  const n = plan.selected ? planNodeById(plan.selected) : null;
+  const card = n ? planLiveOf(v, n).card : null;
+  const btn = $('pl-open-kanban');
+  btn.disabled = !card;
+  btn.title = card ? '' : n ? 'This card isn’t on a board' : 'Select a card to open it in Kanban';
+}
+
+function openPlanCardInKanban() {
+  const v = plan.view;
+  const n = plan.selected ? planNodeById(plan.selected) : null;
+  const card = v && n ? planLiveOf(v, n).card : null;
+  if (!card) return;
+  if (card.board === projectId) {
+    setView('kanban');
+    openCardModal(card.id);
+  } else location.search = `?project=${encodeURIComponent(card.board)}&card=${encodeURIComponent(card.id)}&view=kanban`;
+}
+
+function planLiveLegend() {
+  const lane = (cls, label) => {
+    const s = node('span', 'pl-lg');
+    s.append(node('span', `pl-lane-sw ${cls}`), node('span', '', label));
+    return s;
+  };
+  const done = node('span', 'pl-lg pl-lg-done');
+  done.append(node('span', 'pl-lg-check', '✓'), node('span', '', 'Done'));
+  const blocked = node('span', 'pl-lg pl-lg-blocked');
+  blocked.append(planFlagIcon(12, '#e06c75'), node('span', '', 'Blocked'));
+  return [lane('backlog', 'Backlog'), lane('queued', 'Queued'), lane('in-progress', 'In progress'), lane('in-review', 'In review'), done, blocked];
+}
+
+// "N blocked · Answer in <board> terminal", one row per board with blocked cards.
+function renderLiveStrip(v) {
+  const host = $('pl-live-strip');
+  if (!planIsLive(v)) {
+    plan.liveStripKey = '';
+    return host.replaceChildren();
+  }
+  const L = plan.live;
+  const byBoard = new Map();
+  if (L.draft === v.draft.id)
+    for (const id of planLiveIds(v)) {
+      const c = L.cards.get(id);
+      if (!c?.blocked) continue;
+      if (!byBoard.has(c.board)) byBoard.set(c.board, []);
+      byBoard.get(c.board).push(c.title || 'Untitled');
+    }
+  const order = (b) => {
+    const i = v.boards.findIndex((x) => x.id === b);
+    return i < 0 ? Infinity : i;
+  };
+  const rows = [...byBoard].sort((a, b) => order(a[0]) - order(b[0]));
+  const canOpen = !EMBED && term.enabled;
+  const key = JSON.stringify([v.draft.id, rows, canOpen]);
+  if (key === plan.liveStripKey) return;
+  plan.liveStripKey = key;
+  const boards = planBoards(v);
+  host.replaceChildren(
+    ...rows.map(([board, titles]) => {
+      const name = boards.get(board)?.name ?? 'Unknown board';
+      const row = node('div', 'pl-issue pl-blocked');
+      const text = node('span', 'pl-issue-text');
+      text.append(node('b', '', `${titles.length} blocked`), ` · ${titles.join(', ')} · ${name} is waiting on your answer`);
+      row.append(planFlagIcon(16, '#e06c75'), text);
+      if (canOpen) {
+        const go = node('button', 'pl-answer', `Answer in ${name} terminal`);
+        go.type = 'button';
+        go.onclick = () => openBoardTerminal(board, plan.workspace ?? v.draft.workspace_id);
+        row.append(go);
+      } else row.append(node('span', 'pl-answer-note', `Answer in ${name} terminal`));
+      return row;
+    }),
+  );
+}
+
+// A card message: re-style the nodes in place and refresh the header + strip.
+function renderPlanLive() {
+  const v = plan.view;
+  if (!planIsLive(v) || v.draft.id !== plan.openId || activeView !== 'planner') return;
+  const boards = planBoards(v);
+  for (const b of $('pl-world').querySelectorAll('.pl-node')) {
+    const n = planNodeById(b.dataset.id);
+    if (n) applyLiveNode(b, n, v, boards.get(n.board_id)?.name ?? 'Unknown board');
+  }
+  renderPlanMode(v);
+  renderLiveStrip(v);
 }
 
 // ── pan / zoom ──
@@ -5970,6 +6478,10 @@ function planReveal(ids) {
     selectPlanNode(null);
   });
   $('pl-add').onclick = () => addPlanCard();
+  $('pl-saved').onclick = () => openLostSavesModal();
+  $('pl-mode-plan').onclick = () => plan.view && setPlanMode(plan.view.draft.id, 'plan');
+  $('pl-mode-live').onclick = () => plan.view && setPlanMode(plan.view.draft.id, 'live');
+  $('pl-open-kanban').onclick = () => openPlanCardInKanban();
   $('pl-commit').onclick = () => openCommitModal();
   $('pl-run').onclick = () => openRunModal();
   // a field that was held while focused catches up once focus leaves it (bound once: #pl-editor persists)
