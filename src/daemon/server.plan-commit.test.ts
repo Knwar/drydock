@@ -116,8 +116,8 @@ describe('/plan-drafts commit + run routes', () => {
     assert.equal((await card(m.b)).title, 'Web client v2');
     assert.equal((await fetch(`${base}/task/${m.c}`)).status >= 400, true, 'backlog card deleted');
     assert.equal((await card(m.a)).lane, 'in_progress', 'started card kept');
-    const kept = (r2.diff.boards as unknown as { kept: { card_id: string; note: string }[] }[]).flatMap((x) => x.kept);
-    assert.deepEqual(kept.map((k) => [k.card_id, k.note]), [[m.a, 'kept, no longer in plan']]);
+    const kept = (r2.diff.boards as unknown as { kept: { card_id: string; note: string; reason: string }[] }[]).flatMap((x) => x.kept);
+    assert.deepEqual(kept.map((k) => [k.card_id, k.note, k.reason]), [[m.a, 'kept, no longer in plan', 'started']]);
 
     // a started card whose node changes is locked
     await ok(send('POST', `/task/${m.b}/move`, { lane: 'in_progress' }));

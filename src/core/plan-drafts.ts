@@ -314,13 +314,9 @@ export interface BoardDiff {
   update: DiffUpdate[];
   /** Removed nodes whose card is still in backlog/queued (and not blocked). */
   delete: { node_id: string; card_id: string; title: string }[];
-  /** Removed nodes whose card has started or is done: left on the board. */
-  kept: { node_id: string; card_id: string; title: string; lane: Lane; note: string }[];
-  /**
-   * Cards a commit won't touch: nodes that differ from a started/done card
-   * (reason 'started'), or nodes that differ from or were removed while their card
-   * is blocked (reason 'blocked'; `fields` is empty for a removed node).
-   */
+  /** Removed nodes whose card has started, is done (reason 'started') or is blocked (reason 'blocked'): left on the board. */
+  kept: { node_id: string; card_id: string; title: string; lane: Lane; note: string; reason: LockReason }[];
+  /** Nodes that differ from a started/done card (reason 'started') or a blocked card (reason 'blocked'): not updated. */
   locked: { node_id: string; card_id: string; title: string; lane: Lane; fields: DiffField[]; reason: LockReason }[];
 }
 
@@ -456,10 +452,8 @@ function planCommit(db: DB, draft: PlanDraft): CommitPlan {
     if (!reason) {
       deletes.push(card);
       boardDiff(card.project_id).delete.push({ node_id: nodeId, card_id: card.id, title: card.title });
-    } else if (reason === 'blocked') {
-      boardDiff(card.project_id).locked.push({ node_id: nodeId, card_id: card.id, title: card.title, lane: card.lane, fields: [], reason });
     } else {
-      boardDiff(card.project_id).kept.push({ node_id: nodeId, card_id: card.id, title: card.title, lane: card.lane, note: KEPT_NOTE });
+      boardDiff(card.project_id).kept.push({ node_id: nodeId, card_id: card.id, title: card.title, lane: card.lane, note: KEPT_NOTE, reason });
     }
   }
 

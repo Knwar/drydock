@@ -526,7 +526,7 @@ server.registerTool(
   'preview_plan_commit',
   {
     description:
-      'Preview what commit_plan would do, per board: phases to add, cards to create/update/delete, and kept/locked cards (started or done cards are never changed), plus validation errors that block commit. Read-only.',
+      'Preview what commit_plan would do, per board: phases to add, cards to create/update/delete, and kept/locked cards (started, done or blocked cards are never changed, moved or deleted), plus validation errors that block commit. Read-only.',
     inputSchema: { plan_id: z.string() },
   },
   ({ plan_id }) => api('GET', `/plan-drafts/${encodeURIComponent(plan_id)}/diff`),
@@ -546,7 +546,7 @@ server.registerTool(
   'run_plan',
   {
     description:
-      "Start a committed, clean plan: 'queue' moves its spec'd backlog cards (requirements + acceptance criteria) to queued, skipping the rest as needing spec; 'autopilot' also turns autopilot on for each involved board with queued cards. Use ONLY after the user explicitly asks to run the plan: this is the human’s judgment gate, like advance_phase. Returns {queued, skipped, autopilot}.",
+      "Start a committed, clean plan: 'queue' moves its spec'd backlog cards (requirements + acceptance criteria) to queued, skipping the rest as needing spec; 'autopilot' also turns autopilot on for each involved vertical with queued cards, never for the main (workspace) session, whose cards are queued for the user. Use ONLY after the user explicitly asks to run the plan: this is the human’s judgment gate, like advance_phase. Returns {queued, skipped, autopilot}.",
     inputSchema: { plan_id: z.string(), mode: z.enum(['queue', 'autopilot']) },
   },
   ({ plan_id, mode }) => api('POST', `/plan-drafts/${encodeURIComponent(plan_id)}/run`, { mode }),

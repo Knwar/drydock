@@ -187,7 +187,7 @@ describe('diffDraft / commitDraft', () => {
     const wsDiff = diff.boards.find((b) => b.board_id === ws.id)!;
     const webDiff = diff.boards.find((b) => b.board_id === web.id)!;
     assert.deepEqual(wsDiff.kept, [
-      { node_id: 'a', card_id: committed.a, title: 'API contract', lane: 'in_progress', note: 'kept, no longer in plan' },
+      { node_id: 'a', card_id: committed.a, title: 'API contract', lane: 'in_progress', note: 'kept, no longer in plan', reason: 'started' },
     ]);
     assert.deepEqual(webDiff.delete, [{ node_id: 'c', card_id: committed.c, title: 'Web page' }]);
     // b lost its in-plan dependency on a
@@ -222,7 +222,7 @@ describe('diffDraft / commitDraft', () => {
     assert.equal(getDraft(db, d.id)!.data.committed.b, committed.b);
   });
 
-  it('a blocked backlog card is locked: not edited, moved or deleted', (t) => {
+  it('a blocked backlog card is locked (not edited or moved) and kept when removed (not deleted)', (t) => {
     const { db, ws, web, cleanup } = setup();
     t.after(cleanup);
     const d = seed(db, ws, web);
@@ -241,10 +241,9 @@ describe('diffDraft / commitDraft', () => {
         [],
         [],
         [],
-        [],
+        [{ node_id: 'c', card_id: committed.c, title: 'Web page', lane: 'backlog', note: 'kept, no longer in plan', reason: 'blocked' }],
         [
           { node_id: 'b', card_id: committed.b, title: 'Web client', lane: 'backlog', fields: ['title', 'phase', 'board'], reason: 'blocked' },
-          { node_id: 'c', card_id: committed.c, title: 'Web page', lane: 'backlog', fields: [], reason: 'blocked' },
         ],
       ],
     ]);
