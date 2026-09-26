@@ -60,79 +60,6 @@
     <main id="board"></main>
     <section id="attention-view" class="view hidden">
       <div id="attention-list" class="view-detail"></div>
-      <div id="office" class="view-detail hidden">
-        <div class="office-stage">
-          <div class="office-floor">
-            <svg class="floorplan" viewBox="0 0 1400 880" width="1400" height="880">
-              <defs>
-                <pattern id="tiles" width="88" height="88" patternUnits="userSpaceOnUse">
-                  <rect width="88" height="88" fill="#c1b48c" />
-                  <rect width="44" height="44" fill="#cabe97" /><rect x="44" y="44" width="44" height="44" fill="#cabe97" />
-                </pattern>
-                <pattern id="walk" width="72" height="72" patternUnits="userSpaceOnUse">
-                  <rect width="72" height="72" fill="#6c7486" />
-                  <rect width="36" height="36" fill="#757d90" /><rect x="36" y="36" width="36" height="36" fill="#757d90" />
-                </pattern>
-                <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1c463a" /><stop offset="1" stop-color="#0f1a17" /></linearGradient>
-              </defs>
-
-              <rect width="1400" height="880" fill="url(#tiles)" />
-              <rect x="46" y="350" width="1308" height="250" rx="12" fill="url(#walk)" />
-              <rect x="6" y="6" width="1388" height="868" rx="20" fill="none" stroke="#8a8168" stroke-width="3" />
-
-              <!-- MEETING ROOMS: two equal rooms spanning the full top, sharing a middle wall -->
-              <rect x="69" y="79" width="626" height="252" rx="6" fill="#aebfd2" />
-              <rect x="705" y="79" width="626" height="252" rx="6" fill="#c8b0cd" />
-              <g fill="#39424f">
-                <rect x="60" y="70" width="1280" height="9" rx="3" />
-                <rect x="60" y="70" width="9" height="270" rx="3" />
-                <rect x="695" y="70" width="10" height="270" rx="3" />
-                <rect x="1331" y="70" width="9" height="270" rx="3" />
-                <rect x="60" y="331" width="280" height="9" rx="3" /><rect x="420" y="331" width="275" height="9" rx="3" />
-                <rect x="705" y="331" width="275" height="9" rx="3" /><rect x="1060" y="331" width="280" height="9" rx="3" />
-              </g>
-              <rect x="340" y="330" width="80" height="10" fill="#141821" /><rect x="980" y="330" width="80" height="10" fill="#141821" />
-              <text x="88" y="108" class="fp-label">MEETING A</text>
-              <text x="728" y="108" class="fp-label">MEETING B</text>
-              <rect x="258" y="148" width="240" height="116" rx="16" fill="#3a3222" /><rect x="266" y="154" width="224" height="104" rx="12" fill="#4a3e28" />
-              <rect x="898" y="148" width="240" height="116" rx="16" fill="#26323a" /><rect x="906" y="154" width="224" height="104" rx="12" fill="#324049" />
-              <g fill="#3a4356">
-                <rect x="306" y="126" width="24" height="22" rx="8" /><rect x="426" y="126" width="24" height="22" rx="8" /><rect x="306" y="266" width="24" height="22" rx="8" /><rect x="426" y="266" width="24" height="22" rx="8" /><rect x="226" y="194" width="22" height="24" rx="8" /><rect x="508" y="194" width="22" height="24" rx="8" />
-                <rect x="946" y="126" width="24" height="22" rx="8" /><rect x="1066" y="126" width="24" height="22" rx="8" /><rect x="946" y="266" width="24" height="22" rx="8" /><rect x="1066" y="266" width="24" height="22" rx="8" /><rect x="866" y="194" width="22" height="24" rx="8" /><rect x="1148" y="194" width="22" height="24" rx="8" /></g>
-
-              <!-- LOUNGE: spans the full bottom (mirrors the meeting rooms up top) -->
-              <rect x="69" y="614" width="1262" height="197" rx="6" fill="#d3bd9c" />
-              <g fill="#39424f">
-                <rect x="60" y="605" width="600" height="9" rx="3" /><rect x="740" y="605" width="600" height="9" rx="3" />
-                <rect x="60" y="605" width="9" height="215" rx="3" /><rect x="1331" y="605" width="9" height="215" rx="3" />
-                <rect x="60" y="811" width="1280" height="9" rx="3" />
-              </g>
-              <rect x="660" y="604" width="80" height="10" fill="url(#walk)" />
-              <text x="88" y="642" class="fp-label">LOUNGE</text>
-              <ellipse cx="700" cy="728" rx="330" ry="74" fill="#a37c4a" opacity="0.16" />
-              <rect x="110" y="760" width="330" height="46" rx="14" fill="#454b63" /><rect x="110" y="748" width="330" height="24" rx="12" fill="#4e5570" />
-              <rect x="124" y="764" width="94" height="20" rx="8" fill="#565d78" /><rect x="228" y="764" width="94" height="20" rx="8" fill="#565d78" /><rect x="332" y="764" width="94" height="20" rx="8" fill="#565d78" />
-              <rect x="960" y="760" width="330" height="46" rx="14" fill="#454b63" /><rect x="960" y="748" width="330" height="24" rx="12" fill="#4e5570" />
-              <rect x="974" y="764" width="94" height="20" rx="8" fill="#565d78" /><rect x="1078" y="764" width="94" height="20" rx="8" fill="#565d78" /><rect x="1182" y="764" width="94" height="20" rx="8" fill="#565d78" />
-              <ellipse cx="700" cy="704" rx="72" ry="32" fill="#2d3545" />
-              <g transform="translate(556,668)"><path d="M-14 22 h28 l-4 -22 h-20 z" fill="#6b4a34" /><circle cx="-4" cy="-8" r="15" fill="#4a9d6e" /><circle cx="8" cy="-3" r="13" fill="#54ad78" /></g>
-              <g transform="translate(844,668)"><path d="M-14 22 h28 l-4 -22 h-20 z" fill="#6b4a34" /><circle cx="-4" cy="-8" r="15" fill="#4a9d6e" /><circle cx="8" cy="-3" r="13" fill="#54ad78" /></g>
-
-              <!-- WORKSPACE (open plan; desks generated to match workers) -->
-              <text x="120" y="392" class="fp-label">WORKSPACE</text>
-              <g id="fp-desks"></g>
-
-              <!-- water cooler -->
-              <g transform="translate(120,430)"><rect width="30" height="46" rx="5" fill="#2a3140" /><rect x="6" y="-16" width="18" height="20" rx="9" fill="#4aa8d8" opacity="0.7" /></g>
-            </svg>
-            <div id="office-agents"></div>
-          </div>
-        </div>
-        <div id="office-attn" class="office-attn collapsed">
-          <button id="office-attn-tab" class="oa-tab"><span class="oa-bell">🔔</span><span id="oa-count" class="oa-count"></span></button>
-          <div id="office-attn-list" class="oa-list"></div>
-        </div>
-      </div>
     </section>
     <section id="scm-view" class="view hidden">
       <div class="view-sidebar">
@@ -345,10 +272,6 @@
                 <option value="kanban">Kanban</option>
                 <option value="attention">Attention</option>
               </select>
-            </div>
-            <div class="st-list-row">
-              <div class="st-rowtext"><div class="st-rowtitle">Office mode</div><div class="st-rowsub">Show the Attention view as a live office simulation</div></div>
-              <label class="switch"><input type="checkbox" id="opt-office" /><span class="slider"></span></label>
             </div>
           </div>
         </section>

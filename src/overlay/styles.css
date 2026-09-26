@@ -1016,52 +1016,6 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 .att-arrow { flex: none; color: var(--dim); }
 .att-empty { padding: 48px 20px; text-align: center; color: var(--dim); line-height: 1.7; }
 
-/* ── office simulation (2D-game office) ── */
-#office { display: flex; padding: 0; overflow: hidden; }
-.office-stage { flex: 1; min-width: 0; overflow: auto; padding: 14px; }
-.office-floor { position: relative; width: 1400px; height: 880px; margin: auto; border-radius: 14px; overflow: hidden; box-shadow: inset 0 0 90px rgba(0, 0, 0, 0.5); }
-.floorplan { position: absolute; inset: 0; width: 1400px; height: 880px; display: block; }
-.fp-label { fill: rgba(40, 34, 22, 0.5); font-size: 16px; font-weight: 700; letter-spacing: 2.5px; font-family: "SF Mono", ui-monospace, Menlo, monospace; }
-#office-agents { position: absolute; inset: 0; }
-
-.office-agent {
-  position: absolute; top: 0; left: 0; width: 48px; text-align: center; z-index: 3;
-  transform-origin: 24px 46px; will-change: transform;
-}
-.office-agent svg { display: block; margin: 0 auto; overflow: visible; animation: bob 2.8s ease-in-out infinite; }
-.office-agent.walking svg { animation-duration: 0.45s; } /* bouncy step while moving */
-.office-agent.working svg { animation: bob 1.1s ease-in-out infinite; }
-.oa-label { font-size: 10px; color: var(--text); opacity: 0.9; margin-top: -1px; white-space: nowrap; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85); }
-.oa-bubble { position: absolute; top: -13px; left: 50%; transform: translateX(-50%); font-size: 15px; opacity: 0; transition: opacity 0.3s; z-index: 4; }
-.office-agent.working .oa-bubble { opacity: 1; animation: floaty 2.2s ease-in-out infinite; } /* thinking bubble only while working at a desk */
-/* a blocked agent raises its hand (✋, set in JS) and pulses red for attention */
-.office-agent.blocked .oa-bubble { opacity: 1; animation: floaty 2.2s ease-in-out infinite; }
-.office-agent.blocked svg { animation: blockpulse 1.1s ease-in-out infinite; }
-@keyframes blockpulse { 0%, 100% { filter: drop-shadow(0 0 0 rgba(224, 108, 117, 0)); } 50% { filter: drop-shadow(0 0 7px rgba(224, 108, 117, 0.95)); } }
-@keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
-@keyframes floaty { 0%, 100% { transform: translateX(-50%) translateY(0); } 50% { transform: translateX(-50%) translateY(-3px); } }
-.office-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--dim); font-size: 13px; line-height: 1.7; }
-
-/* attention lane on the right of the office */
-.office-attn { flex: none; display: flex; overflow: hidden; border-left: 1px solid rgba(255, 255, 255, 0.08); background: #0f1219; transition: width 0.25s ease; }
-.office-attn.collapsed { width: 58px; }
-.office-attn:not(.collapsed) { width: 300px; }
-.oa-tab { flex: none; width: 58px; display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 14px 0; background: none; border: none; color: var(--dim); cursor: pointer; }
-.oa-bell { font-size: 20px; display: inline-block; transform-origin: 50% 10%; }
-.oa-count { min-width: 18px; padding: 1px 5px; border-radius: 9px; font-size: 10px; font-weight: 700; background: rgba(255, 255, 255, 0.12); color: var(--text); }
-.office-attn.alert { border-left-color: #e06c75; box-shadow: inset 5px 0 20px rgba(224, 108, 117, 0.22); }
-.office-attn.alert .oa-bell { animation: ring 0.9s ease-in-out infinite; }
-.office-attn.alert .oa-count { background: #e06c75; color: #fff; }
-@keyframes ring { 0%, 100% { transform: rotate(0); } 15% { transform: rotate(16deg); } 30% { transform: rotate(-13deg); } 45% { transform: rotate(9deg); } 60% { transform: rotate(-5deg); } }
-.oa-list { flex: 1; min-width: 0; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-.office-attn.collapsed .oa-list { display: none; }
-.oa-item { border: 1px solid rgba(255, 255, 255, 0.08); border-left: 3px solid var(--dim); border-radius: 8px; padding: 9px 10px; cursor: pointer; }
-.oa-item:hover { background: rgba(255, 255, 255, 0.03); }
-.oa-item.blocker { border-left-color: #e06c75; }
-.oa-item.warn { border-left-color: #e5c07b; }
-.oai-title { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.oai-reason { font-size: 11px; color: var(--dim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
 /* project stats view */
 #stats-body { padding: 20px 22px; }
 .stats-totals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 22px; }
