@@ -216,7 +216,7 @@ server.registerTool(
   'get_metrics',
   {
     description:
-      'Flow metrics summary: throughput per ISO week for the last 4 ISO weeks ending at `to` (default now; the current week partial), cycle time p50/p85 (ms) over the same window, WIP by lane, the oldest in-flight card, and `waiting` (work waiting on the human right now: needs-you sessions + open blockers, count and longest wait in ms). A workspace id includes its verticals. from/to: epoch ms, YYYY-MM-DD, or a datetime (read in `tz` when it has no zone). tz: IANA zone, default the daemon\'s.',
+      'Flow metrics summary: throughput per ISO week for the last 4 ISO weeks ending at `to` (default now; the current week partial), cycle time p50/p85 (ms) over the same window, WIP by lane, the oldest in-flight card, `waiting` (work waiting on the human right now: needs-you sessions + open blockers, count and longest wait in ms), and `cost` {period: USD spent on build runs in the same window, estimatedShare: the share of it estimated from runs without a token breakdown (null when nothing was spent)}. A workspace id includes its verticals. from/to: epoch ms, YYYY-MM-DD, or a datetime (read in `tz` when it has no zone). tz: IANA zone, default the daemon\'s.',
     inputSchema: {
       project_id: z.string(),
       phase_id: z.string().optional(),
@@ -237,11 +237,29 @@ server.registerTool(
     const waitParams = new URLSearchParams({ project: project_id });
     if (phase_id) waitParams.set('phase', phase_id);
     const wait = await api('GET', `/metrics/wait?${waitParams}`);
-    // the flow summary stands on its own: a failed wait lookup only drops `waiting`
-    if (wait.isError) return { content: [...summary.content, { type: 'text' as const, text: `waiting unavailable: ${wait.content[0]?.text}` }] };
-    const { count, longestMs } = JSON.parse(wait.content[0].text).waiting;
-    const merged = { ...JSON.parse(summary.content[0].text), waiting: { count, longestMs } };
-    return { content: [{ type: 'text' as const, text: JSON.stringify(merged) }] };
+    // the flow summary stands on its own: a failed wait or cost lookup only drops
+    // `waiting` / `cost`, with a note saying so
+    const merged = JSON.parse(summary.content[0].text);
+    const notes: string[] = [];
+    if (wait.isError) notes.push(`waiting unavailable: ${wait.content[0]?.text}`);
+    else {
+      const { count, longestMs } = JSON.parse(wait.content[0].text).waiting;
+      merged.waiting = { count, longestMs };
+    }
+    // cost over the summary's own window
+    const costParams = new URLSearchParams(params);
+    if (merged.range) {
+      costParams.set('from', String(merged.range.from));
+      costParams.set('to', String(merged.range.to));
+    }
+    costParams.set('limit', '1');
+    const spent = await api('GET', `/metrics/cost?${costParams}`);
+    if (spent.isError) notes.push(`cost unavailable: ${spent.content[0]?.text}`);
+    else {
+      const c = JSON.parse(spent.content[0].text);
+      merged.cost = { period: c.totals.cost, estimatedShare: c.estimated.share };
+    }
+    return { content: [{ type: 'text' as const, text: JSON.stringify(merged) }, ...notes.map((text) => ({ type: 'text' as const, text }))] };
   },
 );
 
@@ -249,19 +267,20 @@ server.registerTool(
   'get_forecast',
   {
     description:
-      'Monte Carlo finish-date forecast for the not-done cards of a committed plan (plan_id), a phase (project_id + phase_id), or the whole board (project_id), resampling the scope\'s daily throughput over the last `weeks` (default 6) calendar weeks. Returns p50/p85/p95 {days, date} + a days histogram, or status insufficient_history (need 10 history days and 5 done cards). tz: IANA zone, default the daemon\'s.',
+      'Monte Carlo finish-date forecast for the not-done cards of a committed plan (plan_id), a phase (project_id + phase_id), or the whole board (project_id), resampling the scope\'s daily throughput over the last `weeks` (default 6) calendar weeks. With plan_id, project_id is optional but, if given, must be the plan\'s workspace. Returns p50/p85/p95 {days, date} + a days histogram + the seed used, or status insufficient_history (need 10 history days and 5 done cards). seed: pass a previous result\'s seed to reproduce it. tz: IANA zone, default the daemon\'s.',
     inputSchema: {
       project_id: z.string().optional(),
       phase_id: z.string().optional(),
       plan_id: z.string().optional(),
       tag: z.enum(['ui', 'api', 'db', 'infra']).optional(),
       weeks: z.number().int().min(2).max(52).optional(),
+      seed: z.number().int().min(0).max(2 ** 32 - 1).optional(),
       tz: z.string().optional(),
     },
   },
-  ({ project_id, phase_id, plan_id, tag, weeks, tz }) => {
+  ({ project_id, phase_id, plan_id, tag, weeks, seed, tz }) => {
     const params = new URLSearchParams();
-    for (const [k, v] of [['project', project_id], ['phase', phase_id], ['plan', plan_id], ['tag', tag], ['weeks', weeks?.toString()], ['tz', tz]] as const) {
+    for (const [k, v] of [['project', project_id], ['phase', phase_id], ['plan', plan_id], ['tag', tag], ['weeks', weeks?.toString()], ['seed', seed?.toString()], ['tz', tz]] as const) {
       if (v) params.set(k, v);
     }
     return api('GET', `/metrics/forecast?${params}`);

@@ -119,29 +119,69 @@ export function subagentTranscriptPath(data) {
   return null;
 }
 
-/** Sum billable tokens (total + output) across a transcript's assistant messages. */
+/**
+ * Per-model token breakdown of a transcript's assistant messages:
+ * { "<model>": { input, output, cache_read, cache_creation } }.
+ * A message is logged as several lines under one message.id (one per content
+ * block), each repeating its usage: count each message once. Input and cache
+ * counts are the same on every line; output_tokens is a streaming snapshot
+ * unless the line carries a stop_reason, which has the final usage. So per
+ * message: the stop_reason line's usage when there is one, else the max of
+ * each field. Messages logged without a stop_reason line still UNDERCOUNT
+ * output (the API reports this as a caveat). No final per-type figure exists
+ * elsewhere: the SubagentStop payload carries no usage, and the completion
+ * notification only has a single subagent_tokens total.
+ * Models with no tokens at all (e.g. "<synthetic>") are dropped.
+ */
+export function usageByModel(file) {
+  const byMessage = new Map();
+  let anon = 0;
+  for (const line of readFileSync(expand(file), 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    let m;
+    try {
+      m = JSON.parse(line)?.message;
+    } catch {
+      continue;
+    }
+    if (!m?.usage) continue;
+    const u = {
+      input: m.usage.input_tokens || 0,
+      output: m.usage.output_tokens || 0,
+      cache_read: m.usage.cache_read_input_tokens || 0,
+      cache_creation: m.usage.cache_creation_input_tokens || 0,
+    };
+    const key = m.id ?? `line-${anon++}`;
+    const prev = byMessage.get(key);
+    if (!prev || (!prev.final && m.stop_reason)) {
+      byMessage.set(key, { model: m.model || 'unknown', u, final: !!m.stop_reason });
+    } else if (!prev.final) {
+      for (const k of Object.keys(u)) prev.u[k] = Math.max(prev.u[k], u[k]);
+    }
+  }
+  const usage = {};
+  for (const { model, u } of byMessage.values()) {
+    const acc = (usage[model] ??= { input: 0, output: 0, cache_read: 0, cache_creation: 0 });
+    for (const k of Object.keys(acc)) acc[k] += u[k];
+  }
+  for (const [model, u] of Object.entries(usage)) {
+    if (!(u.input + u.output + u.cache_read + u.cache_creation)) delete usage[model];
+  }
+  return usage;
+}
+
+/** Billable tokens (total + output) and the per-model breakdown they sum from. */
 export function sumTokens(file) {
   try {
+    const usage = usageByModel(file);
     let tokens = 0;
     let out = 0;
-    for (const line of readFileSync(expand(file), 'utf8').split('\n')) {
-      if (!line.trim()) continue;
-      let u;
-      try {
-        u = JSON.parse(line)?.message?.usage;
-      } catch {
-        continue;
-      }
-      if (!u) continue;
-      tokens +=
-        (u.input_tokens || 0) +
-        (u.cache_creation_input_tokens || 0) +
-        (u.cache_read_input_tokens || 0) +
-        (u.output_tokens || 0);
-      out += u.output_tokens || 0;
+    for (const u of Object.values(usage)) {
+      tokens += u.input + u.output + u.cache_read + u.cache_creation;
+      out += u.output;
     }
-    return { tokens, tokens_out: out };
+    return { tokens, tokens_out: out, usage };
   } catch {
-    return { tokens: 0, tokens_out: 0 };
+    return { tokens: 0, tokens_out: 0, usage: {} };
   }
 }

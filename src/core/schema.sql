@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS phases (
   plan        TEXT,                       -- markdown: per-phase implementation plan (filled lazily)
   status      TEXT NOT NULL DEFAULT 'planned',   -- planned|active|done
   position    INTEGER NOT NULL DEFAULT 0,
+  budget_usd  REAL,                       -- optional spend budget for the phase (USD), or null
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -85,7 +86,15 @@ CREATE TABLE IF NOT EXISTS card_activity (  -- one row per build run: cost + chu
   lines_removed INTEGER NOT NULL DEFAULT 0,
   ms            INTEGER NOT NULL DEFAULT 0,   -- wall-clock of the build run
   estimated     INTEGER NOT NULL DEFAULT 0,   -- 1 = legacy line counts that couldn't be recomputed from git (excluded from line totals)
+  usage         TEXT,                       -- JSON token breakdown keyed by model: {"<model>": {input, output, cache_read, cache_creation}}, or null
+  cost_estimated INTEGER NOT NULL DEFAULT 0, -- 1 = no usage breakdown (legacy row / old hook): cost is estimated from `tokens` (see core/cost.ts)
   created_at    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (  -- small global key/value settings (JSON values), e.g. 'prices'
+  key         TEXT PRIMARY KEY,
+  value       TEXT NOT NULL,              -- JSON
+  updated_at  INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS outbox (  -- durable event log for fan-out delivery (Phase 3 dispatcher drains it)

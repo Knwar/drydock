@@ -380,3 +380,79 @@ describe('init-project.sh: first commit + registration', { timeout: 180_000 }, (
     assert.ok(body.project_id, JSON.stringify(body));
   });
 });
+
+describe('on-build-stop: per-model token breakdown', () => {
+  let daemon: TestDaemon | undefined;
+  let dir: string;
+  let fixture: string;
+
+  // A subagent transcript: a message logged as several lines under one id,
+  // counted once (its stop_reason line has the final usage, whatever the line
+  // order); one with no stop_reason line (max output snapshot); a second model;
+  // a zero-usage synthetic message; a malformed line; a message without an id.
+  const line = (model: string, id: string | undefined, u: Record<string, number>, stop_reason: string | null = null) =>
+    JSON.stringify({ type: 'assistant', message: { id, model, role: 'assistant', stop_reason, usage: u } });
+  const m1 = { input_tokens: 2, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000 };
+  const TRANSCRIPT = [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'build it' } }),
+    line('claude-opus-5-5', 'm1', { ...m1, output_tokens: 4 }),
+    line('claude-opus-5-5', 'm1', { ...m1, output_tokens: 50 }, 'tool_use'),
+    line('claude-opus-5-5', 'm1', { ...m1, output_tokens: 60 }), // after the final line: ignored
+    line('claude-haiku-4-5', 'm2', { input_tokens: 10, output_tokens: 5 }, 'end_turn'),
+    line('claude-opus-5-5', 'm5', { input_tokens: 1, output_tokens: 9 }),
+    line('claude-opus-5-5', 'm5', { input_tokens: 1, output_tokens: 12 }),
+    line('<synthetic>', 'm3', { input_tokens: 0, output_tokens: 0 }),
+    'not json',
+    line('claude-opus-5-5', undefined, { input_tokens: 1, output_tokens: 1 }),
+  ].join('\n');
+  const EXPECTED = {
+    'claude-opus-5-5': { input: 4, output: 63, cache_read: 1000, cache_creation: 100 },
+    'claude-haiku-4-5': { input: 10, output: 5, cache_read: 0, cache_creation: 0 },
+  };
+
+  before(async () => {
+    daemon = await startDaemon();
+    dir = mkdtempSync(join(tmpdir(), 'kankan-hook-usage-'));
+    fixture = join(dir, 'agent-a1.jsonl');
+    writeFileSync(fixture, TRANSCRIPT);
+  });
+
+  after(async () => {
+    await daemon?.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('usageByModel / sumTokens: once per message (final line, else max), per model, totals from the breakdown', async () => {
+    const lib = await import(pathToFileURL(join(HOOKS, 'lib.js')).href);
+    assert.deepEqual(lib.usageByModel(fixture), EXPECTED);
+    assert.deepEqual(lib.sumTokens(fixture), { tokens: 1167 + 15, tokens_out: 68, usage: EXPECTED });
+    assert.deepEqual(lib.sumTokens(join(dir, 'missing.jsonl')), { tokens: 0, tokens_out: 0, usage: {} });
+  });
+
+  it('posts the breakdown with the run: the activity row carries it and is not cost-estimated', async () => {
+    const root = join(dir, 'app');
+    mkdirSync(root);
+    const pid = ((await (await fetch(`${daemon!.base}/project?root=${encodeURIComponent(root)}`)).json()) as { project_id: string }).project_id;
+    const created = await fetch(`${daemon!.base}/task`, { method: 'POST', body: JSON.stringify({ project_id: pid, title: 'card' }) });
+    const cardId = ((await created.json()) as { task_id: string }).task_id;
+    const r = spawnSync(process.execPath, [join(HOOKS, 'on-build-stop.js')], {
+      input: JSON.stringify({ cwd: root, agent_type: 'builder', agent_id: 'a1', agent_transcript_path: fixture, description: `.trees/${cardId}` }),
+      env: { PATH: process.env.PATH ?? '', DAEMON_URL: daemon!.base },
+      encoding: 'utf8',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const db = new (await import('better-sqlite3')).default(join(daemon!.dbDir, 'board.db'), { readonly: true });
+    try {
+      const row = db.prepare('SELECT tokens, tokens_out, usage, cost_estimated FROM card_activity WHERE task_id = ?').get(cardId) as {
+        tokens: number;
+        tokens_out: number;
+        usage: string;
+        cost_estimated: number;
+      };
+      assert.deepEqual([row.tokens, row.tokens_out, row.cost_estimated], [1182, 68, 0]);
+      assert.deepEqual(JSON.parse(row.usage), EXPECTED);
+    } finally {
+      db.close();
+    }
+  });
+});
