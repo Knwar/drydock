@@ -196,8 +196,17 @@ export function qualityMetrics(db: DB, filter: MetricsFilter, opts: { tz: string
   if (filter.from !== undefined) checkRange(filter.from, filter.to ?? opts.now);
   // the loader keeps cards whose life overlaps the window: a superset of both rules above
   const ds = deriveCards(loadCardHistories(db, filter), opts.now);
+  // titles only for the phases the loaded (already project-scoped) cards are in
+  const phaseIds = [...new Set(ds.flatMap((x) => (x.m.phase_id === null ? [] : [x.m.phase_id])))];
   const phaseTitles = new Map(
-    (db.prepare('SELECT id, title FROM phases').all() as { id: string; title: string }[]).map((p) => [p.id, p.title]),
+    phaseIds.length
+      ? (
+          db.prepare(`SELECT id, title FROM phases WHERE id IN (${phaseIds.map(() => '?').join(', ')})`).all(...phaseIds) as {
+            id: string;
+            title: string;
+          }[]
+        ).map((p) => [p.id, p.title])
+      : [],
   );
   return qualityFromDerived(ds, { ...opts, from: filter.from, to: filter.to, phaseTitles });
 }
