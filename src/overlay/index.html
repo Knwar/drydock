@@ -244,17 +244,20 @@
               <button id="pl-by-phase" type="button" aria-pressed="false">Phase</button>
             </div>
             <div class="pl-grow"></div>
+            <span id="pl-paused" class="pl-paused hidden"></span>
             <div id="pl-legend" class="pl-legend"></div>
           </div>
           <div id="pl-canvas" class="pl-canvas" tabindex="0" role="group" aria-label="Plan graph" aria-roledescription="canvas">
-            <span id="pl-paused" class="pl-paused hidden"></span>
             <div id="pl-world" class="pl-world"></div>
             <div id="pl-canvas-empty" class="pl-canvas-empty hidden">
               <div class="pl-ce-title">Add your first card</div>
               <div class="pl-ce-sub">Cards land here as steps: every card in a step can be built at once.</div>
             </div>
           </div>
-          <div id="pl-strip" class="pl-strip"></div>
+          <div id="pl-strip" class="pl-strip">
+            <div id="pl-errors" class="pl-issues" role="alert"></div>
+            <div id="pl-warns" class="pl-issues" role="status"></div>
+          </div>
         </div>
       </div>
     </section>

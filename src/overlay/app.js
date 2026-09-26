@@ -3895,7 +3895,11 @@ const plan = {
   size: { W: 0, H: 0 },
   fitted: false,
   seq: 0,
+  listSeq: 0,
   busy: false,
+  autoFit: null, // the minK of the last fit, until the user pans/zooms (re-fit on resize)
+  stripKey: '',
+  skipSync: false, // the socket's first open right after openPlanner's own fetch
   stripError: '',
   ws: null,
   retry: 1000,
@@ -3925,26 +3929,34 @@ async function openPlanner() {
   const project = currentProject();
   if (!project) return; // the init message re-opens once the project is known
   plan.project = project;
-  if (!plan.workspace) {
-    try {
-      const res = await fetch(`/workspace?project=${encodeURIComponent(project)}`);
-      if (res.ok) plan.workspace = (await res.json()).workspace.id;
-    } catch {
-      /* daemon hiccup — the list's workspace_id (or the project) stands in */
-    }
-  }
+  await resolvePlanWorkspace();
   if (activeView !== 'planner') return;
   await loadPlanList();
-  plan.workspace ??= plan.list?.[0]?.workspace_id ?? project;
   if (activeView !== 'planner') return;
-  if (!plan.ws && !plan.retryTimer) planConnect();
+  if (!plan.ws && !plan.retryTimer) {
+    plan.skipSync = !plan.listFailed; // the list was just fetched and the draft is fetched below
+    planConnect();
+  }
   const want = new URLSearchParams(location.search).get('plan');
   const id = want || plan.openId || plan.list?.[0]?.id || null;
   if (id) openPlan(id, id === plan.openId && !!plan.view);
   else renderPlanner();
 }
 
+// The workspace id for the socket. Only a real answer is kept; on failure it's
+// retried on the next (re)connect.
+async function resolvePlanWorkspace() {
+  if (plan.workspace || !plan.project) return;
+  try {
+    const res = await fetch(`/workspace?project=${encodeURIComponent(plan.project)}`);
+    if (res.ok) plan.workspace = (await res.json()).workspace.id;
+  } catch {
+    /* daemon hiccup — retried on the next (re)connect */
+  }
+}
+
 function closePlanner() {
+  plan.skipSync = false;
   clearTimeout(plan.retryTimer);
   clearTimeout(plan.listTimer);
   plan.retryTimer = null;
@@ -3958,13 +3970,16 @@ function closePlanner() {
   history.replaceState(null, '', url);
 }
 
-function planConnect() {
-  const ws = new WebSocket(`ws://${location.host}/ws?project=${encodeURIComponent(plan.workspace)}`);
+async function planConnect() {
+  await resolvePlanWorkspace();
+  if (activeView !== 'planner' || plan.ws) return;
+  // Unresolved (daemon hiccup): a draft's workspace_id or the project stands in for this socket only.
+  const sub = plan.workspace ?? plan.list?.[0]?.workspace_id ?? plan.project;
+  const ws = new WebSocket(`ws://${location.host}/ws?project=${encodeURIComponent(sub)}`);
   plan.ws = ws;
-  let first = true;
   ws.onopen = () => {
     plan.retry = 1000;
-    if (first && plan.list) return void (first = false); // openPlanner just fetched
+    if (plan.skipSync) return void (plan.skipSync = false); // openPlanner just fetched
     loadPlanList(); // re-connect: catch anything missed while disconnected
     if (plan.openId) openPlan(plan.openId, true);
   };
@@ -3972,6 +3987,7 @@ function planConnect() {
   ws.onclose = () => {
     if (plan.ws !== ws) return; // closed on purpose (left the view)
     plan.ws = null;
+    plan.skipSync = false; // whatever opens next is a re-connect
     plan.retryTimer = setTimeout(() => {
       plan.retryTimer = null;
       if (activeView === 'planner') planConnect();
@@ -4006,14 +4022,17 @@ function schedulePlanList() {
 
 async function loadPlanList() {
   if (!plan.project) return;
+  const seq = ++plan.listSeq;
+  let list = null;
   try {
     const res = await fetch(`/plan-drafts?workspace=${encodeURIComponent(plan.project)}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    plan.list = await res.json();
-    plan.listFailed = false;
+    if (res.ok) list = await res.json();
   } catch {
-    plan.listFailed = true;
+    /* handled below */
   }
+  if (seq !== plan.listSeq) return; // a newer fetch owns the list
+  if (list) plan.list = list;
+  plan.listFailed = !list;
   if (activeView === 'planner') renderPlanner();
 }
 
@@ -4065,6 +4084,7 @@ async function openPlan(id, refresh = false) {
 }
 
 function setPlanView(view) {
+  if (view?.draft?.id !== plan.openId) return; // another draft was opened meanwhile
   const cur = plan.view;
   if (cur && cur.draft.id === view.draft.id && view.draft.version < cur.draft.version) return; // stale
   plan.view = view;
@@ -4161,13 +4181,16 @@ function renderPlanMain() {
   $('pl-by-board').setAttribute('aria-pressed', String(plan.colorBy === 'board'));
   $('pl-by-phase').setAttribute('aria-pressed', String(plan.colorBy === 'phase'));
   const model = planModel(v);
+  const prev = plan.size;
   renderPlanLegend(v, model);
   renderPlanGraph(v, model);
   renderPlanStrip(v, model);
+  const grew = prev.W !== plan.size.W || prev.H !== plan.size.H;
   if (!plan.fitted && $('pl-canvas').clientWidth) {
     plan.fitted = true;
     planFit(0.6); // first look stays readable; the Fit button fits everything
-  } else applyPlanXf();
+  } else if (grew && plan.autoFit !== null) planFit(plan.autoFit); // still as fitted: keep it all in view
+  else applyPlanXf();
 }
 
 // Board id → { name, color }: Main first, verticals in the boards array's order.
@@ -4206,14 +4229,21 @@ function planModel(v) {
     maxN = Math.max(maxN, list.length);
     list.forEach((n, i) => pos.set(n.id, { x: colX(c) + PL.PAD, y: PL.TOP + i * PL.STEP }));
   }
-  const cycle = v.validation.errors.find((e) => e.code === 'cycle')?.nodes ?? [];
-  const cyclePairs = new Set(cycle.map((id, i) => `${id}\u0000${cycle[(i + 1) % cycle.length]}`));
-  const cycleEdges = [];
-  edges.forEach((e, i) => cyclePairs.has(`${e.from}\u0000${e.to}`) && cycleEdges.push(i));
+  // A cycle's arrows, or a self-loop's: each issue's edge indexes in draft order.
+  const issueEdges = (it) => {
+    const ids = it.nodes ?? [];
+    if (it.code === 'self_loop') return edges.flatMap((e, i) => (e.from === e.to && e.from === ids[0] ? [i] : []));
+    if (it.code !== 'cycle') return [];
+    const pairs = new Set(ids.map((id, i) => `${id}\u0000${ids[(i + 1) % ids.length]}`));
+    return edges.flatMap((e, i) => (pairs.has(`${e.from}\u0000${e.to}`) ? [i] : []));
+  };
+  const loopIssues = v.validation.errors.filter((e) => e.code === 'cycle' || e.code === 'self_loop');
+  const cycle = loopIssues.flatMap((e) => e.nodes ?? []);
+  const cycleEdges = loopIssues.flatMap(issueEdges);
   const chain = v.layout?.longestChain ?? [];
   const chainPairs = new Set(chain.slice(1).map((id, i) => `${chain[i]}\u0000${id}`));
-  const backward = edges.some((e) => pos.has(e.from) && pos.has(e.to) && pos.get(e.to).x <= pos.get(e.from).x);
-  const bandH = PL.TOP + maxN * PL.STEP - (PL.STEP - PL.NODE_H) + 20;
+  const backward = edges.some((e) => e.from !== e.to && pos.has(e.from) && pos.has(e.to) && pos.get(e.to).x <= pos.get(e.from).x);
+  const bandH = PL.TOP + maxN * PL.STEP - (PL.STEP - PL.NODE_H) + 24;
   return {
     nodes,
     edges,
@@ -4224,7 +4254,8 @@ function planModel(v) {
     stale: paused && !!cols, // showing the last valid layout
     cycle: new Set(cycle),
     cycleEdges: new Set(cycleEdges),
-    newestCycleEdge: cycleEdges.length ? edges[cycleEdges[cycleEdges.length - 1]] : null,
+    newestEdge: (it) => edges[issueEdges(it).at(-1)] ?? null, // "Remove newest arrow" for a cycle / self-loop issue
+    maxN,
     chain: chain.length >= 2 ? new Set(chain) : new Set(),
     chainLen: chain.length,
     chainPairs,
@@ -4255,19 +4286,45 @@ function renderPlanLegend(v, m) {
   } else for (const b of planBoards(v).values()) items.push(legendItem(b.color, b.name));
   if (m.chain.size) {
     const s = node('span', 'pl-lg pl-lg-chain');
-    s.append(node('span', 'pl-chain-swatch'), node('span', '', `Longest chain · ${m.chainLen} steps`));
+    s.append(node('span', 'pl-chain-swatch'), node('span', '', `Critical path · ${m.chainLen} steps`));
     items.push(s);
   }
   $('pl-legend').replaceChildren(...items);
 }
 
-// Cubic from the right edge of `a` to the left edge of `b`; a backward arrow
-// (cycle / stale layout) loops under the columns instead.
-function planEdgePath(a, b, m) {
+// A polyline as a path with rounded corners (radius r, at most half of a segment).
+function planRoundPath(pts, r) {
+  const p = pts.filter((q, i) => i === 0 || q[0] !== pts[i - 1][0] || q[1] !== pts[i - 1][1]);
+  let d = `M${p[0][0]} ${p[0][1]}`;
+  for (let i = 1; i < p.length - 1; i++) {
+    const [[ax, ay], [bx, by], [cx, cy]] = [p[i - 1], p[i], p[i + 1]];
+    const l1 = Math.hypot(bx - ax, by - ay);
+    const l2 = Math.hypot(cx - bx, cy - by);
+    const k = Math.min(r, l1 / 2, l2 / 2);
+    d += ` L${bx - ((bx - ax) * k) / l1} ${by - ((by - ay) * k) / l1} Q${bx} ${by} ${bx + ((cx - bx) * k) / l2} ${by + ((cy - by) * k) / l2}`;
+  }
+  return `${d} L${p[p.length - 1][0]} ${p[p.length - 1][1]}`;
+}
+
+// Cubic from the right edge of `a` to the left edge of `b`. An arrow that skips
+// columns (`lane` set) runs through the gaps instead: down the corridor after `a`,
+// along a row gap (no card sits there in any column), and into `b` from the
+// corridor before it, so it never passes under a card. A self-loop rounds over
+// the node's top-right corner; a backward arrow (cycle / stale layout) loops
+// under the columns.
+function planEdgePath(a, b, m, lane) {
   const x1 = a.x + PL.NODE_W;
   const y1 = a.y + PL.NODE_H / 2;
   const x2 = b.x;
   const y2 = b.y + PL.NODE_H / 2;
+  if (a === b) {
+    const tx = x1 - 30;
+    return `M${x1} ${y1} C${x1 + 44} ${y1} ${tx} ${a.y - 44} ${tx} ${a.y}`;
+  }
+  if (x2 > x1 && lane !== undefined) {
+    const half = (PL.COL + PL.GAP - PL.NODE_W) / 2; // the middle of the corridor between node columns
+    return planRoundPath([[x1, y1], [x1 + half, y1], [x1 + half, lane], [x2 - half, lane], [x2 - half, y2], [x2, y2]], 14);
+  }
   if (x2 > x1) {
     const mx = (x1 + x2) / 2;
     return `M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`;
@@ -4315,11 +4372,26 @@ function renderPlanGraph(v, m) {
   const plain = svgEl('g', { fill: 'none', stroke: m.paused ? '#3f4555' : '#5b6275', 'stroke-width': 1.5 });
   const halo = svgEl('g', { fill: 'none', 'stroke-width': 8, 'stroke-linecap': 'round', 'stroke-opacity': m.paused ? 0.2 : 0.22 });
   const hot = svgEl('g', { fill: 'none', 'stroke-width': 2.5 });
+  const colOf = (p) => Math.round((p.x - PL.X0 - PL.PAD) / (PL.COL + PL.GAP));
+  const laneUse = new Map(); // row gap → arrows already in it (spread them apart)
   m.edges.forEach((e, i) => {
     const a = m.pos.get(e.from);
     const b = m.pos.get(e.to);
     if (!a || !b) return;
-    const d = planEdgePath(a, b, m);
+    let lane;
+    if (colOf(b) - colOf(a) > 1) {
+      // the row gap (below row 1..maxN, never above the first: step labels) nearest both ends
+      const ya = a.y + PL.NODE_H / 2;
+      const yb = b.y + PL.NODE_H / 2;
+      let best = 1;
+      const gapY = (r) => PL.TOP + r * PL.STEP - (PL.STEP - PL.NODE_H) / 2;
+      for (let r = 2; r <= m.maxN; r++)
+        if (Math.abs(gapY(r) - ya) + Math.abs(gapY(r) - yb) < Math.abs(gapY(best) - ya) + Math.abs(gapY(best) - yb)) best = r;
+      const k = laneUse.get(best) ?? 0;
+      laneUse.set(best, k + 1);
+      lane = gapY(best) + [0, -6, 6][k % 3];
+    }
+    const d = planEdgePath(a, b, m, lane);
     const kind = m.cycleEdges.has(i) ? 'cycle' : m.chainPairs.has(`${e.from}\u0000${e.to}`) ? 'chain' : '';
     if (!kind) return plain.append(svgEl('path', { d, 'marker-end': 'url(#pl-ah)' }));
     const color = kind === 'cycle' ? '#e06c75' : '#5dd3a8';
@@ -4403,13 +4475,29 @@ function planIssueIcon(kind) {
   return svg;
 }
 
+// The strip's two containers are persistent (index.html) and only re-filled when
+// the issues change, so a screen reader doesn't re-announce the alert on every render.
 function renderPlanStrip(v, m) {
   const titles = new Map(m.nodes.map((n) => [n.id, n.title || n.id]));
+  const { errors, warnings } = v.validation;
+  const loops = errors.filter((it) => it.code === 'cycle' || it.code === 'self_loop');
+  const key = JSON.stringify([
+    v.draft.id,
+    errors,
+    warnings,
+    plan.stripError,
+    loops.map((it) => [(it.nodes ?? []).map((id) => titles.get(id)), m.newestEdge(it)]),
+  ]);
+  const syncBusy = () => $('pl-strip').querySelectorAll('.pl-remove').forEach((b) => (b.disabled = plan.busy));
+  if (key === plan.stripKey) return syncBusy();
+  plan.stripKey = key;
   const issue = (it, kind, key) => {
     const row = node('div', `pl-issue ${kind}`);
     const text = node('span', 'pl-issue-text');
     if (it.code === 'cycle' && it.nodes?.length) {
       text.append(node('b', '', 'Cycle:'), ` ${[...it.nodes, it.nodes[0]].map((id) => titles.get(id) ?? id).join(' → ')}. Remove one arrow.`);
+    } else if (it.code === 'self_loop' && it.nodes?.length) {
+      text.append(node('b', '', 'Cycle:'), ` ${titles.get(it.nodes[0]) ?? it.nodes[0]} depends on itself. Remove the arrow.`);
     } else text.textContent = it.message;
     row.append(planIssueIcon(kind), text);
     if (it.nodes?.length) {
@@ -4423,23 +4511,21 @@ function renderPlanStrip(v, m) {
       };
       row.append(show);
     }
-    if (it.code === 'cycle' && m.newestCycleEdge && !EMBED) {
+    const edge = m.newestEdge(it);
+    if (edge && !EMBED) {
       const rm = node('button', 'pl-remove', 'Remove newest arrow');
       rm.type = 'button';
-      rm.disabled = plan.busy;
-      rm.onclick = () => removePlanEdge(m.newestCycleEdge);
+      rm.onclick = () => removePlanEdge(edge);
       row.append(rm);
     }
     return row;
   };
-  const errs = node('div', 'pl-issues');
-  errs.setAttribute('role', 'alert');
-  errs.append(...v.validation.errors.map((it, i) => issue(it, 'error', `e${i}`)));
-  if (plan.stripError) errs.append(node('div', 'pl-issue error pl-strip-err', plan.stripError));
-  const warns = node('div', 'pl-issues');
-  warns.setAttribute('role', 'status');
-  warns.append(...v.validation.warnings.map((it, i) => issue(it, 'warn', `w${i}`)));
-  $('pl-strip').replaceChildren(errs, warns);
+  const errs = errors.map((it, i) => issue(it, 'error', `e${i}`));
+  if (plan.stripError) errs.push(node('div', 'pl-issue error pl-strip-err', plan.stripError));
+  $('pl-errors').replaceChildren(...errs);
+  $('pl-warns').replaceChildren(...warnings.map((it, i) => issue(it, 'warn', `w${i}`)));
+  syncBusy();
+  updatePlanMarks();
 }
 
 async function removePlanEdge(edge) {
@@ -4461,6 +4547,11 @@ async function removePlanEdge(edge) {
     /* handled below */
   }
   plan.busy = false;
+  if (plan.openId !== v.draft.id) {
+    // another draft was opened meanwhile: just re-enable its buttons
+    if (plan.view?.draft.id === plan.openId) renderPlanStrip(plan.view, planModel(plan.view));
+    return;
+  }
   if (res?.ok) return setPlanView(out);
   if (res?.status === 409) return openPlan(v.draft.id, true); // changed under us — show the latest
   plan.stripError = typeof out.error === 'string' && out.error ? `Couldn’t remove the arrow: ${out.error}` : 'Couldn’t reach the daemon — try again.';
@@ -4475,6 +4566,7 @@ function applyPlanXf() {
 }
 
 function planZoomAt(factor, cx, cy) {
+  plan.autoFit = null;
   const { x, y, k } = plan.xf;
   const nk = Math.min(PL_ZOOM_MAX, Math.max(PL_ZOOM_MIN, k * factor));
   plan.xf = { k: nk, x: cx - ((cx - x) * nk) / k, y: cy - ((cy - y) * nk) / k };
@@ -4492,6 +4584,7 @@ function planFit(minK = PL_ZOOM_MIN) {
   if (!c.clientWidth || !W) return;
   const k = Math.min(1, Math.max(minK, Math.min((c.clientWidth - 24) / W, (c.clientHeight - 24) / H)));
   plan.xf = { k, x: Math.max(12, (c.clientWidth - W * k) / 2), y: 12 };
+  plan.autoFit = minK; // re-fit when the canvas or the graph resizes, until the user pans/zooms
   applyPlanXf();
 }
 
@@ -4505,6 +4598,7 @@ function planReveal(ids) {
   const ys = pts.flatMap((b) => [b.offsetTop, b.offsetTop + PL.NODE_H]);
   const [l, r, t, bm] = [Math.min(...xs) * k + x, Math.max(...xs) * k + x, Math.min(...ys) * k + y, Math.max(...ys) * k + y];
   if (l >= 0 && t >= 0 && r <= c.clientWidth && bm <= c.clientHeight) return;
+  plan.autoFit = null;
   plan.xf = { k, x: x + c.clientWidth / 2 - (l + r) / 2, y: y + c.clientHeight / 2 - (t + bm) / 2 };
   applyPlanXf();
 }
@@ -4531,6 +4625,7 @@ function planReveal(ids) {
   });
   canvas.addEventListener('pointermove', (e) => {
     if (!drag || e.pointerId !== drag.id) return;
+    plan.autoFit = null;
     plan.xf = { ...plan.xf, x: drag.x + e.clientX - drag.sx, y: drag.y + e.clientY - drag.sy };
     applyPlanXf();
   });
@@ -4540,6 +4635,10 @@ function planReveal(ids) {
     canvas.classList.remove('panning');
   };
   canvas.addEventListener('pointerup', end);
+  // the validation strip growing (a cycle appears) shrinks the canvas: re-fit if still fitted
+  new ResizeObserver(() => {
+    if (plan.autoFit !== null && plan.view && activeView === 'planner') planFit(plan.autoFit);
+  }).observe(canvas);
   canvas.addEventListener('pointercancel', end);
   canvas.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
