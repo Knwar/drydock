@@ -253,6 +253,7 @@
         <button class="st-tab active" data-tab="general">General</button>
         <button class="st-tab" data-tab="skills">Skills</button>
         <button class="st-tab" data-tab="team">Team</button>
+        <button class="st-tab" data-tab="board">Board</button>
       </nav>
       <div class="settings-main">
         <button id="settings-close" title="Close">✕</button>
@@ -287,6 +288,12 @@
           </div>
           <div id="skills-list" class="st-list"></div>
           <div id="skill-detail" class="st-detail hidden"></div>
+        </section>
+
+        <section class="st-panel hidden" data-panel="board">
+          <div class="st-head"><h3>Board health</h3></div>
+          <p class="st-hint">Flag cards that sit too long in a lane, and warn when a lane holds too many. Saved for this board.</p>
+          <div id="board-settings" class="st-list"></div>
         </section>
 
         <section class="st-panel hidden" data-panel="team">

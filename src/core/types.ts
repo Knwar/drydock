@@ -7,6 +7,7 @@ export interface Project {
   root_path: string;
   parent_id: string | null; // workspace this vertical belongs to, or null (top-level)
   autopilot: number; // 1 = daemon nudges an idle session that has queued cards (default 0)
+  board_settings: string | null; // JSON BoardSettings, or null (defaults) — read via getBoardSettings
   created_at: number;
 }
 
@@ -82,6 +83,13 @@ export interface CardSummary {
   blocked: boolean; // a builder raised a blocker on this card
   blocked_reason: string | null; // the decision/question it needs
   subs: { done: number; total: number } | null;
+  lane_since: number | null; // epoch ms an in-flight card entered its lane (last move into it, else creation); null otherwise
+}
+
+/** Per-board work-in-progress health config (projects.board_settings). */
+export interface BoardSettings {
+  stuck_hours: { queued: number; in_progress: number; in_review: number }; // a card longer than this in the lane is "stuck"
+  wip: { in_progress: number | null; in_review: number | null }; // optional lane limits (null = none); warn only
 }
 
 /** The canonical set of event types, the single source of truth for the union
@@ -254,8 +262,9 @@ export interface AttentionItem {
 export interface BoardSummary {
   project: { id: string; name: string; root_path: string; parent_id: string | null; autopilot: number };
   lanes: Record<Lane, number>;
-  active: { id: string; title: string; lane: Lane; agent: string | null; blocked: boolean }[];
+  active: { id: string; title: string; lane: Lane; agent: string | null; blocked: boolean; lane_since: number }[];
   blocked: number; // open cards with a raised blocker
+  settings: BoardSettings; // stuck thresholds + WIP limits
   phase: { id: string; title: string; done: number; total: number } | null; // the active phase
   totals: CardTotals & { cards: number };
 }

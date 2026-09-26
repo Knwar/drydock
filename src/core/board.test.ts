@@ -456,7 +456,7 @@ describe('board reads', () => {
     const { db, project } = setup();
     createTask(db, project.id, 'First', { requirements: 'long spec text' });
     const [card] = getBoard(db, project.id);
-    assert.deepEqual(Object.keys(card).sort(), ['agent', 'blocked', 'blocked_reason', 'id', 'lane', 'phase_id', 'rounds', 'skill', 'subs', 'tag', 'title', 'updated_at']);
+    assert.deepEqual(Object.keys(card).sort(), ['agent', 'blocked', 'blocked_reason', 'id', 'lane', 'lane_since', 'phase_id', 'rounds', 'skill', 'subs', 'tag', 'title', 'updated_at']);
   });
 
   it('active cards are the in_progress lane', () => {
@@ -895,11 +895,14 @@ describe('workspace summary', () => {
     const [wsB, mB, webB] = sum.boards;
     assert.deepEqual(mB.project, { id: mobile.id, name: 'Mobile', root_path: mobile.root_path, parent_id: ws.id, autopilot: 0 });
     assert.deepEqual(mB.lanes, { backlog: 1, queued: 1, in_progress: 2, in_review: 1, done: 1 });
-    assert.deepEqual(mB.active, [
-      { id: a.id, title: 'Building A', lane: 'in_progress', agent: 'Ada', blocked: false },
-      { id: b.id, title: 'Building B', lane: 'in_progress', agent: null, blocked: true },
-      { id: rev.id, title: 'Reviewing', lane: 'in_review', agent: null, blocked: false },
-    ]);
+    assert.deepEqual(
+      mB.active.map(({ lane_since, ...c }) => (assert.equal(typeof lane_since, 'number'), c)),
+      [
+        { id: a.id, title: 'Building A', lane: 'in_progress', agent: 'Ada', blocked: false },
+        { id: b.id, title: 'Building B', lane: 'in_progress', agent: null, blocked: true },
+        { id: rev.id, title: 'Reviewing', lane: 'in_review', agent: null, blocked: false },
+      ],
+    );
     assert.equal(mB.blocked, 1);
     assert.deepEqual(mB.phase, { id: phase.id, title: 'Launch', done: 1, total: 2 });
     assert.deepEqual(mB.totals, { cards: 2, tokens: 1500, tokens_out: 300, lines_added: 40, lines_removed: 7, ms: 90000 });

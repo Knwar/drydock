@@ -238,6 +238,7 @@ function toCard(task: Task) {
     blocked: !!task.blocked_at,
     blocked_reason: task.blocked_reason,
     subs: board.progressOf(task.subtasks),
+    lane_since: board.laneSince(db, task.id),
   };
 }
 
@@ -1184,7 +1185,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
   }
 
-  const projMatch = pathname.match(/^\/project\/([^/]+)(?:\/(repo|autopilot))?$/);
+  const projMatch = pathname.match(/^\/project\/([^/]+)(?:\/(repo|autopilot|settings))?$/);
   if (projMatch && projMatch[1] !== 'new' && projMatch[1] !== 'pick') {
     const [, pid, action] = projMatch;
     if (method === 'DELETE' && !action) {
@@ -1215,6 +1216,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       if (project.parent_id) announceVerticals(project.parent_id);
       else flushEvents();
       return json(res, 200, { project_id: pid, autopilot: project.autopilot });
+    }
+    if (action === 'settings' && (method === 'GET' || method === 'PUT')) {
+      if (!projectRoot(pid)) return json(res, 404, { error: 'unknown project' });
+      if (method === 'GET') return json(res, 200, board.getBoardSettings(db, pid));
+      if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+      const b = await readBody(req);
+      let settings;
+      try {
+        settings = board.setBoardSettings(db, pid, b);
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+      broadcaster.send(pid, { type: 'settings', project_id: pid, settings });
+      return json(res, 200, settings);
     }
   }
 
