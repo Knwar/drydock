@@ -83,7 +83,12 @@ if (cmd === 'add') {
   let base = git('rev-parse', '--abbrev-ref', 'HEAD');
   if (base === 'HEAD') base = git('rev-parse', 'HEAD'); // detached: the commit itself
   git('worktree', 'add', tree, '-b', branch);
-  git('config', `branch.${branch}.kankanbase`, base);
+  try {
+    git('config', `branch.${branch}.kankanbase`, base);
+  } catch (err) {
+    // the worktree and branch exist: only the lines base is missing (counted against the current branch)
+    console.warn(`warning: couldn't record the base branch for ${branch}: ${err.message}`);
+  }
   console.log(`${tree} on ${branch}`);
 } else if (cmd === 'remove') {
   git('worktree', 'remove', ...(flag === '--force' ? ['--force'] : []), tree);

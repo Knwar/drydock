@@ -91,7 +91,7 @@ const codes = (issues: { code: string }[]) => issues.map((i) => i.code);
 describe('validatePlan', () => {
   it('a clean plan has no issues', () => {
     const v = validatePlan({ nodes: [node('a'), node('b')], edges: es('a>b') }, CTX);
-    assert.deepEqual(v, { errors: [], warnings: [] });
+    assert.deepEqual(v, { errors: [], warnings: [], groups: [] });
   });
 
   it('empty title', () => {
@@ -186,6 +186,43 @@ describe('validatePlan', () => {
         CTX,
       );
       assert.deepEqual(v.warnings, []);
+    });
+
+    it('groups the pairs per path: one issue listing every card, per-pair warnings kept', () => {
+      const t = (id: string, touches: string[]) => node(id, { title: id.toUpperCase(), touches });
+      const v = validatePlan(
+        {
+          nodes: [
+            t('a', ['src/server.ts']),
+            t('b', ['src/server.ts', 'src/db.ts']),
+            t('c', ['./src/server.ts']),
+            t('d', ['src/db.ts']),
+            t('e', ['src/server.ts']), // sequenced after a: still parallel with b and c
+          ],
+          edges: es('a>e'),
+        },
+        CTX,
+      );
+      assert.equal(v.warnings.filter((w) => w.code === 'shared_file').length, 6); // ab ac bc bd be ce
+      assert.deepEqual(
+        v.groups.map((g) => [g.code, g.nodes]),
+        [
+          ['shared_file_group', ['a', 'b', 'c', 'e']],
+          ['shared_file_group', ['b', 'd']],
+        ],
+      );
+      assert.equal(v.groups[0].message, '4 cards touch src/server.ts and some of them can run in parallel: sequence them');
+      assert.equal(v.groups[1].message, '"B" and "D" can run in parallel but both touch src/db.ts: sequence them');
+    });
+
+    it('paths with the same cards share one group; no groups without shared files', () => {
+      const v = validatePlan(
+        { nodes: [node('a', { touches: ['x.ts', 'y.ts'] }), node('b', { touches: ['y.ts', 'x.ts'] })], edges: [] },
+        CTX,
+      );
+      assert.equal(v.groups.length, 1);
+      assert.match(v.groups[0].message, /both touch x\.ts, y\.ts: sequence them/);
+      assert.deepEqual(validatePlan({ nodes: [node('a'), node('b')], edges: [] }, CTX).groups, []);
     });
 
     it('no warning for disjoint paths', () => {

@@ -28,6 +28,16 @@ header {
   align-items: center;
 }
 
+/* the daemon runs older code than is on disk (see checkDaemonVersion) */
+.version-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin: 8px 0 0; padding: 6px 10px; font-size: 12.5px;
+  color: #e5c07b; background: rgba(229, 192, 123, 0.08);
+  border: 1px solid rgba(229, 192, 123, 0.4); border-radius: 10px;
+}
+.version-banner code { color: var(--text); }
+.version-banner button { background: none; border: 0; color: inherit; font: inherit; font-size: 16px; line-height: 1; cursor: pointer; }
+
 .head-left, .head-right { display: flex; gap: 14px; align-items: baseline; }
 .head-right { justify-content: flex-end; }
 

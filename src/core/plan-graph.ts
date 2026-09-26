@@ -257,6 +257,30 @@ function ownersOf(path: string, verticals: PlanBoard[]): PlanBoard[] {
 
 // ── validation ──
 
+/**
+ * One `shared_file_group` issue per touched path (paths with the very same set
+ * of cards share one issue), cards in node order, groups in first-seen order.
+ */
+function sharedFileGroups(byPath: Map<string, Set<string>>, nodes: Pick<PlanNode, 'id' | 'title'>[]): PlanIssue[] {
+  const order = new Map(nodes.map((n, i) => [n.id, i]));
+  const title = new Map(nodes.map((n) => [n.id, n.title]));
+  const bySet = new Map<string, { paths: string[]; ids: string[] }>();
+  for (const [path, set] of byPath) {
+    const ids = [...set].sort((x, y) => order.get(x)! - order.get(y)!);
+    const key = ids.join('\u0000');
+    if (bySet.has(key)) bySet.get(key)!.paths.push(path);
+    else bySet.set(key, { paths: [path], ids });
+  }
+  return [...bySet.values()].map(({ paths, ids }) => ({
+    code: 'shared_file_group',
+    message:
+      ids.length === 2
+        ? `"${title.get(ids[0])}" and "${title.get(ids[1])}" can run in parallel but both touch ${paths.join(', ')}: sequence them`
+        : `${ids.length} cards touch ${paths.join(', ')} and some of them can run in parallel: sequence them`,
+    nodes: ids,
+  }));
+}
+
 /** Commit-blocking errors and informational warnings for a draft. */
 export function validatePlan(data: Pick<PlanData, 'nodes' | 'edges'>, ctx: PlanContext): PlanValidation {
   const errors: PlanIssue[] = [];
@@ -323,6 +347,7 @@ export function validatePlan(data: Pick<PlanData, 'nodes' | 'edges'>, ctx: PlanC
   // Warnings consider each node id once (first occurrence).
   const unique = nodes.filter((n, i) => nodes.findIndex((m) => m.id === n.id) === i);
 
+  const byPath = new Map<string, Set<string>>(); // touched path → ids of the cards in parallel pairs on it
   for (let i = 0; i < unique.length; i++) {
     for (let j = i + 1; j < unique.length; j++) {
       const a = unique[i];
@@ -335,8 +360,14 @@ export function validatePlan(data: Pick<PlanData, 'nodes' | 'edges'>, ctx: PlanC
         message: `"${a.title}" and "${b.title}" can run in parallel but both touch ${shared.join(', ')}: sequence them`,
         nodes: [a.id, b.id],
       });
+      const theirs = b.touches.filter((q) => a.touches!.some((p) => overlaps(p, q)));
+      for (const p of new Set([...shared, ...theirs].map(normPath))) {
+        if (!byPath.has(p)) byPath.set(p, new Set());
+        byPath.get(p)!.add(a.id).add(b.id);
+      }
     }
   }
+  const groups = sharedFileGroups(byPath, unique);
 
   const verticals = ctx.boards.filter((b) => normPath(b.root) !== '');
   for (const n of unique) {
@@ -379,5 +410,5 @@ export function validatePlan(data: Pick<PlanData, 'nodes' | 'edges'>, ctx: PlanC
       });
   }
 
-  return { errors, warnings };
+  return { errors, warnings, groups };
 }

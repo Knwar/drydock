@@ -56,8 +56,14 @@ export function sumNumstat(out: string): Lines {
   return { added, removed };
 }
 
+/** Each git call is killed after this long, so a stuck repo can't hang a recount. */
+export const GIT_TIMEOUT_MS = 20_000;
+
 async function git(repo: string, ...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync('git', ['-C', repo, ...args], { maxBuffer: 64 * 1024 * 1024 });
+  const { stdout } = await execFileAsync('git', ['-C', repo, ...args], {
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: GIT_TIMEOUT_MS,
+  });
   return stdout;
 }
 
@@ -79,6 +85,17 @@ export async function mergeCommits(repo: string): Promise<Map<string, string>> {
   return map;
 }
 
+/** Sha of one card's (most recent) merge commit across all refs, or null. Searches
+ *  for that card only; the subject must name exactly this id (not a longer one). */
+export async function mergeCommit(repo: string, taskId: string): Promise<string | null> {
+  const out = await git(repo, 'log', '--all', '--merges', '--fixed-strings', '--grep', `card/${taskId}`, '--format=%H %s');
+  for (const line of out.split('\n')) {
+    const sp = line.indexOf(' ');
+    if (MERGE_SUBJECT.exec(line.slice(sp + 1))?.[1] === taskId) return line.slice(0, sp); // newest first
+  }
+  return null;
+}
+
 /** The branch a card worktree was created from, as recorded by `kankan worktree add`. */
 async function recordedBase(repo: string, branch: string): Promise<string | null> {
   try {
@@ -93,7 +110,7 @@ export type LinesSource = 'merge' | 'branch';
 /**
  * A card's lines from git: its merge commit if merged, else its branch vs its
  * base. Null when neither exists (or `repo` isn't a git repo). Pass `merges`
- * (from mergeCommits) to avoid re-reading the log per card.
+ * (from mergeCommits) when counting many cards; otherwise only this card's merge is searched.
  */
 export async function cardLines(
   repo: string,
@@ -101,7 +118,7 @@ export async function cardLines(
   merges?: Map<string, string>,
 ): Promise<(Lines & { source: LinesSource }) | null> {
   try {
-    const sha = (merges ?? (await mergeCommits(repo))).get(taskId);
+    const sha = merges ? merges.get(taskId) : await mergeCommit(repo, taskId);
     if (sha) return { ...(await numstat(repo, `${sha}^1`, sha)), source: 'merge' };
     const branch = `card/${taskId}`;
     try {
