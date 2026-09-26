@@ -138,6 +138,18 @@ CREATE TABLE IF NOT EXISTS sync_links (  -- local<->remote link state for the br
   UNIQUE (provider, local_id)                -- one link per (provider, local card)
 );
 
+CREATE TABLE IF NOT EXISTS plan_drafts (  -- visual-planner drafts: a workspace-wide plan kept off the board until committed
+  id                TEXT PRIMARY KEY,         -- short id
+  workspace_id      TEXT NOT NULL,            -- top-level project (a workspace or a standalone project), never a vertical
+  title             TEXT NOT NULL,
+  version           INTEGER NOT NULL DEFAULT 1,  -- bumped on every applied ops batch
+  data              TEXT NOT NULL,            -- JSON PlanData: {nodes, edges, committed}
+  committed_version INTEGER,                  -- version last committed to the boards, or null
+  committed_at      INTEGER,                  -- epoch ms of the last commit, or null
+  created_at        INTEGER,
+  updated_at        INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_project_lane ON tasks(project_id, lane, position);
 CREATE INDEX IF NOT EXISTS idx_phases_project ON phases(project_id, position);
 CREATE INDEX IF NOT EXISTS idx_events_recent ON task_events(project_id, created_at);
@@ -146,3 +158,4 @@ CREATE INDEX IF NOT EXISTS idx_card_activity_project ON card_activity(project_id
 CREATE INDEX IF NOT EXISTS idx_card_activity_task ON card_activity(task_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_task ON reviews(task_id);
 CREATE INDEX IF NOT EXISTS idx_events_task ON task_events(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_plan_drafts_workspace ON plan_drafts(workspace_id);
