@@ -225,9 +225,16 @@
             <button id="pl-show-plans" class="pl-iconbtn hidden" type="button" aria-label="Show plans" aria-expanded="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></button>
             <h1 id="pl-title"></h1>
             <span id="pl-chip" class="pl-chip"></span>
-            <span id="pl-saved" class="pl-saved"></span>
+            <button id="pl-saved" class="pl-saved" type="button" disabled></button>
+            <span id="pl-live-bar" class="pl-live-bar hidden" aria-hidden="true"><span class="pl-live-bar-done"></span><span class="pl-live-bar-busy"></span></span>
+            <span id="pl-live-sum" class="pl-live-sum hidden"></span>
             <div class="pl-grow"></div>
             <span id="pl-errcount" class="pl-errcount"></span>
+            <div id="pl-mode" class="pl-mode hidden" role="group" aria-label="View">
+              <button id="pl-mode-plan" type="button" aria-pressed="true">Plan</button>
+              <button id="pl-mode-live" type="button" aria-pressed="false"><span class="pl-live-dot" aria-hidden="true"></span>Live</button>
+            </div>
+            <button id="pl-open-kanban" class="pl-kanban hidden" type="button">Open in Kanban</button>
             <button id="pl-run" class="pl-run" type="button" disabled><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg>Run</button>
             <button id="pl-commit" class="pl-commit" type="button" disabled>Commit</button>
           </div>
@@ -259,6 +266,7 @@
           <div id="pl-strip" class="pl-strip">
             <div id="pl-errors" class="pl-issues" role="alert"></div>
             <div id="pl-warns" class="pl-issues" role="status"></div>
+            <div id="pl-live-strip" class="pl-issues" role="status"></div>
           </div>
         </div>
       </div>
