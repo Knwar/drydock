@@ -367,8 +367,10 @@ function draftWorkspace(projectId: string): string | null {
   return row ? (row.parent_id ?? row.id) : null;
 }
 
-/** DraftError → 404 (not_found) or 400 {error, code}; anything else rethrows. */
+/** DraftConflict → 409 {error, code, errors?, version?}; DraftError → 404 (not_found) or 400 {error, code}; anything else rethrows. */
 function draftError(res: ServerResponse, err: unknown): void {
+  if (err instanceof drafts.DraftConflict)
+    return json(res, 409, { error: err.message, code: err.code, errors: err.errors, version: err.version });
   if (!(err instanceof drafts.DraftError)) throw err;
   json(res, err.code === 'not_found' ? 404 : 400, { error: err.message, code: err.code });
 }
@@ -1109,6 +1111,48 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const draft = drafts.applyDraftOps(db, id, b.ops);
       announceDraft(draft);
       return json(res, 200, draftView(draft));
+    } catch (err) {
+      return draftError(res, err);
+    }
+  }
+
+  const draftAction = pathname.match(/^\/plan-drafts\/([^/]+)\/(diff|commit|run)$/);
+  if (draftAction && method === (draftAction[2] === 'diff' ? 'GET' : 'POST')) {
+    const [, id, action] = draftAction;
+    if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+    try {
+      if (action === 'diff') return json(res, 200, drafts.diffDraft(db, id));
+      const b = await readBody(req);
+      if (action === 'commit') {
+        if (typeof b.version !== 'number' || !Number.isFinite(b.version))
+          return json(res, 400, { error: 'version (number) required' });
+        const result = drafts.commitDraft(db, id, b.version);
+        for (const m of result.moved)
+          broadcaster.send(m.from, { type: 'card_removed', project_id: m.from, card_id: m.id });
+        for (const d of result.deleted)
+          broadcaster.send(d.project_id, { type: 'card_removed', project_id: d.project_id, card_id: d.id });
+        flushEvents();
+        const gone = new Set(result.deleted.map((d) => d.id));
+        const cards = new Set([...result.touched, ...result.deleted.flatMap((d) => d.unblocked)]);
+        for (const cardId of cards) if (!gone.has(cardId)) announce(board.getTask(db, cardId));
+        for (const pid of result.boards) announcePhases(pid);
+        announceDraft(result.draft);
+        return json(res, 200, { diff: result.diff, draft: draftView(result.draft) });
+      }
+      const result = drafts.runDraft(db, id, b.mode);
+      for (const cardId of result.queued) announce(board.getTask(db, cardId));
+      for (const { board_id, already_on } of result.autopilot.enabled) {
+        if (already_on) continue;
+        broadcaster.send(board_id, { type: 'autopilot', project_id: board_id, on: true });
+        const parent = (db.prepare('SELECT parent_id FROM projects WHERE id = ?').get(board_id) as {
+          parent_id: string | null;
+        }).parent_id;
+        if (parent) announceVerticals(parent);
+      }
+      flushEvents();
+      const draft = drafts.getDraft(db, id)!;
+      announceDraft(draft);
+      return json(res, 200, result);
     } catch (err) {
       return draftError(res, err);
     }
