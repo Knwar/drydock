@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS projects (
   root_path   TEXT NOT NULL UNIQUE,       -- absolute cwd, for get_or_create
   parent_id   TEXT REFERENCES projects(id),  -- workspace this vertical belongs to, or null (top-level)
   autopilot   INTEGER NOT NULL DEFAULT 0, -- 1 = daemon nudges an idle session that has queued cards
+  board_settings TEXT,                    -- JSON: per-board stuck thresholds + WIP limits, or null (defaults)
   created_at  INTEGER NOT NULL
 );
 

@@ -10,6 +10,7 @@ import {
   type AgentStat,
   type AttentionItem,
   type AttentionSeverity,
+  type BoardSettings,
   type BoardSummary,
   type CardPlacement,
   type CardSummary,
@@ -147,6 +148,7 @@ export function getOrCreateProject(db: DB, rootPath: string, name?: string): Pro
     root_path: root,
     parent_id: null,
     autopilot: 0,
+    board_settings: null,
     created_at: now(),
   };
   db.prepare('INSERT INTO projects (id, name, root_path, created_at) VALUES (?, ?, ?, ?)').run(
@@ -218,7 +220,7 @@ export function createVertical(db: DB, workspaceId: string, name: string, rootPa
       );
       vertical = { ...existing, parent_id: workspace.id, name };
     } else {
-      vertical = { id: randomUUID(), name, root_path: root, parent_id: workspace.id, autopilot: 0, created_at: now() };
+      vertical = { id: randomUUID(), name, root_path: root, parent_id: workspace.id, autopilot: 0, board_settings: null, created_at: now() };
       db.prepare(
         'INSERT INTO projects (id, name, root_path, parent_id, created_at) VALUES (?, ?, ?, ?, ?)',
       ).run(vertical.id, vertical.name, vertical.root_path, vertical.parent_id, vertical.created_at);
@@ -524,6 +526,51 @@ export function setAutopilot(db: DB, projectId: string, on: boolean): Project {
     appendEvent(db, { project_id: projectId, type: 'autopilot', payload: { on } });
     return { ...project, autopilot: on ? 1 : 0 };
   })();
+}
+
+export const DEFAULT_BOARD_SETTINGS: BoardSettings = {
+  stuck_hours: { queued: 72, in_progress: 24, in_review: 24 },
+  wip: { in_progress: null, in_review: null },
+};
+
+/** A board's stuck thresholds + WIP limits: the stored JSON over the defaults. */
+export function getBoardSettings(db: DB, projectId: string): BoardSettings {
+  const row = db.prepare('SELECT board_settings FROM projects WHERE id = ?').get(projectId) as
+    | { board_settings: string | null }
+    | undefined;
+  if (!row) throw new Error(`no such project: ${projectId}`);
+  const stored = row.board_settings ? (JSON.parse(row.board_settings) as Partial<BoardSettings>) : {};
+  return {
+    stuck_hours: { ...DEFAULT_BOARD_SETTINGS.stuck_hours, ...stored.stuck_hours },
+    wip: { ...DEFAULT_BOARD_SETTINGS.wip, ...stored.wip },
+  };
+}
+
+/**
+ * Merge a partial update into a board's settings and store it. stuck_hours
+ * values must be positive numbers; wip values positive integers or null (no
+ * limit). Unknown keys are rejected. Returns the full settings.
+ */
+export function setBoardSettings(
+  db: DB,
+  projectId: string,
+  patch: { stuck_hours?: Record<string, unknown>; wip?: Record<string, unknown> },
+): BoardSettings {
+  const next = getBoardSettings(db, projectId);
+  for (const [lane, v] of Object.entries(patch.stuck_hours ?? {})) {
+    if (!(lane in next.stuck_hours)) throw new Error(`invalid stuck_hours lane: ${lane}`);
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0)
+      throw new Error(`stuck_hours.${lane} must be a positive number`);
+    next.stuck_hours[lane as keyof BoardSettings['stuck_hours']] = v;
+  }
+  for (const [lane, v] of Object.entries(patch.wip ?? {})) {
+    if (!(lane in next.wip)) throw new Error(`invalid wip lane: ${lane}`);
+    if (v !== null && (!Number.isInteger(v) || (v as number) <= 0))
+      throw new Error(`wip.${lane} must be a positive integer or null`);
+    next.wip[lane as keyof BoardSettings['wip']] = v as number | null;
+  }
+  db.prepare('UPDATE projects SET board_settings = ? WHERE id = ?').run(JSON.stringify(next), projectId);
+  return next;
 }
 
 /** Unregister a project and everything it owns from the board. The folder on disk is left untouched. */
@@ -1028,8 +1075,20 @@ export function checkSubtask(
   return { task: getTask(db, taskId), moved };
 }
 
-const CARD_COLUMNS =
-  'id, title, lane, tag, skill, assigned_agent AS agent, review_rounds AS rounds, updated_at, phase_id, blocked_at, blocked_reason, subtasks';
+/** When a card entered its current lane: the latest move event into that lane,
+ *  else its creation. A correlated subquery (idx_events_task) over `tasks`. */
+const LANE_SINCE_SQL = `COALESCE((SELECT MAX(e.created_at) FROM task_events e WHERE e.task_id = tasks.id AND e.type = 'move' AND json_extract(e.payload, '$.to') = tasks.lane), tasks.created_at)`;
+
+/** lane_since for one card (see LANE_SINCE_SQL). */
+export function laneSince(db: DB, taskId: string): number {
+  const row = db.prepare(`SELECT ${LANE_SINCE_SQL} AS t FROM tasks WHERE id = ?`).get(taskId) as
+    | { t: number }
+    | undefined;
+  if (!row) throw new Error(`no such task: ${taskId}`);
+  return row.t;
+}
+
+const CARD_COLUMNS = `id, title, lane, tag, skill, assigned_agent AS agent, review_rounds AS rounds, updated_at, phase_id, blocked_at, blocked_reason, subtasks, ${LANE_SINCE_SQL} AS lane_since`;
 
 type CardRow = Omit<CardSummary, 'subs' | 'blocked'> & { subtasks: string | null; blocked_at: number | null };
 
@@ -1527,12 +1586,19 @@ function boardSummary(db: DB, p: Project): BoardSummary {
   const active = (
     db
       .prepare(
-        `SELECT id, title, lane, assigned_agent, blocked_at FROM tasks
+        `SELECT id, title, lane, assigned_agent, blocked_at, ${LANE_SINCE_SQL} AS lane_since FROM tasks
          WHERE project_id = ? AND lane IN ('in_progress', 'in_review')
          ORDER BY CASE lane WHEN 'in_progress' THEN 0 ELSE 1 END, position`,
       )
-      .all(p.id) as Pick<Task, 'id' | 'title' | 'lane' | 'assigned_agent' | 'blocked_at'>[]
-  ).map((t) => ({ id: t.id, title: t.title, lane: t.lane, agent: t.assigned_agent, blocked: t.blocked_at != null }));
+      .all(p.id) as (Pick<Task, 'id' | 'title' | 'lane' | 'assigned_agent' | 'blocked_at'> & { lane_since: number })[]
+  ).map((t) => ({
+    id: t.id,
+    title: t.title,
+    lane: t.lane,
+    agent: t.assigned_agent,
+    blocked: t.blocked_at != null,
+    lane_since: t.lane_since,
+  }));
   const { n: blocked } = db
     .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE project_id = ? AND blocked_at IS NOT NULL AND lane != 'done'`)
     .get(p.id) as { n: number };
@@ -1549,6 +1615,7 @@ function boardSummary(db: DB, p: Project): BoardSummary {
     lanes,
     active,
     blocked,
+    settings: getBoardSettings(db, p.id),
     phase: ap && prog ? { id: ap.id, title: ap.title, done: prog.done ?? 0, total: prog.total } : null,
     totals: getTotals(db, p.id),
   };

@@ -2193,3 +2193,17 @@ body.embed #planner-view { border-radius: 0; }
 .pl-open.live .pl-live-sum { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pl-open.live .pl-head { gap: 10px; }
 .pl-open.live .pl-live-bar { flex: 0 1 120px; min-width: 40px; }
+
+/* lane health: age in lane, stuck flag (amber), WIP limit warning */
+.age { flex: none; font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.age.stuck { color: #f0a53c; border: 1px solid #f0a53c; border-radius: 3px; padding: 0 4px; font-weight: 600; background: rgba(240, 165, 60, 0.1); }
+.lane-count.wip-over { color: #f0a53c; border: 1px solid #f0a53c; border-radius: 3px; padding: 0 4px; font-weight: 700; }
+.lane-count.wip-over::before { content: '⚠ '; }
+.dt-lane.wip-over { background: rgba(240, 165, 60, 0.12); box-shadow: inset 0 0 0 1px #f0a53c; }
+.dt-lane.wip-over .dt-lane-n { color: #f0a53c; }
+.st-num {
+  width: 90px; background: #1b1f2a; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 8px;
+  color: var(--text); font-size: 13px; padding: 7px 10px; outline: none;
+}
+.st-num:focus { border-color: var(--accent); }
+.st-num.bad { border-color: #e06c75; }
