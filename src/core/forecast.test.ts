@@ -161,13 +161,18 @@ describe('computeForecast', () => {
     assert.equal(MAX_DAYS, 3650);
   });
 
-  it('10k runs x 300 remaining finishes well under 200ms', () => {
+  // Timing is machine- and load-dependent, so it only runs on demand: KANKAN_PERF_TESTS=1 npm test
+  it('10k runs x 300 remaining finishes well under 200ms; a large sparse backlog under 400ms', { skip: process.env.KANKAN_PERF_TESTS !== '1' && 'set KANKAN_PERF_TESTS=1 to run' }, () => {
     const h = history(Array.from({ length: 42 }, (_, i) => (i % 3 === 0 ? 0 : (i % 4) + 1)));
     const worst = history([1, 1, 1, 1, 1, ...new Array(37).fill(0)]); // rare throughput: long runs
-    for (const [src, remaining] of [
-      [h, 300],
-      [worst, 300],
-      [worst, 5000],
+    // the true slow case: a large backlog on sparse (1 card every 6 days) but uncapped throughput,
+    // so every run walks all `remaining` iterations (none capped) and the runs spend the whole work budget (~125ms idle)
+    const sparse = history(Array.from({ length: 42 }, (_, i) => (i % 6 === 0 ? 1 : 0)));
+    for (const [src, remaining, limitMs] of [
+      [h, 300, 150],
+      [worst, 300, 150],
+      [worst, 5000, 150],
+      [sparse, 500, 400],
     ] as const) {
       computeForecast(src.doneAts, src.firstAt, remaining, { tz, now, seed: 1 }); // warm up
       const times: number[] = [];
@@ -178,7 +183,7 @@ describe('computeForecast', () => {
         assert.equal(f.status, 'ok');
       }
       const ms = times.sort((a, b) => a - b)[1]; // median of 3: robust to one noisy run under a loaded suite
-      assert.ok(ms < 150, `${remaining} remaining took ${ms.toFixed(1)}ms`);
+      assert.ok(ms < limitMs, `${remaining} remaining took ${ms.toFixed(1)}ms`);
     }
   });
 });

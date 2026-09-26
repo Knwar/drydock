@@ -74,6 +74,7 @@ describe('MCP get_metrics', () => {
     assert.equal(s.points, undefined, 'no full series');
     assert.equal(s.cfd, undefined, 'no full series');
     assert.deepEqual(s.waiting, { count: 0, longestMs: null });
+    assert.deepEqual(s.cost, { period: 0, estimatedShare: null });
 
     const api = JSON.parse((await call({ project_id: projectId, tag: 'api' })).content[0].text);
     assert.equal(api.cycleTime.count, 0);
@@ -99,6 +100,17 @@ describe('MCP get_metrics', () => {
     assert.deepEqual(after.waiting, { count: 0, longestMs: null });
   });
 
+  it('adds the cost of the window: USD spent + the estimated share', async () => {
+    // placeholder rates: claude-opus-5-5 input 15/M; the tokens-only run is estimated at its cache-read rate (1.5/M)
+    await send('POST', `/task/${doneId}/activity`, { agent: 'builder', usage: { 'claude-opus-5-5': { input: 1_000_000 } } });
+    assert.deepEqual(JSON.parse((await call({ project_id: projectId })).content[0].text).cost, { period: 15, estimatedShare: 0 });
+    await send('POST', `/task/${doneId}/activity`, { agent: 'builder', tokens: 1_000_000, tokens_out: 0 });
+    const s = JSON.parse((await call({ project_id: projectId })).content[0].text);
+    assert.deepEqual(s.cost, { period: 16.5, estimatedShare: Math.round((1.5 / 16.5) * 1e6) / 1e6 });
+    // filters pass through: nothing credited to this agent
+    assert.deepEqual(JSON.parse((await call({ project_id: projectId, agent: 'nobody' })).content[0].text).cost, { period: 0, estimatedShare: null });
+  });
+
   it('surfaces bad params and unknown projects as tool errors', async () => {
     const bad = await call({ project_id: projectId, from: 'whenever' });
     assert.equal(bad.isError, true);
@@ -122,6 +134,35 @@ describe('MCP get_metrics', () => {
     const unknown = (await client!.callTool({ name: 'get_forecast', arguments: { plan_id: 'nope' } })) as ToolOut;
     assert.equal(unknown.isError, true);
     assert.match(unknown.content[0].text, /unknown plan/);
+  });
+});
+
+describe('MCP get_forecast seed', () => {
+  it('passes seed through to /metrics/forecast', async (t) => {
+    const urls: string[] = [];
+    const stub = createServer((req, res) => {
+      urls.push(req.url ?? '');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    await new Promise<void>((r) => stub.listen(0, '127.0.0.1', () => r()));
+    t.after(() => stub.close());
+    const client = new Client({ name: 'forecast-test', version: '0.0.0' });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ['--import', 'tsx', SERVER],
+        env: { ...(process.env as Record<string, string>), DAEMON_URL: `http://127.0.0.1:${(stub.address() as { port: number }).port}` },
+        stderr: 'ignore',
+      }),
+    );
+    t.after(() => client.close());
+    const tool = (await client.listTools()).tools.find((x) => x.name === 'get_forecast')!;
+    assert.match(tool.description!, /must be the plan's workspace/);
+    await client.callTool({ name: 'get_forecast', arguments: { project_id: 'p', seed: 7 } });
+    assert.deepEqual(urls, ['/metrics/forecast?project=p&seed=7']);
+    const bad = (await client.callTool({ name: 'get_forecast', arguments: { project_id: 'p', seed: -1 } })) as ToolOut;
+    assert.equal(bad.isError, true);
   });
 });
 

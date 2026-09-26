@@ -17,11 +17,12 @@ const agent = data.agent_type ?? 'builder';
 await api('POST', `/task/${cardId}/move`, { lane: 'in_review', agent });
 await api('POST', '/event', { project_id: projectId, task_id: cardId, type: 'build_end', agent });
 
-// record this build run's cost: tokens from the subagent transcript; the daemon
+// record this build run's cost: tokens (total, output, and the per-model
+// breakdown the cost is priced from) from the subagent transcript; the daemon
 // adds line-churn + elapsed time and credits the card's assigned team member
 // (the subagent type is recorded as the run's role).
 const tx = subagentTranscriptPath(data);
 if (tx) {
-  const { tokens, tokens_out } = sumTokens(tx);
-  if (tokens) await api('POST', `/task/${cardId}/activity`, { agent, role: agent, agent_id: data.agent_id, tokens, tokens_out });
+  const { tokens, tokens_out, usage } = sumTokens(tx);
+  if (tokens) await api('POST', `/task/${cardId}/activity`, { agent, role: agent, agent_id: data.agent_id, tokens, tokens_out, usage });
 }

@@ -49,6 +49,15 @@ export function migrate(db: DB): void {
   if (!activityCols.includes('role')) db.exec('ALTER TABLE card_activity ADD COLUMN role TEXT');
   if (!activityCols.includes('estimated'))
     db.exec('ALTER TABLE card_activity ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0');
+  // Cost breakdown: rows recorded before it existed have no per-model usage, so their cost is estimated.
+  if (!activityCols.includes('usage')) {
+    db.exec('ALTER TABLE card_activity ADD COLUMN usage TEXT');
+    if (!activityCols.includes('cost_estimated'))
+      db.exec('ALTER TABLE card_activity ADD COLUMN cost_estimated INTEGER NOT NULL DEFAULT 0');
+    db.exec('UPDATE card_activity SET cost_estimated = 1 WHERE usage IS NULL');
+  }
+  const phaseCols = (db.pragma('table_info(phases)') as { name: string }[]).map((c) => c.name);
+  if (!phaseCols.includes('budget_usd')) db.exec('ALTER TABLE phases ADD COLUMN budget_usd REAL');
   if (cols.includes('assigned_agent')) backfillActivityAgents(db); // absent only on hand-built test tables
 }
 

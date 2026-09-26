@@ -15,6 +15,8 @@ import * as metrics from '../core/metrics.js';
 import * as waitTime from '../core/wait-time.js';
 import * as quality from '../core/quality.js';
 import * as forecast from '../core/forecast.js';
+import * as cost from '../core/cost.js';
+import * as usageBurn from '../core/usage-burn.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
 import { cardLines } from '../core/lines.js';
@@ -259,6 +261,12 @@ const STARTED_AT = Date.now();
 
 interface LimitWindow { used_percentage: number; resets_at: number }
 let usage: { five_hour: LimitWindow | null; seven_day: LimitWindow | null } | null = null;
+/** Every /usage push (memory only, bounded), for the burn-rate projection in /metrics/usage-burn. */
+const usageSamples: usageBurn.UsageSample[] = [];
+const toWindowSample = (w: LimitWindow | null | undefined): usageBurn.WindowSample | null =>
+  w && typeof w.used_percentage === 'number' && Number.isFinite(w.used_percentage)
+    ? { used: w.used_percentage, resetsAt: resetsAtMs(w.resets_at) }
+    : null;
 
 // ── autopilot: prompt an idle session that has queued cards ─────────
 // Engine on by default; KANKAN_AUTOPILOT=0 disables it (the test helper does).
@@ -1433,6 +1441,89 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
   }
 
+  // ── cost (core/cost.ts): per card / phase / plan / agent / board, budgets; prices are a global setting ──
+  if (method === 'GET' && pathname === '/metrics/cost') {
+    const q = url.searchParams;
+    const project = q.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
+    try {
+      const filter: cost.CostFilter = { projectIds: [project] };
+      for (const [key, param] of [['phaseId', 'phase'], ['tag', 'tag'], ['agent', 'agent']] as const) {
+        const v = q.get(param);
+        if (v) filter[key] = v;
+      }
+      const from = q.get('from');
+      const to = q.get('to');
+      if (from) filter.from = metrics.parseTime(from, tz, 'from');
+      if (to) filter.to = metrics.parseTime(to, tz, 'to');
+      const limit = forecast.intParam(q.get('limit'), 'limit', 1, 100);
+      const plans = drafts
+        .listDrafts(db, project)
+        .filter((d) => d.committed_version !== null)
+        .flatMap((d) => {
+          const draft = drafts.getDraft(db, d.id);
+          return draft ? [{ id: draft.id, title: draft.title, cardIds: Object.values(draft.data.committed) }] : [];
+        });
+      return json(res, 200, cost.costMetrics(db, filter, { tz, now: Date.now(), limit, plans }));
+    } catch (err) {
+      const status = err instanceof metrics.MetricsParamError ? 400 : 500;
+      return json(res, status, { error: (err as Error).message });
+    }
+  }
+  if (method === 'GET' && pathname === '/metrics/usage-burn') {
+    const q = url.searchParams;
+    const project = q.get('project');
+    const phaseId = q.get('phase');
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
+    if (phaseId && !project) return json(res, 400, { error: 'phase needs project' });
+    if (project && !projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const now = Date.now();
+    try {
+      const seed = forecast.intParam(q.get('seed'), 'seed', 0, 2 ** 32 - 1);
+      let info: usageBurn.ForecastInfo | null = null;
+      if (project) {
+        const phase = (
+          phaseId
+            ? db.prepare('SELECT id, project_id, title FROM phases WHERE id = ?').get(phaseId)
+            : board.getActivePhase(db, project)
+        ) as { id: string; project_id: string; title: string } | null | undefined;
+        if (phaseId && !phase) return json(res, 404, { error: 'unknown phase' });
+        const boards = [project, ...board.listVerticals(db, project).map((v) => v.id)];
+        if (phase && !boards.includes(phase.project_id)) return json(res, 400, { error: 'phase is not on this project' });
+        if (!phase) info = { status: 'no_phase', phase: null, reason: 'the project has no active phase' };
+        else {
+          const f = forecast.forecast(db, { projectId: project }, { kind: 'phase', phaseId: phase.id }, { tz, now, seed });
+          const p = { id: phase.id, title: phase.title };
+          info =
+            f.status === 'ok'
+              ? { status: 'ok', phase: p, p50: f.p50, p85: f.p85 }
+              : { status: 'insufficient_history', phase: p, reason: f.reason };
+        }
+      }
+      return json(res, 200, usageBurn.usageBurn(usageSamples, info, { tz, now }));
+    } catch (err) {
+      const status = err instanceof metrics.MetricsParamError ? 400 : 500;
+      return json(res, status, { error: (err as Error).message });
+    }
+  }
+  if (pathname === '/settings/prices') {
+    if (method === 'GET') return json(res, 200, cost.getPrices(db));
+    if (method === 'PUT') {
+      if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+      const b = await readBody(req);
+      try {
+        return json(res, 200, cost.setPrices(db, b));
+      } catch (err) {
+        if (err instanceof cost.CostParamError) return json(res, 400, { error: err.message });
+        throw err;
+      }
+    }
+  }
+
   if (method === 'GET' && pathname === '/skills') {
     const project = url.searchParams.get('project');
     return json(res, 200, listSkills(project ? projectRoot(project) : null));
@@ -1631,6 +1722,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     announcePhases(b.project_id);
     return json(res, 200, phase);
   }
+  const budgetMatch = pathname.match(/^\/phase\/([^/]+)\/budget$/);
+  if (method === 'PUT' && budgetMatch) {
+    if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+    const b = await readBody(req);
+    if (!('budget_usd' in b)) return json(res, 400, { error: 'budget_usd required (USD, or null to clear)' });
+    if (!db.prepare('SELECT 1 FROM phases WHERE id = ?').get(budgetMatch[1])) return json(res, 404, { error: 'unknown phase' });
+    try {
+      const phase = board.setPhaseBudget(db, budgetMatch[1], b.budget_usd);
+      announcePhases(phase.project_id);
+      return json(res, 200, phase);
+    } catch (err) {
+      return json(res, 400, { error: (err as Error).message });
+    }
+  }
   // after /phase/advance, so 'advance' is never taken as a phase id
   const phaseMatch = pathname.match(/^\/phase\/([^/]+)$/);
   if (method === 'POST' && phaseMatch) {
@@ -1720,6 +1825,13 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       // tokens come from the build hook; the daemon adds line-churn + elapsed time.
       // Lines are the card's whole change, not this run's: recountCard moves them
       // onto this (latest) row and zeroes earlier runs, so rebuilds don't double count.
+      let breakdown: ReturnType<typeof cost.parseUsage>;
+      try {
+        breakdown = cost.parseUsage(b.usage); // absent (an older hook) → null: the run's cost is estimated
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+      const fromUsage = breakdown ? Object.values(breakdown) : [];
       const task = board.getTask(db, taskId);
       const startEv = db
         .prepare(`SELECT created_at AS t FROM task_events WHERE task_id = ? AND type = 'build_start' ORDER BY id DESC LIMIT 1`)
@@ -1731,11 +1843,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         agent: task.assigned_agent ? board.memberName(db, task.assigned_agent) : (b.agent ?? null),
         role: b.role ?? b.agent ?? null,
         agent_id: b.agent_id,
-        tokens: Number(b.tokens) || 0,
-        tokens_out: Number(b.tokens_out) || 0,
+        tokens: Number(b.tokens) || fromUsage.reduce((n, u) => n + cost.usageTokens(u), 0),
+        tokens_out: Number(b.tokens_out) || fromUsage.reduce((n, u) => n + u.output, 0),
         lines_added: 0,
         lines_removed: 0,
         ms: startEv ? Date.now() - startEv.t : 0,
+        usage: breakdown,
       });
       json(res, 200, { ok: true });
       return recountCard(task);
@@ -1783,6 +1896,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const b = await readBody(req);
     if (!b.five_hour && !b.seven_day) return json(res, 400, { error: 'five_hour or seven_day required' });
     usage = { five_hour: b.five_hour ?? usage?.five_hour ?? null, seven_day: b.seven_day ?? usage?.seven_day ?? null };
+    const sample = { at: Date.now(), five_hour: toWindowSample(b.five_hour), seven_day: toWindowSample(b.seven_day) };
+    if (sample.five_hour || sample.seven_day) usageBurn.pruneSamples(usageSamples, sample.at).push(sample);
     broadcaster.sendAll({ type: 'usage', usage });
     return json(res, 200, { ok: true });
   }

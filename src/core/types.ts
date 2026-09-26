@@ -28,6 +28,7 @@ export interface Phase {
   plan: string | null; // markdown: per-phase implementation plan (filled lazily)
   status: PhaseStatus; // planned → active → done
   position: number;
+  budget_usd: number | null; // optional spend budget (USD), or null
   created_at: number;
   updated_at: number;
 }
@@ -41,6 +42,17 @@ export interface PhaseView {
   position: number;
   progress: { done: number; total: number };
 }
+
+/** Token counts for one model (one build run, or summed). */
+export interface ModelUsage {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_creation: number;
+}
+
+/** A build run's token breakdown keyed by model id (card_activity.usage). */
+export type UsageBreakdown = Record<string, ModelUsage>;
 
 export interface Task {
   id: string;

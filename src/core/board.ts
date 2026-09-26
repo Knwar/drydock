@@ -28,6 +28,7 @@ import {
   type SyncLink,
   type Subtask,
   type Task,
+  type UsageBreakdown,
   type TaskEvent,
   type TeamMember,
   type UpNext,
@@ -890,6 +891,7 @@ export function createPhase(
     plan: opts.plan ?? null,
     status: 'planned',
     position: (max.max ?? 0) + 1,
+    budget_usd: null,
     created_at: ts,
     updated_at: ts,
   };
@@ -1017,6 +1019,18 @@ export function updatePhase(
       setPhaseStatus(db, phaseId, status, PHASE_EVENTS[status]);
     }
   })();
+  return getPhase(db, phaseId);
+}
+
+export const MAX_PHASE_BUDGET_USD = 1e9;
+
+/** Set (a finite number in [0, MAX_PHASE_BUDGET_USD]) or clear (null) a phase's spend budget in USD. */
+export function setPhaseBudget(db: DB, phaseId: string, budget: number | null): Phase {
+  if (budget !== null && (typeof budget !== 'number' || !Number.isFinite(budget) || budget < 0 || budget > MAX_PHASE_BUDGET_USD))
+    throw new Error(`budget must be a number of USD in [0, ${MAX_PHASE_BUDGET_USD}] or null`);
+  getPhase(db, phaseId);
+  // updated_at left alone: a done phase's burn chart ends at it
+  db.prepare('UPDATE phases SET budget_usd = ? WHERE id = ?').run(budget, phaseId);
   return getPhase(db, phaseId);
 }
 
@@ -1365,11 +1379,14 @@ export function recordActivity(
     lines_added: number;
     lines_removed: number;
     ms: number;
+    /** Per-model token breakdown; without it the run's cost is estimated (cost_estimated = 1). */
+    usage?: UsageBreakdown | null;
   },
 ): void {
+  const hasUsage = !!a.usage && Object.keys(a.usage).length > 0;
   db.prepare(
-    `INSERT INTO card_activity (project_id, task_id, agent, role, agent_id, tokens, tokens_out, lines_added, lines_removed, ms, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO card_activity (project_id, task_id, agent, role, agent_id, tokens, tokens_out, lines_added, lines_removed, ms, usage, cost_estimated, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     a.project_id,
     a.task_id,
@@ -1381,6 +1398,8 @@ export function recordActivity(
     a.lines_added,
     a.lines_removed,
     a.ms,
+    hasUsage ? JSON.stringify(a.usage) : null,
+    hasUsage ? 0 : 1,
     now(),
   );
 }
