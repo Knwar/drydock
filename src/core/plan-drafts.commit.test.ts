@@ -11,6 +11,7 @@ import {
   getOrCreateProject,
   getTask,
   moveTask,
+  raiseBlocker,
   updateTask,
 } from './board.js';
 import { openDb } from './db.js';
@@ -186,7 +187,7 @@ describe('diffDraft / commitDraft', () => {
     const wsDiff = diff.boards.find((b) => b.board_id === ws.id)!;
     const webDiff = diff.boards.find((b) => b.board_id === web.id)!;
     assert.deepEqual(wsDiff.kept, [
-      { node_id: 'a', card_id: committed.a, title: 'API contract', lane: 'in_progress', note: 'kept, no longer in plan' },
+      { node_id: 'a', card_id: committed.a, title: 'API contract', lane: 'in_progress', note: 'kept, no longer in plan', reason: 'started' },
     ]);
     assert.deepEqual(webDiff.delete, [{ node_id: 'c', card_id: committed.c, title: 'Web page' }]);
     // b lost its in-plan dependency on a
@@ -212,13 +213,66 @@ describe('diffDraft / commitDraft', () => {
 
     const diff = diffDraft(db, d.id);
     assert.deepEqual(diff.boards.map((b) => [b.board_id, b.locked, b.update]), [
-      [web.id, [{ node_id: 'b', card_id: committed.b, title: 'Web client', lane: 'done', fields: ['title', 'board'] }], []],
+      [web.id, [{ node_id: 'b', card_id: committed.b, title: 'Web client', lane: 'done', fields: ['title', 'board'], reason: 'started' }], []],
     ]);
     commitDraft(db, d.id, 2);
     const b = getTask(db, committed.b);
     assert.equal(b.title, 'Web client');
     assert.equal(b.project_id, web.id);
     assert.equal(getDraft(db, d.id)!.data.committed.b, committed.b);
+  });
+
+  it('a blocked backlog card is locked (not edited or moved) and kept when removed (not deleted)', (t) => {
+    const { db, ws, web, cleanup } = setup();
+    t.after(cleanup);
+    const d = seed(db, ws, web);
+    const committed = commitDraft(db, d.id, 1).draft.data.committed;
+    raiseBlocker(db, committed.b, 'which API?');
+    raiseBlocker(db, committed.c, 'unclear');
+    edit(db, d.id, [
+      { op: 'update_node', id: 'b', patch: { title: 'Renamed', board_id: ws.id, phase: 'Later' } },
+      { op: 'remove_node', id: 'c' },
+    ]);
+
+    const diff = diffDraft(db, d.id);
+    assert.deepEqual(diff.boards.map((b) => [b.board_id, b.phases, b.update, b.delete, b.kept, b.locked]), [
+      [
+        web.id,
+        [],
+        [],
+        [],
+        [{ node_id: 'c', card_id: committed.c, title: 'Web page', lane: 'backlog', note: 'kept, no longer in plan', reason: 'blocked' }],
+        [
+          { node_id: 'b', card_id: committed.b, title: 'Web client', lane: 'backlog', fields: ['title', 'phase', 'board'], reason: 'blocked' },
+        ],
+      ],
+    ]);
+
+    const phases = count(db, 'phases');
+    const r = commitDraft(db, d.id, 2);
+    assert.deepEqual(r.deleted, []);
+    assert.deepEqual(r.moved, []);
+    assert.deepEqual(r.touched, []);
+    assert.equal(count(db, 'phases'), phases, 'no phase created for a locked card');
+    const b = getTask(db, committed.b);
+    assert.equal(b.title, 'Web client');
+    assert.equal(b.project_id, web.id);
+    assert.equal(getTask(db, committed.c).title, 'Web page', 'blocked card not deleted');
+    assert.deepEqual(r.draft.data.committed, { a: committed.a, b: committed.b });
+  });
+
+  it('matches phase names trimmed on both sides (no duplicate phase)', (t) => {
+    const { db, ws, web, cleanup } = setup();
+    t.after(cleanup);
+    const padded = createPhase(db, web.id, 'Checkout ');
+    const d = seed(db, ws, web, { b: { phase: 'Checkout' }, c: { phase: '  Checkout' } });
+    const diff = diffDraft(db, d.id);
+    assert.deepEqual(diff.boards.find((b) => b.board_id === web.id)!.phases, []);
+    const committed = commitDraft(db, d.id, 1).draft.data.committed;
+    assert.deepEqual(phasesOf(db, web.id).map((p) => p.id), [padded.id]);
+    assert.equal(getTask(db, committed.b).phase_id, padded.id);
+    assert.equal(getTask(db, committed.c).phase_id, padded.id);
+    assert.deepEqual(diffDraft(db, d.id).boards, [], 'a padded existing title is not a phase change');
   });
 
   it('preserves depends_on entries that point outside the plan', (t) => {
@@ -326,20 +380,58 @@ describe('runDraft', () => {
     assert.equal((db.prepare('SELECT autopilot FROM projects WHERE id = ?').get(web.id) as { autopilot: number }).autopilot, 0);
   });
 
-  it('autopilot: turns autopilot on for boards with queued cards and reports the others', (t) => {
+  const MAIN = { reason: 'main_session', message: 'Autopilot never drives the main session; its cards are queued for you' };
+  const flag = (db: DB, id: string) =>
+    (db.prepare('SELECT autopilot FROM projects WHERE id = ?').get(id) as { autopilot: number }).autopilot;
+
+  it('autopilot: turns autopilot on for vertical boards only; the workspace (main session) is queued, not driven', (t) => {
     const { db, ws, web, cleanup } = setup();
     t.after(cleanup);
-    // the workspace node has no spec → nothing to queue there
-    const d = seed(db, ws, web, { a: { requirements: undefined } });
-    commitDraft(db, d.id, 1);
+    const d = seed(db, ws, web);
+    const committed = commitDraft(db, d.id, 1).draft.data.committed;
     const r = runDraft(db, d.id, 'autopilot');
     assert.deepEqual(r.autopilot, {
       enabled: [{ board_id: web.id, already_on: false }],
-      not_enabled: [{ board_id: ws.id, reason: 'no queued cards to work' }],
+      not_enabled: [{ board_id: ws.id, ...MAIN }],
     });
-    const flag = (id: string) => (db.prepare('SELECT autopilot FROM projects WHERE id = ?').get(id) as { autopilot: number }).autopilot;
-    assert.equal(flag(web.id), 1);
-    assert.equal(flag(ws.id), 0);
+    assert.equal(getTask(db, committed.a).lane, 'queued', "the workspace's card is still queued");
+    assert.equal(flag(db, web.id), 1);
+    assert.equal(flag(db, ws.id), 0);
     assert.deepEqual(runDraft(db, d.id, 'autopilot').autopilot.enabled, [{ board_id: web.id, already_on: true }]);
+  });
+
+  it('autopilot: a vertical with no queued cards is reported, not enabled', (t) => {
+    const { db, ws, web, cleanup } = setup();
+    t.after(cleanup);
+    // the web nodes have no spec → nothing to queue there
+    const d = seed(db, ws, web, { b: { requirements: undefined } });
+    commitDraft(db, d.id, 1);
+    const r = runDraft(db, d.id, 'autopilot');
+    assert.deepEqual(r.autopilot, {
+      enabled: [],
+      not_enabled: [
+        { board_id: ws.id, ...MAIN },
+        { board_id: web.id, reason: 'no queued cards to work' },
+      ],
+    });
+    assert.equal(flag(db, web.id), 0);
+  });
+
+  it('autopilot: a standalone project is the main session: queued, never enabled', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-solo-'));
+    const db = openDb();
+    t.after(() => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const solo = getOrCreateProject(db, dir, 'Solo');
+    const d = createDraft(db, solo.id, 'Plan', {
+      nodes: [{ id: 'x', title: 'X', board_id: solo.id, requirements: 'r', subtasks: ['s'] }],
+    });
+    const committed = commitDraft(db, d.id, 1).draft.data.committed;
+    const r = runDraft(db, d.id, 'autopilot');
+    assert.deepEqual(r.queued, [committed.x]);
+    assert.deepEqual(r.autopilot, { enabled: [], not_enabled: [{ board_id: solo.id, ...MAIN }] });
+    assert.equal(flag(db, solo.id), 0);
   });
 });
