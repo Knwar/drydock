@@ -3905,6 +3905,14 @@ const plan = {
   retry: 1000,
   retryTimer: null,
   listTimer: null,
+  ed: null, // the card editor for `selected` (renderPlanEditor)
+  listOpen: false, // the drafts list shown anyway while the editor is open
+  selEdge: null, // { from, to }: the selected arrow
+  link: null, // drag-to-connect in progress (startPlanLink)
+  queue: Promise.resolve(), // PATCHes run one at a time, in order
+  patching: 0, // PATCHes in flight
+  deferVersion: 0, // highest plan_draft version heard while patching (checked once they land)
+  boardPhases: new Map(), // board id → its existing phase titles (fetched on demand, per planner visit)
 };
 
 function svgEl(tag, attrs) {
@@ -3929,6 +3937,7 @@ async function openPlanner() {
   const project = currentProject();
   if (!project) return; // the init message re-opens once the project is known
   plan.project = project;
+  plan.boardPhases.clear();
   await resolvePlanWorkspace();
   if (activeView !== 'planner') return;
   await loadPlanList();
@@ -3999,7 +4008,10 @@ async function planConnect() {
 function onPlannerMessage(msg) {
   if (msg.type === 'plan_draft') {
     schedulePlanList();
-    if (msg.id === plan.openId && (!plan.view || msg.version > plan.view.draft.version)) openPlan(msg.id, true);
+    if (msg.id !== plan.openId) return;
+    // our own PATCH's echo can beat its response: hold versions heard mid-PATCH until it lands
+    if (plan.patching) plan.deferVersion = Math.max(plan.deferVersion, msg.version);
+    else if (!plan.view || msg.version > plan.view.draft.version) openPlan(msg.id, true);
   } else if (msg.type === 'plan_draft_removed') {
     if (plan.list) plan.list = plan.list.filter((d) => d.id !== msg.id);
     schedulePlanList();
@@ -4048,6 +4060,8 @@ function setPlanUrl(id) {
 async function openPlan(id, refresh = false) {
   if (!refresh || id !== plan.openId) {
     plan.selected = null;
+    plan.selEdge = null;
+    endPlanLink();
     plan.flagged = null;
     plan.fitted = false;
     plan.stripError = '';
@@ -4168,13 +4182,16 @@ function renderPlanMain() {
   const open = !!v && v.draft.id === plan.openId;
   $('pl-open').classList.toggle('hidden', !open);
   $('pl-empty').classList.toggle('hidden', open);
+  renderPlanEditor(); // before any fit: the panel takes its width from the canvas
   if (!open) return renderPlanEmpty();
   const { draft, validation } = v;
   $('pl-title').textContent = draft.title;
   const [chipLabel, chipMod] = planStatus(draft);
   $('pl-chip').className = `pl-chip ${chipMod}`;
   $('pl-chip').textContent = chipLabel;
-  $('pl-saved').textContent = `Saved · v${draft.version}`;
+  renderPlanSaved();
+  $('pl-add').classList.toggle('hidden', EMBED);
+  $('pl-hint').classList.toggle('hidden', EMBED);
   const n = validation.errors.length;
   $('pl-errcount').textContent = n ? `Fix ${n} error${n === 1 ? '' : 's'} to commit` : '';
   $('pl-commit').textContent = `Commit v${draft.version}`;
@@ -4372,6 +4389,7 @@ function renderPlanGraph(v, m) {
   const plain = svgEl('g', { fill: 'none', stroke: m.paused ? '#3f4555' : '#5b6275', 'stroke-width': 1.5 });
   const halo = svgEl('g', { fill: 'none', 'stroke-width': 8, 'stroke-linecap': 'round', 'stroke-opacity': m.paused ? 0.2 : 0.22 });
   const hot = svgEl('g', { fill: 'none', 'stroke-width': 2.5 });
+  const hits = svgEl('g', { fill: 'none' }); // wide invisible strokes: click an arrow to select it
   const colOf = (p) => Math.round((p.x - PL.X0 - PL.PAD) / (PL.COL + PL.GAP));
   const laneUse = new Map(); // row gap → arrows already in it (spread them apart)
   m.edges.forEach((e, i) => {
@@ -4393,12 +4411,13 @@ function renderPlanGraph(v, m) {
     }
     const d = planEdgePath(a, b, m, lane);
     const kind = m.cycleEdges.has(i) ? 'cycle' : m.chainPairs.has(`${e.from}\u0000${e.to}`) ? 'chain' : '';
-    if (!kind) return plain.append(svgEl('path', { d, 'marker-end': 'url(#pl-ah)' }));
+    if (!EMBED) hits.append(svgEl('path', { d, class: 'pl-edge-hit', 'data-i': i }));
+    if (!kind) return plain.append(svgEl('path', { d, 'marker-end': 'url(#pl-ah)', class: 'pl-edge-vis', 'data-i': i }));
     const color = kind === 'cycle' ? '#e06c75' : '#5dd3a8';
     halo.append(svgEl('path', { d, stroke: color }));
-    hot.append(svgEl('path', { d, stroke: color, 'marker-end': `url(#${kind === 'cycle' ? 'pl-ahr' : 'pl-ahm'})`, 'data-edge': `${e.from}>${e.to}` }));
+    hot.append(svgEl('path', { d, stroke: color, 'marker-end': `url(#${kind === 'cycle' ? 'pl-ahr' : 'pl-ahm'})`, 'data-edge': `${e.from}>${e.to}`, class: 'pl-edge-vis', 'data-i': i }));
   });
-  svg.append(plain, halo, hot);
+  svg.append(plain, halo, hot, hits);
   parts.push(svg);
 
   const boards = planBoards(v);
@@ -4440,14 +4459,22 @@ function renderPlanGraph(v, m) {
         ? node('span', 'pl-node-meta warn', 'No spec yet')
         : node('span', 'pl-node-meta', `${crit} criteri${crit === 1 ? 'on' : 'a'}`);
     b.append(top, node('span', 'pl-node-title', n.title || 'Untitled'), meta);
-    b.onclick = () => {
-      plan.selected = n.id;
-      updatePlanMarks();
-    };
+    b.onclick = () => selectPlanNode(n.id);
     parts.push(b);
+    if (!EMBED) {
+      // drag from here to another card to add an arrow (startPlanLink)
+      const h = node('span', 'pl-handle');
+      h.dataset.id = n.id;
+      h.setAttribute('aria-hidden', 'true');
+      h.style.left = `${p.x + PL.NODE_W - 8}px`;
+      h.style.top = `${p.y + PL.NODE_H / 2 - 8}px`;
+      parts.push(h);
+    }
   }
   world.replaceChildren(...parts);
   updatePlanMarks();
+  markPlanEdge();
+  if (plan.link) drawPlanLink(); // a re-render mid-drag: put the dashed arrow back
   if (refocus) world.querySelector(`.pl-node[data-id="${CSS.escape(refocus)}"]`)?.focus({ preventScroll: true });
 }
 
@@ -4536,6 +4563,7 @@ async function removePlanEdge(edge) {
   renderPlanStrip(v, planModel(v));
   let res;
   let out = {};
+  plan.patching++;
   try {
     res = await fetch(`/plan-drafts/${encodeURIComponent(v.draft.id)}`, {
       method: 'PATCH',
@@ -4546,16 +4574,775 @@ async function removePlanEdge(edge) {
   } catch {
     /* handled below */
   }
+  plan.patching--;
+  if (res?.ok) setPlanView(out);
+  planPatchSettled();
   plan.busy = false;
   if (plan.openId !== v.draft.id) {
     // another draft was opened meanwhile: just re-enable its buttons
     if (plan.view?.draft.id === plan.openId) renderPlanStrip(plan.view, planModel(plan.view));
     return;
   }
-  if (res?.ok) return setPlanView(out);
+  if (res?.ok) return renderPlanStrip(plan.view, planModel(plan.view));
   if (res?.status === 409) return openPlan(v.draft.id, true); // changed under us — show the latest
   plan.stripError = typeof out.error === 'string' && out.error ? `Couldn’t remove the arrow: ${out.error}` : 'Couldn’t reach the daemon — try again.';
   if (plan.view) renderPlanStrip(plan.view, planModel(plan.view));
+}
+
+// ── editing: every write is an ops batch on PATCH /plan-drafts/:id ──
+// Batches run one at a time, in order; each response (the GET shape) re-renders
+// in place. A plan_draft heard while one is in flight is held until it lands
+// (it's usually our own echo) and refetched only if it's newer still.
+function planPatch(draftId, ops) {
+  const run = async () => {
+    let res;
+    let out = {};
+    plan.patching++;
+    renderPlanSaved();
+    try {
+      res = await fetch(`/plan-drafts/${encodeURIComponent(draftId)}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ops }),
+      });
+      out = await res.json().catch(() => ({}));
+    } catch {
+      /* handled below */
+    }
+    plan.patching--;
+    if (res?.ok) setPlanView(out);
+    planPatchSettled();
+    renderPlanSaved();
+    if (res?.ok) return { ok: true };
+    const error = typeof out.error === 'string' && out.error ? out.error : res ? `the daemon answered ${res.status}` : 'couldn’t reach the daemon';
+    return { ok: false, error };
+  };
+  const p = plan.queue.then(run);
+  plan.queue = p.catch(() => {});
+  return p;
+}
+
+function planPatchSettled() {
+  if (plan.patching) return;
+  const dv = plan.deferVersion;
+  plan.deferVersion = 0;
+  if (dv && plan.openId && plan.view?.draft.id === plan.openId && dv > plan.view.draft.version) openPlan(plan.openId, true);
+}
+
+function planSaving() {
+  const ed = plan.ed;
+  return plan.patching > 0 || (!!ed && (Object.keys(ed.pending).length > 0 || [...ed.inflight.values()].some((c) => c > 0)));
+}
+
+function renderPlanSaved() {
+  const saving = planSaving();
+  if (plan.view) $('pl-saved').textContent = saving ? 'Saving…' : `Saved · v${plan.view.draft.version}`;
+  if (plan.ed) plan.ed.els.status.textContent = saving ? 'Saving…' : 'Changes save as you type';
+}
+
+function planNodeById(id) {
+  return plan.view?.draft.data.nodes.find((n) => n.id === id) ?? null;
+}
+
+function selectPlanNode(id) {
+  plan.selected = id;
+  updatePlanMarks();
+  renderPlanEditor();
+  if (!id) return;
+  if (plan.autoFit !== null) planFit(plan.autoFit); // the panel took room from the canvas
+  planReveal([id]);
+}
+
+// ── the card editor (side panel for the selected node) ──
+// Built once per selected node; later renders only sync values into it, never
+// over a field that has focus or unsaved/in-flight edits, so typing stays smooth.
+function renderPlanEditor() {
+  const v = plan.view;
+  const n = !EMBED && v && v.draft.id === plan.openId && plan.selected ? planNodeById(plan.selected) : null;
+  if (plan.ed && (plan.ed.id !== n?.id || plan.ed.draft !== v?.draft.id)) {
+    const old = plan.ed;
+    plan.ed = null;
+    flushPlanEdits(old); // leaving a card saves what was typed into it
+  }
+  const open = !!n;
+  if (!open) plan.listOpen = false;
+  const host = $('pl-editor');
+  host.classList.toggle('hidden', !open);
+  $('pl-side').classList.toggle('hidden', open && !plan.listOpen);
+  const show = $('pl-show-plans');
+  show.classList.toggle('hidden', !open);
+  show.setAttribute('aria-expanded', String(plan.listOpen));
+  show.setAttribute('aria-label', plan.listOpen ? 'Hide plans' : 'Show plans');
+  if (!open) return host.replaceChildren();
+  if (!plan.ed) plan.ed = buildPlanEditor(n.id, v.draft.id);
+  syncPlanEditor(plan.ed);
+  renderPlanSaved();
+}
+
+const PL_X_ICON = ['M6 6l12 12', 'M18 6L6 18'];
+function planXIcon(size) {
+  const svg = svgEl('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2.4, 'stroke-linecap': 'round', 'aria-hidden': 'true' });
+  for (const d of PL_X_ICON) svg.append(svgEl('path', { d }));
+  return svg;
+}
+
+function buildPlanEditor(id, draftId) {
+  const ed = { id, draft: draftId, pending: {}, inflight: new Map(), timer: null, errs: {}, els: { err: {} }, phaseOpen: false, phaseIdx: 0, phaseOpts: [], keys: {} };
+  const { els } = ed;
+  const errEl = (f) => {
+    const e = node('div', 'pl-ed-err');
+    e.setAttribute('role', 'alert');
+    els.err[f] = e;
+    return e;
+  };
+  const field = (label, forId, ...kids) => {
+    const f = node('div', 'pl-ed-field');
+    const l = node('label', 'pl-ed-label', label);
+    l.htmlFor = forId;
+    f.append(l, ...kids);
+    return f;
+  };
+  const button = (cls, text, label) => {
+    const b = node('button', cls, text);
+    b.type = 'button';
+    if (label) b.setAttribute('aria-label', label);
+    return b;
+  };
+
+  const head = node('div', 'pl-ed-head');
+  els.kicker = node('span', 'pl-ed-kicker');
+  const close = button('pl-ed-close', null, 'Close card editor');
+  close.append(planXIcon(14));
+  close.onclick = () => {
+    selectPlanNode(null);
+    $('pl-canvas').focus({ preventScroll: true });
+  };
+  head.append(els.kicker, close);
+
+  els.title = node('input', 'pl-ed-input pl-ed-title');
+  els.title.id = 'pl-ed-title';
+  els.title.autocomplete = 'off';
+  els.title.oninput = () => planEdit(ed, 'title', els.title.value);
+
+  els.board = node('select', 'pl-ed-input pl-ed-select');
+  els.board.id = 'pl-ed-board';
+  els.board.onchange = () => {
+    planEdit(ed, 'board_id', els.board.value, true);
+    loadBoardPhases(els.board.value);
+  };
+
+  // phase: free text + suggestions (this plan's phases on that board, then the board's own)
+  els.phase = node('input', 'pl-ed-input');
+  els.phase.id = 'pl-ed-phase';
+  els.phase.autocomplete = 'off';
+  els.phase.placeholder = 'No phase';
+  els.phase.setAttribute('role', 'combobox');
+  els.phase.setAttribute('aria-autocomplete', 'list');
+  els.phase.setAttribute('aria-controls', 'pl-ed-phase-list');
+  els.phase.setAttribute('aria-expanded', 'false');
+  els.phaseList = node('div', 'pl-ed-sugg hidden');
+  els.phaseList.id = 'pl-ed-phase-list';
+  els.phaseList.setAttribute('role', 'listbox');
+  els.phaseList.setAttribute('aria-label', 'Phase suggestions');
+  const openPhases = (on) => {
+    ed.phaseOpen = on;
+    ed.phaseIdx = 0;
+    if (on) loadBoardPhases(els.board.value);
+    renderPlanPhaseList(ed);
+  };
+  els.phase.onfocus = () => openPhases(true);
+  els.phase.oninput = () => openPhases(true);
+  els.phase.onblur = () => {
+    openPhases(false);
+    commitPlanPhase(ed, els.phase.value);
+  };
+  els.phase.onkeydown = (e) => {
+    const opts = ed.phaseOpts;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!ed.phaseOpen) return openPhases(true);
+      if (opts.length) ed.phaseIdx = (ed.phaseIdx + (e.key === 'ArrowDown' ? 1 : opts.length - 1)) % opts.length;
+      renderPlanPhaseList(ed);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const o = ed.phaseOpen ? opts[ed.phaseIdx] : null;
+      choosePlanPhase(ed, o ? o.name : els.phase.value);
+    } else if (e.key === 'Escape' && ed.phaseOpen) {
+      e.stopPropagation();
+      openPhases(false);
+    }
+  };
+  els.phaseList.addEventListener('pointerdown', (e) => e.preventDefault()); // keep focus in the input
+  const combo = node('div', 'pl-ed-combo');
+  combo.append(els.phase, els.phaseList);
+  const grid = node('div', 'pl-ed-grid');
+  grid.append(field('Board', 'pl-ed-board', els.board, errEl('board_id')), field('Phase', 'pl-ed-phase', combo, errEl('phase')));
+
+  els.req = node('textarea', 'pl-ed-input pl-ed-req');
+  els.req.id = 'pl-ed-req';
+  els.req.oninput = () => planEdit(ed, 'requirements', els.req.value);
+
+  // acceptance criteria
+  const critBox = node('div', 'pl-ed-field');
+  els.critLabel = node('span', 'pl-ed-label');
+  els.critLabel.id = 'pl-ed-crit-label';
+  els.crit = node('div', 'pl-ed-list');
+  els.crit.setAttribute('role', 'group');
+  els.crit.setAttribute('aria-labelledby', 'pl-ed-crit-label');
+  const addCrit = button('pl-ed-add', '+ Add criterion');
+  addCrit.onclick = () => {
+    const row = planCritRow(ed, '');
+    els.crit.append(row);
+    row.querySelector('input').focus();
+    planCritLabel(ed);
+  };
+  els.addCrit = addCrit;
+  critBox.append(els.critLabel, els.crit, addCrit, errEl('subtasks'));
+
+  // touches
+  const touchBox = node('div', 'pl-ed-field');
+  const touchLabel = node('span', 'pl-ed-label', 'Touches');
+  touchLabel.id = 'pl-ed-touch-label';
+  els.touches = node('div', 'pl-ed-chips');
+  els.touches.setAttribute('role', 'group');
+  els.touches.setAttribute('aria-labelledby', 'pl-ed-touch-label');
+  touchBox.append(touchLabel, els.touches, errEl('touches'));
+
+  // depends on / blocks
+  els.deps = node('div', 'pl-ed-deps');
+  const depBox = node('div', 'pl-ed-field');
+  depBox.append(els.deps, errEl('deps'));
+
+  const foot = node('div', 'pl-ed-foot');
+  const del = button('pl-ed-delete', 'Delete card');
+  del.onclick = () => confirmPlanDelete(ed);
+  els.status = node('span', 'pl-ed-status');
+  els.status.setAttribute('role', 'status');
+  foot.append(del, els.status);
+
+  $('pl-editor').replaceChildren(
+    head,
+    field('Title', 'pl-ed-title', els.title, errEl('title')),
+    grid,
+    field('Requirements', 'pl-ed-req', els.req, errEl('requirements')),
+    critBox,
+    touchBox,
+    depBox,
+    errEl('delete'),
+    foot,
+  );
+  // a field that was held while focused catches up once focus leaves it
+  $('pl-editor').addEventListener('focusout', () =>
+    setTimeout(() => {
+      if (plan.ed === ed) syncPlanEditor(ed);
+    }),
+  );
+  if (!planNodeById(id)?.board_id) return ed;
+  loadBoardPhases(planNodeById(id).board_id);
+  return ed;
+}
+
+function planEdit(ed, field, value, now = false) {
+  ed.pending[field] = value;
+  if (ed.errs[field]) {
+    delete ed.errs[field];
+    ed.els.err[field].textContent = '';
+  }
+  clearTimeout(ed.timer);
+  ed.timer = null;
+  if (now) flushPlanEdits(ed);
+  else ed.timer = setTimeout(() => flushPlanEdits(ed), 500);
+  renderPlanSaved();
+}
+
+// Everything typed since the last save, as ONE update_node op with only those fields.
+async function flushPlanEdits(ed) {
+  clearTimeout(ed.timer);
+  ed.timer = null;
+  const patch = ed.pending;
+  const fields = Object.keys(patch);
+  if (!fields.length) return;
+  ed.pending = {};
+  if (plan.view?.draft.id === ed.draft && !planNodeById(ed.id)) return renderPlanSaved(); // the card is gone
+  for (const f of fields) ed.inflight.set(f, (ed.inflight.get(f) ?? 0) + 1);
+  const r = await planPatch(ed.draft, [{ op: 'update_node', id: ed.id, patch }]);
+  for (const f of fields) ed.inflight.set(f, ed.inflight.get(f) - 1);
+  if (!r.ok) for (const f of fields) ed.errs[f] = `Couldn’t save: ${r.error}`;
+  if (plan.ed !== ed) return;
+  // a failed field reverts to the saved value (unless it has been edited again since)
+  syncPlanEditor(ed, r.ok ? [] : fields.filter((f) => !(f in ed.pending)));
+  renderPlanSaved();
+}
+
+function syncPlanEditor(ed, force = []) {
+  const v = plan.view;
+  const n = planNodeById(ed.id);
+  if (!v || !n || v.draft.id !== ed.draft) return;
+  const { els } = ed;
+  const active = document.activeElement;
+  const busy = (f) => !force.includes(f) && (f in ed.pending || (ed.inflight.get(f) ?? 0) > 0);
+  const hold = (f, el) => busy(f) || (!force.includes(f) && el.contains(active));
+  const boards = planBoards(v);
+
+  const b = boards.get(n.board_id);
+  const bn = node('span', '', b?.name ?? 'Unknown board');
+  bn.style.color = b?.color ?? PL_NONE_COLOR;
+  const step = v.layout?.columns?.[n.id];
+  els.kicker.replaceChildren('CARD · ', bn, ...(Number.isInteger(step) ? [` · STEP ${step + 1}`] : []));
+
+  if (!hold('title', els.title) && els.title.value !== n.title) els.title.value = n.title;
+
+  if (!hold('board_id', els.board)) {
+    const known = v.boards.some((x) => x.id === n.board_id);
+    const key = JSON.stringify([v.boards, known ? null : n.board_id]);
+    if (ed.keys.board !== key) {
+      ed.keys.board = key;
+      const opts = v.boards.map((x) => {
+        const o = node('option', '', x.root === '' ? `${boards.get(x.id)?.name ?? x.name} (workspace)` : `${x.name} · ${x.root}`);
+        o.value = x.id;
+        return o;
+      });
+      if (!known) {
+        const o = node('option', '', 'Unknown board');
+        o.value = n.board_id;
+        opts.push(o);
+      }
+      els.board.replaceChildren(...opts);
+    }
+    els.board.value = n.board_id;
+  }
+
+  if (!hold('phase', els.phase) && els.phase.value !== (n.phase ?? '')) els.phase.value = n.phase ?? '';
+  if (!hold('requirements', els.req) && els.req.value !== (n.requirements ?? '')) els.req.value = n.requirements ?? '';
+
+  if (!hold('subtasks', els.crit)) {
+    const cur = [...els.crit.querySelectorAll('input')].map((i) => i.value);
+    const want = n.subtasks ?? [];
+    if (JSON.stringify(cur) !== JSON.stringify(want)) els.crit.replaceChildren(...want.map((t) => planCritRow(ed, t)));
+  }
+  planCritLabel(ed);
+
+  if (!hold('touches', els.touches) && JSON.stringify(ed.touchList) !== JSON.stringify(n.touches ?? [])) renderPlanTouches(ed, n.touches ?? []);
+
+  renderPlanDeps(ed, v, n, boards);
+
+  for (const [f, el] of Object.entries(els.err)) el.textContent = ed.errs[f] ?? '';
+}
+
+function planCritRow(ed, text) {
+  const row = node('div', 'pl-ed-row');
+  const input = node('input', 'pl-ed-row-input');
+  input.value = text;
+  input.autocomplete = 'off';
+  input.setAttribute('aria-label', 'Acceptance criterion');
+  input.oninput = () => {
+    planEdit(ed, 'subtasks', planCritValues(ed));
+    planCritLabel(ed);
+  };
+  input.onkeydown = (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    ed.els.addCrit.click(); // Enter: on to a new criterion
+  };
+  const rm = node('button', 'pl-ed-x', '✕');
+  rm.type = 'button';
+  rm.setAttribute('aria-label', 'Remove criterion');
+  rm.onclick = () => {
+    row.remove();
+    planEdit(ed, 'subtasks', planCritValues(ed), true);
+    planCritLabel(ed);
+    ed.els.addCrit.focus();
+  };
+  row.append(input, rm);
+  return row;
+}
+
+function planCritValues(ed) {
+  return [...ed.els.crit.querySelectorAll('input')].map((i) => i.value).filter((s) => s.trim());
+}
+
+function planCritLabel(ed) {
+  ed.els.critLabel.textContent = `Acceptance criteria · ${planCritValues(ed).length}`;
+}
+
+function renderPlanTouches(ed, list) {
+  ed.touchList = [...list];
+  const set = (next) => {
+    planEdit(ed, 'touches', next, true);
+    renderPlanTouches(ed, next);
+  };
+  const chips = list.map((p, i) => {
+    const c = node('span', 'pl-ed-chip pl-ed-path');
+    c.append(node('span', 'pl-ed-chip-text', p));
+    const rm = node('button', 'pl-ed-x', '✕');
+    rm.type = 'button';
+    rm.setAttribute('aria-label', `Remove path ${p}`);
+    rm.onclick = () => {
+      set(list.filter((_, j) => j !== i));
+      ed.els.touches.querySelector('.pl-ed-add')?.focus();
+    };
+    c.append(rm);
+    return c;
+  });
+  const add = node('button', 'pl-ed-add pl-ed-add-sm', '+ Path');
+  add.type = 'button';
+  add.onclick = () => {
+    const input = node('input', 'pl-ed-input pl-ed-path-input');
+    input.placeholder = 'path/or/glob';
+    input.autocomplete = 'off';
+    input.setAttribute('aria-label', 'New path');
+    let done = false;
+    const finish = (save) => {
+      if (done) return;
+      done = true;
+      const p = input.value.trim();
+      if (save && p && !ed.touchList.includes(p)) set([...ed.touchList, p]);
+      else renderPlanTouches(ed, ed.touchList);
+      ed.els.touches.querySelector('.pl-ed-add')?.focus();
+    };
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === 'Escape') {
+        e.stopPropagation();
+        finish(false);
+      }
+    };
+    input.onblur = () => finish(true);
+    add.replaceWith(input);
+    input.focus();
+  };
+  ed.els.touches.replaceChildren(...chips, add);
+}
+
+function renderPlanDeps(ed, v, n, boards) {
+  const { els } = ed;
+  const nodes = v.draft.data.nodes;
+  const edges = v.draft.data.edges;
+  const byId = new Map(nodes.map((x) => [x.id, x]));
+  const on = edges.filter((e) => e.to === n.id && e.from !== n.id).map((e) => e.from);
+  const blocks = edges.filter((e) => e.from === n.id && e.to !== n.id).map((e) => e.to);
+  const offer = nodes.filter((x) => x.id !== n.id && !on.includes(x.id));
+  const desc = (id) => {
+    const x = byId.get(id);
+    return [id, x?.title || 'Untitled', boards.get(x?.board_id)?.color ?? PL_NONE_COLOR];
+  };
+  const key = JSON.stringify([on.map(desc), blocks.map(desc), offer.map((x) => [x.id, x.title])]);
+  if (ed.keys.deps === key) return;
+  ed.keys.deps = key;
+  const refocus = els.deps.contains(document.activeElement) && document.activeElement.id === 'pl-ed-adddep';
+  const chip = ([, title, color], cls) => {
+    const c = node('span', `pl-ed-chip ${cls}`);
+    const dot = node('span', 'pl-dot');
+    dot.style.background = color;
+    c.append(dot, node('span', 'pl-ed-chip-text', title));
+    return c;
+  };
+  const row = (label, ...kids) => {
+    const r = node('div', 'pl-ed-deprow');
+    r.append(node('span', 'pl-ed-deplabel', label), ...kids);
+    return r;
+  };
+  const depErr = (r) => {
+    ed.errs.deps = r.ok ? '' : `Couldn’t change dependencies: ${r.error}`;
+    if (plan.ed === ed) els.err.deps.textContent = ed.errs.deps;
+  };
+  const onChips = on.map((id) => {
+    const d = desc(id);
+    const c = chip(d, 'dep');
+    const rm = node('button', 'pl-ed-x', '✕');
+    rm.type = 'button';
+    rm.setAttribute('aria-label', `Remove dependency on ${d[1]}`);
+    rm.onclick = async () => {
+      $('pl-ed-adddep')?.focus();
+      depErr(await planPatch(ed.draft, [{ op: 'remove_edge', from: id, to: n.id }]));
+    };
+    c.append(rm);
+    return c;
+  });
+  // keyboard alternative to dragging an arrow
+  const sel = node('select', 'pl-ed-input pl-ed-select pl-ed-adddep');
+  sel.id = 'pl-ed-adddep';
+  sel.setAttribute('aria-label', 'Add dependency');
+  const first = node('option', '', 'Add dependency…');
+  first.value = '';
+  sel.append(
+    first,
+    ...offer.map((x) => {
+      const o = node('option', '', x.title || 'Untitled');
+      o.value = x.id;
+      return o;
+    }),
+  );
+  sel.disabled = !offer.length;
+  sel.onchange = async () => {
+    const from = sel.value;
+    sel.value = '';
+    if (from) depErr(await planPatch(ed.draft, [{ op: 'add_edge', from, to: n.id }]));
+  };
+  const blockChips = blocks.map((id) => chip(desc(id), 'blocks'));
+  els.deps.replaceChildren(
+    row('Depends on', ...onChips, sel),
+    row('Blocks', ...(blockChips.length ? blockChips : [node('span', 'pl-ed-none', 'Nothing yet')])),
+  );
+  if (refocus) sel.focus();
+}
+
+// ── phase suggestions ──
+async function loadBoardPhases(boardId) {
+  if (!boardId || plan.boardPhases.has(boardId)) return;
+  plan.boardPhases.set(boardId, []);
+  let titles = null;
+  try {
+    const res = await fetch(`/phases?project=${encodeURIComponent(boardId)}`);
+    if (res.ok) titles = (await res.json()).map((p) => p.title).filter((t) => typeof t === 'string' && t.trim());
+  } catch {
+    /* no board phases to suggest; retried next time */
+  }
+  if (titles) plan.boardPhases.set(boardId, titles);
+  else plan.boardPhases.delete(boardId);
+  if (plan.ed?.phaseOpen) renderPlanPhaseList(plan.ed);
+}
+
+function planPhaseOptions(ed) {
+  const v = plan.view;
+  if (!v) return [];
+  const board = ed.els.board.value;
+  const typed = ed.els.phase.value.trim();
+  const q = typed.toLowerCase();
+  const counts = new Map();
+  for (const n of v.draft.data.nodes) {
+    const p = n.board_id === board ? n.phase?.trim() : '';
+    if (p) counts.set(p, (counts.get(p) ?? 0) + 1);
+  }
+  const opts = [...counts].map(([name, c]) => ({ name, sub: `${c} card${c === 1 ? '' : 's'} in this plan` }));
+  for (const t of plan.boardPhases.get(board) ?? []) {
+    const name = t.trim();
+    if (!opts.some((o) => o.name === name)) opts.push({ name, sub: 'On the board' });
+  }
+  const shown = opts.filter((o) => !q || o.name.toLowerCase().includes(q));
+  if (typed && !opts.some((o) => o.name === typed)) shown.push({ name: typed, isNew: true });
+  return shown;
+}
+
+function renderPlanPhaseList(ed) {
+  const { els } = ed;
+  const opts = ed.phaseOpen ? planPhaseOptions(ed) : [];
+  ed.phaseOpts = opts;
+  if (ed.phaseIdx >= opts.length) ed.phaseIdx = 0;
+  const open = opts.length > 0;
+  els.phaseList.classList.toggle('hidden', !open);
+  els.phase.setAttribute('aria-expanded', String(open));
+  if (open) els.phase.setAttribute('aria-activedescendant', `pl-ed-ph-${ed.phaseIdx}`);
+  else els.phase.removeAttribute('aria-activedescendant');
+  els.phaseList.replaceChildren(
+    ...opts.map((o, i) => {
+      const el = node('div', `pl-ed-opt${o.isNew ? ' new' : ''}`);
+      el.id = `pl-ed-ph-${i}`;
+      el.setAttribute('role', 'option');
+      el.setAttribute('aria-selected', String(i === ed.phaseIdx));
+      if (o.isNew) el.textContent = `+ New phase “${o.name}”`;
+      else el.append(node('span', 'pl-ed-opt-name', o.name), node('span', 'pl-ed-opt-sub', o.sub));
+      el.onclick = () => choosePlanPhase(ed, o.name);
+      return el;
+    }),
+  );
+}
+
+function choosePlanPhase(ed, name) {
+  ed.els.phase.value = name.trim();
+  ed.phaseOpen = false;
+  renderPlanPhaseList(ed);
+  commitPlanPhase(ed, name);
+}
+
+// The phase saves when picked (or on Enter / leaving the field), not per keystroke:
+// a half-typed name would otherwise land in the plan as a phase of its own.
+function commitPlanPhase(ed, value) {
+  const t = value.trim();
+  const saved = 'phase' in ed.pending ? ed.pending.phase : planNodeById(ed.id)?.phase;
+  if (t !== (saved ?? '')) planEdit(ed, 'phase', t || null, true);
+}
+
+// ── delete a card ──
+function confirmPlanDelete(ed) {
+  const n = planNodeById(ed.id);
+  if (!n || svModal) return;
+  const { dlg, close, mount } = openModal({ labelledBy: 'pl-del-title', describedBy: 'pl-del-sub', busy: () => false, fallbackFocus: () => $('pl-canvas') });
+  const title = node('h2', 'sv-title', `Delete “${n.title || 'Untitled'}”?`);
+  title.id = 'pl-del-title';
+  const k = plan.view.draft.data.edges.filter((e) => e.from === n.id || e.to === n.id).length;
+  const sub = node('p', 'sv-sub', k ? `It leaves this plan with its ${k} arrow${k === 1 ? '' : 's'}.` : 'It leaves this plan.');
+  sub.id = 'pl-del-sub';
+  const foot = node('div', 'sv-foot');
+  const cancel = node('button', 'home-btn', 'Cancel');
+  cancel.type = 'button';
+  cancel.onclick = close;
+  const del = node('button', 'home-btn pl-danger', 'Delete card');
+  del.type = 'button';
+  del.onclick = () => {
+    close();
+    deletePlanNode(ed);
+  };
+  foot.append(node('span', 'sv-foot-note'), cancel, del);
+  dlg.append(title, sub, foot);
+  mount();
+  cancel.focus();
+}
+
+async function deletePlanNode(ed) {
+  clearTimeout(ed.timer);
+  ed.timer = null;
+  ed.pending = {};
+  const r = await planPatch(ed.draft, [{ op: 'remove_node', id: ed.id }]);
+  if (r.ok) return $('pl-canvas').focus({ preventScroll: true });
+  ed.errs.delete = `Couldn’t delete: ${r.error}`;
+  if (plan.ed === ed) syncPlanEditor(ed);
+}
+
+// ── add a card ──
+async function addPlanCard() {
+  const v = plan.view;
+  if (EMBED || !v || v.draft.id !== plan.openId) return;
+  const ids = new Set(v.draft.data.nodes.map((n) => n.id));
+  let id;
+  do id = Math.random().toString(36).slice(2, 8);
+  while (!id || ids.has(id));
+  const board = planNodeById(plan.selected)?.board_id ?? v.boards.find((b) => b.root === '')?.id ?? v.draft.workspace_id;
+  plan.stripError = '';
+  const r = await planPatch(v.draft.id, [{ op: 'add_node', node: { id, title: 'New card', board_id: board } }]);
+  if (plan.openId !== v.draft.id) return;
+  if (!r.ok) {
+    plan.stripError = `Couldn’t add a card: ${r.error}`;
+    if (plan.view) renderPlanStrip(plan.view, planModel(plan.view));
+    return;
+  }
+  if (!planNodeById(id)) return;
+  selectPlanNode(id);
+  const t = $('pl-ed-title');
+  t?.focus();
+  t?.select();
+}
+
+// ── arrows: select / delete, drag to connect ──
+async function planEdgeOp(op, from, to) {
+  const v = plan.view;
+  if (EMBED || !v) return;
+  plan.stripError = '';
+  const r = await planPatch(v.draft.id, [{ op, from, to }]);
+  if (r.ok || plan.openId !== v.draft.id || !plan.view) return;
+  plan.stripError = `Couldn’t ${op === 'add_edge' ? 'add' : 'remove'} the arrow: ${r.error}`;
+  renderPlanStrip(plan.view, planModel(plan.view));
+}
+
+function removeSelectedEdge() {
+  const e = plan.selEdge;
+  if (!e) return;
+  plan.selEdge = null;
+  markPlanEdge();
+  planEdgeOp('remove_edge', e.from, e.to);
+}
+
+// The selected arrow: highlighted, with a ✕ at its midpoint.
+function markPlanEdge() {
+  const world = $('pl-world');
+  world.querySelector('.pl-edge-x')?.remove();
+  for (const p of world.querySelectorAll('.pl-edge-vis.sel')) p.classList.remove('sel');
+  const s = plan.selEdge;
+  if (!s || !plan.view) return;
+  const i = plan.view.draft.data.edges.findIndex((e) => e.from === s.from && e.to === s.to);
+  const path = i < 0 ? null : world.querySelector(`.pl-edge-vis[data-i="${i}"]`);
+  if (!path) return void (plan.selEdge = null);
+  path.classList.add('sel');
+  const pt = path.getPointAtLength(path.getTotalLength() / 2);
+  const title = (id) => planNodeById(id)?.title || 'Untitled';
+  const x = node('button', 'pl-edge-x');
+  x.type = 'button';
+  x.setAttribute('aria-label', `Remove arrow: ${title(s.from)} → ${title(s.to)}`);
+  x.append(planXIcon(12));
+  x.style.left = `${pt.x - 12}px`;
+  x.style.top = `${pt.y - 12}px`;
+  x.onclick = removeSelectedEdge;
+  world.append(x);
+}
+
+function planWorldPoint(e) {
+  const r = $('pl-canvas').getBoundingClientRect();
+  const { x, y, k } = plan.xf;
+  return { x: (e.clientX - r.left - x) / k, y: (e.clientY - r.top - y) / k };
+}
+
+function startPlanLink(from, e) {
+  e.preventDefault();
+  const canvas = $('pl-canvas');
+  canvas.setPointerCapture(e.pointerId);
+  canvas.focus({ preventScroll: true });
+  canvas.classList.add('linking');
+  const svg = svgEl('svg', { class: 'pl-link', width: 1, height: 1, 'aria-hidden': 'true' });
+  svg.append(svgEl('path', { class: 'pl-link-line' }));
+  const tip = node('div', 'pl-link-tip hidden');
+  tip.setAttribute('role', 'tooltip');
+  plan.link = { from, pointer: e.pointerId, at: planWorldPoint(e), target: null, svg, dot: node('span', 'pl-link-dot'), tip };
+  drawPlanLink();
+}
+
+function movePlanLink(e) {
+  const l = plan.link;
+  l.at = planWorldPoint(e);
+  const hit = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('#pl-world .pl-node, #pl-world .pl-handle');
+  const id = hit?.dataset.id ?? null;
+  const edges = plan.view?.draft.data.edges ?? [];
+  // no self arrows and no duplicates: those cards are never offered as a drop target
+  l.target = id && id !== l.from && !edges.some((x) => x.from === l.from && x.to === id) ? id : null;
+  drawPlanLink();
+}
+
+function drawPlanLink() {
+  const l = plan.link;
+  const world = $('pl-world');
+  const at = (id) => world.querySelector(`.pl-node[data-id="${CSS.escape(id)}"]`);
+  const src = at(l.from);
+  if (!src) return endPlanLink();
+  if (!l.svg.isConnected) world.append(l.svg, l.dot, l.tip);
+  const tgt = l.target ? at(l.target) : null;
+  if (!tgt) l.target = null;
+  for (const b of world.querySelectorAll('.pl-node.drop')) if (b !== tgt) b.classList.remove('drop');
+  tgt?.classList.add('drop');
+  const sx = src.offsetLeft + PL.NODE_W;
+  const sy = src.offsetTop + PL.NODE_H / 2;
+  const ex = tgt ? tgt.offsetLeft : l.at.x;
+  const ey = tgt ? tgt.offsetTop + PL.NODE_H / 2 : l.at.y;
+  const dx = ex >= sx ? Math.max(40, (ex - sx) / 2) : 40; // leftward: a short hook, not a loop
+  l.svg.firstChild.setAttribute('d', `M${sx} ${sy} C${sx + dx} ${sy} ${ex - dx} ${ey} ${ex} ${ey}`);
+  l.dot.style.left = `${sx - 8}px`;
+  l.dot.style.top = `${sy - 8}px`;
+  l.tip.classList.toggle('hidden', !tgt);
+  if (!tgt) return;
+  const title = (id) => planNodeById(id)?.title || 'Untitled';
+  l.tip.replaceChildren(node('span', 'pl-link-tip-k', 'DROP TO ADD ARROW'), node('span', '', `${title(l.target)} will depend on ${title(l.from)}`));
+  l.tip.style.left = `${tgt.offsetLeft + 14}px`;
+  const above = tgt.offsetTop - l.tip.offsetHeight - 8;
+  l.tip.style.top = `${above >= 0 ? above : tgt.offsetTop + PL.NODE_H + 8}px`;
+}
+
+function dropPlanLink() {
+  const { from, target } = plan.link;
+  endPlanLink();
+  if (target) planEdgeOp('add_edge', from, target);
+}
+
+function endPlanLink() {
+  const l = plan.link;
+  if (!l) return;
+  plan.link = null;
+  l.svg.remove();
+  l.dot.remove();
+  l.tip.remove();
+  const canvas = $('pl-canvas');
+  canvas.classList.remove('linking');
+  if (canvas.hasPointerCapture(l.pointer)) canvas.releasePointerCapture(l.pointer);
+  for (const b of $('pl-world').querySelectorAll('.pl-node.drop')) b.classList.remove('drop');
 }
 
 // ── pan / zoom ──
@@ -4617,7 +5404,14 @@ function planReveal(ids) {
   );
   let drag = null;
   canvas.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0 || e.target.closest('.pl-node')) return;
+    if (e.button !== 0) return;
+    const handle = !EMBED && !plan.link && e.target.closest('.pl-handle');
+    if (handle) return startPlanLink(handle.dataset.id, e);
+    if (e.target.closest('.pl-node, .pl-edge-hit, .pl-edge-x')) return;
+    if (plan.selEdge) {
+      plan.selEdge = null;
+      markPlanEdge();
+    }
     drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x: plan.xf.x, y: plan.xf.y };
     canvas.setPointerCapture(e.pointerId);
     canvas.classList.add('panning');
@@ -4635,6 +5429,28 @@ function planReveal(ids) {
     canvas.classList.remove('panning');
   };
   canvas.addEventListener('pointerup', end);
+  canvas.addEventListener('pointermove', (e) => {
+    if (plan.link && e.pointerId === plan.link.pointer) movePlanLink(e);
+  });
+  canvas.addEventListener('pointerup', (e) => {
+    if (plan.link && e.pointerId === plan.link.pointer) dropPlanLink();
+  });
+  canvas.addEventListener('pointercancel', (e) => {
+    if (plan.link && e.pointerId === plan.link.pointer) endPlanLink();
+  });
+  canvas.addEventListener('click', (e) => {
+    const hit = e.target.closest('.pl-edge-hit');
+    if (!hit || !plan.view) return;
+    const edge = plan.view.draft.data.edges[Number(hit.dataset.i)];
+    if (!edge) return;
+    plan.selEdge = { from: edge.from, to: edge.to };
+    markPlanEdge();
+    canvas.focus({ preventScroll: true }); // Delete / Backspace now removes it
+  });
+  canvas.addEventListener('dblclick', (e) => {
+    if (EMBED || !plan.view || e.target.closest('.pl-node, .pl-handle, .pl-edge-hit, .pl-edge-x')) return;
+    addPlanCard();
+  });
   // the validation strip growing (a cycle appears) shrinks the canvas: re-fit if still fitted
   new ResizeObserver(() => {
     if (plan.autoFit !== null && plan.view && activeView === 'planner') planFit(plan.autoFit);
@@ -4660,13 +5476,27 @@ function planReveal(ids) {
     renderPlanMain();
   };
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || activeView !== 'planner' || svModal) return;
-    if (e.target.closest?.('input, textarea, select')) return;
+    if (activeView !== 'planner' || svModal) return;
+    if (e.target.closest?.('input, textarea, select, [contenteditable], .xterm')) return; // typing, or the terminal
+    if ((e.key === 'Delete' || e.key === 'Backspace') && plan.selEdge && !EMBED) {
+      e.preventDefault();
+      return removeSelectedEdge();
+    }
+    if (e.key !== 'Escape') return;
+    if (plan.link) return endPlanLink();
+    if (plan.selEdge) {
+      plan.selEdge = null;
+      return markPlanEdge();
+    }
     if (!plan.selected && !plan.flagged) return;
-    plan.selected = null;
     plan.flagged = null;
-    updatePlanMarks();
+    selectPlanNode(null);
   });
+  $('pl-add').onclick = () => addPlanCard();
+  $('pl-show-plans').onclick = () => {
+    plan.listOpen = !plan.listOpen;
+    renderPlanEditor();
+  };
 
   // "+ New plan": an inline title input at the top of the list
   const form = $('pl-new-form');
