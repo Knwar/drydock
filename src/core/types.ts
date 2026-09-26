@@ -83,7 +83,7 @@ export interface CardSummary {
   blocked: boolean; // a builder raised a blocker on this card
   blocked_reason: string | null; // the decision/question it needs
   subs: { done: number; total: number } | null;
-  lane_since: number; // epoch ms the card entered its current lane (last move into it, else creation)
+  lane_since: number | null; // epoch ms an in-flight card entered its lane (last move into it, else creation); null otherwise
 }
 
 /** Per-board work-in-progress health config (projects.board_settings). */

@@ -59,8 +59,16 @@ describe('/project/:id/settings + lane_since', () => {
   });
 
   it('PUT with invalid values → 400; unknown project → 404', async () => {
-    const bad = await send(`${daemon!.base}/project/${project}/settings`, 'PUT', { stuck_hours: { in_review: -1 } });
-    assert.equal(bad.status, 400);
+    for (const body of [
+      { stuck_hours: { in_review: -1 } },
+      { stuck_hours: { in_review: 9000 } },
+      { wip: { in_progress: 5000 } },
+      { stuck_hours: { toString: 3 } },
+      { bogus: 1 },
+    ]) {
+      const bad = await send(`${daemon!.base}/project/${project}/settings`, 'PUT', body);
+      assert.equal(bad.status, 400, JSON.stringify(body));
+    }
     const missing = await fetch(`${daemon!.base}/project/no-such/settings`);
     assert.equal(missing.status, 404);
   });

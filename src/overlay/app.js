@@ -249,7 +249,7 @@ function applyEvent(msg) {
     renderUsage(msg.usage);
   } else if (msg.type === 'verticals') {
     onVerticals(msg);
-  } else if (msg.type === 'settings') {
+  } else if (msg.type === 'settings' && msg.project_id === projectId) {
     boardSettings = msg.settings;
     renderBoard();
     if (!$('settings-modal').classList.contains('hidden')) renderBoardSettings();
@@ -1888,7 +1888,12 @@ function onDashboardMessage(msg) {
     setTimeout(() => {
       $('dashboard-body').querySelector(`.dash-tile[data-id="${CSS.escape(pid)}"] .dt-autopilot`)?.classList.remove('nudged');
     }, DASH_NUDGE_PULSE_MS);
-  } else if (['card', 'card_removed', 'phases', 'verticals', 'event', 'settings'].includes(msg.type)) {
+  } else if (msg.type === 'settings') {
+    const b = dash.summary?.boards.find((x) => x.project.id === pid);
+    if (!b) return;
+    b.settings = msg.settings; // this board's tile only
+    replaceDashTile(b);
+  } else if (['card', 'card_removed', 'phases', 'verticals', 'event'].includes(msg.type)) {
     scheduleDashboardRefetch();
   }
 }

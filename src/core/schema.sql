@@ -161,4 +161,5 @@ CREATE INDEX IF NOT EXISTS idx_card_activity_project ON card_activity(project_id
 CREATE INDEX IF NOT EXISTS idx_card_activity_task ON card_activity(task_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_task ON reviews(task_id);
 CREATE INDEX IF NOT EXISTS idx_events_task ON task_events(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_task_type ON task_events(task_id, type, created_at);
 CREATE INDEX IF NOT EXISTS idx_plan_drafts_workspace ON plan_drafts(workspace_id);

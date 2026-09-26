@@ -546,27 +546,35 @@ export function getBoardSettings(db: DB, projectId: string): BoardSettings {
   };
 }
 
+export const MAX_STUCK_HOURS = 8760; // one year
+export const MAX_WIP_LIMIT = 1000;
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
 /**
  * Merge a partial update into a board's settings and store it. stuck_hours
- * values must be positive numbers; wip values positive integers or null (no
- * limit). Unknown keys are rejected. Returns the full settings.
+ * values must be numbers in (0, MAX_STUCK_HOURS]; wip values integers in
+ * [1, MAX_WIP_LIMIT] or null (no limit). Unknown keys (top-level or lane) are
+ * rejected. Returns the full settings.
  */
-export function setBoardSettings(
-  db: DB,
-  projectId: string,
-  patch: { stuck_hours?: Record<string, unknown>; wip?: Record<string, unknown> },
-): BoardSettings {
+export function setBoardSettings(db: DB, projectId: string, patch: unknown): BoardSettings {
   const next = getBoardSettings(db, projectId);
-  for (const [lane, v] of Object.entries(patch.stuck_hours ?? {})) {
-    if (!(lane in next.stuck_hours)) throw new Error(`invalid stuck_hours lane: ${lane}`);
-    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0)
-      throw new Error(`stuck_hours.${lane} must be a positive number`);
+  if (!isPlainObject(patch)) throw new Error('settings must be an object');
+  for (const key of Object.keys(patch))
+    if (key !== 'stuck_hours' && key !== 'wip') throw new Error(`unknown setting: ${key}`);
+  for (const key of ['stuck_hours', 'wip'] as const)
+    if (patch[key] !== undefined && !isPlainObject(patch[key])) throw new Error(`${key} must be an object`);
+  for (const [lane, v] of Object.entries((patch.stuck_hours ?? {}) as Record<string, unknown>)) {
+    if (!Object.hasOwn(next.stuck_hours, lane)) throw new Error(`invalid stuck_hours lane: ${lane}`);
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > MAX_STUCK_HOURS)
+      throw new Error(`stuck_hours.${lane} must be a number of hours in (0, ${MAX_STUCK_HOURS}]`);
     next.stuck_hours[lane as keyof BoardSettings['stuck_hours']] = v;
   }
-  for (const [lane, v] of Object.entries(patch.wip ?? {})) {
-    if (!(lane in next.wip)) throw new Error(`invalid wip lane: ${lane}`);
-    if (v !== null && (!Number.isInteger(v) || (v as number) <= 0))
-      throw new Error(`wip.${lane} must be a positive integer or null`);
+  for (const [lane, v] of Object.entries((patch.wip ?? {}) as Record<string, unknown>)) {
+    if (!Object.hasOwn(next.wip, lane)) throw new Error(`invalid wip lane: ${lane}`);
+    if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v <= 0 || v > MAX_WIP_LIMIT))
+      throw new Error(`wip.${lane} must be an integer in [1, ${MAX_WIP_LIMIT}] or null`);
     next.wip[lane as keyof BoardSettings['wip']] = v as number | null;
   }
   db.prepare('UPDATE projects SET board_settings = ? WHERE id = ?').run(JSON.stringify(next), projectId);
@@ -1075,14 +1083,15 @@ export function checkSubtask(
   return { task: getTask(db, taskId), moved };
 }
 
-/** When a card entered its current lane: the latest move event into that lane,
- *  else its creation. A correlated subquery (idx_events_task) over `tasks`. */
-const LANE_SINCE_SQL = `COALESCE((SELECT MAX(e.created_at) FROM task_events e WHERE e.task_id = tasks.id AND e.type = 'move' AND json_extract(e.payload, '$.to') = tasks.lane), tasks.created_at)`;
+/** When an in-flight card (queued/in_progress/in_review) entered its current
+ *  lane: the latest move event into that lane, else its creation; null in other
+ *  lanes. A correlated subquery over `tasks`, only move rows (idx_events_task_type). */
+const LANE_SINCE_SQL = `CASE WHEN tasks.lane IN ('queued', 'in_progress', 'in_review') THEN COALESCE((SELECT MAX(e.created_at) FROM task_events e WHERE e.task_id = tasks.id AND e.type = 'move' AND json_extract(e.payload, '$.to') = tasks.lane), tasks.created_at) END`;
 
-/** lane_since for one card (see LANE_SINCE_SQL). */
-export function laneSince(db: DB, taskId: string): number {
+/** lane_since for one card (see LANE_SINCE_SQL); null outside the in-flight lanes. */
+export function laneSince(db: DB, taskId: string): number | null {
   const row = db.prepare(`SELECT ${LANE_SINCE_SQL} AS t FROM tasks WHERE id = ?`).get(taskId) as
-    | { t: number }
+    | { t: number | null }
     | undefined;
   if (!row) throw new Error(`no such task: ${taskId}`);
   return row.t;

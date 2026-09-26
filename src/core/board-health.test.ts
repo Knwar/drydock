@@ -46,13 +46,33 @@ describe('lane_since', () => {
     backdateMove(db, t.id, 'in_progress', 1000);
     moveTask(db, t.id, 'in_review');
     moveTask(db, t.id, 'in_progress'); // failed review → back
-    assert.ok(laneSince(db, t.id) > 1000);
+    assert.ok(laneSince(db, t.id)! > 1000);
   });
 
-  it('falls back to created_at with no move into the lane', () => {
+  it('falls back to created_at with no move into an in-flight lane', () => {
     const { db, project } = setup();
     const t = createTask(db, project.id, 'A');
+    db.prepare(`UPDATE tasks SET lane = 'queued' WHERE id = ?`).run(t.id);
     assert.equal(laneSince(db, t.id), t.created_at);
+  });
+
+  it('is null outside the in-flight lanes', () => {
+    const { db, project } = setup();
+    const t = createTask(db, project.id, 'A');
+    assert.equal(laneSince(db, t.id), null);
+    moveTask(db, t.id, 'in_progress');
+    moveTask(db, t.id, 'done');
+    assert.equal(laneSince(db, t.id), null);
+    assert.equal(getBoard(db, project.id)[0].lane_since, null);
+  });
+
+  it('uses the task/type index for the move lookup', () => {
+    const { db, project } = setup();
+    const t = createTask(db, project.id, 'A');
+    const plan = db
+      .prepare(`EXPLAIN QUERY PLAN SELECT MAX(created_at) FROM task_events WHERE task_id = ? AND type = 'move'`)
+      .all(t.id) as { detail: string }[];
+    assert.ok(plan.some((r) => r.detail.includes('idx_events_task_type')), JSON.stringify(plan));
   });
 
   it('is on the workspace summary active list, with the board settings', () => {
@@ -84,6 +104,17 @@ describe('board settings', () => {
   it('rejects bad values and lanes without writing', () => {
     const { db, project } = setup();
     for (const patch of [
+      null,
+      [],
+      'x',
+      { stuck_hours: { in_review: 2 }, extra: 1 },
+      { stuck_hours: [] },
+      { wip: 'x' },
+      { stuck_hours: { toString: 5 } },
+      { wip: { constructor: 3 } },
+      { stuck_hours: { in_review: 8761 } },
+      { wip: { in_progress: 1001 } },
+      { stuck_hours: { in_review: Infinity } },
       { stuck_hours: { in_review: 0 } },
       { stuck_hours: { in_review: '5' } },
       { stuck_hours: { done: 5 } },
@@ -91,7 +122,14 @@ describe('board settings', () => {
       { wip: { in_progress: -1 } },
       { wip: { queued: 3 } },
     ])
-      assert.throws(() => setBoardSettings(db, project.id, patch as never));
+      assert.throws(() => setBoardSettings(db, project.id, patch), JSON.stringify(patch));
     assert.deepEqual(getBoardSettings(db, project.id), DEFAULT_BOARD_SETTINGS);
+  });
+
+  it('accepts the caps exactly', () => {
+    const { db, project } = setup();
+    const s = setBoardSettings(db, project.id, { stuck_hours: { queued: 8760 }, wip: { in_review: 1000 } });
+    assert.equal(s.stuck_hours.queued, 8760);
+    assert.equal(s.wip.in_review, 1000);
   });
 });
