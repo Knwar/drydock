@@ -155,13 +155,32 @@ function under(path: string, dir: string): boolean {
   return dir === '' || path === dir || path.startsWith(dir + '/');
 }
 
+/** `dir/prefix*suffix` with one `*` in the final segment and no other glob chars, split up; else null. */
+function singleStar(p: string): { dir: string; prefix: string; suffix: string } | null {
+  const m = /^(?:(.*)\/)?([^/]*)$/.exec(normPath(p))!;
+  const [dir = '', seg] = [m[1], m[2]];
+  if (GLOB_CHARS.test(dir)) return null;
+  const star = seg.indexOf('*');
+  if (star < 0 || seg.indexOf('*', star + 1) >= 0 || GLOB_CHARS.test(seg.replace('*', ''))) return null;
+  return { dir, prefix: seg.slice(0, star), suffix: seg.slice(star + 1) };
+}
+
 /** Do two touched paths/globs overlap? Identical path, or one's glob-free prefix covers the other. */
 function overlaps(a: string, b: string): boolean {
   const A = base(a);
   const B = base(b);
   if (!A.glob && !B.glob) return under(A.base, B.base) || under(B.base, A.base);
-  if (A.glob && !B.glob) return B.base.startsWith(A.base);
-  if (!A.glob && B.glob) return A.base.startsWith(B.base);
+  // glob vs plain: the glob's prefix covers the path, or the path is a directory at/above the glob's prefix
+  const globPlain = (g: string, p: string) => p.startsWith(g) || under(g.replace(/\/+$/, ''), p);
+  if (A.glob && !B.glob) return globPlain(A.base, B.base);
+  if (!A.glob && B.glob) return globPlain(B.base, A.base);
+  // two single-`*` globs in a final segment match only in the same folder with compatible prefix/suffix
+  const sa = singleStar(a);
+  const sb = singleStar(b);
+  if (sa && sb) {
+    const compat = (x: string, y: string, f: 'startsWith' | 'endsWith') => x[f](y) || y[f](x);
+    return sa.dir === sb.dir && compat(sa.prefix, sb.prefix, 'startsWith') && compat(sa.suffix, sb.suffix, 'endsWith');
+  }
   return A.base.startsWith(B.base) || B.base.startsWith(A.base);
 }
 

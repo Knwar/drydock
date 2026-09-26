@@ -172,4 +172,30 @@ describe('plan drafts', () => {
     assert.equal((db.prepare('SELECT COUNT(*) AS n FROM plan_drafts').get() as { n: number }).n, 1);
     assert.ok(getDraft(db, keep.id));
   });
+
+  it('parses stored data defensively: corrupt → DraftError, missing keys default', (t) => {
+    const { db, ws, cleanup } = setup();
+    t.after(cleanup);
+    const d = createDraft(db, ws.id, 'Plan');
+    const setData = (data: string) => db.prepare('UPDATE plan_drafts SET data = ? WHERE id = ?').run(data, d.id);
+    const corrupt = (e: unknown) => e instanceof DraftError && e.code === 'corrupt';
+    for (const bad of ['{not json', 'null', '[]', '{"nodes":{}}', '{"edges":"x"}', '{"committed":[]}']) {
+      setData(bad);
+      assert.throws(() => getDraft(db, d.id), corrupt, bad);
+      assert.throws(() => applyDraftOps(db, d.id, [{ op: 'set_title', title: 'X' }]), corrupt, bad);
+    }
+    setData('{}');
+    assert.deepEqual(getDraft(db, d.id)!.data, { nodes: [], edges: [], committed: {} });
+    setData(JSON.stringify({ nodes: [node('a')] }));
+    assert.deepEqual(getDraft(db, d.id)!.data, { nodes: [node('a')], edges: [], committed: {} });
+  });
+
+  it('createDraft ignores a provided committed map', (t) => {
+    const { db, ws, cleanup } = setup();
+    t.after(cleanup);
+    const seed = { nodes: [node('a')], committed: { a: 'card1' } } as Parameters<typeof createDraft>[3];
+    const d = createDraft(db, ws.id, 'Plan', seed);
+    assert.deepEqual(d.data.committed, {});
+    assert.deepEqual(getDraft(db, d.id)!.data.committed, {});
+  });
 });
