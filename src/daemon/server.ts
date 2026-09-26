@@ -892,7 +892,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       );
       const agents = board.getAgentBoard(db, project).map((m) => {
         const entry =
-          latest(allEntries.filter((e) => e.task_id !== null && cardAgent.get(e.task_id) === m.name)) ??
+          latest(
+            allEntries.filter((e) => {
+              const assigned = e.task_id !== null ? cardAgent.get(e.task_id) : null;
+              return assigned === m.name || assigned === m.id;
+            }),
+          ) ??
           latest([...sessions.values()].flatMap((s) => s.agents).filter((a) => a.agent === m.name));
         return { ...m, now: activity(entry) };
       });
@@ -1569,7 +1574,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       board.recordActivity(db, {
         project_id: task.project_id,
         task_id: taskId,
-        agent: b.agent ?? task.assigned_agent,
+        // credit the card's team member; the hook's agent is the subagent type (the role)
+        agent: task.assigned_agent ? board.memberName(db, task.assigned_agent) : (b.agent ?? null),
+        role: b.role ?? b.agent ?? null,
         agent_id: b.agent_id,
         tokens: Number(b.tokens) || 0,
         tokens_out: Number(b.tokens_out) || 0,
@@ -1638,6 +1645,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       task_id: b.task_id ?? null,
     };
     const now = Date.now();
+    // A subagent's pings only name its card when the path shows up in the tool
+    // input; carry its last known card forward so it stays attributed.
+    if (status.task_id === null && b.agent_id) {
+      const prev = states.view(b.project_id, now).agents.find((a) => a.agent_id === b.agent_id);
+      if (prev) status.task_id = prev.task_id;
+    }
     if (status.agent === 'orchestrator') {
       const wasIdle = states.view(b.project_id, now).main?.verb === 'idle';
       if (status.verb !== 'idle') mainIdleStart.delete(b.project_id);

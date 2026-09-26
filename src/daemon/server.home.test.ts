@@ -150,6 +150,41 @@ describe('daemon GET /home', () => {
     assert.equal(hv.now_building.length, 1);
   });
 
+  it('build runs credit the assigned member; live "now" follows the card across pings', async () => {
+    const id = await project(join(daemon!.dbDir, 'attrib'));
+    const card = await task(id, 'Assigned');
+    await send('PATCH', `/task/${card}`, { assigned_agent: 'Ada', worktree_path: `.trees/${card}`, branch: `card/${card}` });
+    const loose = await task(id, 'Unassigned');
+    // the build hooks send the subagent TYPE as the agent
+    await post('/event', { project_id: id, task_id: card, type: 'build_start', agent: 'builder' });
+    assert.equal((await post(`/task/${card}/activity`, { agent: 'builder', role: 'builder', agent_id: 'b1', tokens: 10 })).status, 200);
+    assert.equal((await post(`/task/${loose}/activity`, { agent: 'builder', agent_id: 'b2', tokens: 5 })).status, 200);
+
+    const stats = (await (await fetch(`${base}/stats?project=${id}`)).json()) as any;
+    assert.deepEqual(
+      stats.agents.map((a: any) => [a.agent, a.cards, a.tokens]),
+      [
+        ['Ada', 1, 10],
+        ['builder', 1, 5], // unassigned card falls back to the hook's agent
+      ],
+    );
+
+    // first ping names the card; later pings (no .trees path in the tool input) don't
+    await post('/status', { project_id: id, agent: 'builder', agent_id: 'b1', task_id: card, verb: 'started', detail: '' });
+    await post('/status', { project_id: id, agent: 'builder', agent_id: 'b1', task_id: null, verb: 'running', detail: 'npm test' });
+    let h = await home(id);
+    const ada = h.agents.find((m: any) => m.name === 'Ada');
+    assert.equal(ada.cards, 1);
+    assert.equal(ada.now, 'running npm test');
+    assert.equal(h.agents.find((m: any) => m.name === 'Bob').now, null);
+    assert.equal(h.now_building.find((c: any) => c.id === card).activity, 'running npm test');
+
+    // the subagent finishing clears it
+    await post('/status', { project_id: id, agent: 'builder', agent_id: 'b1', verb: 'finished', detail: '' });
+    h = await home(id);
+    assert.equal(h.agents.find((m: any) => m.name === 'Ada').now, null);
+  });
+
   it('unknown id → 404, missing param → 400', async () => {
     const res = await fetch(`${base}/home?project=does-not-exist`);
     assert.equal(res.status, 404);
