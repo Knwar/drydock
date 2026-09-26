@@ -631,6 +631,7 @@ const MX_URL_KEYS = ['tab', 'scope', 'phase', 'tag', 'agent', 'range', 'from', '
 const MX_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const MX_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MX_COST_LIMIT = 100;
+const MX_META_CONCURRENCY = 6;
 
 const mx = {
   project: null, // the board the view was opened from
@@ -642,6 +643,7 @@ const mx = {
   res: {}, // endpoint → { state: 'loading' | 'ok' | 'error' | 'none', data, error }
   window: null, // the resolved { from, to } (epoch ms) once flow has answered
   drill: null, // the open drill-down panel's { close }
+  notes: null, // the open cost-notes popover's { close }
   customOpen: false,
   loadedAt: null,
 };
@@ -826,6 +828,7 @@ function closeMetrics() {
   mx.seq++; // drop anything in flight
   mx.metaSeq++;
   mx.drill?.close();
+  mx.notes?.close(false);
   const url = new URL(location.href);
   if (url.searchParams.get('view') === 'metrics' || url.searchParams.get('view') === 'stats') url.searchParams.delete('view');
   for (const k of MX_URL_KEYS) url.searchParams.delete(k);
@@ -845,15 +848,13 @@ function mxLoadMeta() {
       label: b.id === main.id && ws.verticals.length ? 'Main' : b.name,
       color: b.id === main.id ? PL_MAIN_COLOR : PL_VERT_COLORS[(i - 1) % PL_VERT_COLORS.length],
     }));
-    const per = await Promise.all(
-      boards.map(async (b) => {
-        const [phaseList, cardList] = await Promise.all([
-          mxGet(`/phases?project=${encodeURIComponent(b.id)}`).catch(() => []),
-          mxGet(`/board?project=${encodeURIComponent(b.id)}`).catch(() => []),
-        ]);
-        return { b, phaseList, cardList };
-      }),
-    );
+    // per board: its phases and cards, at most MX_META_CONCURRENCY requests in flight
+    const jobs = boards.flatMap((b) => [
+      () => mxGet(`/phases?project=${encodeURIComponent(b.id)}`).catch(() => []),
+      () => mxGet(`/board?project=${encodeURIComponent(b.id)}`).catch(() => []),
+    ]);
+    const results = await mxPool(jobs, MX_META_CONCURRENCY);
+    const per = boards.map((b, i) => ({ b, phaseList: results[2 * i], cardList: results[2 * i + 1] }));
     const meta = { workspaceId: main.id, boards, boardById: new Map(boards.map((b) => [b.id, b])), phases: new Map(), cards: new Map(), tags: [], agents: [] };
     const tags = new Set();
     const agents = new Set(teamByName.keys());
@@ -882,11 +883,26 @@ function mxLoadMeta() {
       throw err;
     },
   );
+  mx.metaReady.catch(() => {}); // mxLoad reports it; never an unhandled rejection
+}
+// Run async jobs with at most `limit` in flight; results in the jobs' order.
+async function mxPool(jobs, limit) {
+  const out = new Array(jobs.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < jobs.length) {
+      const i = next++;
+      out[i] = await jobs[i]();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, jobs.length) }, worker));
+  return out;
 }
 
 async function mxLoad() {
   const tab = mxTab();
   const seq = ++mx.seq;
+  mx.notes?.close(false); // its notes belong to the previous filters
   mx.res = Object.fromEntries(tab.endpoints.map((k) => [k, { state: 'loading' }]));
   mx.window = null;
   mxRenderBody();
@@ -928,7 +944,8 @@ async function mxLoad() {
     if (seq !== mx.seq) return;
     rest = rest.filter((k) => k !== 'flow');
     if (mx.window) w = { from: Math.floor(mx.window.from), to: win.to }; // epoch ms (the API reads digits only)
-    mxRenderFilters(); // the range button shows the resolved dates
+    const rangeBtn = $('mx-range-btn');
+    if (rangeBtn) rangeBtn.textContent = mxWindowLabel(); // the resolved dates
   }
   await Promise.all(rest.map((k) => fetchOne(k, w)));
 }
@@ -996,6 +1013,15 @@ function mxSelect(label, value, options, onChange) {
   return wrap;
 }
 
+let mxTzList = null; // built once: ~400 zones
+function mxTzOptions() {
+  if (!mxTzList) {
+    const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [MX_LOCAL_TZ];
+    mxTzList = [...new Set([MX_LOCAL_TZ, 'UTC', ...zones])].map((z) => [z, z]);
+  }
+  return mxTzList;
+}
+
 function mxRenderFilters() {
   const host = $('mx-filters');
   if (!host || !mx.f) return;
@@ -1036,6 +1062,7 @@ function mxRenderFilters() {
   items.push(ranges);
 
   const rangeBtn = node('button', 'mx-chip mono', mxWindowLabel());
+  rangeBtn.id = 'mx-range-btn';
   rangeBtn.type = 'button';
   rangeBtn.title = 'Custom range';
   rangeBtn.setAttribute('aria-pressed', String(f.range === 'custom'));
@@ -1077,9 +1104,7 @@ function mxRenderFilters() {
   }
   items.push(rangeWrap);
 
-  const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [MX_LOCAL_TZ];
-  const tzList = [...new Set([MX_LOCAL_TZ, 'UTC', ...zones])];
-  const tzSel = mxSelect('', f.tz, tzList.map((z) => [z, z]), (v) => mxSetFilter({ tz: v }));
+  const tzSel = mxSelect('', f.tz, mxTzOptions(), (v) => mxSetFilter({ tz: v }));
   tzSel.classList.add('mx-tz');
   tzSel.querySelector('select').setAttribute('aria-label', 'Time zone');
   tzSel.firstChild.remove();
@@ -1197,14 +1222,13 @@ const mxPointsIn = (flow, fromDay, toDay) =>
 function mxRenderOverview(host) {
   const tiles = node('div', 'mx-tiles');
   tiles.append(mxWaitTile(), mxThroughputTile(), mxCycleTile(), mxQualityTile(), mxForecastTile(), mxCostTile());
-  const caveats = mxCaveats();
   const charts = node('div', 'mx-charts');
   const cfd = node('section', 'mx-panel mx-cfd');
   cfd.setAttribute('aria-label', 'Cumulative flow');
   const tp = node('section', 'mx-panel mx-tp');
   tp.setAttribute('aria-label', 'Throughput per week');
   charts.append(cfd, tp);
-  host.replaceChildren(...[tiles, caveats, charts].filter(Boolean));
+  host.replaceChildren(tiles, charts);
   mxRenderCfd(cfd);
   mxRenderThroughput(tp);
 }
@@ -1336,7 +1360,9 @@ function mxForecastTile() {
 
 function mxCostTile() {
   const p = mxFocusPhase();
-  return mxTile('cost', '', p ? `COST · ${p.title.toUpperCase()}` : 'COST', (el, c) => {
+  // the period cost follows the Phase filter; the budget line below is the focus phase's (named there)
+  const phaseFilter = mx.f.phase ? mxPhaseById(mx.f.phase) : null;
+  return mxTile('cost', '', phaseFilter ? `COST · ${phaseFilter.title.toUpperCase()}` : 'COST · all phases', (el, c) => {
     const line = node('span', 'mx-row');
     line.append(
       mxBig(mxMoney(c.totals.cost), c.byCard.length ? () => mxDrillCost(c) : null, `List the ${mxPlural(c.cardCount, 'card')} with cost this period`),
@@ -1359,15 +1385,24 @@ function mxCostTile() {
     const msg = burn?.status === 'ok' ? mxBurnMessage(burn) : null;
     if (msg) {
       const warn = node('span', `mx-warn${msg.warn ? '' : ' calm'}`);
-      warn.title = burn.messages.join('\n');
       warn.append(mxWarnIcon(), node('span', '', msg.text));
       el.append(warn);
+    }
+    const notes = mxCostNotes();
+    if (notes.length) {
+      const link = node('button', 'mx-notes-link', `ⓘ ${mxPlural(notes.length, 'note')}`);
+      link.id = 'mx-notes-btn';
+      link.type = 'button';
+      link.setAttribute('aria-haspopup', 'dialog');
+      link.setAttribute('aria-expanded', String(!!mx.notes));
+      link.onclick = () => (mx.notes ? mx.notes.close() : mxOpenNotes());
+      el.append(link);
     }
   });
 }
 // The usage-burn line for the tile, short as in the artboard ("Weekly limit Thu 1 Oct, before the 85% date"):
 // a limit hit before the phase forecast first, then any hit / reached limit, else the first message as is.
-// The full messages are listed under the tiles.
+// The full messages are in the cost tile's notes popover.
 function mxBurnMessage(burn) {
   const reports = [burn.limits.seven_day, burn.limits.five_hour].filter(Boolean);
   const r =
@@ -1388,25 +1423,81 @@ function mxWarnIcon() {
   for (const d of ['M12 9v4', 'M12 17h.01', 'M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z']) svg.append(svgEl('path', { d }));
   return svg;
 }
-// Under the tiles: the cost response's caveats (and a placeholder-price note), and the usage-burn messages in full.
-function mxCaveats() {
+// The cost tile's notes: the API's caveats in plain language (unknown ones as sent), then the usage-limit messages.
+function mxCostNotes() {
   const c = mx.res.cost?.state === 'ok' ? mx.res.cost.data : null;
   const burn = mx.res.usageBurn?.state === 'ok' ? mx.res.usageBurn.data : null;
-  const groups = [];
-  if (c) groups.push(['Cost caveats', [...(c.prices.placeholder ? ['prices are placeholders: set your rates (PUT /settings/prices)'] : []), ...c.caveats]]);
-  if (burn?.status === 'ok' && burn.messages.length) groups.push(['Usage limits', burn.messages]);
-  if (!groups.some(([, lines]) => lines.length)) return null;
-  const el = node('div', 'mx-caveats');
-  for (const [title, lines] of groups) {
-    if (!lines.length) continue;
-    const row = node('div', 'mx-caveats-row');
-    row.setAttribute('aria-label', title);
-    const ul = node('ul');
-    for (const l of lines) ul.append(node('li', '', l));
-    row.append(node('span', 'mx-caveats-h', title), ul);
-    el.append(row);
+  const notes = [];
+  if (c) {
+    const since = c.tokenBasisChangedAt === null ? null : mxShortDay(mxDayKey(c.tokenBasisChangedAt, mx.f.tz));
+    if (c.prices.placeholder) notes.push({ group: 'Cost', text: 'Prices are placeholders: set your real rates (PUT /settings/prices)' });
+    for (const raw of c.caveats) {
+      let text = raw;
+      if (raw.startsWith('output tokens come from transcripts')) text = 'Output tokens are undercounted, so costs read low';
+      else if (raw.startsWith('estimated cost (')) text = since ? `Costs before ${since} are estimates` : 'These costs are estimates (no run has a token breakdown yet)';
+      else if (raw.startsWith('totals.tokens and estimated.tokens include')) text = since ? `Token totals before ${since} are roughly double-counted` : 'Token totals are roughly double-counted';
+      notes.push({ group: 'Cost', text, raw });
+    }
   }
-  return el;
+  if (burn?.status === 'ok') for (const m of burn.messages) notes.push({ group: 'Usage limits', text: m });
+  return notes;
+}
+
+// The notes popover: mounted on the view (tiles re-render under it), Esc / outside click closes, focus returns.
+function mxOpenNotes() {
+  mx.notes?.close();
+  const btn = $('mx-notes-btn');
+  if (!btn) return;
+  const pop = node('div', 'mx-notes');
+  pop.id = 'mx-notes';
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', 'Cost notes');
+  let group = null;
+  let ul = null;
+  for (const n of mxCostNotes()) {
+    if (n.group !== group) {
+      group = n.group;
+      ul = node('ul');
+      pop.append(node('span', 'mx-notes-h', group), ul);
+    }
+    const li = node('li', '', n.text);
+    if (n.raw && n.raw !== n.text) li.title = n.raw;
+    ul.append(li);
+  }
+  const close = node('button', 'mx-link', 'Close');
+  close.type = 'button';
+  pop.append(close);
+  const r = btn.getBoundingClientRect();
+  const host = metricsView.getBoundingClientRect();
+  pop.style.top = `${r.bottom - host.top + 6}px`;
+  pop.style.right = `${Math.max(8, host.right - r.right)}px`;
+  metricsView.append(pop);
+  btn.setAttribute('aria-expanded', 'true');
+  const onKey = (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    api.close();
+  };
+  const onDown = (e) => {
+    if (!pop.contains(e.target) && e.target.id !== 'mx-notes-btn') api.close(false);
+  };
+  const api = {
+    close(refocus = true) {
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('mousedown', onDown, true);
+      pop.remove();
+      if (mx.notes === api) mx.notes = null;
+      const b = $('mx-notes-btn'); // the tile may have re-rendered: the current button
+      b?.setAttribute('aria-expanded', 'false');
+      if (refocus) b?.focus();
+    },
+  };
+  close.onclick = () => api.close();
+  document.addEventListener('keydown', onKey, true);
+  document.addEventListener('mousedown', onDown, true);
+  mx.notes = api;
+  close.focus();
 }
 
 // ---------- cumulative flow ----------
@@ -1870,16 +1961,35 @@ function mxOpenDrill({ kicker, title, sub, stat, rows, sorts, total }) {
 
 // ── Kanban highlight: Metrics' "Open all N in Kanban" ────────────────
 const kanbanHighlight = new Set();
+let kanbanHighlightChip = null; // "N highlighted · Clear", while the highlight is on
 function setKanbanHighlight(ids) {
   kanbanHighlight.clear();
   for (const id of ids) if (cards.has(id)) kanbanHighlight.add(id);
   renderBoard();
+  renderHighlightChip();
   boardEl.querySelector('.card.mx-hl')?.scrollIntoView({ block: 'nearest' });
 }
 function clearKanbanHighlight() {
   kanbanHighlight.clear();
   renderBoard();
+  renderHighlightChip();
 }
+function renderHighlightChip() {
+  kanbanHighlightChip?.remove();
+  kanbanHighlightChip = null;
+  if (!kanbanHighlight.size) return;
+  const chip = node('div', 'mx-hl-chip');
+  chip.setAttribute('role', 'status');
+  const clear = node('button', '', 'Clear highlight');
+  clear.type = 'button';
+  clear.onclick = clearKanbanHighlight;
+  chip.append(node('span', '', `${mxPlural(kanbanHighlight.size, 'card')} highlighted from Metrics`), clear);
+  document.body.append(chip);
+  kanbanHighlightChip = chip;
+}
+// Is any dialog open (card modal, settings, a vertical dialog, the drill-down…)? Esc belongs to it then.
+const anyDialogOpen = () =>
+  !!openCardId || svModal || !$('settings-modal').classList.contains('hidden') || !!document.querySelector('[aria-modal="true"]');
 // One-shot ?cards=<id,id,…> (from another board's Metrics drill-down), once the board init has arrived.
 function highlightCardsFromUrl() {
   const url = new URL(location.href);
@@ -1889,9 +1999,13 @@ function highlightCardsFromUrl() {
   history.replaceState(null, '', url);
   setKanbanHighlight(raw.split(',').filter(Boolean));
 }
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && activeView === 'kanban' && kanbanHighlight.size && !openCardId) clearKanbanHighlight();
-});
+document.addEventListener(
+  'keydown',
+  (e) => {
+    if (e.key === 'Escape' && activeView === 'kanban' && kanbanHighlight.size && !anyDialogOpen()) clearKanbanHighlight();
+  },
+  true,
+);
 
 // stall/grace signals fire no WS event — poll so quiet agents still surface.
 setInterval(refreshAttention, 30000);

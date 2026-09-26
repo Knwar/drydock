@@ -1114,10 +1114,6 @@ button.mx-big:hover { color: #5dd3a8; text-decoration-color: #5dd3a8; }
 @keyframes mx-pulse { 50% { opacity: 0.45; } }
 .mx-err-title { font-size: 14px; font-weight: 600; }
 .mx-err-msg { font-size: 12px; color: #aab2c5; overflow-wrap: anywhere; }
-.mx-caveats { display: flex; flex-direction: column; gap: 4px; font-family: var(--mx-mono); font-size: 11.5px; color: #8b93a7; line-height: 1.5; padding: 0 4px; }
-.mx-caveats-row { display: flex; gap: 10px; align-items: baseline; }
-.mx-caveats-h { color: #e5c07b; white-space: nowrap; min-width: 96px; }
-.mx-caveats ul { margin: 0; padding: 0 0 0 14px; }
 
 .mx-charts { display: flex; gap: 16px; min-height: 0; }
 @media (max-width: 1100px) { .mx-charts { flex-direction: column; } .mx-charts .mx-tp { width: auto; } }
@@ -1178,6 +1174,16 @@ button.mx-big:hover { color: #5dd3a8; text-decoration-color: #5dd3a8; }
 .mx-drill-count { font-family: var(--mx-mono); font-size: 12px; color: #8b93a7; }
 .mx-drill-alls { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 
+/* the cost tile's notes link + popover (caveats in plain language, usage-limit messages) */
+.mx-notes-link { align-self: flex-start; background: none; border: none; padding: 0; color: #8b93a7; font-size: 12px; text-decoration: underline dotted; text-underline-offset: 3px; }
+.mx-notes-link:hover { color: #e8eaf0; }
+.mx-notes { position: absolute; z-index: 8; width: min(360px, calc(100% - 16px)); box-sizing: border-box; padding: 12px 14px; border-radius: 12px; background: #1a1f2b; border: 1px solid rgba(255, 255, 255, 0.14); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5); display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #e8eaf0; }
+.mx-notes-h { font-family: var(--mx-mono); font-size: 11.5px; letter-spacing: 0.06em; color: #e5c07b; text-transform: uppercase; }
+.mx-notes ul { margin: 0 0 4px; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; line-height: 1.4; }
+.mx-notes .mx-link { align-self: flex-end; }
+/* Kanban: "N cards highlighted from Metrics · Clear highlight" */
+.mx-hl-chip { position: fixed; left: 50%; bottom: 46px; transform: translateX(-50%); z-index: 15; display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 14px; border-radius: 999px; background: #1a1f2b; border: 1px solid rgba(93, 211, 168, 0.55); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); font-size: 12.5px; color: #e8eaf0; }
+.mx-hl-chip button { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 999px; border: none; background: #5dd3a8; color: #0b0d12; font-weight: 600; cursor: pointer; }
 /* Kanban cards highlighted from a Metrics drill-down ("Open all N in Kanban"); Esc clears */
 .card.mx-hl { box-shadow: 0 0 0 2px #5dd3a8, 0 0 18px rgba(93, 211, 168, 0.25); }
 /* per-card cost line in the card modal */
