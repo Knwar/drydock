@@ -19,7 +19,10 @@ interface Card {
   subtasks: { text: string; done: boolean }[];
 }
 interface Committed {
-  diff: { errors: { code: string }[]; boards: { board_id: string; phases: { name: string; position: number }[] }[] };
+  diff: {
+    errors: { code: string }[];
+    boards: { board_id: string; phases: { name: string; position: number; after: string | null }[]; activate: string | null }[];
+  };
   draft: { draft: { version: number; committed_version: number | null; data: { committed: Record<string, string> } }; dirty: boolean };
 }
 
@@ -82,10 +85,10 @@ describe('/plan-drafts commit + run routes', () => {
     const diff = await ok<Committed['diff']>(fetch(`${base}/plan-drafts/${id}/diff`));
     assert.deepEqual(diff.errors, []);
     assert.deepEqual(
-      diff.boards.map((b) => [b.board_id, b.phases]),
+      diff.boards.map((b) => [b.board_id, b.phases, b.activate]),
       [
-        [wsId, [{ name: 'Foundation', position: 1 }]],
-        [webId, [{ name: 'Build', position: 2 }]],
+        [wsId, [{ name: 'Foundation', position: 1, after: null }], 'Foundation'],
+        [webId, [{ name: 'Build', position: 2, after: 'Foundation' }], 'Foundation'],
       ],
     );
 
@@ -99,7 +102,7 @@ describe('/plan-drafts commit + run routes', () => {
     assert.deepEqual(b.depends_on, [a.id]);
     assert.deepEqual(c.depends_on, [b.id]);
     const web = await phases(webId);
-    assert.deepEqual(web.map((p) => p.title), ['Foundation', 'Build'], 'Foundation reused, Build appended');
+    assert.deepEqual(web.map((p) => p.title), ['Foundation', 'Build'], 'Foundation reused, Build after it (depends on it)');
     assert.equal(b.phase_id, web[0].id);
 
     // edit: rename b, drop c (backlog → deleted), start a then drop it (kept), start + edit nothing else
@@ -126,6 +129,44 @@ describe('/plan-drafts commit + run routes', () => {
     const locked = (r3.diff.boards as unknown as { locked: { card_id: string; fields: string[] }[] }[]).flatMap((x) => x.locked);
     assert.deepEqual(locked, [{ node_id: 'b', card_id: m.b, title: 'Web client v2', lane: 'in_progress', fields: ['title'], reason: 'started' }]);
     assert.equal((await card(m.b)).title, 'Web client v2');
+  });
+
+  it('new phases: dependency order, placed after the active phase, goals set', async () => {
+    const root = join(daemon!.dbDir, 'metrics');
+    mkdirSync(root, { recursive: true });
+    const pid = (await ok<{ project_id: string }>(fetch(`${base}/project?root=${encodeURIComponent(root)}`))).project_id;
+    const phase = async (title: string) => (await ok<{ phase_id: string }>(send('POST', '/phase', { project_id: pid, title }))).phase_id;
+    await ok(send('POST', `/phase/${await phase('Setup')}`, { status: 'done' }));
+    await ok(send('POST', `/phase/${await phase('Board UX')}`, { status: 'active' }));
+    await phase('Cloud relay');
+    const id = (await ok<{ id: string }>(send('POST', '/plan-drafts', { workspace: pid, title: 'Metrics' }))).id;
+    const { version } = (
+      await patch(id, [
+        { op: 'add_node', node: { id: 'r0', title: 'Report shell', board_id: pid, phase: 'Reporting' } },
+        { op: 'add_node', node: { id: 'f1', title: 'Cycle time', board_id: pid, phase: 'Flow' } },
+        { op: 'add_node', node: { id: 'r1', title: 'Weekly report', board_id: pid, phase: 'Reporting' } },
+        { op: 'add_edge', from: 'f1', to: 'r1' },
+      ])
+    ).draft;
+    const diff = await ok<Committed['diff']>(fetch(`${base}/plan-drafts/${id}/diff`));
+    assert.deepEqual(diff.boards.map((b) => [b.phases, b.activate]), [
+      [
+        [
+          { name: 'Flow', position: 3, after: 'Board UX' },
+          { name: 'Reporting', position: 4, after: 'Flow' },
+        ],
+        null,
+      ],
+    ]);
+    await commit(id, version);
+    const after = await ok<{ title: string; position: number; status: string; goal: string | null }[]>(fetch(`${base}/phases?project=${pid}`));
+    assert.deepEqual(after.map((p) => [p.title, p.position, p.status, p.goal]), [
+      ['Setup', 1, 'done', null],
+      ['Board UX', 2, 'active', null],
+      ['Flow', 3, 'planned', 'Metrics · Flow'],
+      ['Reporting', 4, 'planned', 'Metrics · Reporting'],
+      ['Cloud relay', 5, 'planned', null],
+    ]);
   });
 
   it('preserves an external depends_on', async () => {
