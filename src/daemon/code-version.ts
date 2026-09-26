@@ -1,55 +1,66 @@
 import { execFile } from 'node:child_process';
-import { readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { readdir, realpath, stat } from 'node:fs/promises';
+import { join, relative } from 'node:path';
 import { promisify } from 'node:util';
 
-// The daemon's code version: its checkout's HEAD short sha plus the newest
-// mtime under src/daemon and src/core (test files excluded). Recorded at
-// startup and re-read on disk by GET /version, so the overlay can tell when the
-// running daemon is older than the code it serves.
+// The daemon's code version: a fingerprint of its own code (src/daemon and
+// src/core, test files excluded): a hash of the sorted path:mtime:size list.
+// Recorded at startup and re-read on disk by GET /version, so the overlay can
+// tell when the running daemon is older than its code on disk. Commits that
+// don't touch that code (overlay, docs) don't change it.
 
 const execFileAsync = promisify(execFile);
 
 export interface CodeVersion {
-  sha: string | null; // null outside a git checkout (e.g. an npm install)
-  mtime: number; // ms since epoch; 0 when the folders are missing
+  fingerprint: string; // what the overlay compares
+  files: number;
+  /** Informational only (never compared): HEAD short sha, when the daemon's root is
+   *  itself a git checkout's toplevel (not e.g. a project it's installed inside). */
+  sha: string | null;
 }
 
 const DIRS = ['src/daemon', 'src/core'];
 
-async function newestMtime(dir: string): Promise<number> {
+async function listFiles(dir: string, root: string, out: string[]): Promise<void> {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
-    return 0;
+    return;
   }
-  let newest = 0;
   for (const e of entries) {
     const path = join(dir, e.name);
-    if (e.isDirectory()) newest = Math.max(newest, await newestMtime(path));
+    if (e.isDirectory()) await listFiles(path, root, out);
     else if (e.isFile() && !e.name.includes('.test.')) {
       try {
-        newest = Math.max(newest, Math.floor((await stat(path)).mtimeMs));
+        const s = await stat(path);
+        out.push(`${relative(root, path)}:${Math.floor(s.mtimeMs)}:${s.size}`);
       } catch {
         /* removed meanwhile */
       }
     }
   }
-  return newest;
 }
 
-/** The code version of the checkout at `root`, as it is on disk now. */
-export async function readCodeVersion(root: string): Promise<CodeVersion> {
-  let sha: string | null = null;
+async function ownSha(root: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync('git', ['-C', root, 'rev-parse', '--short', 'HEAD'], { timeout: 5000 });
-    sha = stdout.trim() || null;
+    const git = (...args: string[]) => execFileAsync('git', ['-C', root, ...args], { timeout: 5000 });
+    const top = (await git('rev-parse', '--show-toplevel')).stdout.trim();
+    if (!top || (await realpath(top)) !== (await realpath(root))) return null;
+    return (await git('rev-parse', '--short', 'HEAD')).stdout.trim() || null;
   } catch {
-    /* not a git checkout */
+    return null; // not a git checkout
   }
-  const mtimes = await Promise.all(DIRS.map((d) => newestMtime(join(root, d))));
-  return { sha, mtime: Math.max(0, ...mtimes) };
+}
+
+/** The code version of the daemon checkout at `root`, as it is on disk now. */
+export async function readCodeVersion(root: string): Promise<CodeVersion> {
+  const entries: string[] = [];
+  for (const d of DIRS) await listFiles(join(root, d), root, entries);
+  entries.sort();
+  const fingerprint = createHash('sha1').update(entries.join('\n')).digest('hex').slice(0, 16);
+  return { fingerprint, files: entries.length, sha: await ownSha(root) };
 }
 
 /** readCodeVersion, cached for `ttlMs` so a polled route stays cheap. */

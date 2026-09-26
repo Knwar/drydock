@@ -211,7 +211,7 @@ describe('validatePlan', () => {
           ['shared_file_group', ['b', 'd']],
         ],
       );
-      assert.equal(v.groups[0].message, '4 cards can run in parallel but touch src/server.ts: sequence them');
+      assert.equal(v.groups[0].message, '4 cards touch src/server.ts and some of them can run in parallel: sequence them');
       assert.equal(v.groups[1].message, '"B" and "D" can run in parallel but both touch src/db.ts: sequence them');
     });
 

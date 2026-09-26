@@ -15,9 +15,11 @@ describe('daemon code version', () => {
   });
 
   it('/config version and /version agree while the code is unchanged', async () => {
-    const cfg = (await (await fetch(`${daemon!.base}/config`)).json()) as { version: { sha: string | null; mtime: number } };
-    assert.match(cfg.version.sha ?? '', /^[0-9a-f]{4,}$/); // the daemon runs from a git checkout
-    assert.ok(cfg.version.mtime > 0);
+    const cfg = (await (await fetch(`${daemon!.base}/config`)).json()) as {
+      version: { fingerprint: string; files: number; sha: string | null };
+    };
+    assert.match(cfg.version.fingerprint, /^[0-9a-f]{16}$/);
+    assert.ok(cfg.version.files > 0);
     const res = await fetch(`${daemon!.base}/version`);
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), cfg.version);

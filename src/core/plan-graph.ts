@@ -276,7 +276,7 @@ function sharedFileGroups(byPath: Map<string, Set<string>>, nodes: Pick<PlanNode
     message:
       ids.length === 2
         ? `"${title.get(ids[0])}" and "${title.get(ids[1])}" can run in parallel but both touch ${paths.join(', ')}: sequence them`
-        : `${ids.length} cards can run in parallel but touch ${paths.join(', ')}: sequence them`,
+        : `${ids.length} cards touch ${paths.join(', ')} and some of them can run in parallel: sequence them`,
     nodes: ids,
   }));
 }

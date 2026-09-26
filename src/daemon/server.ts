@@ -33,7 +33,7 @@ const DB_PATH = process.env.DB_PATH ?? join(process.cwd(), 'data', 'board.db');
 const OVERLAY_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'overlay');
 const INIT_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'init-project.sh');
 
-// the code this daemon runs (recorded at startup) vs what is on disk now (GET /version)
+// fingerprint of the daemon code it runs (recorded at startup) vs on disk now (GET /version)
 const CODE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RUNNING_VERSION = await readCodeVersion(CODE_ROOT);
 const diskVersion = cachedCodeVersion(CODE_ROOT);
@@ -564,15 +564,23 @@ async function git(root: string, ...args: string[]): Promise<string> {
 /** Replace a card's line counts with its git-derived change (merge commit, else
  *  branch vs its base), then announce the card. Best-effort: leaves them as-is
  *  when git has nothing. Called AFTER the response is sent (git can be slow);
- *  errors are logged, never thrown. */
+ *  errors are logged, never thrown. Serialized per card, so a slow earlier
+ *  recount (an activity post) can't land after, and overwrite, the done one. */
+const recounts = new Map<string, Promise<void>>(); // per-card chain: recounts run (and land) in call order
 function recountCard(task: Task): void {
-  void (async () => {
-    const root = projectRoot(task.project_id);
-    const lines = root ? await cardLines(root, task.id) : null;
-    if (!lines) return;
-    board.setCardLines(db, task.id, lines.added, lines.removed);
-    announce(board.getTask(db, task.id));
-  })().catch((err) => console.error(`line recount for ${task.id} failed: ${(err as Error).message}`));
+  const next = (recounts.get(task.id) ?? Promise.resolve())
+    .then(async () => {
+      const root = projectRoot(task.project_id);
+      const lines = root ? await cardLines(root, task.id) : null;
+      if (!lines) return;
+      board.setCardLines(db, task.id, lines.added, lines.removed);
+      announce(board.getTask(db, task.id));
+    })
+    .catch((err) => console.error(`line recount for ${task.id} failed: ${(err as Error).message}`));
+  recounts.set(task.id, next);
+  void next.then(() => {
+    if (recounts.get(task.id) === next) recounts.delete(task.id);
+  });
 }
 
 async function gitStatus(root: string) {

@@ -1069,8 +1069,8 @@ async function initTerminal() {
 }
 
 // ── out-of-date daemon banner ──
-// /config carries the code version the daemon started with, /version what is on
-// disk now; they differ once the code changed under a running daemon. Checked on
+// /config carries the fingerprint of the daemon code it started with, /version the
+// one on disk now; they differ once the daemon's code changed under it. Checked on
 // load and every few minutes; dismissed for the rest of the browser session.
 const VERSION_DISMISS_KEY = 'kankan.versionBannerDismissed';
 const VERSION_CHECK_MS = 3 * 60_000;
@@ -1090,7 +1090,7 @@ async function checkDaemonVersion() {
       const res = await fetch('/version');
       if (!res.ok) return;
       const disk = await res.json();
-      banner.classList.toggle('hidden', disk.sha === cfg.version.sha && disk.mtime === cfg.version.mtime);
+      banner.classList.toggle('hidden', disk.fingerprint === cfg.version.fingerprint); // sha is informational only
     } catch {
       /* daemon unreachable: the offline badge covers it */
     }

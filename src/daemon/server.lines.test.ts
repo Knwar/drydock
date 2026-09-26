@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -93,6 +93,7 @@ describe('daemon line counts: slow git', () => {
   const SLOW_S = 3;
   let daemon: TestDaemon | undefined;
   let base: string;
+  let bin: string | undefined;
   const run = promisify(execFile);
   const git = (cwd: string, ...args: string[]) => run('git', args, { cwd });
   const post = (path: string, body: unknown, method = 'POST') =>
@@ -105,7 +106,7 @@ describe('daemon line counts: slow git', () => {
 
   before(async () => {
     const realGit = (await run('which', ['git'])).stdout.trim();
-    const bin = mkdtempSync(join(tmpdir(), 'kankan-slow-git-'));
+    bin = mkdtempSync(join(tmpdir(), 'kankan-slow-git-'));
     writeFileSync(
       join(bin, 'git'),
       `#!/bin/sh\ncase " $* " in *" --merges "*|*" --numstat "*) sleep ${SLOW_S};; esac\nexec "${realGit}" "$@"\n`,
@@ -116,6 +117,7 @@ describe('daemon line counts: slow git', () => {
   });
   after(async () => {
     await daemon?.stop();
+    if (bin) rmSync(bin, { recursive: true, force: true });
   });
 
   it('activity and done reply before the recount, which then broadcasts the card', async () => {

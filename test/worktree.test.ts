@@ -67,9 +67,13 @@ describe('worktree merge lock', () => {
 
   it('add: failing to record the base in git config only warns (exit 0, worktree + branch kept)', () => {
     writeFileSync(join(repo, '.git', 'config.lock'), ''); // git config can't take the lock
-    const out = execFileSync(process.execPath, [SCRIPT, 'add', 'fff'], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out;
+    try {
+      out = execFileSync(process.execPath, [SCRIPT, 'add', 'fff'], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
+    } finally {
+      rmSync(join(repo, '.git', 'config.lock'), { force: true });
+    }
     assert.match(out.toString(), /\.trees\/fff on card\/fff/);
-    rmSync(join(repo, '.git', 'config.lock'));
     assert.ok(existsSync(join(repo, '.trees', 'fff')));
     assert.equal(git(repo, 'rev-parse', '--abbrev-ref', 'card/fff'), 'card/fff');
     assert.throws(() => git(repo, 'config', '--get', 'branch.card/fff.kankanbase'));
