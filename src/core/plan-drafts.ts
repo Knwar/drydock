@@ -33,8 +33,22 @@ interface DraftRow extends Omit<PlanDraft, 'data'> {
   data: string;
 }
 
+/** Parse stored data defensively: bad JSON or wrong-typed fields → DraftError('corrupt'); missing keys default to empty. */
 function toDraft(row: DraftRow): PlanDraft {
-  return { ...row, data: JSON.parse(row.data) as PlanData };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(row.data);
+  } catch {
+    throw new DraftError('corrupt', `draft ${row.id} has unreadable data`);
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+    throw new DraftError('corrupt', `draft ${row.id} data is not an object`);
+  const { nodes = [], edges = [], committed = {} } = raw as Partial<PlanData>;
+  if (!Array.isArray(nodes) || !Array.isArray(edges))
+    throw new DraftError('corrupt', `draft ${row.id} nodes/edges must be arrays`);
+  if (typeof committed !== 'object' || committed === null || Array.isArray(committed))
+    throw new DraftError('corrupt', `draft ${row.id} committed must be an object`);
+  return { ...row, data: { ...(raw as PlanData), nodes, edges, committed } };
 }
 
 function emptyData(): PlanData {
@@ -139,16 +153,20 @@ function requireTopLevel(db: DB, workspaceId: string): Project {
 
 /**
  * Create a draft on a top-level project. Optional initial nodes/edges go through
- * the same checks as ops; `committed` is carried over as given (default {}).
+ * the same checks as ops. `committed` always starts empty (only commit writes it).
  */
-export function createDraft(db: DB, workspaceId: string, title: string, data?: Partial<PlanData>): PlanDraft {
+export function createDraft(
+  db: DB,
+  workspaceId: string,
+  title: string,
+  data?: Partial<Pick<PlanData, 'nodes' | 'edges'>>,
+): PlanDraft {
   return db.transaction(() => {
     requireTopLevel(db, workspaceId);
     if (typeof title !== 'string' || !title.trim()) throw new DraftError('invalid_op', 'draft title must be a non-empty string');
     const d = emptyData();
     for (const node of data?.nodes ?? []) applyOp(d, { op: 'add_node', node });
     for (const e of data?.edges ?? []) applyOp(d, { op: 'add_edge', from: e.from, to: e.to });
-    d.committed = { ...(data?.committed ?? {}) };
     const ts = now();
     const draft: PlanDraft = {
       id: shortId(),

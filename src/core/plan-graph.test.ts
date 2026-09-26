@@ -143,6 +143,32 @@ describe('validatePlan', () => {
       assert.deepEqual(codes(v.warnings), ['shared_file']);
     });
 
+    it('a glob overlaps its own plain directory (and a parent directory)', () => {
+      for (const dir of ['src/core', 'src/core/', 'src']) {
+        const v = validatePlan(
+          { nodes: [node('a', { touches: ['src/core/**'] }), node('b', { touches: [dir] })], edges: [] },
+          CTX,
+        );
+        assert.deepEqual(codes(v.warnings), ['shared_file'], dir);
+      }
+      const v = validatePlan(
+        { nodes: [node('a', { touches: ['src/core/**'] }), node('b', { touches: ['src/cor'] })], edges: [] },
+        CTX,
+      );
+      assert.deepEqual(v.warnings, []);
+    });
+
+    it('single-* globs in one folder overlap only when their literal parts are compatible', () => {
+      const pair = (x: string, y: string) =>
+        codes(validatePlan({ nodes: [node('a', { touches: [x] }), node('b', { touches: [y] })], edges: [] }, CTX).warnings);
+      assert.deepEqual(pair('src/*.ts', 'src/*.css'), []);
+      assert.deepEqual(pair('src/a*.ts', 'src/b*.ts'), []);
+      assert.deepEqual(pair('src/*.ts', 'lib/*.ts'), []);
+      assert.deepEqual(pair('src/*.ts', 'src/*.test.ts'), ['shared_file']);
+      assert.deepEqual(pair('src/*.ts', 'src/plan*'), ['shared_file']);
+      assert.deepEqual(pair('src/*.ts', 'src/**'), ['shared_file']);
+    });
+
     it('no warning when the nodes are sequenced (even transitively)', () => {
       const v = validatePlan(
         {

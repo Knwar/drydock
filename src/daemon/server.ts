@@ -10,8 +10,10 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import * as board from '../core/board.js';
 import * as subscriptions from '../core/subscriptions.js';
+import * as drafts from '../core/plan-drafts.js';
+import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
-import type { Project, Task } from '../core/types.js';
+import type { PlanDraft, Project, Task } from '../core/types.js';
 import { looksLikeClaude, NUDGE_PROMPT, resetsAtMs, shouldNudge, type NudgeInput } from './autopilot.js';
 import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
@@ -331,6 +333,44 @@ function announceVerticals(workspaceId: string): void {
     verticals: board.listVerticals(db, workspaceId),
   });
   flushEvents();
+}
+
+/** Tell a draft's workspace subscribers it changed (or is gone), so an open canvas can refresh. */
+function announceDraft(draft: Pick<PlanDraft, 'id' | 'workspace_id' | 'version'>, removed = false): void {
+  broadcaster.send(
+    draft.workspace_id,
+    removed
+      ? { type: 'plan_draft_removed', id: draft.id, workspace_id: draft.workspace_id }
+      : { type: 'plan_draft', id: draft.id, workspace_id: draft.workspace_id, version: draft.version },
+  );
+}
+
+/** The canvas read: a draft + its layout, validation, target boards and dirty flag. */
+function draftView(draft: PlanDraft) {
+  const { nodes, edges } = draft.data;
+  const ctx = drafts.draftContext(db, draft.workspace_id);
+  const columns = layoutColumns(nodes, edges);
+  return {
+    draft,
+    layout: columns ? { columns, longestChain: longestChain(nodes, edges) } : null,
+    validation: validatePlan(draft.data, ctx),
+    boards: ctx.boards,
+    dirty: draft.version !== draft.committed_version,
+  };
+}
+
+/** A project id (workspace or vertical) → its workspace id, or null when unknown. */
+function draftWorkspace(projectId: string): string | null {
+  const row = db.prepare('SELECT id, parent_id FROM projects WHERE id = ?').get(projectId) as
+    | { id: string; parent_id: string | null }
+    | undefined;
+  return row ? (row.parent_id ?? row.id) : null;
+}
+
+/** DraftError → 404 (not_found) or 400 {error, code}; anything else rethrows. */
+function draftError(res: ServerResponse, err: unknown): void {
+  if (!(err instanceof drafts.DraftError)) throw err;
+  json(res, err.code === 'not_found' ? 404 : 400, { error: err.message, code: err.code });
 }
 
 // ── git (for the overlay's commit modal) ────────────────────────────
@@ -1020,6 +1060,58 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     announcePhases(into.id);
     announceVerticals(into.parent_id!);
     return json(res, 200, into);
+  }
+
+  // ── plan drafts (workspace-wide visual plans) ──
+  if (pathname === '/plan-drafts' && (method === 'GET' || method === 'POST')) {
+    if (method === 'GET') {
+      const ws = draftWorkspace(url.searchParams.get('workspace') ?? '');
+      if (!ws) return json(res, 404, { error: 'unknown workspace' });
+      return json(res, 200, drafts.listDrafts(db, ws));
+    }
+    if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+    const b = await readBody(req);
+    const ws = typeof b.workspace === 'string' ? draftWorkspace(b.workspace) : null;
+    if (!ws) return json(res, 404, { error: 'unknown workspace' });
+    try {
+      const draft = drafts.createDraft(db, ws, b.title);
+      announceDraft(draft);
+      return json(res, 200, draft);
+    } catch (err) {
+      return draftError(res, err);
+    }
+  }
+
+  const draftMatch = pathname.match(/^\/plan-drafts\/([^/]+)$/);
+  if (draftMatch && ['GET', 'PATCH', 'DELETE'].includes(method ?? '')) {
+    const id = draftMatch[1];
+    if (method !== 'GET' && !isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+    try {
+      if (method === 'GET') {
+        const draft = drafts.getDraft(db, id);
+        if (!draft) return json(res, 404, { error: 'unknown draft' });
+        return json(res, 200, draftView(draft));
+      }
+      if (method === 'DELETE') {
+        // raw row, not getDraft: a draft with corrupt data must still be deletable
+        const draft = db.prepare('SELECT id, workspace_id, version FROM plan_drafts WHERE id = ?').get(id) as
+          | Pick<PlanDraft, 'id' | 'workspace_id' | 'version'>
+          | undefined;
+        if (!draft || !drafts.deleteDraft(db, id)) return json(res, 404, { error: 'unknown draft' });
+        announceDraft(draft, true);
+        return json(res, 200, { deleted: id });
+      }
+      const b = await readBody(req);
+      const current = drafts.getDraft(db, id);
+      if (!current) return json(res, 404, { error: 'unknown draft' });
+      if (b.version !== undefined && b.version !== current.version)
+        return json(res, 409, { error: 'version mismatch', version: current.version });
+      const draft = drafts.applyDraftOps(db, id, b.ops);
+      announceDraft(draft);
+      return json(res, 200, draftView(draft));
+    } catch (err) {
+      return draftError(res, err);
+    }
   }
 
   const projMatch = pathname.match(/^\/project\/([^/]+)(?:\/(repo|autopilot))?$/);
