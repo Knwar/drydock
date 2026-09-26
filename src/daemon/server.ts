@@ -12,6 +12,7 @@ import * as board from '../core/board.js';
 import * as subscriptions from '../core/subscriptions.js';
 import * as drafts from '../core/plan-drafts.js';
 import * as metrics from '../core/metrics.js';
+import * as quality from '../core/quality.js';
 import * as forecast from '../core/forecast.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
@@ -1319,8 +1320,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return json(res, 200, board.getStats(db, project));
   }
 
-  // ── flow metrics: aggregation lives in core/metrics.ts; these only parse + load ──
-  if (method === 'GET' && ['/metrics/flow', '/metrics/burn', '/metrics/summary'].includes(pathname)) {
+  // ── flow + quality metrics: aggregation lives in core/metrics.ts / core/quality.ts; these only parse + load ──
+  if (method === 'GET' && ['/metrics/flow', '/metrics/burn', '/metrics/summary', '/metrics/quality'].includes(pathname)) {
     const q = url.searchParams;
     const project = q.get('project');
     if (!project) return json(res, 400, { error: 'project required' });
@@ -1348,7 +1349,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const to = q.get('to');
       if (from) filter.from = metrics.parseTime(from, tz, 'from');
       if (to) filter.to = metrics.parseTime(to, tz, 'to');
-      const view = pathname === '/metrics/flow' ? metrics.flowMetrics : metrics.summaryMetrics;
+      const view =
+        pathname === '/metrics/flow' ? metrics.flowMetrics : pathname === '/metrics/quality' ? quality.qualityMetrics : metrics.summaryMetrics;
       return json(res, 200, view(db, filter, { tz, now }));
     } catch (err) {
       // bad params → 400; anything else is ours → 500 (route()'s outer catch would say 400)
