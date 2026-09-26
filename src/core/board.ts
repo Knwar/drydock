@@ -1311,8 +1311,35 @@ export function recordActivity(
   );
 }
 
+/**
+ * Set a card's line churn to one authoritative measurement (its diff vs its
+ * base, or its merge commit): the lines move onto the card's latest activity
+ * row and every other row is zeroed, so sums over card_activity count each card
+ * once no matter how many build runs it had. Clears any `estimated` flag.
+ * No-op when the card has no activity rows.
+ */
+export function setCardLines(db: DB, taskId: string, added: number, removed: number): void {
+  db.transaction(() => {
+    const last = db.prepare('SELECT MAX(id) AS id FROM card_activity WHERE task_id = ?').get(taskId) as { id: number | null };
+    if (last.id == null) return;
+    db.prepare('UPDATE card_activity SET lines_added = 0, lines_removed = 0, estimated = 0 WHERE task_id = ?').run(taskId);
+    db.prepare('UPDATE card_activity SET lines_added = ?, lines_removed = ? WHERE id = ?').run(added, removed, last.id);
+  })();
+}
+
+/** Flag a card's recorded line counts as estimated (not recomputable from git):
+ *  the raw numbers stay in the row but line totals exclude them. */
+export function flagLinesEstimated(db: DB, taskId: string): void {
+  db.prepare(
+    'UPDATE card_activity SET estimated = 1 WHERE task_id = ? AND (lines_added != 0 OR lines_removed != 0)',
+  ).run(taskId);
+}
+
+// line totals skip `estimated` rows: legacy counts that couldn't be recomputed are
+// known to be inflated (diffed against the wrong base), so they'd drown the real ones.
 const TOTALS_SELECT = `COALESCE(SUM(tokens),0) AS tokens, COALESCE(SUM(tokens_out),0) AS tokens_out,
-  COALESCE(SUM(lines_added),0) AS lines_added, COALESCE(SUM(lines_removed),0) AS lines_removed, COALESCE(SUM(ms),0) AS ms`;
+  COALESCE(SUM(CASE WHEN estimated = 0 THEN lines_added ELSE 0 END),0) AS lines_added,
+  COALESCE(SUM(CASE WHEN estimated = 0 THEN lines_removed ELSE 0 END),0) AS lines_removed, COALESCE(SUM(ms),0) AS ms`;
 
 export function cardTotals(db: DB, taskId: string): CardTotals {
   return db

@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS card_activity (  -- one row per build run: cost + chu
   lines_added   INTEGER NOT NULL DEFAULT 0,
   lines_removed INTEGER NOT NULL DEFAULT 0,
   ms            INTEGER NOT NULL DEFAULT 0,   -- wall-clock of the build run
+  estimated     INTEGER NOT NULL DEFAULT 0,   -- 1 = legacy line counts that couldn't be recomputed from git (excluded from line totals)
   created_at    INTEGER NOT NULL
 );
 

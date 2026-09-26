@@ -13,6 +13,7 @@ import * as subscriptions from '../core/subscriptions.js';
 import * as drafts from '../core/plan-drafts.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
+import { cardLines } from '../core/lines.js';
 import type { PlanDraft, Project, Task } from '../core/types.js';
 import { looksLikeClaude, NUDGE_PROMPT, resetsAtMs, shouldNudge, type NudgeInput } from './autopilot.js';
 import { Broadcaster } from './broadcast.js';
@@ -554,22 +555,12 @@ async function git(root: string, ...args: string[]): Promise<string> {
   }
 }
 
-/** Lines added/removed on a card branch vs main (best-effort; 0 if the branch is gone). */
-async function gitNumstat(root: string, branch: string): Promise<{ added: number; removed: number }> {
-  try {
-    const out = await git(root, 'diff', '--numstat', `main...${branch}`);
-    let added = 0;
-    let removed = 0;
-    for (const line of out.trim().split('\n')) {
-      if (!line) continue;
-      const [a, d] = line.split('\t');
-      added += Number(a) || 0;
-      removed += Number(d) || 0;
-    }
-    return { added, removed };
-  } catch {
-    return { added: 0, removed: 0 };
-  }
+/** Replace a card's line counts with its git-derived change (merge commit, else
+ *  branch vs its base). Best-effort: leaves them as-is when git has nothing. */
+async function recountCard(task: Task): Promise<void> {
+  const root = projectRoot(task.project_id);
+  const lines = root ? await cardLines(root, task.id) : null;
+  if (lines) board.setCardLines(db, task.id, lines.added, lines.removed);
 }
 
 async function gitStatus(root: string) {
@@ -1544,6 +1535,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (method === 'POST' && action === 'move') {
       if (!b.lane) return json(res, 400, { error: 'lane required' });
       const task = board.moveTask(db, taskId, b.lane, b.agent);
+      if (task.lane === 'done') await recountCard(task); // merged by now: final numbers from the merge commit
       announce(task);
       return json(res, 200, { task_id: task.id, lane: task.lane });
     }
@@ -1565,9 +1557,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
     if (method === 'POST' && action === 'activity') {
       // tokens come from the build hook; the daemon adds line-churn + elapsed time.
+      // Lines are the card's whole change, not this run's: recountCard moves them
+      // onto this (latest) row and zeroes earlier runs, so rebuilds don't double count.
       const task = board.getTask(db, taskId);
-      const root = projectRoot(task.project_id);
-      const lines = root && task.branch ? await gitNumstat(root, task.branch) : { added: 0, removed: 0 };
       const startEv = db
         .prepare(`SELECT created_at AS t FROM task_events WHERE task_id = ? AND type = 'build_start' ORDER BY id DESC LIMIT 1`)
         .get(taskId) as { t: number } | undefined;
@@ -1580,10 +1572,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         agent_id: b.agent_id,
         tokens: Number(b.tokens) || 0,
         tokens_out: Number(b.tokens_out) || 0,
-        lines_added: lines.added,
-        lines_removed: lines.removed,
+        lines_added: 0,
+        lines_removed: 0,
         ms: startEv ? Date.now() - startEv.t : 0,
       });
+      await recountCard(task);
       return json(res, 200, { ok: true });
     }
     if (method === 'POST' && action === 'review') {

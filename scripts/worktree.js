@@ -78,7 +78,12 @@ function acquireLock() {
 
 if (cmd === 'add') {
   excludeTrees();
+  // record the base (the branch we're on) so lines are counted as <base>...card/<id>,
+  // not against main; git drops the key with the branch
+  let base = git('rev-parse', '--abbrev-ref', 'HEAD');
+  if (base === 'HEAD') base = git('rev-parse', 'HEAD'); // detached: the commit itself
   git('worktree', 'add', tree, '-b', branch);
+  git('config', `branch.${branch}.kankanbase`, base);
   console.log(`${tree} on ${branch}`);
 } else if (cmd === 'remove') {
   git('worktree', 'remove', ...(flag === '--force' ? ['--force'] : []), tree);

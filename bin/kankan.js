@@ -7,6 +7,7 @@
 //   kankan stop                stop the daemon (set-up folders only)
 //   kankan restart             restart + show project details (set-up folders only)
 //   kankan worktree add|remove|merge <id> [--force]   per-card git worktree, run in the project
+//   kankan recount-lines [--dry-run] [--db <path>]    recompute lines written per card from git history
 //   kankan daemon start|stop|restart|status|run   machine-level daemon management
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -205,6 +206,16 @@ async function main() {
     process.exit(res.status ?? 0);
   }
 
+  // Recompute per-card line counts from git (explicit, idempotent; --dry-run writes nothing).
+  if (cmd === 'recount-lines') {
+    const res = spawnSync(daemonCmd()[0], [join(ROOT, 'src', 'core', 'recount-lines.ts'), ...rest], {
+      stdio: 'inherit',
+      env: daemonEnv(),
+    });
+    if (res.error) console.error(res.error.message);
+    process.exit(res.status ?? 1);
+  }
+
   if (cmd === 'daemon') {
     const sub = rest[0] ?? 'status';
     if (sub === 'start') process.exit((await start()) ? 0 : 1);
@@ -234,6 +245,7 @@ async function main() {
   kankan info                              project details for this folder
   kankan start|stop|restart                daemon + project details (set-up folders)
   kankan worktree add|remove|merge <id>    per-card git worktree, run in the project
+  kankan recount-lines [--dry-run]         recompute lines written per card from git history
   kankan daemon start|stop|restart|status  machine-level daemon management
   kankan daemon run                        run daemon in the foreground`);
 }
