@@ -11,6 +11,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import * as board from '../core/board.js';
 import * as subscriptions from '../core/subscriptions.js';
 import * as drafts from '../core/plan-drafts.js';
+import * as metrics from '../core/metrics.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
 import { cardLines } from '../core/lines.js';
@@ -1300,6 +1301,48 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const project = url.searchParams.get('project');
     if (!project) return json(res, 400, { error: 'project required' });
     return json(res, 200, board.getStats(db, project));
+  }
+
+  // ── flow metrics: aggregation lives in core/metrics.ts; these only parse + load ──
+  if (method === 'GET' && ['/metrics/flow', '/metrics/burn', '/metrics/summary'].includes(pathname)) {
+    const q = url.searchParams;
+    const project = q.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
+    const now = Date.now();
+    try {
+      if (pathname === '/metrics/burn') {
+        const phaseId = q.get('phase');
+        if (!phaseId) return json(res, 400, { error: 'phase required' });
+        const phase = db.prepare('SELECT * FROM phases WHERE id = ?').get(phaseId) as metrics.BurnPhase & { project_id: string } | undefined;
+        if (!phase) return json(res, 404, { error: 'unknown phase' });
+        const boards = [project, ...board.listVerticals(db, project).map((v) => v.id)];
+        if (!boards.includes(phase.project_id)) return json(res, 400, { error: 'phase is not on this project' });
+        const hs = metrics.loadCardHistories(db, { projectIds: [project], phaseId });
+        return json(res, 200, metrics.computeBurn(phase, hs, { tz, now }));
+      }
+      // a workspace id expands to its verticals inside loadCardHistories
+      const filter: metrics.MetricsFilter = { projectIds: [project] };
+      for (const [key, param] of [['phaseId', 'phase'], ['tag', 'tag'], ['agent', 'agent']] as const) {
+        const v = q.get(param);
+        if (v) filter[key] = v;
+      }
+      const from = q.get('from');
+      const to = q.get('to');
+      if (from) filter.from = metrics.parseTime(from, tz, 'from');
+      if (to) filter.to = metrics.parseTime(to, tz, 'to');
+      if (filter.from !== undefined && filter.to !== undefined && filter.from > filter.to) {
+        return json(res, 400, { error: 'from must be <= to' });
+      }
+      if (pathname === '/metrics/summary') filter.from ??= (filter.to ?? now) - metrics.SUMMARY_RANGE_MS;
+      const hs = metrics.loadCardHistories(db, filter);
+      const opts = { tz, now, from: filter.from, to: filter.to };
+      return json(res, 200, pathname === '/metrics/flow' ? metrics.computeFlow(hs, opts) : metrics.computeSummary(hs, opts));
+    } catch (err) {
+      return json(res, 400, { error: (err as Error).message });
+    }
   }
 
   if (method === 'GET' && pathname === '/skills') {

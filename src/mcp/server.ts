@@ -213,6 +213,29 @@ server.registerTool(
 );
 
 server.registerTool(
+  'get_metrics',
+  {
+    description:
+      'Flow metrics summary: throughput for the last 4 ISO weeks, cycle time p50/p85 (ms), WIP by lane, and the oldest in-flight card. Default range: the 28 days before `to` (now). A workspace id includes its verticals. from/to: epoch ms, YYYY-MM-DD, or an ISO date.',
+    inputSchema: {
+      project_id: z.string(),
+      phase_id: z.string().optional(),
+      tag: z.string().optional(),
+      agent: z.string().optional(),
+      from: z.string().optional(),
+      to: z.string().optional(),
+    },
+  },
+  ({ project_id, phase_id, tag, agent, from, to }) => {
+    const params = new URLSearchParams({ project: project_id });
+    for (const [k, v] of [['phase', phase_id], ['tag', tag], ['agent', agent], ['from', from], ['to', to]] as const) {
+      if (v) params.set(k, v);
+    }
+    return api('GET', `/metrics/summary?${params}`);
+  },
+);
+
+server.registerTool(
   'get_team',
   {
     description:

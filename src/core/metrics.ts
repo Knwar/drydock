@@ -343,6 +343,384 @@ export function inDateRange(m: Pick<CardMetrics, 'createdAt' | 'doneAt'> & { del
   return true;
 }
 
+// ---------- aggregation (pure) ----------
+//
+// Day buckets are calendar days in an IANA time zone (default: the process's
+// local zone). Weeks are ISO weeks (Monday start) of those local days. Every
+// series is zero-filled over the requested range.
+
+/** The process's local IANA time zone. */
+export const localTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+const fmtCache = new Map<string, Intl.DateTimeFormat>();
+function zoneFormat(tz: string): Intl.DateTimeFormat {
+  let f = fmtCache.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    fmtCache.set(tz, f);
+  }
+  return f;
+}
+
+/** True when `tz` is a time zone Intl accepts. */
+export function isValidTimeZone(tz: string): boolean {
+  try {
+    zoneFormat(tz);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function zonedParts(ts: number, tz: string): { y: number; m: number; d: number; h: number; mi: number; s: number } {
+  const p = Object.fromEntries(zoneFormat(tz).formatToParts(ts).map((x) => [x.type, x.value]));
+  return { y: +p.year, m: +p.month, d: +p.day, h: +p.hour, mi: +p.minute, s: +p.second };
+}
+
+const pad = (n: number, w = 2) => String(n).padStart(w, '0');
+
+/** Local calendar day (YYYY-MM-DD) of an instant in `tz`. */
+export function dayKey(ts: number, tz: string): string {
+  const p = zonedParts(ts, tz);
+  return `${pad(p.y, 4)}-${pad(p.m)}-${pad(p.d)}`;
+}
+
+/** Offset of `tz` from UTC at instant `ts`, in ms (local = utc + offset). */
+function tzOffsetMs(ts: number, tz: string): number {
+  const p = zonedParts(ts, tz);
+  return Date.UTC(p.y, p.m - 1, p.d, p.h, p.mi, p.s) - Math.floor(ts / 1000) * 1000;
+}
+
+/** The instant a local day (YYYY-MM-DD) starts in `tz` (DST-aware). */
+export function startOfDay(day: string, tz: string): number {
+  const [y, m, d] = day.split('-').map(Number);
+  const guess = Date.UTC(y, m - 1, d);
+  let t = guess - tzOffsetMs(guess, tz);
+  t = guess - tzOffsetMs(t, tz);
+  if (dayKey(t, tz) < day) t += 3_600_000; // midnight skipped by a DST jump: the day starts at 01:00
+  return t;
+}
+
+/** Calendar arithmetic on YYYY-MM-DD (no time zone involved). */
+export function addDays(day: string, n: number): string {
+  const [y, m, d] = day.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+
+/** ISO week of a local day: its key (YYYY-Www) and the Monday it starts on. */
+export function isoWeek(day: string): { week: string; start: string } {
+  const [y, m, d] = day.split('-').map(Number);
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay() || 7; // Mon=1..Sun=7
+  const thursday = new Date(Date.UTC(y, m - 1, d + 4 - dow));
+  const isoYear = thursday.getUTCFullYear();
+  const week = Math.ceil(((thursday.getTime() - Date.UTC(isoYear, 0, 1)) / 86_400_000 + 1) / 7);
+  return { week: `${isoYear}-W${pad(week)}`, start: addDays(day, 1 - dow) };
+}
+
+/** The local days from `from` to `to` inclusive. */
+export function daysBetween(from: number, to: number, tz: string): string[] {
+  const out: string[] = [];
+  const last = dayKey(to, tz);
+  for (let d = dayKey(from, tz); d <= last; d = addDays(d, 1)) out.push(d);
+  return out;
+}
+
+/** Nearest-rank percentile (an observed value); null for no data. */
+export function percentile(sorted: number[], p: number): number | null {
+  if (!sorted.length) return null;
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))];
+}
+
+export interface Percentiles {
+  p50: number | null;
+  p85: number | null;
+  p95: number | null;
+  count: number;
+}
+
+export function percentiles(values: number[]): Percentiles {
+  const s = [...values].sort((a, b) => a - b);
+  return { p50: percentile(s, 50), p85: percentile(s, 85), p95: percentile(s, 95), count: s.length };
+}
+
+export type LaneCounts = Record<Lane, number>;
+const zeroLanes = (): LaneCounts => Object.fromEntries(LANES.map((l) => [l, 0])) as LaneCounts;
+
+/** Lane of a derived history at instant `t`, or null (not created yet / deleted). */
+export function laneAt(intervals: LaneInterval[], t: number): Lane | null {
+  for (const i of intervals) if (i.from <= t && (i.to === null || t < i.to)) return i.lane;
+  return null;
+}
+
+export interface FlowPoint {
+  id: string;
+  title: string;
+  doneAt: number;
+  cycleTimeMs: number;
+  leadTimeMs: number;
+}
+
+export interface FlowMetrics {
+  range: { from: number; to: number; tz: string; days: number };
+  throughput: {
+    total: number;
+    weekly: { week: string; start: string; count: number }[];
+    /** Per local day; only for ranges of 31 days or fewer, else null. */
+    daily: { date: string; count: number }[] | null;
+  };
+  cycleTime: Percentiles;
+  leadTime: Percentiles;
+  /** One point per card done in the range, for a scatter chart (by doneAt). */
+  points: FlowPoint[];
+  /** Cumulative flow: lane counts at the end of each local day (or at `to` for the last). */
+  cfd: ({ date: string } & LaneCounts)[];
+  /** Cards considered, and how many of them had partial histories. */
+  cards: number;
+  partial: number;
+}
+
+export interface AggregateOptions {
+  tz: string;
+  now: number;
+  from?: number;
+  to?: number;
+}
+
+/** Longest range the series are built for (a guard against from=0). */
+export const MAX_RANGE_DAYS = 3660;
+
+interface Derived {
+  h: CardHistory;
+  d: LaneHistory;
+  m: CardMetrics;
+}
+const deriveAll = (hs: CardHistory[], now: number): Derived[] =>
+  hs.map((h) => {
+    const d = deriveLaneHistory(h.card, h.events);
+    return { h, d, m: computeCardMetrics(h.card, d, now) };
+  });
+
+/**
+ * Lane counts at the end of each day (snapshots at min(day end, `to`)). A
+ * per-card cursor walks the ordered intervals once: O(days + intervals).
+ */
+function laneSnapshots(ds: Derived[], days: string[], to: number, tz: string): LaneCounts[] {
+  const ends = days.map((day) => Math.min(startOfDay(addDays(day, 1), tz) - 1, to));
+  const out = days.map(zeroLanes);
+  for (const { d } of ds) {
+    let k = 0;
+    ends.forEach((t, i) => {
+      while (k < d.intervals.length && d.intervals[k].to !== null && d.intervals[k].to! <= t) k++;
+      const iv = d.intervals[k];
+      if (iv && iv.from <= t && (iv.to === null || t < iv.to)) out[i][iv.lane]++;
+    });
+  }
+  return out;
+}
+
+function resolveRange(opts: AggregateOptions, defaultFrom: () => number): { from: number; to: number } {
+  const to = opts.to ?? opts.now;
+  const from = opts.from ?? Math.min(to, defaultFrom());
+  if (from > to) throw new Error('from must be <= to');
+  return { from, to };
+}
+
+/** Throughput, cycle/lead percentiles + points, and the CFD over a date range. */
+export function computeFlow(histories: CardHistory[], opts: AggregateOptions): FlowMetrics {
+  const { tz, now } = opts;
+  const ds = deriveAll(histories, now);
+  const { from, to } = resolveRange(opts, () => Math.min(...ds.map((x) => x.m.createdAt)));
+  const days = daysBetween(from, to, tz);
+  if (days.length > MAX_RANGE_DAYS) throw new Error(`range too long (max ${MAX_RANGE_DAYS} days)`);
+
+  const done = ds
+    .map((x) => x.m)
+    .filter((m) => m.doneAt !== null && m.doneAt >= from && m.doneAt <= to)
+    .sort((a, b) => a.doneAt! - b.doneAt!);
+  const points: FlowPoint[] = done.map((m) => ({
+    id: m.id,
+    title: m.title,
+    doneAt: m.doneAt!,
+    cycleTimeMs: m.cycleTimeMs!,
+    leadTimeMs: m.leadTimeMs!,
+  }));
+
+  const perDay = new Map(days.map((day) => [day, 0]));
+  for (const p of points) {
+    const k = dayKey(p.doneAt, tz);
+    perDay.set(k, (perDay.get(k) ?? 0) + 1);
+  }
+  const weekly: FlowMetrics['throughput']['weekly'] = [];
+  for (const day of days) {
+    const w = isoWeek(day);
+    if (weekly[weekly.length - 1]?.week !== w.week) weekly.push({ ...w, count: 0 });
+    weekly[weekly.length - 1].count += perDay.get(day)!;
+  }
+
+  const snaps = laneSnapshots(ds, days, to, tz);
+  return {
+    range: { from, to, tz, days: days.length },
+    throughput: {
+      total: points.length,
+      weekly,
+      daily: days.length <= 31 ? days.map((date) => ({ date, count: perDay.get(date)! })) : null,
+    },
+    cycleTime: percentiles(points.map((p) => p.cycleTimeMs)),
+    leadTime: percentiles(points.map((p) => p.leadTimeMs)),
+    points,
+    cfd: days.map((date, i) => ({ date, ...snaps[i] })),
+    cards: ds.length,
+    partial: ds.filter((x) => x.m.partial).length,
+  };
+}
+
+export interface BurnPhase {
+  id: string;
+  title: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface BurnMetrics {
+  phase: { id: string; title: string; status: string };
+  range: { from: number; to: number; tz: string; days: number };
+  /** Per local day, at the day's end: scope (burn-up total), done (burn-up), remaining (burn-down). */
+  series: { date: string; scope: number; done: number; remaining: number }[];
+  scope: number;
+  done: number;
+  /** Cards whose scope-entry time is a guess (they joined the phase after creation; no event records when). */
+  approximated: number;
+  partial: number;
+}
+
+/**
+ * Burn-up / burn-down for one phase, over the phase's life (its creation, or
+ * its first card if earlier, to now; a done phase ends at max(its last update,
+ * last card done)).
+ *
+ * Approximations (the event log has no phase-change event):
+ *  - Scope is the phase's CURRENT cards. A card whose create event carried this
+ *    phase enters scope at creation. Any other card (placed, moved or
+ *    committed into the phase later) enters at max(its creation, the phase's
+ *    creation), counted in `approximated`.
+ *  - Removals are invisible: a card moved to another phase leaves no trace
+ *    here, and a deleted card's history is deleted with it. So past scope only
+ *    ever counts cards that are still in the phase.
+ *  - Done follows the lane history, so a reopened card drops out of `done`
+ *    again for the days it was not done.
+ */
+export function computeBurn(phase: BurnPhase, histories: CardHistory[], opts: Omit<AggregateOptions, 'from' | 'to'>): BurnMetrics {
+  const { tz, now } = opts;
+  const ds = deriveAll(histories, now);
+  let approximated = 0;
+  const joined = ds.map((x) => {
+    const create = x.h.events.find((e) => e.type === 'create');
+    if (create && parsePayload(create.payload).phase_id === phase.id) return x.m.createdAt;
+    approximated++;
+    return Math.max(x.m.createdAt, phase.created_at);
+  });
+  const from = Math.min(phase.created_at, ...joined);
+  const lastDone = Math.max(0, ...ds.map((x) => x.m.doneAt ?? 0));
+  const to = Math.max(from, phase.status === 'done' ? Math.min(now, Math.max(phase.updated_at, lastDone)) : now);
+  const days = daysBetween(from, to, tz);
+  if (days.length > MAX_RANGE_DAYS) throw new Error(`range too long (max ${MAX_RANGE_DAYS} days)`);
+
+  const series = days.map((date) => {
+    const t = Math.min(startOfDay(addDays(date, 1), tz) - 1, to);
+    let scope = 0;
+    let done = 0;
+    ds.forEach((x, i) => {
+      if (joined[i] > t) return;
+      scope++;
+      if (laneAt(x.d.intervals, t) === 'done') done++;
+    });
+    return { date, scope, done, remaining: scope - done };
+  });
+  const last = series[series.length - 1];
+  return {
+    phase: { id: phase.id, title: phase.title, status: phase.status },
+    range: { from, to, tz, days: days.length },
+    series,
+    scope: last?.scope ?? 0,
+    done: last?.done ?? 0,
+    approximated,
+    partial: ds.filter((x) => x.m.partial).length,
+  };
+}
+
+export interface MetricsSummary {
+  range: { from: number; to: number; tz: string };
+  /** The last 4 ISO weeks of the range. */
+  throughput: { week: string; start: string; count: number }[];
+  cycleTime: { p50: number | null; p85: number | null; count: number };
+  /** Current lane counts (at `to`) for the not-done lanes. */
+  wip: Record<Exclude<Lane, 'done'>, number>;
+  /** As of now: the card longest in flight (queued / in_progress / in_review), by cycle start. */
+  oldestInFlight: { id: string; title: string; lane: Lane; inFlightMs: number; ageInLaneMs: number | null } | null;
+  cards: number;
+  partial: number;
+}
+
+/** The summary's default range: the 28 days before `to`. */
+export const SUMMARY_RANGE_MS = 28 * 86_400_000;
+
+/** A compact summary (for the MCP tool): default range is the SUMMARY_RANGE_MS before `to`. */
+export function computeSummary(histories: CardHistory[], opts: AggregateOptions): MetricsSummary {
+  const to = opts.to ?? opts.now;
+  const from = opts.from ?? to - SUMMARY_RANGE_MS;
+  const flow = computeFlow(histories, { ...opts, from, to });
+  const end = flow.cfd[flow.cfd.length - 1];
+  const inFlight = deriveAll(histories, opts.now)
+    .map((x) => x.m)
+    .filter((m) => !m.deleted && (m.lane === 'queued' || m.lane === 'in_progress' || m.lane === 'in_review'))
+    .sort((a, b) => (a.cycleStartAt ?? a.createdAt) - (b.cycleStartAt ?? b.createdAt));
+  const oldest = inFlight[0];
+  return {
+    range: { from, to, tz: opts.tz },
+    throughput: flow.throughput.weekly.slice(-4),
+    cycleTime: { p50: flow.cycleTime.p50, p85: flow.cycleTime.p85, count: flow.cycleTime.count },
+    wip: { backlog: end.backlog, queued: end.queued, in_progress: end.in_progress, in_review: end.in_review },
+    oldestInFlight: oldest
+      ? {
+          id: oldest.id,
+          title: oldest.title,
+          lane: oldest.lane,
+          inFlightMs: Math.max(0, opts.now - (oldest.cycleStartAt ?? oldest.createdAt)),
+          ageInLaneMs: oldest.ageInLaneMs,
+        }
+      : null,
+    cards: flow.cards,
+    partial: flow.partial,
+  };
+}
+
+/**
+ * Parse a from/to query value: epoch ms, a bare local day (YYYY-MM-DD in `tz`:
+ * `from` = its start, `to` = its end), or anything Date.parse accepts.
+ * Throws on garbage.
+ */
+export function parseTime(raw: string, tz: string, edge: 'from' | 'to'): number {
+  if (/^\d+$/.test(raw)) return Number(raw);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const t = edge === 'from' ? startOfDay(raw, tz) : startOfDay(addDays(raw, 1), tz) - 1;
+    if (Number.isFinite(t) && dayKey(t, tz) === raw) return t;
+  } else {
+    const t = Date.parse(raw);
+    if (Number.isFinite(t)) return t;
+  }
+  throw new Error(`invalid ${edge}: ${raw}`);
+}
+
 // ---------- DB reader ----------
 
 /** SQL WHERE (over tasks aliased `t`) for the non-date parts of a filter. */
