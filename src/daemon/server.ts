@@ -11,6 +11,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import * as board from '../core/board.js';
 import * as subscriptions from '../core/subscriptions.js';
 import * as drafts from '../core/plan-drafts.js';
+import * as metrics from '../core/metrics.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
 import { cardLines } from '../core/lines.js';
@@ -1300,6 +1301,44 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const project = url.searchParams.get('project');
     if (!project) return json(res, 400, { error: 'project required' });
     return json(res, 200, board.getStats(db, project));
+  }
+
+  // ── flow metrics: aggregation lives in core/metrics.ts; these only parse + load ──
+  if (method === 'GET' && ['/metrics/flow', '/metrics/burn', '/metrics/summary'].includes(pathname)) {
+    const q = url.searchParams;
+    const project = q.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
+    const now = Date.now();
+    try {
+      if (pathname === '/metrics/burn') {
+        const phaseId = q.get('phase');
+        if (!phaseId) return json(res, 400, { error: 'phase required' });
+        const phase = db.prepare('SELECT * FROM phases WHERE id = ?').get(phaseId) as metrics.BurnPhase & { project_id: string } | undefined;
+        if (!phase) return json(res, 404, { error: 'unknown phase' });
+        const boards = [project, ...board.listVerticals(db, project).map((v) => v.id)];
+        if (!boards.includes(phase.project_id)) return json(res, 400, { error: 'phase is not on this project' });
+        return json(res, 200, metrics.burnMetrics(db, phase, [project], { tz, now }));
+      }
+      // a workspace id expands to its verticals inside the loader
+      const filter: metrics.MetricsFilter = { projectIds: [project] };
+      for (const [key, param] of [['phaseId', 'phase'], ['tag', 'tag'], ['agent', 'agent']] as const) {
+        const v = q.get(param);
+        if (v) filter[key] = v;
+      }
+      const from = q.get('from');
+      const to = q.get('to');
+      if (from) filter.from = metrics.parseTime(from, tz, 'from');
+      if (to) filter.to = metrics.parseTime(to, tz, 'to');
+      const view = pathname === '/metrics/flow' ? metrics.flowMetrics : metrics.summaryMetrics;
+      return json(res, 200, view(db, filter, { tz, now }));
+    } catch (err) {
+      // bad params → 400; anything else is ours → 500 (route()'s outer catch would say 400)
+      const status = err instanceof metrics.MetricsParamError ? 400 : 500;
+      return json(res, status, { error: (err as Error).message });
+    }
   }
 
   if (method === 'GET' && pathname === '/skills') {
