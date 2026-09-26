@@ -8,10 +8,12 @@ import {
   createTask,
   createVertical,
   deleteTask,
+  getActivePhase,
   getOrCreateProject,
   getTask,
   moveTask,
   raiseBlocker,
+  updatePhase,
   updateTask,
 } from './board.js';
 import { openDb } from './db.js';
@@ -22,9 +24,11 @@ import {
   commitDraft,
   createDraft,
   diffDraft,
+  draftContext,
   getDraft,
   runDraft,
 } from './plan-drafts.js';
+import { validatePlan } from './plan-graph.js';
 import type { DraftOp, Phase, PlanNode, Project, Subtask, Task } from './types.js';
 
 function setup() {
@@ -69,7 +73,7 @@ function seed(db: DB, ws: Project, web: Project, extra: Partial<Record<'a' | 'b'
 const edit = (db: DB, id: string, ops: DraftOp[]) => applyDraftOps(db, id, ops);
 
 describe('diffDraft / commitDraft', () => {
-  it('first commit: phases by name (reused + appended), cards and cross-board depends_on', (t) => {
+  it('first commit: phases by name (reused + placed), cards and cross-board depends_on', (t) => {
     const { db, ws, web, cleanup } = setup();
     t.after(cleanup);
     const existing = createPhase(db, web.id, 'Foundation');
@@ -78,10 +82,11 @@ describe('diffDraft / commitDraft', () => {
     const diff = diffDraft(db, d.id);
     assert.deepEqual(diff.errors, []);
     assert.deepEqual(
-      diff.boards.map((b) => [b.board_id, b.phases, b.create.map((c) => c.node_id)]),
+      diff.boards.map((b) => [b.board_id, b.phases, b.activate, b.create.map((c) => c.node_id)]),
       [
-        [ws.id, [{ name: 'Foundation', position: 1 }], ['a']],
-        [web.id, [{ name: 'Build', position: 2 }], ['b', 'c']],
+        [ws.id, [{ name: 'Foundation', position: 1, after: null }], 'Foundation', ['a']],
+        // Build depends on the existing (planned) Foundation, so it goes after it; nothing was active
+        [web.id, [{ name: 'Build', position: 2, after: 'Foundation' }], 'Foundation', ['b', 'c']],
       ],
     );
     assert.equal(count(db, 'tasks'), 0, 'diff is a dry run');
@@ -112,6 +117,11 @@ describe('diffDraft / commitDraft', () => {
     assert.equal(b.phase_id, existing.id, 'phase reused by name');
     assert.equal(c.phase_id, webPhases[1].id);
     assert.equal(a.phase_id, phasesOf(db, ws.id)[0].id);
+    assert.deepEqual(webPhases.map((p) => [p.status, p.goal]), [
+      ['active', null],
+      ['planned', 'Launch · Build'],
+    ]);
+    assert.deepEqual(phasesOf(db, ws.id).map((p) => [p.title, p.status, p.goal]), [['Foundation', 'active', 'Launch · Foundation']]);
 
     const stored = getDraft(db, d.id)!;
     assert.equal(stored.committed_version, 1);
@@ -334,6 +344,103 @@ describe('diffDraft / commitDraft', () => {
     assert.equal(count(db, 'phases'), 0);
     assert.equal(getDraft(db, d.id)!.committed_version, null);
     assert.throws(() => commitDraft(db, 'nope', 1), (e) => e instanceof DraftError && e.code === 'not_found');
+  });
+
+  /** Reporting nodes appear first in column order, but Reporting depends on Flow. */
+  function metrics(db: DB, ws: Project) {
+    return createDraft(db, ws.id, 'Metrics', {
+      nodes: [
+        { id: 'r0', title: 'Report shell', board_id: ws.id, phase: 'Reporting' },
+        { id: 'f1', title: 'Cycle time', board_id: ws.id, phase: 'Flow' },
+        { id: 'r1', title: 'Weekly report', board_id: ws.id, phase: 'Reporting' },
+      ],
+      edges: [{ from: 'f1', to: 'r1' }],
+    });
+  }
+
+  it('orders new phases by the dependencies between them', (t) => {
+    const { db, ws, cleanup } = setup();
+    t.after(cleanup);
+    const d = metrics(db, ws);
+    const diff = diffDraft(db, d.id);
+    assert.deepEqual(diff.boards[0].phases, [
+      { name: 'Flow', position: 1, after: null },
+      { name: 'Reporting', position: 2, after: 'Flow' },
+    ]);
+    const committed = commitDraft(db, d.id, 1).draft.data.committed;
+    const phases = phasesOf(db, ws.id);
+    assert.deepEqual(phases.map((p) => [p.title, p.position, p.status, p.goal]), [
+      ['Flow', 1, 'active', 'Metrics · Flow'],
+      ['Reporting', 2, 'planned', 'Metrics · Reporting'],
+    ]);
+    assert.equal(getTask(db, committed.f1).phase_id, phases[0].id);
+    assert.equal(getTask(db, committed.r0).phase_id, phases[1].id);
+  });
+
+  it('a cycle between phases keeps plan order and warns phase_order', (t) => {
+    const { db, ws, cleanup } = setup();
+    t.after(cleanup);
+    const d = metrics(db, ws);
+    edit(db, d.id, [{ op: 'add_edge', from: 'r0', to: 'f1' }]); // Flow now also depends on Reporting
+    const v = validatePlan(getDraft(db, d.id)!.data, draftContext(db, ws.id));
+    assert.deepEqual(v.errors, []);
+    assert.deepEqual(v.warnings.filter((w) => w.code === 'phase_order').map((w) => w.nodes), [['r0', 'f1', 'r1']]);
+    assert.deepEqual(diffDraft(db, d.id).boards[0].phases.map((p) => p.name), ['Reporting', 'Flow']);
+    commitDraft(db, d.id, 2);
+    assert.deepEqual(phasesOf(db, ws.id).map((p) => p.title), ['Reporting', 'Flow']);
+  });
+
+  it('places new phases after the active phase, before existing planned ones', (t) => {
+    const { db, ws, cleanup } = setup();
+    t.after(cleanup);
+    const done = createPhase(db, ws.id, 'Setup');
+    const active = createPhase(db, ws.id, 'Board UX');
+    createPhase(db, ws.id, 'Cloud relay');
+    createPhase(db, ws.id, 'Cloud billing');
+    updatePhase(db, done.id, { status: 'done' });
+    updatePhase(db, active.id, { status: 'active' });
+    const d = metrics(db, ws);
+    const diff = diffDraft(db, d.id);
+    assert.deepEqual(diff.boards[0].phases, [
+      { name: 'Flow', position: 3, after: 'Board UX' },
+      { name: 'Reporting', position: 4, after: 'Flow' },
+    ]);
+    assert.equal(diff.boards[0].activate, null, 'a board with an active phase keeps it');
+    assert.equal(diff.boards[0].active, 'Board UX');
+    commitDraft(db, d.id, 1);
+    assert.deepEqual(phasesOf(db, ws.id).map((p) => [p.title, p.position, p.status]), [
+      ['Setup', 1, 'done'],
+      ['Board UX', 2, 'active'],
+      ['Flow', 3, 'planned'],
+      ['Reporting', 4, 'planned'],
+      ['Cloud relay', 5, 'planned'],
+      ['Cloud billing', 6, 'planned'],
+    ]);
+  });
+
+  it('with no active phase, the first new phase is activated (before parked phases)', (t) => {
+    const { db, ws, cleanup } = setup();
+    t.after(cleanup);
+    const done = createPhase(db, ws.id, 'Setup');
+    createPhase(db, ws.id, 'Cloud relay');
+    updatePhase(db, done.id, { status: 'done' });
+    const d = metrics(db, ws);
+    const diff = diffDraft(db, d.id);
+    assert.deepEqual(diff.boards[0].phases.map((p) => [p.name, p.position, p.after]), [
+      ['Flow', 2, 'Setup'],
+      ['Reporting', 3, 'Flow'],
+    ]);
+    assert.equal(diff.boards[0].activate, 'Flow');
+    assert.equal(diff.boards[0].active, 'Flow');
+    const committed = commitDraft(db, d.id, 1).draft.data.committed;
+    const phases = phasesOf(db, ws.id);
+    assert.deepEqual(phases.map((p) => [p.title, p.status]), [
+      ['Setup', 'done'],
+      ['Flow', 'active'],
+      ['Reporting', 'planned'],
+      ['Cloud relay', 'planned'],
+    ]);
+    assert.equal(getActivePhase(db, ws.id)!.id, getTask(db, committed.f1).phase_id);
   });
 
   it('a failure mid-commit rolls everything back', (t) => {

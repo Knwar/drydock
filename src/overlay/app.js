@@ -2692,16 +2692,11 @@ function renderHomeSend() {
   res.dataset.gate = needs ? '1' : '';
 }
 
-async function homeSend() {
-  const text = $('home-send-text').value.trim();
-  const res = $('home-send-result');
-  if (!text || !home.target) return;
-  home.sending = true;
-  $('home-send-btn').disabled = true;
-  res.textContent = 'Sending…';
-  res.className = '';
+// Type `text` into a board's Claude session (POST /pty/send: token-gated, idle
+// sessions only). Used by Home's Send to agent and the planner's Run dialog.
+async function ptySend(project, text) {
   try {
-    const post = () => fetch(`/pty/send?${ptyQuery(home.target)}`, { method: 'POST', body: JSON.stringify({ text }) });
+    const post = () => fetch(`/pty/send?${ptyQuery(project)}`, { method: 'POST', body: JSON.stringify({ text }) });
     let r = await post();
     if (r.status === 403) {
       // daemon restarted → the cached token is stale: refresh it once and retry
@@ -2714,21 +2709,26 @@ async function homeSend() {
       r = await post();
     }
     const out = await r.json().catch(() => ({}));
-    if (r.status === 403) {
-      res.textContent = 'Couldn’t reach the terminal — reload the page';
-      res.className = 'err';
-    } else if (r.ok && out.sent) {
-      res.textContent = 'Sent';
-      res.className = 'ok';
-      $('home-send-text').value = '';
-    } else {
-      res.textContent = out.error || `error ${r.status}`;
-      res.className = 'err';
-    }
+    if (r.status === 403) return { ok: false, message: 'Couldn’t reach the terminal — reload the page' };
+    if (r.ok && out.sent) return { ok: true, message: 'Sent' };
+    return { ok: false, message: out.error || `error ${r.status}` };
   } catch {
-    res.textContent = 'Could not reach the daemon';
-    res.className = 'err';
+    return { ok: false, message: 'Could not reach the daemon' };
   }
+}
+
+async function homeSend() {
+  const text = $('home-send-text').value.trim();
+  const res = $('home-send-result');
+  if (!text || !home.target) return;
+  home.sending = true;
+  $('home-send-btn').disabled = true;
+  res.textContent = 'Sending…';
+  res.className = '';
+  const sent = await ptySend(home.target, text);
+  res.textContent = sent.message;
+  res.className = sent.ok ? 'ok' : 'err';
+  if (sent.ok) $('home-send-text').value = '';
   res.dataset.gate = '';
   home.sending = false;
   renderHomeSend();
@@ -5385,13 +5385,22 @@ async function openCommitModal() {
         r.append(node('span', `pl-cm-k ${kind}`, label), t);
         sec.append(r);
       };
-      const existing = st.phases?.get(b.board_id);
-      let prev = existing?.length ? existing[existing.length - 1] : null;
       for (const p of b.phases) {
-        row('add', '+ phase', 'New phase ', plBold(p.name), ...(prev ? [' ', plDim(`after ${prev}`)] : existing ? [' ', plDim('first on this board')] : []));
-        prev = p.name;
+        const where = p.after ? `after ${p.after}` : 'first on this board';
+        row('add', '+ phase', 'New phase ', plBold(p.name), ' ', plDim(b.activate === p.name ? `${where}, becomes active` : where));
       }
+      if (b.activate && !b.phases.some((p) => p.name === b.activate)) row('edit', '~ phase', 'Phase ', plBold(b.activate), ' ', plDim('becomes active'));
       if (b.create.length) row('add', `+ ${b.create.length}`, b.create.map((c) => c.title || 'Untitled').join(' · '));
+      // cards going into a phase that isn't the board's active one stay off its Kanban until that phase starts
+      const later = new Map();
+      if (b.active) {
+        for (const c of b.create) if (c.phase && c.phase !== b.active) later.set(c.phase, (later.get(c.phase) ?? 0) + 1);
+        for (const u of b.update) {
+          const to = u.changes.phase?.to;
+          if (to && to !== b.active) later.set(to, (later.get(to) ?? 0) + 1);
+        }
+      }
+      for (const [ph, n] of later) row('wait', 'waits', n === 1 ? 'This card goes into ' : 'These cards go into ', plBold(ph), ', which starts after ', plBold(b.active), ' is finished');
       for (const u of b.update) row('edit', '~ edit', plBold(u.title || 'Untitled'), ' ', plDim(Object.keys(u.changes).map((f) => PL_DIFF_FIELD[f] ?? f).join(', ')));
       for (const x of b.delete) {
         const lane = st.lanes?.get(x.card_id);
@@ -5417,20 +5426,11 @@ async function openCommitModal() {
     st.error = '';
     render();
     const r = await plJson(`/plan-drafts/${encodeURIComponent(id)}/diff`);
-    let phases = null;
     let lanes = null;
     if (r.ok) {
-      // the explanatory text: which phase a new one follows, and where a deleted card was
-      const withPhases = r.out.boards.filter((b) => b.phases.length).map((b) => b.board_id);
+      // the explanatory text: where a deleted card was
       const dels = r.out.boards.flatMap((b) => b.delete.map((x) => x.card_id));
-      const [ph, ln] = await Promise.all([
-        Promise.all(withPhases.map((b) => plJson(`/phases?project=${encodeURIComponent(b)}`))),
-        plFetchCards(dels),
-      ]);
-      phases = new Map();
-      withPhases.forEach((b, i) => {
-        if (ph[i].ok && Array.isArray(ph[i].out)) phases.set(b, [...ph[i].out].sort((x, y) => x.position - y.position).map((p) => p.title));
-      });
+      const ln = await plFetchCards(dels);
       lanes = new Map();
       dels.forEach((c, i) => ln[i].ok && lanes.set(c, ln[i].out.lane));
     }
@@ -5440,7 +5440,6 @@ async function openCommitModal() {
     // "The plan changed" belongs to the load it triggered; the next good load clears it
     if (r.ok && !st.keepNote) st.note = '';
     if (r.ok) st.keepNote = false;
-    st.phases = phases;
     st.lanes = lanes;
     if (!r.ok) st.error = `Couldn’t load the changes: ${r.error}`;
     render();
@@ -5485,12 +5484,27 @@ async function openRunModal() {
   const v = plan.view;
   if (EMBED || !v || v.draft.id !== plan.openId || svModal || plan.actionBusy || $('pl-run').disabled) return;
   const id = v.draft.id;
-  const st = { mode: 'queue', loading: true, busy: false, error: '', closed: false, cards: null, sessions: new Map() };
+  const st = {
+    mode: 'queue',
+    loading: true,
+    busy: false,
+    error: '',
+    closed: false,
+    cards: null,
+    sessions: new Map(),
+    phases: new Map(), // board → { active: phase id | null, byId: Map(id → { title, status }) }
+    sending: false,
+    sent: null,
+    done: null, // after a Run that left Main's cards waiting: { head, summary, mode } (the dialog stays open for Send)
+  };
   const { dlg, close, mount } = openModal({
     labelledBy: 'pl-run-title',
     describedBy: 'pl-run-sub',
     busy: () => st.busy,
-    onClose: () => (st.closed = true),
+    onClose: () => {
+      st.closed = true;
+      if (st.done) setTimeout(() => finish(st.done.summary, st.done.mode)); // after close() restores focus
+    },
     fallbackFocus: () => $('pl-run'),
   });
   dlg.classList.add('pl-dlg', 'pl-rn');
@@ -5528,9 +5542,21 @@ async function openRunModal() {
   const a = option('autopilot', 'Queue + autopilot');
   const aDesc = node('span', 'pl-rn-opt-desc', 'Idle sessions are prompted to work their next card automatically. Autopilot pauses while 5-hour usage is above 80%.');
   const aSess = node('span', 'pl-rn-sessions');
-  const aMain = node('span', 'pl-rn-main');
-  a.text.append(aDesc, aSess, aMain);
+  a.text.append(aDesc, aSess);
 
+  // Main (the workspace board, or a standalone project) is never driven by autopilot
+  const mainId = v.draft.workspace_id;
+  const mainBox = node('div', 'pl-rn-mainbox hidden');
+  const mainMsg = node('span', 'pl-rn-mainmsg', 'Nothing starts automatically for Main: its session has to pick these up.');
+  const mainRow = node('div', 'pl-rn-mainrow');
+  const send = plDlgButton('pl-dlg-btn', 'Send to Main session');
+  const sendNote = node('span', 'pl-rn-sendnote');
+  sendNote.id = 'pl-rn-sendnote';
+  send.setAttribute('aria-describedby', sendNote.id);
+  mainRow.append(send, sendNote);
+  mainBox.append(mainMsg, mainRow);
+
+  const later = node('div', 'pl-rn-later hidden');
   const spec = node('div', 'pl-rn-spec hidden');
   const err = node('div', 'pl-dlg-err');
   err.setAttribute('role', 'alert');
@@ -5542,7 +5568,42 @@ async function openRunModal() {
   const go = plDlgButton('pl-dlg-btn primary', 'Queue');
   btns.append(cancel, go);
   foot.append(started, btns);
-  dlg.append(head, fs, spec, err, foot);
+  dlg.append(head, fs, mainBox, later, spec, err, foot);
+
+  const name = (b) => boards.get(b)?.name ?? 'Unknown board';
+  // queued (or about to be) cards whose phase hasn't started: the board's Kanban and next card skip them
+  const laterLines = (work) => {
+    const groups = new Map();
+    for (const c of work) {
+      const ph = st.phases.get(c.board);
+      const p = ph?.byId.get(c.phase);
+      if (!ph?.active || !p || p.status !== 'planned') continue;
+      const key = `${c.board}\u0000${c.phase}`;
+      groups.set(key, { board: c.board, title: p.title, n: (groups.get(key)?.n ?? 0) + 1 });
+    }
+    const many = new Set(work.map((c) => c.board)).size > 1;
+    return [...groups.values()].map(
+      (g) => `${plCount(g.n, 'card')} ${g.n === 1 ? 'is' : 'are'} in ${g.title}${many ? ` on ${name(g.board)}` : ''}, which hasn’t started: ${g.n === 1 ? 'it won’t' : 'they won’t'} be picked up until it’s the active phase`,
+    );
+  };
+
+  // why Send is unavailable, or null when Main's session can take the message now
+  const sendBlocked = () => {
+    if (!term.enabled || !term.token) return 'The terminal is off';
+    const state = st.sessions.get(mainId) ?? 'offline';
+    if (state === 'idle') return null;
+    if (state === 'working') return 'Main’s session is busy';
+    if (state === 'needs_you') return 'Main’s session is waiting for a decision';
+    return 'No Main session is running';
+  };
+
+  // the flash, the Live mode switch and focus: once the dialog is gone
+  const finish = (summary, mode) => {
+    svFlash(summary);
+    plStore(`pl.run.${id}`, mode); // the Live header's "Running · …"
+    setPlanMode(id, 'live'); // a plan that just ran opens on its live progress
+    if (plan.openId === id) $('pl-mode-live').focus(); // Run itself is hidden in Live
+  };
 
   const render = () => {
     const cards = st.cards ?? [];
@@ -5578,9 +5639,21 @@ async function openRunModal() {
         return s;
       }),
     );
-    const hasMain = cards.some((c) => !verts.has(c.board));
-    aMain.textContent = hasMain ? 'Main’s cards are queued for you. Autopilot never drives the main session.' : '';
     for (const o of [q, a]) o.l.classList.toggle('on', o.r.checked);
+    // the work this Run hands over: cards already queued, plus the spec'd backlog it queues
+    const work = cards.filter((c) => c.lane === 'queued' || (c.lane === 'backlog' && c.spec));
+    // Main's cards wait for its session; Send only once they're all queued
+    const onMain = work.some((c) => !verts.has(c.board));
+    const unqueued = work.some((c) => !verts.has(c.board) && c.lane === 'backlog');
+    mainBox.classList.toggle('hidden', !onMain);
+    const blocked = unqueued ? 'Queue the cards first' : sendBlocked();
+    send.textContent = st.sending ? 'Sending…' : 'Send to Main session';
+    send.disabled = st.busy || st.sending || !!blocked || st.sent?.ok === true;
+    sendNote.textContent = st.sent ? st.sent.message : blocked ?? 'Types “Work the queued cards on the board.” into Main’s terminal';
+    sendNote.className = `pl-rn-sendnote${st.sent ? (st.sent.ok ? ' ok' : ' err') : blocked ? ' warn' : ''}`;
+    const lines = laterLines(work);
+    later.classList.toggle('hidden', !lines.length);
+    later.replaceChildren(...lines.map((l) => node('div', 'pl-rn-later-line', l)));
 
     spec.classList.toggle('hidden', !need.length);
     spec.replaceChildren(
@@ -5614,9 +5687,30 @@ async function openRunModal() {
     go.textContent = st.busy ? (apOnly ? 'Turning on…' : 'Queueing…') : st.loading ? 'Queue' : apOnly ? 'Turn on autopilot' : `Queue ${plCount(n, 'card')}`;
     go.disabled = st.busy || st.loading || (n === 0 && !apOnly);
     cancel.disabled = st.busy;
+    if (st.done) {
+      // ran: the result, plus Send for Main's waiting cards
+      sub.textContent = st.done.head; // the phase lines stay in their own box below
+      for (const el of [fs, spec, cancel]) el.classList.add('hidden');
+      started.textContent = '';
+      go.textContent = 'Done';
+      go.disabled = false;
+    }
+  };
+
+  send.onclick = async () => {
+    if (st.sending || send.disabled) return;
+    st.sending = true;
+    st.sent = null;
+    render();
+    const sent = await ptySend(mainId, 'Work the queued cards on the board.');
+    st.sending = false;
+    if (st.closed) return;
+    st.sent = sent;
+    render();
   };
 
   go.onclick = async () => {
+    if (st.done) return close(); // onClose finishes (flash + Live)
     if (st.busy || st.loading || go.disabled) return; // double-submit guard
     st.busy = true;
     st.error = '';
@@ -5633,21 +5727,37 @@ async function openRunModal() {
       st.error = `Couldn’t run the plan: ${r.error}`;
       return render();
     }
-    close();
     const out = r.out;
-    const name = (b) => boards.get(b)?.name ?? 'Unknown board';
     const parts = out.queued.length || mode !== 'autopilot' ? [`Queued ${plCount(out.queued.length, 'card')}`] : [];
     if (out.skipped.length) parts.push(`${out.skipped.length} need${out.skipped.length === 1 ? 's' : ''} a spec`);
+    // who picks the queued work up: Main's session, autopilot, or each vertical when prompted
+    const boardOf = new Map((st.cards ?? []).map((c) => [c.id, c.board]));
+    const waiting = new Set([...out.queued, ...(st.cards ?? []).filter((c) => c.lane === 'queued').map((c) => c.id)]);
+    const waitingOn = [...new Set([...waiting].map((c) => boardOf.get(c)).filter(Boolean))];
+    const vertsWaiting = waitingOn.filter((b) => verts.has(b)).sort(
+      (x, y) => v.boards.findIndex((b) => b.id === x) - v.boards.findIndex((b) => b.id === y),
+    );
     if (mode === 'autopilot') {
       if (out.autopilot.enabled.length) parts.push(`autopilot on ${out.autopilot.enabled.map((x) => name(x.board_id)).join(', ')}`);
       const idle = out.autopilot.not_enabled.filter((x) => x.reason !== 'main_session');
       if (idle.length) parts.push(`not on ${idle.map((x) => name(x.board_id)).join(', ')} (nothing queued)`);
-      if (out.autopilot.not_enabled.some((x) => x.reason === 'main_session')) parts.push('Main’s cards are queued for you');
+    } else if (vertsWaiting.length) {
+      parts.push(`prompt ${vertsWaiting.map(name).join(', ')} to pick ${vertsWaiting.length === 1 ? 'its' : 'their'} cards up`);
     }
-    svFlash(parts.join(' · ') || 'Nothing to queue');
-    plStore(`pl.run.${id}`, mode); // the Live header's "Running · …"
-    setPlanMode(id, 'live'); // a plan that just ran opens on its live progress
-    if (plan.openId === id) $('pl-mode-live').focus(); // Run itself is hidden in Live
+    const mainWaits = waitingOn.some((b) => !verts.has(b));
+    if (mainWaits) parts.push('Main’s cards wait for the Main session');
+    const queued = new Set(out.queued);
+    for (const c of st.cards ?? []) if (queued.has(c.id)) c.lane = 'queued';
+    const head = parts.join(' · ') || 'Nothing to queue';
+    const summary = [head, ...laterLines((st.cards ?? []).filter((c) => waiting.has(c.id)))].join(' · ');
+    if (!mainWaits) {
+      close();
+      return finish(summary, mode);
+    }
+    // Main's cards are queued now: stay open so its session can be prompted
+    st.done = { head, summary, mode };
+    render();
+    (send.disabled ? go : send).focus();
   };
 
   mount();
@@ -5665,7 +5775,18 @@ async function openRunModal() {
     const t = tasks[i];
     if (!t.ok) return []; // deleted elsewhere
     const c = t.out;
-    return [{ node: nodeId, id: c.id, title: c.title, board: c.project_id, lane: c.lane, spec: !!c.requirements?.trim() && (c.subtasks?.length ?? 0) > 0 }];
+    return [{ node: nodeId, id: c.id, title: c.title, board: c.project_id, phase: c.phase_id, lane: c.lane, spec: !!c.requirements?.trim() && (c.subtasks?.length ?? 0) > 0 }];
+  });
+  // each involved board's phases: which of the plan's cards sit in a phase that hasn't started
+  const involved = [...new Set(st.cards.map((c) => c.board))];
+  const ph = await Promise.all(involved.map((b) => plJson(`/phases?project=${encodeURIComponent(b)}`)));
+  if (st.closed) return;
+  involved.forEach((b, i) => {
+    if (!ph[i].ok || !Array.isArray(ph[i].out)) return;
+    st.phases.set(b, {
+      active: ph[i].out.find((p) => p.status === 'active')?.id ?? null,
+      byId: new Map(ph[i].out.map((p) => [p.id, { title: p.title, status: p.status }])),
+    });
   });
   if (sum.ok) for (const b of sum.out.boards ?? []) st.sessions.set(b.project.id, b.session?.state ?? 'offline');
   if (tasks.some((t) => !t.ok && t.res?.status !== 400)) st.error = 'Couldn’t read every card — the count may be off.';

@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { canRunInParallel, findCycle, layoutColumns, longestChain, validatePlan } from './plan-graph.js';
+import {
+  canRunInParallel,
+  findCycle,
+  layoutColumns,
+  longestChain,
+  orderPhases,
+  phaseDependencies,
+  validatePlan,
+} from './plan-graph.js';
 import type { PlanContext, PlanEdge, PlanNode } from './types.js';
 
 const ns = (...ids: string[]) => ids.map((id) => ({ id }));
@@ -238,5 +246,44 @@ describe('validatePlan', () => {
       [['a'], ['b']],
     );
     assert.deepEqual(v.errors, []);
+  });
+
+  it('phase_order: phases on one board that depend on each other', () => {
+    const nodes = [
+      node('f1', { phase: 'Flow' }),
+      node('r1', { phase: 'Reporting' }),
+      node('f2', { phase: 'Flow' }),
+      node('x', { board_id: 'web', phase: 'Flow' }),
+    ];
+    const ok = validatePlan({ nodes, edges: es('f1>r1') }, CTX);
+    assert.deepEqual(ok.warnings, []);
+    const v = validatePlan({ nodes, edges: es('f1>r1', 'r1>f2') }, CTX);
+    assert.deepEqual(v.errors, [], 'a phase cycle is not a node cycle');
+    assert.deepEqual(codes(v.warnings), ['phase_order']);
+    assert.match(v.warnings[0].message, /"Flow", "Reporting" on Shop depend on each other/);
+    assert.deepEqual(v.warnings[0].nodes, ['f1', 'r1', 'f2']);
+  });
+});
+
+describe('phase order', () => {
+  it('phase deps are transitive (through other boards) and per board', () => {
+    const nodes: PlanNode[] = [
+      node('r', { phase: 'Reporting' }),
+      node('mid', { board_id: 'web' }),
+      node('f', { phase: 'Flow' }),
+      node('w', { board_id: 'web', phase: 'Flow' }),
+    ];
+    const deps = phaseDependencies(nodes, es('f>mid', 'mid>r'), WS);
+    assert.deepEqual([...deps].map(([k, v]) => [k, [...v]]), [['Reporting', ['Flow']]]);
+    assert.deepEqual(phaseDependencies(nodes, es('f>mid', 'mid>r'), 'web').size, 0);
+  });
+
+  it('orderPhases: dependencies first, ties in given order, null on a cycle', () => {
+    const deps = new Map([['Reporting', new Set(['Flow'])]]);
+    assert.deepEqual(orderPhases(['Reporting', 'Docs', 'Flow'], deps), ['Docs', 'Flow', 'Reporting']);
+    assert.deepEqual(orderPhases(['Flow', 'Reporting'], deps), ['Flow', 'Reporting']);
+    assert.deepEqual(orderPhases(['Reporting'], deps), ['Reporting'], 'deps outside the list are ignored');
+    deps.set('Flow', new Set(['Reporting']));
+    assert.equal(orderPhases(['Reporting', 'Flow'], deps), null);
   });
 });

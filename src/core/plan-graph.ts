@@ -135,6 +135,63 @@ export function canRunInParallel(a: string, b: string, edges: PlanEdge[]): boole
   return a !== b && !reaches(a, b, edges) && !reaches(b, a, edges);
 }
 
+// ── phase order ──
+
+type PhasedNode = Pick<PlanNode, 'id' | 'board_id' | 'phase'>;
+const phaseName = (n: PhasedNode): string | null => n.phase?.trim() || null;
+
+/**
+ * Phase-level dependencies on one board: phase → the phases it must follow. A
+ * phase X depends on Y when a node of X on `boardId` (transitively, through any
+ * board) depends on a node of Y on `boardId`.
+ */
+export function phaseDependencies(nodes: PhasedNode[], edges: PlanEdge[], boardId: string): Map<string, Set<string>> {
+  const adj = adjacency(ids(nodes), edges);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const deps = new Map<string, Set<string>>();
+  for (const n of nodes) {
+    const from = phaseName(n);
+    if (n.board_id !== boardId || !from) continue;
+    const seen = new Set<string>();
+    const stack = [...adj.get(n.id)!];
+    while (stack.length) {
+      const id = stack.pop()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      stack.push(...adj.get(id)!);
+      const m = byId.get(id)!;
+      const to = phaseName(m);
+      if (m.board_id !== boardId || !to || to === from) continue;
+      if (!deps.has(to)) deps.set(to, new Set());
+      deps.get(to)!.add(from);
+    }
+  }
+  return deps;
+}
+
+/**
+ * `names` ordered so each phase follows the phases it depends on (deps outside
+ * `names` are ignored); ties keep `names` order. Null on a cycle.
+ */
+export function orderPhases(names: string[], deps: Map<string, Set<string>>): string[] | null {
+  const rest = [...names];
+  const order: string[] = [];
+  while (rest.length) {
+    const i = rest.findIndex((x) => ![...(deps.get(x) ?? [])].some((d) => d !== x && rest.includes(d)));
+    if (i < 0) return null;
+    order.push(...rest.splice(i, 1));
+  }
+  return order;
+}
+
+/** The phases (in edge direction) of one board's phase-level dependency cycle, or null. */
+export function phaseCycle(nodes: PhasedNode[], edges: PlanEdge[], boardId: string): string[] | null {
+  const names = [...new Set(nodes.filter((n) => n.board_id === boardId).map(phaseName).filter((x): x is string => !!x))];
+  const deps = phaseDependencies(nodes, edges, boardId);
+  const phaseEdges = [...deps].flatMap(([to, froms]) => [...froms].map((from) => ({ from, to })));
+  return findCycle(names.map((id) => ({ id })), phaseEdges);
+}
+
 // ── path overlap helpers (touches) ──
 
 const GLOB_CHARS = /[*?[\]{}]/;
@@ -297,6 +354,17 @@ export function validatePlan(data: Pick<PlanData, 'nodes' | 'edges'>, ctx: PlanC
           ? `"${n.title}" touches ${owners.size} verticals (${names}): it belongs on the workspace board`
           : `"${n.title}" is on ${board.name} but touches ${names}: it belongs on the workspace board`,
       nodes: [n.id],
+    });
+  }
+
+  for (const boardId of [...new Set(unique.map((n) => n.board_id))]) {
+    const cycle = phaseCycle(unique, edges, boardId);
+    if (!cycle) continue;
+    const board = boards.get(boardId)?.name ?? boardId;
+    warnings.push({
+      code: 'phase_order',
+      message: `phases ${cycle.map((p) => `"${p}"`).join(', ')} on ${board} depend on each other: new phases keep their plan order`,
+      nodes: unique.filter((n) => n.board_id === boardId && cycle.includes(n.phase?.trim() ?? '')).map((n) => n.id),
     });
   }
 

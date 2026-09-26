@@ -13,9 +13,10 @@ import {
   setAutopilot,
   setSubtasks,
   shortId,
+  updatePhase,
   updateTask,
 } from './board.js';
-import { layoutColumns, validatePlan } from './plan-graph.js';
+import { layoutColumns, orderPhases, phaseDependencies, validatePlan } from './plan-graph.js';
 import {
   PLAN_TAGS,
   type DraftOp,
@@ -292,9 +293,12 @@ export function draftContext(db: DB, workspaceId: string): PlanContext {
 // Each node commits onto its own board; `committed` maps node → card. Only
 // unblocked backlog/queued cards are editable: a started, done or blocked card is
 // never changed, moved or deleted by a commit (it's reported as locked or kept
-// instead). Phases match by trimmed name per board (new names are appended). A node without a
-// phase leaves its card's phase alone (a new/moved card goes to the board's
-// active phase, else its first planned one, so it can be picked).
+// instead). Phases match by trimmed name per board. New phases are ordered by the
+// dependencies between phases and inserted after the board's last done/active
+// phase (before any planned ones, but after any existing phase they depend on);
+// a board with no active phase gets its first phase after that point activated.
+// A node without a phase leaves its card's phase alone (a new/moved card goes to
+// the board's active phase, else its first planned one, so it can be picked).
 
 export type DiffField = 'title' | 'requirements' | 'subtasks' | 'tag' | 'phase' | 'depends_on' | 'board';
 
@@ -308,8 +312,12 @@ export interface DiffUpdate {
 
 export interface BoardDiff {
   board_id: string;
-  /** New phases, appended after the board's existing ones in this order. */
-  phases: { name: string; position: number }[];
+  /** New phases in creation order: `position` is the resulting 1-based slot, `after` the phase right before it (null: first). */
+  phases: { name: string; position: number; after: string | null }[];
+  /** The phase this commit activates (the board has no active phase), or null. */
+  activate: string | null;
+  /** The board's active phase after this commit, or null (then every card shows). */
+  active: string | null;
   create: { node_id: string; title: string; phase: string | null }[];
   update: DiffUpdate[];
   /** Removed nodes whose card is still in backlog/queued (and not blocked). */
@@ -406,7 +414,7 @@ function planCommit(db: DB, draft: PlanDraft): CommitPlan {
   const boardDiff = (id: string) => {
     let b = byBoard.get(id);
     if (!b) {
-      b = { board_id: id, phases: [], create: [], update: [], delete: [], kept: [], locked: [] };
+      b = { board_id: id, phases: [], activate: null, active: null, create: [], update: [], delete: [], kept: [], locked: [] };
       byBoard.set(id, b);
     }
     return b;
@@ -458,24 +466,20 @@ function planCommit(db: DB, draft: PlanDraft): CommitPlan {
   }
 
   // New phases: names that created/re-phased/moved cards need but their board lacks, first appearance in column order.
-  const known = new Map<string, Set<string>>();
-  const nextPos = new Map<string, number>();
+  const fresh = new Map<string, string[]>();
   for (const n of order) {
     const name = phaseOf(n);
     const fields = updates.get(n.id);
     if (!name || !(creates.has(n.id) || fields?.includes('phase') || fields?.includes('board'))) continue;
-    if (!known.has(n.board_id)) {
-      const existing = boardPhases(db, n.board_id);
-      known.set(n.board_id, new Set(existing.map((p) => p.title.trim())));
-      nextPos.set(n.board_id, existing.reduce((m, p) => Math.max(m, p.position), 0));
-    }
-    const names = known.get(n.board_id)!;
-    if (names.has(name)) continue;
-    names.add(name);
-    const position = nextPos.get(n.board_id)! + 1;
-    nextPos.set(n.board_id, position);
-    boardDiff(n.board_id).phases.push({ name, position });
+    if (!fresh.has(n.board_id)) fresh.set(n.board_id, []);
+    const names = fresh.get(n.board_id)!;
+    if (!names.includes(name) && !boardPhases(db, n.board_id).some((p) => p.title.trim() === name)) names.push(name);
   }
+  for (const [boardId, names] of fresh) {
+    if (names.length) placePhases(boardDiff(boardId), boardPhases(db, boardId), names, phaseDependencies(nodes, edges, boardId));
+  }
+
+  for (const b of byBoard.values()) b.active = b.activate ?? getActivePhase(db, b.board_id)?.title.trim() ?? null;
 
   const rank = new Map(ctx.boards.map((b, i) => [b.id, i]));
   const boards = [...byBoard.values()].sort(
@@ -491,6 +495,27 @@ function planCommit(db: DB, draft: PlanDraft): CommitPlan {
     planCards,
     cardToNode,
   };
+}
+
+/**
+ * Where a board's new phases go: in dependency order (plan order on a cycle), after
+ * the last done/active phase and after any existing phase they depend on. Fills
+ * `b.phases` with resulting positions and `b.activate` when nothing is active.
+ */
+function placePhases(b: BoardDiff, existing: Phase[], names: string[], deps: Map<string, Set<string>>): void {
+  const final = existing.map((p) => ({ name: p.title.trim(), status: p.status as string, isNew: false }));
+  const anchor = final.reduce((m, p, i) => (p.status === 'planned' ? m : i + 1), 0);
+  let slot = anchor;
+  for (const name of orderPhases(names, deps) ?? names) {
+    for (const d of deps.get(name) ?? []) {
+      const i = final.findIndex((p) => !p.isNew && p.name === d);
+      if (i >= 0) slot = Math.max(slot, i + 1);
+    }
+    final.splice(slot, 0, { name, status: 'planned', isNew: true });
+    slot++;
+  }
+  b.phases = final.flatMap((p, i) => (p.isNew ? [{ name: p.name, position: i + 1, after: final[i - 1]?.name ?? null }] : []));
+  if (!existing.some((p) => p.status === 'active')) b.activate = final[anchor]?.name ?? null;
 }
 
 /** Dry run: what commitDraft would do, per board, plus the validation errors that would block it. */
@@ -532,15 +557,18 @@ export function commitDraft(db: DB, id: string, expectedVersion: number): Commit
     const boards = new Set<string>();
     const moved: CommitResult['moved'] = [];
 
-    // phases: existing by trimmed name (first by position), then the new ones appended
+    // phases: existing by trimmed name (first by position), then the new ones inserted at their diff positions
     const phaseIds = new Map<string, string>();
     const phaseKey = (board: string, name: string) => `${board}\u0000${name}`;
     for (const b of plan.diff.boards) {
       for (const p of boardPhases(db, b.board_id).reverse()) phaseIds.set(phaseKey(b.board_id, p.title.trim()), p.id);
       for (const p of b.phases) {
-        phaseIds.set(phaseKey(b.board_id, p.name), createPhase(db, b.board_id, p.name).id);
+        const phase = createPhase(db, b.board_id, p.name, { goal: `${draft.title} · ${p.name}` });
+        updatePhase(db, phase.id, { position: p.position });
+        phaseIds.set(phaseKey(b.board_id, p.name), phase.id);
         boards.add(b.board_id);
       }
+      if (b.activate) updatePhase(db, phaseIds.get(phaseKey(b.board_id, b.activate))!, { status: 'active' });
     }
     const phaseFor = (n: PlanNode) => {
       const name = phaseOf(n);
