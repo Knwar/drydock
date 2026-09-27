@@ -306,6 +306,10 @@ describe('wait-time DB readers', () => {
   };
 
   it('scopes needs_you and blockers to a workspace + its verticals, and by phase', (t) => {
+    // Freeze the clock: board.ts stamps blocker events with its own Date.now(),
+    // and the window ends at `now`. On a real clock a millisecond tick between
+    // reading `now` and raiseBlocker put the blockers after `to`, outside the window.
+    t.mock.timers.enable({ apis: ['Date'], now: T });
     const { db, ws, v, other, phase, a, b, c } = setup(t);
     const s = wired(db);
     const now = Date.now();
@@ -331,6 +335,8 @@ describe('wait-time DB readers', () => {
     assert.equal(w.needsYou.duration.count, 1);
     assert.equal(w.blocked.count, 2);
     assert.equal(w.blocked.resolution.count, 1);
+    // boundary: blockers raised (and B resolved) at exactly `to` still count
+    assert.ok(loadBlockers(db, { projectIds: [ws.id] }).every((x) => x.from === now));
     assert.equal(w.waiting.count, 2); // ws needs_you + blocker on A
     assert.deepEqual(w.waiting.blockers.map((x) => x.task_id), [a.id]);
     assert.deepEqual(w.waiting.needsYou.map((x) => x.project_id), [ws.id]);
