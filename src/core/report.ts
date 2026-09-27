@@ -14,18 +14,20 @@
  *    not change the colour.
  *  - The reason is the schedule's reason (+ the blocker note).
  * Overall RAG: the worst RAG of the ACTIVE phases, ordered
- *    red > amber > grey > green > done
- * (an active phase we can't forecast keeps the report from claiming green).
+ *    red > amber > green > grey > done
+ * so it is grey only when no active phase can be forecast. When any active
+ * phase has no target date, the reason adds "N active phase(s) have no target".
  * No active phase → grey.
  *
- * Range: [from, to] epoch ms; the default is the last 7 days in the tz (today
- * and the 6 days before it, from the start of the first day to now).
+ * Range: [from, to] epoch ms; the default is the last 7 days in the tz (the
+ * end's day and the 6 days before it, from the start of the first day). `to`
+ * defaults to now; `from` to the start of the day 6 days before `to`.
  */
 import type { DB } from './db.js';
 import { addDays, dayKey, deriveCards, flowFromDerived, loadCardHistories, startOfDay } from './metrics.js';
 import { qualityFromDerived } from './quality.js';
 import { waitMetrics } from './wait-time.js';
-import { costMetrics, PLACEHOLDER_NOTE, type CostBudget } from './cost.js';
+import { costMetrics, type CostBudget } from './cost.js';
 import { listDecisions, listRisks, workspaceOf, type Decision, type Listed, type Risk } from './decisions.js';
 import { schedule, type ScheduleStatus } from './schedule.js';
 import type { Lane, PhaseStatus } from './types.js';
@@ -42,7 +44,7 @@ export const RAG_OF: Record<ScheduleStatus, Rag> = {
 };
 
 /** Worst first. */
-export const RAG_SEVERITY: Rag[] = ['red', 'amber', 'grey', 'green', 'done'];
+export const RAG_SEVERITY: Rag[] = ['red', 'amber', 'green', 'grey', 'done'];
 
 export const DEFAULT_REPORT_DAYS = 7;
 export const NEXT_MILESTONE_DAYS = 14;
@@ -89,7 +91,7 @@ export interface ReportInput {
   flow: { throughput: number; cycleP50: number | null; cycleP85: number | null };
   quality: { firstPassRate: number | null; reviewed: number };
   wait: { needsYouMs: number; needsYouCount: number };
-  cost: { total: number; runs: number; placeholder: boolean; caveats: string[]; budgets: CostBudget[] };
+  cost: { total: number; runs: number; placeholder: boolean; caveats: string[]; budgets: CostBudget[]; tokenBasisChangedAt: number | null };
   risks: Listed<Risk>[];
   decisions: Listed<Decision>[];
 }
@@ -140,6 +142,7 @@ export interface Report {
   next: {
     queued: ReportCard[];
     in_progress: ReportCard[];
+    in_review: ReportCard[];
     milestones: { id: string; title: string; date: string; board: string; phase: string | null }[];
   };
   metrics: {
@@ -152,7 +155,10 @@ export interface Report {
       runs: number;
       placeholder_prices: boolean;
       budgets: { phase_id: string; phase: string; budget_usd: number; actual_usd: number; projected_usd: number | null; status: 'over' | 'projected_over' | 'ok' }[];
+      /** The cost module's caveats, as sent. */
       caveats: string[];
+      /** The same in plain language (placeholder prices first), for people. */
+      notes: string[];
     };
   };
   risks: {
@@ -173,16 +179,43 @@ export function phaseRag(status: ScheduleStatus, openBlockers: number): Rag {
   return rag === 'green' && openBlockers > 0 ? 'amber' : rag;
 }
 
-/** The worst RAG of the active phases (grey with none). */
-export function overallRag(phases: Pick<ReportPhase, 'phase_status' | 'rag' | 'title'>[]): { rag: Rag; reason: string } {
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** The worst RAG of the active phases (grey with none), noting active phases without a target. */
+export function overallRag(
+  phases: Pick<ReportPhase, 'phase_status' | 'rag' | 'title' | 'target_date'>[],
+): { rag: Rag; reason: string } {
   const active = phases.filter((p) => p.phase_status === 'active');
   if (!active.length) return { rag: 'grey', reason: 'no active phase' };
   const worst = [...active].sort((a, b) => RAG_SEVERITY.indexOf(a.rag) - RAG_SEVERITY.indexOf(b.rag))[0];
   const same = active.filter((p) => p.rag === worst.rag).map((p) => p.title);
-  return { rag: worst.rag, reason: `worst active phase${same.length > 1 ? 's' : ''}: ${same.join(', ')}` };
+  const untargeted = active.filter((p) => p.target_date === null).length;
+  const note = untargeted ? `; ${untargeted === 1 ? '1 active phase has' : `${untargeted} active phases have`} no target` : '';
+  return { rag: worst.rag, reason: `worst active phase${same.length > 1 ? 's' : ''}: ${same.join(', ')}${note}` };
 }
 
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** 3 Aug (a YYYY-MM-DD day). */
+const shortDay = (day: string) => `${Number(day.slice(8, 10))} ${MONTHS[Number(day.slice(5, 7)) - 1]}`;
+
+/**
+ * The cost caveats in plain language. Mirrors the Metrics view's cost notes
+ * (src/overlay/app.js mxCostNotes): keep the two in step. Unknown caveats pass
+ * through as sent. `since` = the day token counts switched basis (null = never).
+ */
+export function costNotes(placeholder: boolean, caveats: string[], since: string | null): string[] {
+  const s = since === null ? null : shortDay(since);
+  const notes = placeholder ? ['Prices are placeholders: set your rates in Settings → Prices'] : [];
+  for (const raw of caveats) {
+    if (raw.startsWith('output tokens come from transcripts')) notes.push('Output tokens are undercounted, so costs read low');
+    else if (raw.startsWith('estimated cost ('))
+      notes.push(s ? `Costs before ${s} are estimates` : 'These costs are estimates (no run has a token breakdown yet)');
+    else if (raw.startsWith('totals.tokens and estimated.tokens include'))
+      notes.push(s ? `Token totals before ${s} are roughly double-counted` : 'Token totals are roughly double-counted');
+    else notes.push(raw);
+  }
+  return notes;
+}
 
 /** Shape the modules' outputs into the report (pure). */
 export function buildReport(input: ReportInput): Report {
@@ -280,6 +313,7 @@ export function buildReport(input: ReportInput): Report {
     next: {
       queued: input.cards.filter((c) => c.lane === 'queued').map(card),
       in_progress: input.cards.filter((c) => c.lane === 'in_progress').map(card),
+      in_review: input.cards.filter((c) => c.lane === 'in_review').map(card),
       milestones: input.milestones
         .filter((m) => m.date >= input.today && m.date <= lastMilestoneDay)
         .sort((a, b) => a.date.localeCompare(b.date))
@@ -308,7 +342,12 @@ export function buildReport(input: ReportInput): Report {
         runs: input.cost.runs,
         placeholder_prices: input.cost.placeholder,
         budgets,
-        caveats: input.cost.placeholder ? [PLACEHOLDER_NOTE, ...input.cost.caveats] : input.cost.caveats,
+        caveats: input.cost.caveats,
+        notes: costNotes(
+          input.cost.placeholder,
+          input.cost.caveats,
+          input.cost.tokenBasisChangedAt === null ? null : dayKey(input.cost.tokenBasisChangedAt, range.tz),
+        ),
       },
     },
     risks: {
@@ -326,17 +365,16 @@ export function buildReport(input: ReportInput): Report {
 
 export class ReportParamError extends Error {}
 
-/** The default range: the start of the day 6 days before today (in tz) → now. */
-export function defaultRange(now: number, tz: string, days = DEFAULT_REPORT_DAYS): { from: number; to: number } {
-  return { from: startOfDay(addDays(dayKey(now, tz), -(days - 1)), tz), to: now };
+/** The default range ending at `to` (default now): from the start of the day 6 days before `to`'s day (in tz). */
+export function defaultRange(to: number, tz: string, days = DEFAULT_REPORT_DAYS): { from: number; to: number } {
+  return { from: startOfDay(addDays(dayKey(to, tz), -(days - 1)), tz), to };
 }
 
 /** Gather every module's output for `projectId` (+ its verticals) over [from, to] and build the report. */
 export function loadReport(db: DB, projectId: string, opts: { tz: string; now: number; from?: number; to?: number }): Report {
   const { tz, now } = opts;
-  const def = defaultRange(now, tz);
-  const from = opts.from ?? def.from;
-  const to = opts.to ?? def.to;
+  const to = opts.to ?? now;
+  const from = opts.from ?? defaultRange(to, tz).from;
   if (from > to) throw new ReportParamError('from must be <= to');
   const ws = workspaceOf(db, projectId);
   const names = db.prepare('SELECT id, name FROM projects WHERE id = ? OR parent_id = ? ORDER BY created_at, rowid').all(projectId, projectId) as {
@@ -369,7 +407,7 @@ export function loadReport(db: DB, projectId: string, opts: { tz: string; now: n
     flow: { throughput: flow.throughput.total, cycleP50: flow.cycleTime.p50, cycleP85: flow.cycleTime.p85 },
     quality: { firstPassRate: quality.totals.firstPassRate, reviewed: quality.totals.reviewed },
     wait: { needsYouMs: wait.needsYou.totalMs, needsYouCount: wait.needsYou.count },
-    cost: { total: cost.totals.cost, runs: cost.totals.runs, placeholder: cost.prices.placeholder, caveats: cost.caveats, budgets: cost.budgets },
+    cost: { total: cost.totals.cost, runs: cost.totals.runs, placeholder: cost.prices.placeholder, caveats: cost.caveats, budgets: cost.budgets, tokenBasisChangedAt: cost.tokenBasisChangedAt },
     risks: listRisks(db, projectId),
     decisions: listDecisions(db, projectId),
   });
@@ -390,16 +428,26 @@ export function fmtSpan(ms: number | null): string {
 }
 
 const money = (usd: number) => `$${usd.toFixed(2)}`;
-/** One line of plain text: no newlines; table cells also escape pipes. */
+/** One line of plain text: no newlines. */
 const line = (s: string) => s.replace(/\s*\n\s*/g, ' ').trim();
-const cell = (s: string) => line(s).replace(/\|/g, '\\|');
+/**
+ * User text as inert Markdown on one line: backslash-escapes the inline syntax
+ * (emphasis, code, links/images, HTML, headings, quotes, tables, entities) and a
+ * leading list marker (1. / - / +), so a title can't restyle or restructure the page.
+ */
+export const mdEscape = (s: string) =>
+  line(s)
+    .replace(/[\\`*_[\]()<>#|~&!]/g, '\\$&')
+    .replace(/^(\d+)\./, '$1\\.')
+    .replace(/^([-+=])/, '\\$1');
+const esc = mdEscape;
 
 /** The report as Markdown: headings, a phase table, bullet lists. */
 export function reportMarkdown(r: Report): string {
   const out: string[] = [];
   const title = r.workspace ? `${r.workspace.name} / ${r.project.name}` : r.project.name;
-  out.push(`# Status report: ${line(title)}`, '');
-  out.push(`**${r.range.from_day} to ${r.range.to_day}** (${r.range.tz}) · Overall: **${RAG_LABEL[r.overall.rag]}** (${line(r.overall.reason)})`, '');
+  out.push(`# Status report: ${esc(title)}`, '');
+  out.push(`**${r.range.from_day} to ${r.range.to_day}** (${r.range.tz}) · Overall: **${RAG_LABEL[r.overall.rag]}** (${esc(r.overall.reason)})`, '');
 
   out.push('## Phases', '');
   if (!r.phases.length) out.push('_No phases._', '');
@@ -409,12 +457,12 @@ export function reportMarkdown(r: Report): string {
     out.push(`|${multi ? ' --- |' : ''} --- | --- | --- | --- | --- |`);
     for (const p of r.phases)
       out.push(
-        `| ${multi ? `${cell(p.board)} | ` : ''}${cell(p.title)} | ${RAG_LABEL[p.rag]} | ${p.target_date ?? '-'} | ${p.remaining}/${p.total} | ${cell(p.reason)} |`,
+        `| ${multi ? `${esc(p.board)} | ` : ''}${esc(p.title)} | ${RAG_LABEL[p.rag]} | ${p.target_date ?? '-'} | ${p.remaining}/${p.total} | ${esc(p.reason)} |`,
       );
     out.push('');
     const waits = r.phases.flatMap((p) => [
-      ...p.blockers.map((b) => `- Blocked in ${line(p.title)}: ${line(b.title)}${b.reason ? ` (${line(b.reason)})` : ''}`),
-      ...p.needs_you.map((n) => `- Waiting on you in ${line(p.title)}: ${line(n.title)}${n.reason ? ` (${line(n.reason)})` : ''}`),
+      ...p.blockers.map((b) => `- Blocked in ${esc(p.title)}: ${esc(b.title)}${b.reason ? ` (${esc(b.reason)})` : ''}`),
+      ...p.needs_you.map((n) => `- Waiting on you in ${esc(p.title)}: ${esc(n.title)}${n.reason ? ` (${esc(n.reason)})` : ''}`),
     ]);
     if (waits.length) out.push(...waits, '');
   }
@@ -422,17 +470,17 @@ export function reportMarkdown(r: Report): string {
   const unphased = r.blockers.filter((b) => b.phase_id === null);
   if (unphased.length) {
     out.push('## Blockers (no phase)', '');
-    for (const b of unphased) out.push(`- ${line(b.title)} [${line(b.board)}]${b.reason ? `: ${line(b.reason)}` : ''}`);
+    for (const b of unphased) out.push(`- ${esc(b.title)} [${esc(b.board)}]${b.reason ? `: ${esc(b.reason)}` : ''}`);
     out.push('');
   }
 
   out.push(`## Shipped (${r.shipped.total})`, '');
   if (!r.shipped.total) out.push('_Nothing shipped in this range._', '');
   for (const b of r.shipped.boards) {
-    out.push(`### ${line(b.board)}`, '');
+    out.push(`### ${esc(b.board)}`, '');
     for (const p of b.phases) {
-      out.push(`- **${line(p.phase ?? 'No phase')}**`);
-      for (const c of p.cards) out.push(`  - ${line(c.title)}`);
+      out.push(`- **${esc(p.phase ?? 'No phase')}**`);
+      for (const c of p.cards) out.push(`  - ${esc(c.title)}`);
     }
     out.push('');
   }
@@ -441,14 +489,15 @@ export function reportMarkdown(r: Report): string {
   const next = (label: string, cards: ReportCard[]) => {
     out.push(`**${label} (${cards.length})**`, '');
     if (!cards.length) out.push('- none');
-    for (const c of cards) out.push(`- ${line(c.title)} [${line(c.board)}${c.phase ? ` · ${line(c.phase)}` : ''}]`);
+    for (const c of cards) out.push(`- ${esc(c.title)} [${esc(c.board)}${c.phase ? ` · ${esc(c.phase)}` : ''}]`);
     out.push('');
   };
   next('In progress', r.next.in_progress);
+  next('In review', r.next.in_review);
   next('Queued', r.next.queued);
   out.push(`**Milestones in the next ${NEXT_MILESTONE_DAYS} days (${r.next.milestones.length})**`, '');
   if (!r.next.milestones.length) out.push('- none');
-  for (const m of r.next.milestones) out.push(`- ${m.date}: ${line(m.title)} [${line(m.board)}${m.phase ? ` · ${line(m.phase)}` : ''}]`);
+  for (const m of r.next.milestones) out.push(`- ${m.date}: ${esc(m.title)} [${esc(m.board)}${m.phase ? ` · ${esc(m.phase)}` : ''}]`);
   out.push('');
 
   const m = r.metrics;
@@ -464,26 +513,26 @@ export function reportMarkdown(r: Report): string {
   out.push(`- Cost: ${money(m.cost.total_usd)} over ${plural(m.cost.runs, 'run')}${m.cost.placeholder_prices ? ' (placeholder prices)' : ''}`);
   for (const b of m.cost.budgets)
     out.push(
-      `  - Budget ${line(b.phase)}: ${money(b.actual_usd)} of ${money(b.budget_usd)}${b.projected_usd === null ? '' : `, projected ${money(b.projected_usd)}`} (${b.status === 'over' ? 'over budget' : b.status === 'projected_over' ? 'projected over budget' : 'on budget'})`,
+      `  - Budget ${esc(b.phase)}: ${money(b.actual_usd)} of ${money(b.budget_usd)}${b.projected_usd === null ? '' : `, projected ${money(b.projected_usd)}`} (${b.status === 'over' ? 'over budget' : b.status === 'projected_over' ? 'projected over budget' : 'on budget'})`,
     );
-  if (m.cost.caveats.length) {
-    out.push('', '_Cost caveats:_', '');
-    for (const c of m.cost.caveats) out.push(`- _${line(c)}_`);
+  if (m.cost.notes.length) {
+    out.push('', '_Cost notes:_', '');
+    for (const c of m.cost.notes) out.push(`- ${esc(c)}`);
   }
   out.push('');
 
   out.push('## Risks', '');
   if (!r.risks.open.length && !r.risks.closed.length) out.push('_No open risks._', '');
   for (const x of r.risks.open)
-    out.push(`- **${x.score}** ${line(x.title)} (${x.status}${x.owner ? `, owner ${line(x.owner)}` : ''})${x.mitigation ? `: ${line(x.mitigation)}` : ''}`);
-  for (const x of r.risks.closed) out.push(`- ${x.status === 'occurred' ? 'Occurred' : 'Closed'}: ${line(x.title)}`);
+    out.push(`- **${x.score}** ${esc(x.title)} (${x.status}${x.owner ? `, owner ${esc(x.owner)}` : ''})${x.mitigation ? `: ${esc(x.mitigation)}` : ''}`);
+  for (const x of r.risks.closed) out.push(`- ${x.status === 'occurred' ? 'Occurred' : 'Closed'}: ${esc(x.title)}`);
   if (r.risks.open.length || r.risks.closed.length) out.push('');
 
   out.push('## Decisions', '');
   if (!r.decisions.made.length && !r.decisions.superseded.length) out.push('_No decisions in this range._', '');
   for (const d of r.decisions.made)
-    out.push(`- ${dayKey(d.decided_at, r.range.tz)}: **${line(d.title)}**: ${line(d.decision)}${d.status === 'superseded' ? ' (since superseded)' : ''}`);
-  for (const d of r.decisions.superseded) out.push(`- Superseded: ${line(d.title)}`);
+    out.push(`- ${dayKey(d.decided_at, r.range.tz)}: **${esc(d.title)}**: ${esc(d.decision)}${d.status === 'superseded' ? ' (since superseded)' : ''}`);
+  for (const d of r.decisions.superseded) out.push(`- Superseded: ${esc(d.title)}`);
   if (r.decisions.made.length || r.decisions.superseded.length) out.push('');
 
   return `${out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`;

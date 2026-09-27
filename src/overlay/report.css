@@ -72,13 +72,14 @@ table.rp-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .rp-tile-label { font-size: 12px; color: var(--dim); }
 .rp-tile-value { font-family: var(--mx-mono); font-size: 22px; font-weight: 600; margin-top: 2px; }
 .rp-tile-note { font-size: 12px; color: var(--dim); margin-top: 2px; }
+.rp-manual { margin: 0; max-height: 320px; overflow: auto; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-bg); font: 12px/1.5 var(--mx-mono); white-space: pre-wrap; }
 .rp-caveats { margin-top: 10px; font-size: 12px; color: var(--dim); }
 
 @media print {
   :root { --bg: #fff; --card-bg: #fff; --text: #111; --dim: #555; --line: #ccc; --accent: #1f7a5a; --amber: #8a5a00; --red: #a3303b; --lane-bg: transparent; }
   body { font-size: 11.5pt; }
   .rp { max-width: none; padding: 0; gap: 16px; }
-  .rp-actions, button, .rp-btn { display: none !important; }
+  .rp-actions, button, .rp-btn, .rp-manual { display: none !important; }
   section { break-inside: avoid-page; }
   h2, h3 { break-after: avoid; }
   tr, li, .rp-tile { break-inside: avoid; }

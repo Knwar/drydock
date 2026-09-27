@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { buildReport, fmtSpan, overallRag, phaseRag, reportMarkdown, type ReportInput, type ReportPhaseInput } from './report.js';
+import { buildReport, costNotes, fmtSpan, mdEscape, overallRag, phaseRag, reportMarkdown, type ReportInput, type ReportPhaseInput } from './report.js';
 import type { ScheduleStatus } from './schedule.js';
 
 const H = 3_600_000;
@@ -58,7 +58,8 @@ function input(over: Partial<ReportInput> = {}): ReportInput {
       total: 12.5,
       runs: 6,
       placeholder: true,
-      caveats: ['output undercounts'],
+      caveats: ['output tokens come from transcripts: ...', 'something new'],
+      tokenBasisChangedAt: Date.UTC(2026, 8, 3, 10),
       budgets: [
         { phase_id: 'a', title: 'Phase a', status: 'active', budget: 10, actual: 12, remainingCards: 2, projected: 15, overBudget: true, projectedOverBudget: true },
         { phase_id: 'b', title: 'Phase b', status: 'active', budget: null, actual: 3, remainingCards: 1, projected: null, overBudget: false, projectedOverBudget: false },
@@ -91,17 +92,23 @@ describe('report RAG rules', () => {
     assert.equal(phaseRag('unknown', 1), 'grey');
     assert.equal(phaseRag('complete', 1), 'done');
   });
-  it('overall is the worst active phase (red > amber > grey > green > done)', () => {
-    const p = (title: string, rag: any, phase_status: any = 'active') => ({ title, rag, phase_status });
+  it('overall is the worst active phase (red > amber > green > grey > done)', () => {
+    const p = (title: string, rag: any, phase_status: any = 'active') => ({ title, rag, phase_status, target_date: '2026-10-10' });
     assert.deepEqual(overallRag([]), { rag: 'grey', reason: 'no active phase' });
     assert.equal(overallRag([p('x', 'red', 'done'), p('y', 'green')]).rag, 'green', 'non-active phases do not count');
     assert.equal(overallRag([p('x', 'green'), p('y', 'amber'), p('z', 'done')]).rag, 'amber');
-    assert.equal(overallRag([p('x', 'green'), p('y', 'grey')]).rag, 'grey');
+    assert.equal(overallRag([p('x', 'green'), p('y', 'grey')]).rag, 'green', 'grey only when nothing active can be forecast');
+    assert.equal(overallRag([p('x', 'grey'), p('y', 'done')]).rag, 'grey');
+    assert.equal(overallRag([p('x', 'amber'), p('y', 'grey')]).rag, 'amber');
     assert.equal(overallRag([p('x', 'amber'), p('y', 'red'), p('z', 'grey')]).rag, 'red');
     assert.equal(overallRag([p('x', 'done'), p('y', 'green')]).rag, 'green');
     assert.equal(overallRag([p('x', 'done')]).rag, 'done');
     assert.deepEqual(overallRag([p('x', 'amber'), p('y', 'amber'), p('z', 'green')]), { rag: 'amber', reason: 'worst active phases: x, y' });
     assert.equal(overallRag([p('x', 'red', 'planned')]).reason, 'no active phase');
+    const untargeted = (title: string, rag: any) => ({ ...p(title, rag), target_date: null });
+    assert.deepEqual(overallRag([p('x', 'green'), untargeted('y', 'grey')]), { rag: 'green', reason: 'worst active phase: x; 1 active phase has no target' });
+    assert.deepEqual(overallRag([untargeted('x', 'grey'), untargeted('y', 'grey')]), { rag: 'grey', reason: 'worst active phases: x, y; 2 active phases have no target' });
+    assert.equal(overallRag([p('x', 'green'), { ...untargeted('y', 'grey'), phase_status: 'planned' as const }]).reason, 'worst active phase: x', 'only active phases count');
   });
 });
 
@@ -133,6 +140,7 @@ describe('buildReport', () => {
 
     assert.deepEqual(r.next.queued.map((c) => [c.id, c.board, c.phase]), [['k5', 'web', 'Phase b']]);
     assert.deepEqual(r.next.in_progress.map((c) => c.id), ['k6']);
+    assert.deepEqual(r.next.in_review.map((c) => [c.id, c.phase]), [['k7', 'Phase a']]);
     assert.deepEqual(r.next.milestones.map((m) => [m.title, m.phase]), [['Beta', 'Phase a']], 'next 14 days, from today');
 
     assert.equal(r.metrics.throughput, 3);
@@ -141,8 +149,12 @@ describe('buildReport', () => {
     assert.deepEqual(r.metrics.waiting_on_you, { total_ms: 3 * H, count: 2, now: { count: 1, longest_ms: 2 * H } });
     assert.equal(r.metrics.cost.total_usd, 12.5);
     assert.deepEqual(r.metrics.cost.budgets.map((b) => [b.phase, b.status]), [['Phase a', 'over']], 'only phases with a budget');
-    assert.match(r.metrics.cost.caveats[0], /Placeholder rates/, 'placeholder prices add the note');
-    assert.equal(r.metrics.cost.caveats[1], 'output undercounts');
+    assert.deepEqual(r.metrics.cost.caveats, ['output tokens come from transcripts: ...', 'something new'], 'the JSON keeps the raw caveats');
+    assert.deepEqual(r.metrics.cost.notes, [
+      'Prices are placeholders: set your rates in Settings → Prices',
+      'Output tokens are undercounted, so costs read low',
+      'something new',
+    ]);
 
     assert.deepEqual(r.risks.open.map((x) => x.id), ['r1', 'r2'], 'open + mitigating, by score');
     assert.deepEqual(r.risks.closed.map((x) => x.id), ['r3'], 'closed/occurred in range');
@@ -179,16 +191,19 @@ describe('reportMarkdown', () => {
     assert.match(md, /\*\*2026-09-20 to 2026-09-26\*\* \(UTC\) · Overall: \*\*Amber\*\*/);
     assert.match(md, /\| Board \| Phase \| RAG \| Target \| Cards left \| Reason \|/);
     assert.match(md, /\| shop \| Phase a \| Amber \| 2026-10-10 \| 2\/4 \| reason a; 1 open blocker \|/);
-    assert.match(md, /- Blocked in Phase a: Doing one \(which \| one\)/);
+    assert.match(md, /- Blocked in Phase a: Doing one \(which \\\| one\)/);
     assert.match(md, /- Waiting on you in Phase a: Doing one \(permission prompt\)/);
     assert.match(md, /## Shipped \(3\)\n\n### shop\n\n- \*\*Phase a\*\*\n {2}- Shipped ws a\n- \*\*No phase\*\*\n {2}- Shipped ws none/);
     assert.match(md, /\*\*Queued \(1\)\*\*\n\n- Queued one \[web · Phase b\]/);
     assert.match(md, /- 2026-10-01: Beta \[shop · Phase a\]/);
+    assert.match(md, /\*\*In review \(1\)\*\*\n\n- Reviewing \[shop · Phase a\]/);
     assert.match(md, /- Cycle time: p50 5h, p85 2d/);
+    assert.match(md, /_Cost notes:_\n\n- Prices are placeholders: set your rates in Settings → Prices\n- Output tokens are undercounted, so costs read low\n/);
+    assert.doesNotMatch(md, /PUT \/settings|transcripts/, 'no API routes or raw caveats');
     assert.match(md, /- First-pass review rate: 75% \(4 reviewed cards\)/);
     assert.match(md, /- Cost: \$12\.50 over 6 runs \(placeholder prices\)/);
     assert.match(md, / {2}- Budget Phase a: \$12\.00 of \$10\.00, projected \$15\.00 \(over budget\)/);
-    assert.match(md, /- \*\*20\*\* Vendor \| slip \(open, owner ada\): second vendor/);
+    assert.match(md, /- \*\*20\*\* Vendor \\\| slip \(open, owner ada\): second vendor/);
     assert.match(md, /- Closed: Closed in range/);
     assert.match(md, /- 2026-09-25: \*\*Use Stripe\*\*: Stripe for payments/);
     assert.match(md, /- Superseded: Use Adyen/);
@@ -215,6 +230,52 @@ describe('reportMarkdown', () => {
     assert.match(md, /_Nothing shipped in this range._/);
     assert.match(md, /_No open risks._/);
     assert.match(md, /_No decisions in this range._/);
+  });
+
+  it('escapes Markdown syntax in user text everywhere', () => {
+    assert.equal(mdEscape('**bold** _it_ `code` [x](y) <b> #h > q ~s~ a|b &amp; ![i]'), '\\*\\*bold\\*\\* \\_it\\_ \\`code\\` \\[x\\]\\(y\\) \\<b\\> \\#h \\> q \\~s\\~ a\\|b \\&amp; \\!\\[i\\]');
+    assert.equal(mdEscape('1. first'), '1\\. first');
+    assert.equal(mdEscape('- dash'), '\\- dash');
+    assert.equal(mdEscape('+ plus'), '\\+ plus');
+    assert.equal(mdEscape('back\\slash'), 'back\\\\slash');
+    const nasty = ['# Heading', '1. Ordered', '**Bold** `code`', '[link](http://x)', '<script>alert(1)</script>', '> quote', '- item\n## two'];
+    const md = reportMarkdown(
+      buildReport(
+        input({
+          project: { id: 'ws', name: '*shop*' },
+          phases: [phase('a', 'on_track', { title: nasty[0] })],
+          cards: nasty.map((title, i) => ({ id: `n${i}`, title, project_id: 'ws', phase_id: 'a', lane: i % 2 ? 'queued' : 'done', doneAt: NOW - H })),
+          risks: [],
+          decisions: [
+            { id: 'd1', project_id: 'ws', title: '_Use_ [Stripe]', decision: '`rm -rf` <b>', rationale: null, decided_by: null, decided_at: NOW - D, status: 'active', superseded_by: null, created_at: 0, updated_at: 0, links: [], scope: 'own' },
+          ],
+        }),
+      ),
+    );
+    assert.match(md, /^# Status report: \\\*shop\\\*\n/);
+    assert.match(md, /\| \\# Heading \| Green \|/);
+    assert.match(md, /- \*\*\\# Heading\*\*\n {2}- \\# Heading\n {2}- \\\*\\\*Bold/);
+    assert.match(md, /- 1\\\. Ordered \[shop · \\# Heading\]/);
+    assert.match(md, /- \\\[link\\\]\\\(http:\/\/x\\\) \[/);
+    assert.match(md, /\\<script\\>alert\\\(1\\\)\\<\/script\\>/);
+    assert.match(md, /- \\- item \\#\\# two/);
+    assert.match(md, /\*\*\\_Use\\_ \\\[Stripe\\\]\*\*: \\`rm -rf\\` \\<b\\>/);
+    // no raw user syntax survives on any line
+    for (const l of md.split('\n')) assert.doesNotMatch(l, /(^|[^\\])(<script|\[link\]|`rm)/, l);
+  });
+
+  it('cost notes mirror the Metrics view (plain language, the basis-change day)', () => {
+    const raw = ['estimated cost (3 runs without a token breakdown): ...', 'totals.tokens and estimated.tokens include ...', 'output tokens come from transcripts: ...'];
+    assert.deepEqual(costNotes(false, raw, '2026-09-03'), [
+      'Costs before 3 Sep are estimates',
+      'Token totals before 3 Sep are roughly double-counted',
+      'Output tokens are undercounted, so costs read low',
+    ]);
+    assert.deepEqual(costNotes(true, raw.slice(0, 2), null), [
+      'Prices are placeholders: set your rates in Settings → Prices',
+      'These costs are estimates (no run has a token breakdown yet)',
+      'Token totals are roughly double-counted',
+    ]);
   });
 
   it('formats spans', () => {

@@ -68,6 +68,8 @@ describe('/report', () => {
     const doing = await task(wsId, 'Refunds', { phase_id: late });
     await ok('POST', `/task/${doing}/move`, { lane: 'in_progress' });
     await ok('POST', `/task/${doing}/block`, { reason: 'Stripe or Adyen?' });
+    const reviewing = await task(webId, 'Filters', { phase_id: open });
+    await ok('POST', `/task/${reviewing}/move`, { lane: 'in_review' });
     await ok('POST', '/milestones', { project_id: wsId, title: 'Beta', date: dayUTC(3), phase_id: late });
     await ok('POST', '/milestones', { project_id: wsId, title: 'GA', date: dayUTC(40) });
     await ok('POST', '/decisions', { project_id: wsId, title: 'Use Stripe', decision: 'Stripe for payments' });
@@ -98,6 +100,8 @@ describe('/report', () => {
     assert.deepEqual(r.shipped.boards.map((b: any) => b.board), ['shop', 'web']);
     assert.deepEqual(r.next.queued.map((c: any) => c.id), [queued]);
     assert.deepEqual(r.next.in_progress.map((c: any) => c.id), [doing]);
+    assert.deepEqual(r.next.in_review.map((c: any) => c.id), [reviewing]);
+    assert.ok(r.metrics.cost.notes.every((n: string) => !/\/settings|PUT /.test(n)), 'plain-language notes');
     assert.deepEqual(r.next.milestones.map((m: any) => m.title), ['Beta']);
     assert.equal(r.metrics.throughput, 2);
     assert.ok(Array.isArray(r.metrics.cost.caveats) && r.metrics.cost.caveats.length > 0);
@@ -107,6 +111,10 @@ describe('/report', () => {
     // an explicit range: 30 days back catches the old card
     const wide = await ok('GET', `/report?project=${wsId}&tz=UTC&from=${dayUTC(-29)}&to=${dayUTC(0)}`);
     assert.equal(wide.shipped.total, 3);
+    // only `to`: the 7 days ending that day
+    const back = await ok('GET', `/report?project=${wsId}&tz=UTC&to=${dayUTC(-18)}`);
+    assert.deepEqual([back.range.from_day, back.range.to_day], [dayUTC(-24), dayUTC(-18)]);
+    assert.equal(back.shipped.total, 1, 'the card done 20 days ago');
 
     // a vertical: its own phases, the workspace named
     const v = await ok('GET', `/report?project=${webId}&tz=UTC`);
@@ -123,6 +131,7 @@ describe('/report', () => {
     assert.match(md.text, /\| shop \| Checkout \| Red \|/);
     assert.match(md.text, /## Shipped \(2\)/);
     assert.match(md.text, /- Pay button/);
+    assert.match(md.text, /\*\*In review \(1\)\*\*\n\n- Filters \[web · Web UI\]/);
     assert.match(md.text, /- Blocked in Checkout: Refunds \(Stripe or Adyen\?\)/);
     assert.match(md.text, /## Decisions\n\n- \d{4}-\d\d-\d\d: \*\*Use Stripe\*\*/);
 

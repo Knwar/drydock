@@ -53,6 +53,75 @@
     for (const it of items) ul.append(render(it));
     return ul;
   }
+  // The Markdown for "Copy as Markdown", prefetched on load so the copy happens within the click.
+  let markdown = null;
+  const markdownReady = project
+    ? fetch(`/report.md?${query()}`)
+        .then((res) => (res.ok ? res.text() : Promise.reject(new Error(`HTTP ${res.status}`))))
+        .then((text) => (markdown = text))
+    : Promise.reject(new Error('no project'));
+  markdownReady.catch(() => {}); // reported on click
+
+  /** Copy without the async Clipboard API: a hidden textarea + execCommand. */
+  function execCopy(text) {
+    const ta = node('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+    document.body.append(ta);
+    ta.select();
+    let done = false;
+    try {
+      done = document.execCommand('copy');
+    } catch {
+      done = false;
+    }
+    ta.remove();
+    return done;
+  }
+  /** Last resort: show the text selected, for the user to copy. */
+  function showForManualCopy(text, status) {
+    document.getElementById('rp-manual-copy')?.remove();
+    const pre = node('pre', 'rp-manual', text);
+    pre.id = 'rp-manual-copy';
+    pre.tabIndex = 0;
+    root.querySelector('.rp-head')?.after(pre);
+    const range = document.createRange();
+    range.selectNodeContents(pre);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+    pre.focus();
+    status.textContent = `Press ${/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘C' : 'Ctrl+C'} to copy`;
+  }
+  async function copyMarkdown(status) {
+    const flash = (text) => {
+      status.textContent = text;
+      setTimeout(() => status.textContent === text && (status.textContent = ''), 2500);
+    };
+    try {
+      if (navigator.clipboard?.writeText && markdown !== null) {
+        await navigator.clipboard.writeText(markdown); // called synchronously in the click: keeps the user activation
+        return flash('Copied');
+      }
+      if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+        // not loaded yet: hand the clipboard a promise, still within the click
+        const blob = markdownReady.then((text) => new Blob([text], { type: 'text/plain' }));
+        await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+        return flash('Copied');
+      }
+    } catch {
+      /* fall through to the fallbacks */
+    }
+    let text;
+    try {
+      text = markdown ?? (await markdownReady);
+    } catch (err) {
+      return flash(`Copy failed: ${err.message}`);
+    }
+    if (execCopy(text)) return flash('Copied');
+    showForManualCopy(text, status);
+  }
+
   const cardItem = (c) => kids(node('li'), node('span', '', c.title), node('span', 'rp-meta', `  ${where(c)}`));
 
   // ---------- sections ----------
@@ -77,17 +146,7 @@
     copy.id = 'rp-copy';
     const copied = node('span', 'rp-copied');
     copied.setAttribute('role', 'status');
-    copy.onclick = async () => {
-      try {
-        const res = await fetch(`/report.md?${query()}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        await navigator.clipboard.writeText(await res.text());
-        copied.textContent = 'Copied';
-      } catch (err) {
-        copied.textContent = `Copy failed: ${err.message}`;
-      }
-      setTimeout(() => (copied.textContent = ''), 2500);
-    };
+    copy.onclick = () => copyMarkdown(copied);
     const download = node('a', 'rp-btn', 'Download .md');
     download.id = 'rp-download';
     download.href = `/report.md?${query()}`;
@@ -169,6 +228,8 @@
       'Next',
       node('h3', '', `In progress (${r.next.in_progress.length})`),
       list(r.next.in_progress, cardItem, 'None.'),
+      node('h3', '', `In review (${r.next.in_review.length})`),
+      list(r.next.in_review, cardItem, 'None.'),
       node('h3', '', `Queued (${r.next.queued.length})`),
       list(r.next.queued, cardItem, 'None.'),
       node('h3', '', `Milestones in the next 14 days (${r.next.milestones.length})`),
@@ -203,7 +264,7 @@
           '',
         )
       : null;
-    const caveats = m.cost.caveats.length ? kids(node('div', 'rp-caveats'), node('div', '', 'Cost caveats:'), list(m.cost.caveats, (c) => node('li', '', c), '')) : null;
+    const caveats = m.cost.notes.length ? kids(node('div', 'rp-caveats'), node('div', '', 'Cost notes:'), list(m.cost.notes, (c) => node('li', '', c), '')) : null;
     return section('rp-metrics', 'Metrics', tiles, budgets, caveats);
   }
 

@@ -1042,7 +1042,7 @@ function mxRenderHead() {
     status.textContent = `As of ${at} · ${mxPlural(flow.cards, 'card')} · ${mxPlural(flow.partial, 'partial history', 'partial histories')}`;
   }
   const report = node('a', 'mx-tab', 'Weekly report');
-  report.href = `/report.html?${new URLSearchParams({ project: mx.f.scope ?? mx.project })}`;
+  report.href = `/report.html?${new URLSearchParams({ project: mx.f.scope ?? mx.project, tz: mx.f.tz })}`;
   report.target = '_blank';
   report.rel = 'noopener';
   report.style.cssText = 'display:inline-flex;align-items:center;text-decoration:none';
