@@ -759,10 +759,11 @@ function mxWindowLabel() {
 // ---------- tab registry ----------
 const MX_TABS = [
   { id: 'overview', label: 'Overview', endpoints: ['flow', 'quality', 'wait', 'cost', 'forecast', 'usageBurn'], render: mxRenderOverview },
-  { id: 'flow', label: 'Flow', endpoints: ['flow', 'burn', 'forecast'], render: mxRenderFlow },
+  { id: 'flow', label: 'Flow', endpoints: ['flow', 'burn', 'burnForecast'], render: mxRenderFlow },
   // flow: the by-agent drill-down lists an agent's done cards from its points
   { id: 'quality', label: 'Quality & waiting', endpoints: ['quality', 'wait', 'flow'], render: mxRenderQuality },
-  { id: 'forecast', label: 'Forecast', endpoints: ['forecastTarget', 'forecastAll'], render: mxRenderForecast },
+  // forecastAll (the whole-workspace fallback) is fetched only when forecastTarget lacks history: see mxLoad
+  { id: 'forecast', label: 'Forecast', endpoints: ['forecastTarget'], render: mxRenderForecast },
 ];
 const mxTab = () => MX_TABS.find((t) => t.id === mx.f.tab) ?? MX_TABS[0];
 
@@ -816,6 +817,11 @@ const MX_ENDPOINTS = {
   burn: () => {
     const p = mxFocusPhase();
     return p ? ['/metrics/burn', { phase: p.id }] : null;
+  },
+  // the burn-up's cone: the whole phase, like /metrics/burn (which takes no tag / agent)
+  burnForecast: () => {
+    const p = mxFocusPhase();
+    return p ? ['/metrics/forecast', { phase: p.id }] : null;
   },
   // the Forecast tab: its target (a plan is workspace-wide, so it is asked of the workspace)
   forecastTarget: (f) => {
@@ -981,6 +987,13 @@ async function mxLoad() {
     if (rangeBtn) rangeBtn.textContent = mxWindowLabel(); // the resolved dates
   }
   await Promise.all(rest.map((k) => fetchOne(k, w)));
+  // Forecast tab: not enough history for the target → ask the whole workspace (the fallback offer)
+  const target = mx.res.forecastTarget;
+  if (seq === mx.seq && tab.id === 'forecast' && target?.state === 'ok' && target.data.status !== 'ok' && MX_ENDPOINTS.forecastAll(f)) {
+    mx.res.forecastAll = { state: 'loading' };
+    mxRenderBody();
+    await fetchOne('forecastAll', w);
+  }
 }
 
 // ---------- shell: title + tabs + filters + body ----------
@@ -1853,6 +1866,8 @@ function mxRenderFlow(host) {
 
 // Log-axis ticks, in hours.
 const MX_LOG_TICKS = [
+  [1 / 60, '1m'],
+  [2 / 60, '2m'],
   [1 / 12, '5m'],
   [0.25, '15m'],
   [0.5, '30m'],
@@ -1925,6 +1940,8 @@ function mxRenderScatter(host) {
   const y = (h) => box.B - ((Math.log(h) - lo) * (box.B - box.T)) / Math.max(1e-9, hi - lo);
   let ticks = MX_LOG_TICKS.filter(([h]) => Math.log(h) >= lo && Math.log(h) <= hi);
   while (ticks.length > 6) ticks = ticks.filter((_, i) => i % 2 === 0);
+  // a narrow range (every card about the same time): two ticks from the data range itself
+  if (ticks.length < 2) ticks = [0.25, 0.75].map((k) => Math.exp(lo + k * (hi - lo))).map((h) => [h, mxSpan(h * 3_600_000)]);
 
   const wrap = node('div', 'mx-chart');
   wrap.style.width = `${W}px`;
@@ -2026,13 +2043,18 @@ function mxRenderBurn(host) {
   const head = node('div', 'mx-panel-head');
   head.append(node('h2', '', p ? `Burn-up · ${p.title}` : 'Burn-up'));
   host.append(head);
+  if (p && (mx.f.tag || mx.f.agent)) {
+    const note = node('p', 'mx-note mx-filter-note');
+    note.append(mxInfoIcon(), node('span', '', "Burn-up covers the whole phase; Tag and Agent filters don't apply."));
+    host.append(note);
+  }
   const r = mx.res.burn ?? { state: 'loading' };
   if (r.state === 'none') return host.append(node('div', 'mx-chart-state', 'No active phase: pick a phase to see its burn-up'));
   const burn = r.state === 'ok' ? r.data : null;
   const state = mxChartState('burn', burn && !burn.scope ? 'No cards in this phase yet' : null);
   if (state) return host.append(state);
 
-  const fr = mx.res.forecast;
+  const fr = mx.res.burnForecast;
   const fcData = fr?.state === 'ok' ? fr.data : null;
   const active = burn.phase.status !== 'done';
   const fc = active && fcData?.status === 'ok' && fcData.remaining > 0 ? fcData : null;
@@ -2662,7 +2684,7 @@ function mxForecastEmpty(panel, fc, t, name) {
   const m = mx.meta;
   const box = node('div', 'mx-fc-empty');
   const scopeLabel = m && mx.f.scope !== m.workspaceId ? ` (${m.boardById.get(mx.f.scope)?.label ?? ''})` : '';
-  const what = t.kind === 'phase' ? `PHASE · ${name}` : t.kind === 'plan' ? `PLAN · ${name}` : 'WHOLE BOARD';
+  const what = t.kind === 'phase' ? `PHASE · ${name}` : t.kind === 'plan' ? `PLAN · ${name}` : m && mx.f.scope === m.workspaceId && m.boards.length > 1 ? 'WHOLE WORKSPACE' : 'WHOLE BOARD';
   box.append(node('span', 'mx-kicker', `FORECAST · ${what.toUpperCase()}${scopeLabel}`));
   box.append(
     node('h2', '', 'Not enough history yet'),
@@ -3126,6 +3148,7 @@ function renderPhaseDetail() {
 }
 
 // Phase detail: "Budget ($)" (empty = no budget), saved via PUT /phase/:id/budget on change; errors inline.
+const PD_BUDGET_MAX = 1e9; // the server's MAX_PHASE_BUDGET_USD
 let pdBudgetMsg = null; // { phase, text, error }: the last save's result, kept across re-renders
 function phaseBudgetField(p, typing) {
   const field = node('div', 'pd-budget');
@@ -3153,6 +3176,7 @@ function phaseBudgetField(p, typing) {
     if (input.validity.badInput) return fail('Enter an amount in dollars, or leave it empty for no budget');
     const v = input.value.trim() === '' ? null : Number(input.value);
     if (v !== null && (!Number.isFinite(v) || v < 0)) return fail('The budget can’t be negative');
+    if (v !== null && v > PD_BUDGET_MAX) return fail(`The budget can be at most $${PD_BUDGET_MAX.toLocaleString('en-US')}`);
     try {
       const res = await fetch(`/phase/${encodeURIComponent(p.id)}/budget`, { method: 'PUT', body: JSON.stringify({ budget_usd: v }) });
       const body = await res.json().catch(() => null);
@@ -3900,6 +3924,8 @@ const PRICE_TYPES = [
   ['cache_creation', 'Cache write'],
 ];
 const PRICE_MAX = 10_000;
+const PRICE_MAX_MODELS = 200; // the server's limits (core/cost.ts)
+const PRICE_MAX_ID = 200;
 let pricesSeq = 0;
 async function loadPrices() {
   const host = $('prices-editor');
@@ -4000,6 +4026,7 @@ function renderPrices(table, saved = false) {
       const name = r.id ? r.id.value.trim() : 'Default';
       if (r.id) {
         if (!name) bad(r.id, 'Every model needs an id');
+        else if (name.length > PRICE_MAX_ID) bad(r.id, `Model ids can be at most ${PRICE_MAX_ID} characters`);
         else if (seen.has(name.toLowerCase())) bad(r.id, `${name} is listed twice`);
         seen.add(name.toLowerCase());
       }
@@ -4012,6 +4039,7 @@ function renderPrices(table, saved = false) {
       if (r.id) models[name] = rates;
       else dflt = rates;
     }
+    if (rows.length - 1 > PRICE_MAX_MODELS) problems.push(`At most ${PRICE_MAX_MODELS} models (remove ${rows.length - 1 - PRICE_MAX_MODELS})`);
     if (problems.length) {
       err.textContent = problems[0] + (problems.length > 1 ? ` (and ${problems.length - 1} more)` : '');
       return;

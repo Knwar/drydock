@@ -1186,7 +1186,6 @@ button.mx-big:hover { color: #5dd3a8; text-decoration-color: #5dd3a8; }
 .mx-hl-chip button { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 999px; border: none; background: #5dd3a8; color: #0b0d12; font-weight: 600; cursor: pointer; }
 /* Kanban cards highlighted from a Metrics drill-down ("Open all N in Kanban"); Esc clears */
 .card.mx-hl { box-shadow: 0 0 0 2px #5dd3a8, 0 0 18px rgba(93, 211, 168, 0.25); }
-/* per-card cost line in the card modal */
 /* Metrics · Flow / Quality & waiting / Forecast tabs */
 .mx-seg-sm .mx-seg-btn { height: 30px; }
 .mx-scatter { flex: 5; }
@@ -1306,6 +1305,7 @@ button.mx-big:hover { color: #5dd3a8; text-decoration-color: #5dd3a8; }
 .st-num.pd-budget-input { width: 120px; }
 .pd-budget-msg { font-size: 12px; color: var(--dim); }
 .pd-budget-msg.error { color: #e06c75; }
+/* per-card cost line in the card modal */
 .cd-cost { display: flex; gap: 16px; font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; margin-top: 4px; }
 .cd-cost .add { color: var(--accent); }
 .cd-cost .del { color: #e06c75; }
