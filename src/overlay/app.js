@@ -3114,6 +3114,8 @@ function renderPhaseList() {
       const btn = document.createElement('button');
       btn.className = `pl-item ${esc(p.status)}${p.id === selectedPhaseId ? ' sel' : ''}`;
       btn.innerHTML = `<span class="pl-dot"></span><span class="pl-name">${esc(p.title)}</span><span class="pl-prog">${done}/${pc.length}</span>`;
+      const sched = pdSchedFor(p.id);
+      if (sched) btn.querySelector('.pl-prog').before(schedPill(sched));
       btn.onclick = () => {
         selectedPhaseId = p.id;
         renderPhaseList();
@@ -3125,6 +3127,7 @@ function renderPhaseList() {
 }
 
 function renderPhaseDetail() {
+  if (activeView === 'phases' && pdSched.phases !== phases) loadSchedule(); // a new roadmap (init/phases broadcast) or the view opened
   const detail = document.getElementById('phase-detail');
   const p = phases.find((x) => x.id === selectedPhaseId);
   if (!p) {
@@ -3143,8 +3146,11 @@ function renderPhaseDetail() {
     : '<li class="pd-card empty">no cards yet</li>';
   // a re-render (any card event) keeps what's being typed into the budget field
   const typing = document.activeElement?.id === 'pd-budget' && document.activeElement.dataset.phase === p.id ? document.activeElement.value : null;
+  const typingTarget = document.activeElement?.id === 'pd-target' && document.activeElement.dataset.phase === p.id ? document.activeElement.value : null;
   detail.innerHTML = `<div class="pd-detail"><div class="pd-detail-head"><span class="pd-detail-title">${esc(p.title)}</span><span class="pd-badge ${esc(p.status)}">${esc(p.status)}</span></div>${p.goal ? `<div class="pd-detail-goal">${esc(p.goal)}</div>` : ''}<h4>Cards ${done}/${pc.length}</h4><ul class="pd-cards">${rows}</ul></div>`;
-  detail.querySelector('.pd-detail h4').before(phaseBudgetField(p, typing));
+  const fields = node('div', 'pd-fields');
+  fields.append(phaseBudgetField(p, typing), phaseTargetField(p, typingTarget));
+  detail.querySelector('.pd-detail h4').before(fields);
 }
 
 // Phase detail: "Budget ($)" (empty = no budget), saved via PUT /phase/:id/budget on change; errors inline.
@@ -3195,6 +3201,225 @@ function phaseBudgetField(p, typing) {
       input.focus();
     });
   return field;
+}
+
+// ── Phases: target dates, schedule status (GET /metrics/schedule) and milestones ──
+// pdSched.phases is the roadmap array the schedule was loaded for: a new one (init / phases broadcast) → reload.
+let pdSched = { phases: null, project: null, byPhase: new Map(), milestones: [], allPhases: [] };
+let pdSchedSeq = 0;
+async function loadSchedule() {
+  pdSched.phases = phases;
+  const project = projectId;
+  if (!project) return;
+  const seq = ++pdSchedSeq;
+  try {
+    const res = await fetch(`/metrics/schedule?project=${encodeURIComponent(project)}&tz=${encodeURIComponent(MX_LOCAL_TZ)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    if (seq !== pdSchedSeq || project !== projectId) return; // a newer load (or another board) won
+    pdSched = { phases: pdSched.phases, project, byPhase: new Map(body.phases.map((x) => [x.id, x])), milestones: body.milestones, allPhases: body.phases };
+  } catch {
+    if (seq !== pdSchedSeq) return;
+    pdSched = { phases: pdSched.phases, project, byPhase: new Map(), milestones: [], allPhases: [] };
+  }
+  renderPhaseList();
+  renderMilestones();
+}
+const pdSchedFor = (phaseId) => (pdSched.project === projectId ? pdSched.byPhase.get(phaseId) : null);
+
+// "Tue 6 Oct" for a YYYY-MM-DD day (a calendar day: no time zone shift)
+const PD_DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const PD_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const pdDay = (d) => {
+  const t = new Date(`${d}T00:00:00Z`);
+  return `${PD_DOW[t.getUTCDay()]} ${t.getUTCDate()} ${PD_MON[t.getUTCMonth()]}`;
+};
+const SCHED_LABEL = { on_track: 'on track', at_risk: 'at risk', late: 'late', unknown: 'unknown', done: 'done' };
+
+/** Tooltip: "85% by Tue 6 Oct · target Mon 5 Oct", else what's known. */
+function schedTip(x) {
+  const parts = [];
+  if (x.status === 'done') parts.push('phase done');
+  else if (!x.target_date) parts.push('no target date');
+  else if (!x.p85) parts.push(x.status === 'late' ? `${x.remaining} card${x.remaining === 1 ? '' : 's'} left` : 'not enough history to forecast');
+  if (x.p85 && x.status !== 'done') parts.push(`85% by ${pdDay(x.p85)}`);
+  if (x.target_date) parts.push(`target ${pdDay(x.target_date)}`);
+  return parts.join(' · ');
+}
+
+function schedPill(x) {
+  const pill = node('span', `pl-sched ${x.status}`, SCHED_LABEL[x.status] ?? x.status);
+  pill.title = schedTip(x);
+  return pill;
+}
+
+// Phase detail: "Target date" (empty = none), saved via PUT /phase/:id/target on change; errors inline.
+let pdTargetMsg = null; // { phase, text, error }
+function phaseTargetField(p, typing) {
+  const field = node('div', 'pd-budget pd-target');
+  const label = node('label', 'pd-budget-label', 'Target date');
+  label.htmlFor = 'pd-target';
+  const input = node('input', 'st-num pd-target-input');
+  input.id = 'pd-target';
+  input.dataset.phase = p.id;
+  input.type = 'date';
+  input.value = typing ?? (p.target_date ?? '');
+  const sched = pdSchedFor(p.id);
+  const mine = pdTargetMsg?.phase === p.id ? pdTargetMsg : null;
+  const msg = node('span', `pd-budget-msg${mine?.error ? ' error' : ''}`, mine?.text ?? (sched ? schedTip(sched) : 'empty = no target'));
+  msg.setAttribute('role', 'status');
+  if (sched && !mine) field.append(schedPill(sched));
+  if (mine?.error) input.classList.add('bad');
+  input.onchange = async () => {
+    const v = input.value === '' ? null : input.value;
+    if (input.validity.badInput) {
+      pdTargetMsg = { phase: p.id, text: 'Enter a full date, or clear it for no target', error: true };
+      return renderPhaseDetail();
+    }
+    try {
+      const res = await fetch(`/phase/${encodeURIComponent(p.id)}/target`, { method: 'PUT', body: JSON.stringify({ target_date: v }) });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      const local = phases.find((x) => x.id === p.id);
+      if (local) local.target_date = body.target_date; // the phases broadcast follows (and reloads the schedule)
+      pdTargetMsg = { phase: p.id, text: v === null ? 'Target cleared' : 'Saved', error: false };
+    } catch (err) {
+      pdTargetMsg = { phase: p.id, text: err.message, error: true };
+    }
+    renderPhaseDetail();
+  };
+  field.prepend(label, input);
+  field.append(msg);
+  if (typing !== null) queueMicrotask(() => input.focus());
+  return field;
+}
+
+// Sidebar: the board's milestones (incl. its workspace's / verticals'), add / edit / delete.
+let msEditing = null; // milestone id being edited
+let msDraft = { title: '', date: '', phase_id: '' }; // the add form, kept across re-renders
+let msError = '';
+
+function msPhaseSelect(value) {
+  const sel = node('select', 'st-select ms-phase');
+  sel.setAttribute('aria-label', 'Phase');
+  sel.append(new Option('no phase', ''));
+  for (const ph of pdSched.allPhases ?? []) sel.append(new Option(ph.title, ph.id));
+  sel.value = value ?? '';
+  return sel;
+}
+
+async function msWrite(method, path, body) {
+  try {
+    const res = await fetch(path, { method, body: body === undefined ? undefined : JSON.stringify(body) });
+    const out = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(out?.error ?? `HTTP ${res.status}`);
+    msError = '';
+    return true;
+  } catch (err) {
+    msError = err.message;
+    renderMilestones();
+    return false;
+  }
+}
+
+function renderMilestones() {
+  let host = document.getElementById('pd-milestones');
+  if (!host) {
+    host = node('div', 'ms');
+    host.id = 'pd-milestones';
+    document.getElementById('phase-list').after(host);
+  }
+  const head = node('div', 'ms-head');
+  head.append(node('span', 'panel-heading', 'Milestones'), node('span', 'panel-sub', pdSched.milestones.length ? String(pdSched.milestones.length) : ''));
+  const list = node('div', 'ms-list');
+  const phaseTitle = (id) => (pdSched.allPhases ?? []).find((x) => x.id === id)?.title;
+  if (!pdSched.milestones.length) list.append(node('div', 'ms-empty', 'No milestones yet.'));
+  for (const m of pdSched.milestones) {
+    const row = node('div', 'ms-row');
+    row.dataset.id = m.id;
+    if (msEditing === m.id) {
+      const title = node('input', 'st-num ms-title');
+      title.value = m.title;
+      title.setAttribute('aria-label', 'Title');
+      const date = node('input', 'st-num ms-date');
+      date.type = 'date';
+      date.value = m.date;
+      date.setAttribute('aria-label', 'Date');
+      const phase = msPhaseSelect(m.phase_id);
+      const save = node('button', 'ms-btn primary', 'Save');
+      save.onclick = async () => {
+        const done = await msWrite('PATCH', `/milestones/${encodeURIComponent(m.id)}`, {
+          title: title.value,
+          date: date.value,
+          phase_id: phase.value || null,
+        });
+        if (done) {
+          msEditing = null;
+          loadSchedule();
+        }
+      };
+      const cancel = node('button', 'ms-btn', 'Cancel');
+      cancel.onclick = () => {
+        msEditing = null;
+        msError = '';
+        renderMilestones();
+      };
+      row.classList.add('editing');
+      row.append(title, date, phase, save, cancel);
+    } else {
+      const text = node('div', 'ms-main');
+      const when = node('span', 'ms-when', pdDay(m.date));
+      when.title = m.date;
+      text.append(when, node('span', 'ms-name', m.title));
+      const ph = m.phase_id ? phaseTitle(m.phase_id) : null;
+      if (ph) text.append(node('span', 'ms-ph', ph));
+      const edit = node('button', 'ms-icon', '✎');
+      edit.title = 'Edit milestone';
+      edit.setAttribute('aria-label', `Edit ${m.title}`);
+      edit.onclick = () => {
+        msEditing = m.id;
+        msError = '';
+        renderMilestones();
+      };
+      const del = node('button', 'ms-icon del', '✕');
+      del.title = 'Delete milestone';
+      del.setAttribute('aria-label', `Delete ${m.title}`);
+      del.onclick = async () => {
+        if (await msWrite('DELETE', `/milestones/${encodeURIComponent(m.id)}`)) loadSchedule();
+      };
+      row.append(text, edit, del);
+    }
+    list.append(row);
+  }
+  // add form
+  const add = node('div', 'ms-add');
+  const title = node('input', 'st-num ms-title');
+  title.placeholder = 'Milestone';
+  title.setAttribute('aria-label', 'New milestone title');
+  title.value = msDraft.title;
+  title.oninput = () => (msDraft.title = title.value);
+  const date = node('input', 'st-num ms-date');
+  date.type = 'date';
+  date.setAttribute('aria-label', 'New milestone date');
+  date.value = msDraft.date;
+  date.oninput = () => (msDraft.date = date.value);
+  const phase = msPhaseSelect(msDraft.phase_id);
+  phase.onchange = () => (msDraft.phase_id = phase.value);
+  const btn = node('button', 'ms-btn primary', 'Add');
+  btn.onclick = async () => {
+    const body = { project_id: projectId, title: msDraft.title, date: msDraft.date };
+    if (msDraft.phase_id) body.phase_id = msDraft.phase_id;
+    if (await msWrite('POST', '/milestones', body)) {
+      msDraft = { title: '', date: '', phase_id: '' };
+      loadSchedule();
+    }
+  };
+  add.append(title, date, phase, btn);
+  const err = node('div', 'ms-error', msError);
+  err.setAttribute('role', 'alert');
+  const focused = document.activeElement && host.contains(document.activeElement) ? document.activeElement.getAttribute('aria-label') : null;
+  host.replaceChildren(head, list, add, err);
+  if (focused) host.querySelector(`[aria-label="${CSS.escape(focused)}"]`)?.focus();
 }
 
 function cardEl(card) {
