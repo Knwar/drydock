@@ -743,4 +743,24 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  'get_report',
+  {
+    description:
+      "A status report for summarising project status to the user or publishing a weekly report: overall + per-phase RAG (from the schedule; an open blocker turns a green phase amber), what shipped in the range (by board and phase), what's next (queued / in-progress cards, milestones in the next 14 days), metrics (throughput, cycle p50/p85, first-pass rate, time waiting on you, cost + budgets with caveats), risks and decisions. A workspace includes its verticals. Range defaults to the last 7 days; from/to take YYYY-MM-DD (in tz), a datetime or epoch ms. format 'markdown' (default) returns ready-to-share Markdown; 'json' the structured report.",
+    inputSchema: {
+      project_id: z.string(),
+      from: z.string().optional(),
+      to: z.string().optional(),
+      tz: z.string().optional().describe('IANA time zone, default the daemon’s'),
+      format: z.enum(['markdown', 'json']).optional(),
+    },
+  },
+  ({ project_id, format, ...range }) => {
+    const params = new URLSearchParams({ project: project_id });
+    for (const [k, v] of Object.entries(range)) if (v) params.set(k, v);
+    return api('GET', `${format === 'json' ? '/report' : '/report.md'}?${params}`);
+  },
+);
+
 await server.connect(new StdioServerTransport());

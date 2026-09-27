@@ -19,6 +19,7 @@ import * as forecast from '../core/forecast.js';
 import * as milestones from '../core/milestones.js';
 import * as schedule from '../core/schedule.js';
 import * as cost from '../core/cost.js';
+import * as report from '../core/report.js';
 import * as usageBurn from '../core/usage-burn.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
@@ -1537,6 +1538,34 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return json(res, 200, schedule.schedule(db, project, { tz, now: Date.now(), seed }));
     } catch (err) {
       const status = err instanceof metrics.MetricsParamError ? 400 : 500;
+      return json(res, status, { error: (err as Error).message });
+    }
+  }
+
+  // ── status report (core/report.ts): JSON or Markdown, assembled from the metrics modules ──
+  if (method === 'GET' && (pathname === '/report' || pathname === '/report.md')) {
+    const q = url.searchParams;
+    const project = q.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
+    const now = Date.now();
+    try {
+      states.sweep(now); // close needs_you intervals whose session has silently gone offline
+      const from = q.get('from');
+      const to = q.get('to');
+      const r = report.loadReport(db, project, {
+        tz,
+        now,
+        from: from ? metrics.parseTime(from, tz, 'from') : undefined,
+        to: to ? metrics.parseTime(to, tz, 'to') : undefined,
+      });
+      if (pathname === '/report') return json(res, 200, r);
+      res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' });
+      return void res.end(report.reportMarkdown(r));
+    } catch (err) {
+      const status = err instanceof metrics.MetricsParamError || err instanceof report.ReportParamError ? 400 : 500;
       return json(res, status, { error: (err as Error).message });
     }
   }
