@@ -2504,3 +2504,41 @@ body.embed #planner-view { border-radius: 0; }
 }
 .st-num:focus { border-color: var(--accent); }
 .st-num.bad { border-color: #e06c75; }
+
+/* ── shared filters on the dashboard / Home: the compact "Filters" chip + the bar it expands to ── */
+.fb-host { display: contents; }
+.fb-row { display: flex; align-items: center; gap: 4px; flex: none; min-width: 0; max-width: 100%; }
+.fb-chip { display: inline-flex; align-items: center; gap: 8px; height: 28px; max-width: 460px; min-width: 0; padding: 0 12px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.14); background: transparent; color: var(--dim); font: inherit; font-size: 12px; cursor: pointer; }
+.fb-chip:hover { border-color: rgba(255, 255, 255, 0.3); color: var(--text); }
+.fb-chip.on { border-color: rgba(93, 211, 168, 0.55); color: var(--text); }
+.fb-chip-k { font-weight: 600; flex: none; }
+.fb-chip-v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent); }
+.fb-caret { flex: none; font-size: 10px; opacity: 0.7; }
+.fb-clear { height: 28px; padding: 0 8px; border: none; border-radius: 999px; background: transparent; color: var(--dim); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.fb-clear:hover { color: var(--text); }
+.fb-bar { flex-basis: 100%; min-width: 0; }
+.fb-bar button, .fb-bar select, .fb-bar input { font-family: inherit; }
+.fb-bar button { cursor: pointer; }
+.fb-chip:focus-visible, .fb-clear:focus-visible, .fb-bar button:focus-visible, .fb-bar select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dash-top { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 2px 4px 14px; }
+.dash-top .dash-head { flex: 1 1 auto; min-width: 0; padding: 0; }
+.home-head { flex-wrap: wrap; }
+/* counts that open the drill-down */
+button.dt-lane { border: none; font: inherit; cursor: pointer; }
+button.dt-lane:hover { background: rgba(255, 255, 255, 0.08); }
+button.dt-lane[data-lane="done"]:hover { background: rgba(93, 211, 168, 0.14); }
+button.dt-lane:focus-visible, button.da-count:focus-visible, .home-vlane:focus-visible, button.home-count:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.da-count { border: none; font-family: inherit; line-height: inherit; cursor: pointer; }
+.home-vlane { padding: 0; border: none; background: none; color: inherit; font: inherit; cursor: pointer; }
+.home-vlane:hover { color: var(--text); text-decoration: underline; }
+button.home-count { padding: 0; border: none; background: none; color: inherit; font: inherit; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+button.home-count:hover { color: var(--text); opacity: 1; }
+/* the drill-down outside Metrics carries Metrics' type */
+#dashboard-view .mx-drill-backdrop, #home-view .mx-drill-backdrop {
+  --mx-ui: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mx-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mx-ui);
+}
+#dashboard-view .mx-drill button, #dashboard-view .mx-drill select, #home-view .mx-drill button, #home-view .mx-drill select { font-family: inherit; cursor: pointer; }
+/* the done lane under a date range names it ("done 2w", "done 3 Aug–26 Sep"): may wrap to two lines */
+.dt-lane-l.ranged { white-space: normal; line-height: 1.15; text-align: center; overflow-wrap: anywhere; }
