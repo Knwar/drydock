@@ -252,6 +252,7 @@
         <button class="st-tab" data-tab="skills">Skills</button>
         <button class="st-tab" data-tab="team">Team</button>
         <button class="st-tab" data-tab="board">Board</button>
+        <button class="st-tab" data-tab="prices">Prices</button>
       </nav>
       <div class="settings-main">
         <button id="settings-close" title="Close">✕</button>
@@ -292,6 +293,12 @@
           <div class="st-head"><h3>Board health</h3></div>
           <p class="st-hint">Flag cards that sit too long in a lane, and warn when a lane holds too many. Saved for this board.</p>
           <div id="board-settings" class="st-list"></div>
+        </section>
+
+        <section class="st-panel hidden" data-panel="prices">
+          <div class="st-head"><h3>Prices</h3></div>
+          <p class="st-hint">What Metrics uses to turn tokens into cost, in USD per million tokens. A model id also prices longer ids that start with it (<code>claude-opus-5-5</code> prices <code>claude-opus-5-5[1m]</code>); any other model uses the default rate. Shared by every board.</p>
+          <div id="prices-editor"></div>
         </section>
 
         <section class="st-panel hidden" data-panel="team">

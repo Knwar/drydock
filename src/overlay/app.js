@@ -210,6 +210,9 @@ function applyEvent(msg) {
     highlightCardsFromUrl();
   } else if (msg.type === 'phases') {
     phases = msg.phases;
+    // a budget may have changed: forget the others, refresh the one on screen (its value stays until then)
+    for (const id of [...pdBudgets.keys()]) if (id !== selectedPhaseId) pdBudgets.delete(id);
+    if (activeView === 'phases' && pdBudgets.has(selectedPhaseId)) loadPhaseBudget(selectedPhaseId);
     renderBoard(); // active phase may have changed → board scope shifts
     renderPhaseList();
     refreshAttention();
@@ -627,7 +630,7 @@ const MX_RANGES = [
 ];
 const MX_DEFAULT_RANGE = '8w';
 const MX_LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
-const MX_URL_KEYS = ['tab', 'scope', 'phase', 'tag', 'agent', 'range', 'from', 'to', 'tz'];
+const MX_URL_KEYS = ['tab', 'scope', 'phase', 'tag', 'agent', 'range', 'from', 'to', 'tz', 'target'];
 const MX_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const MX_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MX_COST_LIMIT = 100;
@@ -636,7 +639,7 @@ const MX_META_CONCURRENCY = 6;
 const mx = {
   project: null, // the board the view was opened from
   f: null, // filters (from the URL)
-  meta: null, // { workspaceId, boards, boardById, phases: Map board → phases, cards: Map id → card, tags, agents }
+  meta: null, // { workspaceId, boards, boardById, phases: Map board → phases, cards: Map id → card, tags, agents, plans }
   metaSeq: 0,
   metaReady: null,
   seq: 0, // bumped per load: a response from an older load never renders
@@ -646,6 +649,7 @@ const mx = {
   notes: null, // the open cost-notes popover's { close }
   customOpen: false,
   loadedAt: null,
+  ui: { measure: 'cycle', waitBy: 'board' }, // in-tab toggles (Flow: cycle / lead; Quality: wait by board / phase)
 };
 
 // ---------- formatting ----------
@@ -706,6 +710,7 @@ function mxReadUrl() {
     from: q.get('from') || '',
     to: q.get('to') || '',
     tz: mxValidTz(tz) ? tz : MX_LOCAL_TZ,
+    target: q.get('target') || '', // the Forecast tab's target: phase:<id>, plan:<id> or all ('' = the focus phase)
   };
 }
 function mxValidTz(tz) {
@@ -722,7 +727,7 @@ function mxWriteUrl() {
   url.searchParams.set('view', 'metrics');
   for (const k of MX_URL_KEYS) url.searchParams.delete(k);
   const f = mx.f;
-  const defaults = { tab: 'overview', scope: mx.meta?.workspaceId ?? null, phase: '', tag: '', agent: '', range: MX_DEFAULT_RANGE, tz: MX_LOCAL_TZ };
+  const defaults = { tab: 'overview', scope: mx.meta?.workspaceId ?? null, phase: '', tag: '', agent: '', range: MX_DEFAULT_RANGE, tz: MX_LOCAL_TZ, target: '' };
   for (const k of MX_URL_KEYS) {
     if (k === 'from' || k === 'to') {
       if (f.range === 'custom' && f[k]) url.searchParams.set(k, f[k]);
@@ -757,9 +762,10 @@ function mxWindowLabel() {
 // ---------- tab registry ----------
 const MX_TABS = [
   { id: 'overview', label: 'Overview', endpoints: ['flow', 'quality', 'wait', 'cost', 'forecast', 'usageBurn'], render: mxRenderOverview },
-  { id: 'flow', label: 'Flow', endpoints: [], render: null },
-  { id: 'quality', label: 'Quality & waiting', endpoints: [], render: null },
-  { id: 'forecast', label: 'Forecast', endpoints: [], render: null },
+  { id: 'flow', label: 'Flow', endpoints: ['flow', 'burn', 'forecast'], render: mxRenderFlow },
+  // flow: the by-agent drill-down lists an agent's done cards from its points
+  { id: 'quality', label: 'Quality & waiting', endpoints: ['quality', 'wait', 'flow'], render: mxRenderQuality },
+  { id: 'forecast', label: 'Forecast', endpoints: ['forecastTarget', 'forecastAll'], render: mxRenderForecast },
 ];
 const mxTab = () => MX_TABS.find((t) => t.id === mx.f.tab) ?? MX_TABS[0];
 
@@ -777,6 +783,20 @@ function mxPhaseById(id) {
     if (p) return { ...p, board };
   }
   return null;
+}
+// The Forecast tab's target: the URL's, when it still exists in the scope, else the focus phase, else the whole scope.
+function mxForecastTarget() {
+  const t = mx.f.target;
+  const m = mx.meta;
+  if (t.startsWith('phase:')) {
+    const p = mxPhaseById(t.slice(6));
+    if (p && mxScopeBoards().some((b) => b.id === p.board)) return { kind: 'phase', id: p.id, key: t, phase: p };
+  } else if (t.startsWith('plan:') && m && mx.f.scope === m.workspaceId) {
+    const plan = m.plans.find((x) => x.id === t.slice(5));
+    if (plan) return { kind: 'plan', id: plan.id, key: t, plan };
+  } else if (t === 'all') return { kind: 'all', key: 'all' };
+  const p = mxFocusPhase();
+  return p ? { kind: 'phase', id: p.id, key: `phase:${p.id}`, phase: p } : { kind: 'all', key: 'all' };
 }
 // Boards the scope covers: the workspace → every board; a vertical → itself.
 function mxScopeBoards() {
@@ -796,6 +816,19 @@ const MX_ENDPOINTS = {
     return p ? ['/metrics/forecast', { phase: p.id, tag: f.tag }] : null;
   },
   usageBurn: () => ['/metrics/usage-burn', { phase: mxFocusPhase()?.id }],
+  burn: () => {
+    const p = mxFocusPhase();
+    return p ? ['/metrics/burn', { phase: p.id }] : null;
+  },
+  // the Forecast tab: its target (a plan is workspace-wide, so it is asked of the workspace)
+  forecastTarget: (f) => {
+    const t = mxForecastTarget();
+    if (t.kind === 'phase') return ['/metrics/forecast', { phase: t.id, tag: f.tag }];
+    if (t.kind === 'plan') return ['/metrics/forecast', { plan: t.id, tag: f.tag, project: mx.meta.workspaceId }];
+    return ['/metrics/forecast', { tag: f.tag }];
+  },
+  // the fallback when one board lacks history: the whole workspace (more boards, more history)
+  forecastAll: (f) => (mx.meta && f.scope !== mx.meta.workspaceId ? ['/metrics/forecast', { tag: f.tag, project: mx.meta.workspaceId }] : null),
 };
 function mxUrl([path, params]) {
   const q = new URLSearchParams({ project: mx.f.scope, tz: mx.f.tz });
@@ -853,9 +886,12 @@ function mxLoadMeta() {
       () => mxGet(`/phases?project=${encodeURIComponent(b.id)}`).catch(() => []),
       () => mxGet(`/board?project=${encodeURIComponent(b.id)}`).catch(() => []),
     ]);
+    // committed plans: the Forecast tab's plan targets
+    const plansReq = mxGet(`/plan-drafts?workspace=${encodeURIComponent(main.id)}`).catch(() => []);
     const results = await mxPool(jobs, MX_META_CONCURRENCY);
+    const plans = (await plansReq).filter((d) => d.committed_version !== null).map((d) => ({ id: d.id, title: d.title }));
     const per = boards.map((b, i) => ({ b, phaseList: results[2 * i], cardList: results[2 * i + 1] }));
-    const meta = { workspaceId: main.id, boards, boardById: new Map(boards.map((b) => [b.id, b])), phases: new Map(), cards: new Map(), tags: [], agents: [] };
+    const meta = { workspaceId: main.id, boards, boardById: new Map(boards.map((b) => [b.id, b])), phases: new Map(), cards: new Map(), tags: [], agents: [], plans };
     const tags = new Set();
     const agents = new Set(teamByName.keys());
     for (const { b, phaseList, cardList } of per) {
@@ -1430,7 +1466,7 @@ function mxCostNotes() {
   const notes = [];
   if (c) {
     const since = c.tokenBasisChangedAt === null ? null : mxShortDay(mxDayKey(c.tokenBasisChangedAt, mx.f.tz));
-    if (c.prices.placeholder) notes.push({ group: 'Cost', text: 'Prices are placeholders: set your real rates (PUT /settings/prices)' });
+    if (c.prices.placeholder) notes.push({ group: 'Cost', text: 'Prices are placeholders: set your rates in Settings → Prices', prices: true });
     for (const raw of c.caveats) {
       let text = raw;
       if (raw.startsWith('output tokens come from transcripts')) text = 'Output tokens are undercounted, so costs read low';
@@ -1462,6 +1498,16 @@ function mxOpenNotes() {
     }
     const li = node('li', '', n.text);
     if (n.raw && n.raw !== n.text) li.title = n.raw;
+    if (n.prices) {
+      // "Settings → Prices" opens that Settings tab
+      const go = node('button', 'mx-link mx-inline', 'Settings → Prices');
+      go.type = 'button';
+      go.onclick = () => {
+        api.close(false);
+        openSettings('prices');
+      };
+      li.replaceChildren('Prices are placeholders: set your rates in ', go);
+    }
     ul.append(li);
   }
   const close = node('button', 'mx-link', 'Close');
@@ -1729,6 +1775,940 @@ function mxRenderThroughput(host) {
   host.append(wrap);
 }
 
+// ---------- shared: board marks, toggles ----------
+const MX_SHAPES = ['square', 'circle', 'triangle', 'diamond'];
+function mxShapeD(shape, cx, cy) {
+  const f = (n) => n.toFixed(1);
+  if (shape === 'square') return `M${f(cx - 4.5)},${f(cy - 4.5)} h9 v9 h-9 Z`;
+  if (shape === 'circle') return `M${f(cx - 5)},${f(cy)} a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0 Z`;
+  if (shape === 'triangle') return `M${f(cx)},${f(cy - 5.5)} L${f(cx + 5.5)},${f(cy + 4.5)} L${f(cx - 5.5)},${f(cy + 4.5)} Z`;
+  return `M${f(cx)},${f(cy - 6)} L${f(cx + 6)},${f(cy)} L${f(cx)},${f(cy + 6)} L${f(cx - 6)},${f(cy)} Z`;
+}
+// A board's mark: its colour, and a shape by board order (Main square, then circle, triangle, diamond…).
+function mxBoardMark(id) {
+  const m = mx.meta;
+  const i = m ? m.boards.findIndex((b) => b.id === id) : -1;
+  return {
+    color: i >= 0 ? m.boards[i].color : PL_NONE_COLOR,
+    shape: MX_SHAPES[Math.max(0, i) % MX_SHAPES.length],
+    label: i >= 0 ? m.boards[i].label : 'unknown board',
+  };
+}
+function mxShapeIcon(mark) {
+  const svg = svgEl('svg', { width: 10, height: 10, viewBox: '-6 -6 12 12', 'aria-hidden': 'true' });
+  svg.append(svgEl('path', { d: mxShapeD(mark.shape, 0, 0), fill: mark.color }));
+  return svg;
+}
+// A small segmented toggle (Cycle / Lead, By board / By phase).
+function mxToggle(label, options, value, onChange) {
+  const g = node('div', 'mx-seg mx-seg-sm');
+  g.setAttribute('role', 'group');
+  g.setAttribute('aria-label', label);
+  for (const [id, text] of options) {
+    const b = node('button', 'mx-seg-btn', text);
+    b.type = 'button';
+    b.dataset.value = id;
+    b.setAttribute('aria-pressed', String(id === value));
+    b.onclick = () => id !== value && onChange(id);
+    g.append(b);
+  }
+  return g;
+}
+function mxPanel(cls, label) {
+  const el = node('section', `mx-panel ${cls}`);
+  el.setAttribute('aria-label', label);
+  return el;
+}
+function mxInfoIcon() {
+  const svg = svgEl('svg', { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'aria-hidden': 'true' });
+  svg.append(svgEl('circle', { cx: 12, cy: 12, r: 9 }), svgEl('path', { d: 'M12 11v6' }), svgEl('path', { d: 'M12 7.5h.01' }));
+  return svg;
+}
+// Labels at the chart's right edge (or anywhere in a column), pushed apart so they never overlap.
+function mxSpread(items, gap, maxY) {
+  const sorted = [...items].sort((a, b) => a.y - b.y);
+  let prev = -Infinity;
+  for (const it of sorted) {
+    it.y = Math.max(it.y, prev + gap);
+    prev = it.y;
+  }
+  const over = prev - maxY;
+  if (over > 0) for (const it of sorted) it.y -= over;
+  return items;
+}
+// Show a tooltip beside (x, y) inside a W-wide chart.
+function mxPlaceTip(tip, x, y, W, width) {
+  tip.classList.remove('hidden');
+  tip.style.left = `${(x + 14 + width > W ? x - 14 - width : x + 14).toFixed(1)}px`;
+  tip.style.top = `${Math.max(0, y - 30).toFixed(1)}px`;
+}
+
+// ---------- Flow ----------
+function mxRenderFlow(host) {
+  const row = node('div', 'mx-charts');
+  const sc = mxPanel('mx-scatter', mx.ui.measure === 'lead' ? 'Lead time per card' : 'Cycle time per card');
+  const bu = mxPanel('mx-burn', 'Phase burn-up');
+  row.append(sc, bu);
+  host.replaceChildren(row);
+  mxRenderScatter(sc);
+  mxRenderBurn(bu);
+}
+
+// Log-axis ticks, in hours.
+const MX_LOG_TICKS = [
+  [1 / 12, '5m'],
+  [0.25, '15m'],
+  [0.5, '30m'],
+  [1, '1h'],
+  [2, '2h'],
+  [4, '4h'],
+  [12, '12h'],
+  [24, '1d'],
+  [72, '3d'],
+  [168, '1w'],
+  [336, '2w'],
+  [672, '4w'],
+  [1344, '8w'],
+];
+
+function mxRenderScatter(host) {
+  const measure = mx.ui.measure;
+  const lead = measure === 'lead';
+  const head = node('div', 'mx-panel-head');
+  head.append(
+    node('h2', '', lead ? 'Lead time per card' : 'Cycle time per card'),
+    node('span', 'mx-panel-sub', `${lead ? 'created → done' : 'queued → done'} · log scale`),
+    node('div', 'mx-grow'),
+    mxToggle('Measure', [['cycle', 'Cycle'], ['lead', 'Lead']], measure, (v) => {
+      mx.ui.measure = v;
+      mxRenderBody();
+    }),
+  );
+  host.append(head);
+  const r = mx.res.flow;
+  const flow = r?.state === 'ok' ? r.data : null;
+  const state = mxChartState('flow', flow && !flow.points.length ? 'No cards done in this period' : null);
+  if (state) return host.append(state);
+
+  const pts = flow.points;
+  const ms = (p) => (lead ? p.leadTimeMs : p.cycleTimeMs);
+  const pc = lead ? flow.leadTime : flow.cycleTime;
+  const kicker = lead ? 'LEAD TIME' : 'CYCLE TIME';
+  // legend: every board in scope, and the card count (a drill-down to them all)
+  const legend = node('div', 'mx-legend');
+  for (const b of mxScopeBoards()) {
+    const s = node('span', 'mx-lg');
+    s.append(mxShapeIcon(mxBoardMark(b.id)), b.label);
+    legend.append(s);
+  }
+  legend.append(node('div', 'mx-grow'));
+  const all = node('button', 'mx-link mx-count', `${mxPlural(pts.length, 'card')} · ${mxWindowLabel()}`);
+  all.type = 'button';
+  all.setAttribute('aria-label', `List the ${mxPlural(pts.length, 'card')} done this period`);
+  all.onclick = () => mxDrillDone(pts, `${kicker} · THIS PERIOD`, mxWindowLabel(), measure);
+  legend.append(all);
+  host.append(legend);
+
+  const W = Math.max(420, host.clientWidth - 32);
+  const H = 460;
+  const box = { L: 48, R: W - 84, T: 12, B: H - 40 };
+  const tz = mx.f.tz;
+  // x: one column per local day of the window; y: hours on a log scale (≥ 1 minute)
+  const first = mxDayKey(flow.range.from, tz);
+  const last = mxDayKey(flow.range.to, tz);
+  const dayIdx = (day) => Math.round((mxUtc(day) - mxUtc(first)) / 86_400_000);
+  const nDays = dayIdx(last) + 1;
+  const dayW = (box.R - box.L) / nDays;
+  const xDay = (i) => box.L + (i + 0.5) * dayW;
+  const hrs = (v) => Math.max(1 / 60, v / 3_600_000);
+  const vals = pts.map((p) => hrs(ms(p)));
+  const pcts = [pc.p50, pc.p85, pc.p95].filter((v) => v !== null).map(hrs);
+  const lo = Math.log(Math.min(...vals, ...pcts) / 1.5);
+  const hi = Math.log(Math.max(...vals, ...pcts) * 1.5);
+  const y = (h) => box.B - ((Math.log(h) - lo) * (box.B - box.T)) / Math.max(1e-9, hi - lo);
+  let ticks = MX_LOG_TICKS.filter(([h]) => Math.log(h) >= lo && Math.log(h) <= hi);
+  while (ticks.length > 6) ticks = ticks.filter((_, i) => i % 2 === 0);
+
+  const wrap = node('div', 'mx-chart');
+  wrap.style.width = `${W}px`;
+  wrap.style.height = `${H}px`;
+  const svg = svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: 'img' });
+  svg.setAttribute(
+    'aria-label',
+    `Scatter of ${measure} time per card by done date, ${mxPlural(pts.length, 'card')}. Median ${mxSpan(pc.p50)}, 85th percentile ${mxSpan(pc.p85)}, 95th percentile ${mxSpan(pc.p95)}.`,
+  );
+  const labels = [];
+  svg.append(svgEl('path', { d: ticks.map(([h]) => `M${box.L},${y(h).toFixed(1)} H${box.R}`).join(' '), stroke: 'rgba(255,255,255,0.06)', 'stroke-width': 1, fill: 'none' }));
+  for (const [h, text] of ticks) {
+    const l = node('span', 'mx-axis-y', text);
+    l.style.top = `${(y(h) - 8).toFixed(1)}px`;
+    l.style.width = '40px';
+    labels.push(l);
+  }
+  // percentile lines (the API's), labelled at the right edge
+  const lines = [
+    ['50', pc.p50, '#e8eaf0', '#e8eaf0'],
+    ['85', pc.p85, '#e5c07b', '#e5c07b'],
+    ['95', pc.p95, '#e06c75', '#f0a0a7'],
+  ].filter(([, v]) => v !== null);
+  const pctLabels = lines.map(([p, v, , text]) => ({ p, v, text, y: y(hrs(v)) - 9 }));
+  for (const [p, v, stroke] of [...lines].reverse()) {
+    const line = svgEl('path', { d: `M${box.L},${y(hrs(v)).toFixed(1)} H${box.R}`, stroke, 'stroke-width': 1.5, 'stroke-dasharray': '5 4', fill: 'none', class: 'mx-pct' });
+    line.dataset.p = p;
+    svg.append(line);
+  }
+  for (const l of mxSpread(pctLabels, 16, box.B - 8)) {
+    const s = node('span', 'mx-pct-label', `p${l.p} ${mxSpan(l.v)}`);
+    s.dataset.p = l.p;
+    s.style.color = l.text;
+    s.style.left = `${box.R + 6}px`;
+    s.style.top = `${l.y.toFixed(1)}px`;
+    labels.push(s);
+  }
+  // x labels: Mondays (every k-th when there are many), else the first day
+  const days = Array.from({ length: nDays }, (_, i) => mxAddDays(first, i));
+  const mondays = days.map((d, i) => [d, i]).filter(([d]) => mxUtc(d).getUTCDay() === 1);
+  const xl = mondays.length ? mondays : [[first, 0]];
+  const step = Math.max(1, Math.ceil(xl.length / Math.max(2, Math.floor((box.R - box.L) / 80))));
+  for (const [d, i] of xl.filter((_, k) => k % step === 0)) {
+    const s = node('span', 'mx-axis-x', mxShortDay(d));
+    s.style.left = `${(xDay(i) - 30).toFixed(1)}px`;
+    s.style.top = `${box.B + 12}px`;
+    labels.push(s);
+  }
+  // points: same-day cards side by side within their day column
+  const byDay = new Map();
+  for (const p of pts) {
+    const d = mxDayKey(p.doneAt, tz);
+    if (!byDay.has(d)) byDay.set(d, []);
+    byDay.get(d).push(p);
+  }
+  const ring = svgEl('circle', { cx: -20, cy: -20, r: 9, fill: 'none', stroke: '#e8eaf0', 'stroke-width': 2, 'pointer-events': 'none', visibility: 'hidden' });
+  const tip = node('div', 'mx-tip mx-tip-card hidden');
+  tip.setAttribute('role', 'tooltip');
+  for (const [d, list] of byDay) {
+    const spread = Math.min(8, (dayW * 0.7) / Math.max(1, list.length));
+    list.forEach((p, k) => {
+      const cx = xDay(dayIdx(d)) + (k - (list.length - 1) / 2) * spread;
+      const cy = y(hrs(ms(p)));
+      const board = mxBoardOf(p.id);
+      const mark = mxBoardMark(board);
+      const el = svgEl('path', { d: mxShapeD(mark.shape, cx, cy), fill: mark.color, stroke: '#0f1219', 'stroke-width': 1.5, class: 'mx-pt' });
+      el.dataset.id = p.id;
+      el.dataset.board = board ?? '';
+      el.dataset.shape = mark.shape;
+      el.style.cursor = 'pointer';
+      el.addEventListener('mouseenter', () => {
+        ring.setAttribute('cx', cx.toFixed(1));
+        ring.setAttribute('cy', cy.toFixed(1));
+        ring.setAttribute('visibility', 'visible');
+        const rounds = mx.meta?.cards.get(p.id)?.rounds;
+        tip.replaceChildren(
+          node('span', 'mx-tip-h', p.title),
+          node('span', 'mx-tip-row', `${mark.label} · ${mxAgentOf(p.id) ?? 'unassigned'} · done ${mxLongDay(d)}`),
+          node('span', 'mx-tip-row mx-tip-hi', `cycle ${mxSpan(p.cycleTimeMs)} · lead ${mxSpan(p.leadTimeMs)}${rounds ? ` · ${mxPlural(rounds, 'review round')}` : ''}`),
+        );
+        mxPlaceTip(tip, cx, cy, box.R, 240);
+      });
+      el.addEventListener('mouseleave', () => {
+        ring.setAttribute('visibility', 'hidden');
+        tip.classList.add('hidden');
+      });
+      el.addEventListener('click', () => mxDrillDone(list, `${kicker} · ${mxLongDay(d).toUpperCase()}`, mxLongDay(d), measure));
+      svg.append(el);
+    });
+  }
+  svg.append(ring);
+  wrap.append(svg, ...labels, tip);
+  host.append(wrap);
+}
+
+// Burn-up of the focus phase: stepped scope, done area, and the 50–85% forecast cone.
+function mxRenderBurn(host) {
+  const p = mxFocusPhase();
+  const head = node('div', 'mx-panel-head');
+  head.append(node('h2', '', p ? `Burn-up · ${p.title}` : 'Burn-up'));
+  host.append(head);
+  const r = mx.res.burn ?? { state: 'loading' };
+  if (r.state === 'none') return host.append(node('div', 'mx-chart-state', 'No active phase: pick a phase to see its burn-up'));
+  const burn = r.state === 'ok' ? r.data : null;
+  const state = mxChartState('burn', burn && !burn.scope ? 'No cards in this phase yet' : null);
+  if (state) return host.append(state);
+
+  const fr = mx.res.forecast;
+  const fcData = fr?.state === 'ok' ? fr.data : null;
+  const active = burn.phase.status !== 'done';
+  const fc = active && fcData?.status === 'ok' && fcData.remaining > 0 ? fcData : null;
+  const legend = node('div', 'mx-legend');
+  const lg = (sw, text) => {
+    const s = node('span', 'mx-lg');
+    s.append(sw, text);
+    return s;
+  };
+  legend.append(lg(node('span', 'mx-sw-line'), 'Scope'), lg(node('span', 'mx-sw mx-sw-done'), 'Done'));
+  if (fc) legend.append(lg(node('span', 'mx-sw mx-sw-cone'), 'Forecast 50–85%'));
+  else if (active && fcData && fcData.status !== 'ok') legend.append(node('span', 'mx-dim mx-sm', 'no forecast yet: not enough history'));
+  host.append(legend);
+
+  const s = burn.series;
+  const start = s[0].date;
+  const idx = (day) => Math.round((mxUtc(day) - mxUtc(start)) / 86_400_000);
+  const lastIdx = s.length - 1;
+  const n = Math.max(lastIdx, fc ? idx(fc.p85.date) + 1 : 0) + 1; // room past the 85% date
+  const W = Math.max(320, host.clientWidth - 32);
+  const H = 420;
+  const box = { L: 36, R: W - 20, T: 24, B: H - 40 };
+  const x = (i) => box.L + (i * (box.R - box.L)) / Math.max(1, n - 1);
+  const ticks = mxNiceTicks(Math.max(...s.map((d) => d.scope)));
+  const yMax = ticks[ticks.length - 1];
+  const y = (v) => box.B - (v * (box.B - box.T)) / yMax;
+  const f = (v) => v.toFixed(1);
+
+  const wrap = node('div', 'mx-chart');
+  wrap.style.width = `${W}px`;
+  wrap.style.height = `${H}px`;
+  const svg = svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: 'img' });
+  svg.setAttribute(
+    'aria-label',
+    `Burn-up for ${burn.phase.title} from ${mxShortDay(start)}. Scope ${mxPlural(burn.scope, 'card')}; ${burn.done} done.${fc ? ` Forecast: all done by ${mxLongDay(fc.p50.date)} at 50% and ${mxLongDay(fc.p85.date)} at 85%.` : ''}`,
+  );
+  const labels = mxGrid(svg, box, ticks, y, 28);
+  const today = s[lastIdx];
+  if (fc) {
+    const cone = svgEl('path', {
+      d: `M${f(x(lastIdx))},${f(y(today.done))} L${f(x(idx(fc.p50.date)))},${f(y(burn.scope))} L${f(x(idx(fc.p85.date)))},${f(y(burn.scope))} Z`,
+      fill: 'rgba(93,211,168,0.18)',
+      class: 'mx-cone',
+    });
+    svg.append(cone);
+  }
+  const doneLine = s.map((d, i) => `${f(x(i))},${f(y(d.done))}`);
+  svg.append(
+    svgEl('path', { d: `M${doneLine.join(' L')} L${f(x(lastIdx))},${box.B} L${f(x(0))},${box.B} Z`, fill: '#2e5c50', class: 'mx-done-area' }),
+    svgEl('path', { d: `M${doneLine.join(' L')}`, fill: 'none', stroke: '#5dd3a8', 'stroke-width': 2, 'stroke-linejoin': 'round' }),
+  );
+  if (fc)
+    for (const [pt, dash] of [
+      [fc.p50, '4 4'],
+      [fc.p85, '2 4'],
+    ])
+      svg.append(svgEl('path', { d: `M${f(x(lastIdx))},${f(y(today.done))} L${f(x(idx(pt.date)))},${f(y(burn.scope))}`, fill: 'none', stroke: '#5dd3a8', 'stroke-width': 1.5, 'stroke-dasharray': dash }));
+  let scopeD = `M${f(x(0))},${f(y(s[0].scope))}`;
+  for (let i = 1; i <= lastIdx; i++) scopeD += ` H${f(x(i))} V${f(y(s[i].scope))}`;
+  scopeD += ` H${f(x(n - 1))}`;
+  svg.append(svgEl('path', { d: scopeD, fill: 'none', stroke: '#e8eaf0', 'stroke-width': 2, 'stroke-linejoin': 'round', class: 'mx-scope' }));
+  if (active) {
+    svg.append(svgEl('path', { d: `M${f(x(lastIdx))},${box.T} V${box.B}`, stroke: '#aab2c5', 'stroke-width': 1, fill: 'none' }));
+    const t = node('span', 'mx-axis-x mx-axis-note', 'today');
+    t.style.left = `${f(x(lastIdx) - 30)}px`;
+    t.style.top = `${box.T - 22}px`;
+    labels.push(t);
+  }
+  if (fc) {
+    const my = y(burn.scope);
+    for (const [pt, pct, fill, dy] of [
+      [fc.p50, '50%', '#5dd3a8', 12],
+      [fc.p85, '85%', '#0f1219', -44],
+    ]) {
+      const mxX = x(idx(pt.date));
+      const c = svgEl('circle', { cx: f(mxX), cy: f(my), r: 5, fill, stroke: fill === '#0f1219' ? '#5dd3a8' : '#0f1219', 'stroke-width': 2, class: 'mx-marker' });
+      c.dataset.p = pct.slice(0, 2);
+      c.dataset.date = pt.date;
+      svg.append(c);
+      const l = node('span', 'mx-marker-label');
+      l.dataset.p = pct.slice(0, 2);
+      l.append(node('span', '', pct), node('span', '', mxLongDay(pt.date)));
+      l.style.left = `${f(Math.min(W - 92, mxX - 45))}px`;
+      l.style.top = `${f(Math.max(0, my + dy))}px`;
+      labels.push(l);
+    }
+  }
+  // labels just left of today: the scope above its line, the done count inside the done area
+  const sl = node('span', 'mx-burn-label', `scope ${today.scope}`);
+  sl.style.left = `${f(Math.max(box.L, x(lastIdx) - 78))}px`;
+  sl.style.top = `${f(Math.max(0, y(today.scope) - 20))}px`;
+  const dl = node('span', 'mx-burn-label done', `${today.done} done`);
+  dl.style.left = `${f(Math.max(box.L, x(lastIdx) - 78))}px`;
+  dl.style.top = `${f(Math.min(box.B - 20, y(today.done) + 26))}px`;
+  labels.push(sl, dl);
+  // x labels: Mondays across the phase + forecast days, else the first day
+  const days = Array.from({ length: n }, (_, i) => mxAddDays(start, i));
+  const mondays = days.map((d, i) => [d, i]).filter(([d]) => mxUtc(d).getUTCDay() === 1);
+  const xl = mondays.length ? mondays : [[start, 0]];
+  const step = Math.max(1, Math.ceil(xl.length / Math.max(2, Math.floor((box.R - box.L) / 70))));
+  for (const [d, i] of xl.filter((_, k) => k % step === 0)) {
+    const l = node('span', 'mx-axis-x', mxShortDay(d));
+    l.style.left = `${f(x(i) - 30)}px`;
+    l.style.top = `${box.B + 12}px`;
+    labels.push(l);
+  }
+  wrap.append(svg, ...labels);
+  host.append(wrap);
+  const a = burn.approximated;
+  const note = node('p', 'mx-note');
+  note.append(
+    mxInfoIcon(),
+    node(
+      'span',
+      '',
+      `Scope is today's cards in the phase.${a ? ` ${mxPlural(a, 'card')} joined the phase after it was created, so ${a === 1 ? 'its join date is' : 'their join dates are'} estimated.` : ''} Cards moved out of the phase don't show.`,
+    ),
+  );
+  host.append(note);
+}
+
+// ---------- Quality & waiting ----------
+function mxRenderQuality(host) {
+  const row = node('div', 'mx-charts');
+  const left = node('div', 'mx-col mx-col-l');
+  const right = node('div', 'mx-col mx-col-r');
+  const weekly = mxPanel('mx-qweeks', 'Review quality by week');
+  const agents = mxPanel('mx-agents', 'Review quality by agent');
+  const now = mxPanel('mx-waiting', 'Waiting on you now');
+  const time = mxPanel('mx-waittime', 'Time waiting on you');
+  left.append(weekly, agents);
+  right.append(now, time);
+  row.append(left, right);
+  host.replaceChildren(row);
+  mxRenderQualityWeeks(weekly);
+  mxRenderAgents(agents);
+  mxRenderWaitingNow(now);
+  mxRenderWaitTime(time);
+}
+
+function mxRenderQualityWeeks(host) {
+  const head = node('div', 'mx-panel-head');
+  head.append(node('h2', '', 'Review quality by week'), node('span', 'mx-panel-sub', 'by week of each card’s final review'));
+  host.append(head);
+  const r = mx.res.quality;
+  const q = r?.state === 'ok' ? r.data : null;
+  const state = mxChartState('quality', q && !q.totals.reviewed ? 'No reviews in this period' : null);
+  if (state) return host.append(state);
+  const t = q.totals;
+  const weeks = q.weekly;
+  const W = Math.max(240, host.clientWidth - 32 - 136);
+  const box = { L: 42, R: W - 8 };
+  const slot = (box.R - box.L) / weeks.length;
+  const x = (i) => box.L + slot * (i + 0.5);
+  const fp = weeks.map((w) => (w.firstPassRate === null ? null : w.firstPassRate * 100));
+  const ar = weeks.map((w) => w.avgRounds);
+  const fpLo = fp.some((v) => v !== null && v < 50) ? 0 : 50;
+  const arHi = Math.max(2, Math.ceil(Math.max(...ar.filter((v) => v !== null))));
+  const passed = Math.round(t.firstPassRate * t.reviewed);
+  host.append(
+    mxQualityRow('fp', 'FIRST-PASS', `${Math.round(t.firstPassRate * 100)}%`, `${passed} of ${t.reviewed} reviewed`, {
+      values: fp,
+      ticks: [fpLo, (fpLo + 100) / 2, 100],
+      fmt: (v) => `${Math.round(v)}%`,
+      color: '#5dd3a8',
+      tipText: (w, v) => `Week of ${mxShortDay(w.start)}: ${Math.round(v)}% first-pass · ${w.reviewed} reviewed`,
+    }),
+    mxQualityRow('ar', 'AVG ROUNDS', t.avgRounds.toFixed(2), t.capped ? `${t.capped} hit the 2-round cap` : 'none hit the 2-round cap', {
+      values: ar,
+      ticks: [1, (1 + arHi) / 2, arHi],
+      fmt: (v) => v.toFixed(1),
+      color: '#aab2c5',
+      tipText: (w, v) => `Week of ${mxShortDay(w.start)}: ${v.toFixed(2)} rounds avg · ${w.reviewed} reviewed`,
+    }),
+  );
+  function mxQualityRow(key, kicker, big, sub, o) {
+    const row = node('div', 'mx-qrow');
+    const stat = node('div', 'mx-qstat');
+    stat.append(node('span', 'mx-kicker', kicker), node('span', 'mx-big', big), node('span', 'mx-sub', sub));
+    const H = 110;
+    const T = 10;
+    const B = H - 10;
+    const lo = o.ticks[0];
+    const hi = o.ticks[o.ticks.length - 1];
+    const y = (v) => B - ((v - lo) * (B - T)) / (hi - lo);
+    const wrap = node('div', 'mx-chart');
+    wrap.style.width = `${W}px`;
+    wrap.style.height = `${H}px`;
+    const svg = svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: 'img', class: `mx-qline-${key}` });
+    const shown = weeks.map((w, i) => [w, o.values[i]]).filter(([, v]) => v !== null);
+    svg.setAttribute('aria-label', `${kicker.toLowerCase()} by week: ${shown.map(([w, v]) => `week of ${mxShortDay(w.start)} ${o.fmt(v)}`).join(', ')}.`);
+    svg.append(svgEl('path', { d: o.ticks.map((v) => `M${box.L},${y(v).toFixed(1)} H${box.R}`).join(' '), stroke: 'rgba(255,255,255,0.06)', fill: 'none' }));
+    const labels = o.ticks.map((v) => {
+      const l = node('span', 'mx-axis-y', o.fmt(v));
+      l.style.top = `${(y(v) - 8).toFixed(1)}px`;
+      l.style.width = '34px';
+      return l;
+    });
+    // the line breaks over weeks without reviews
+    let d = '';
+    let pen = false;
+    o.values.forEach((v, i) => {
+      if (v === null) return void (pen = false);
+      d += `${pen ? ' L' : ' M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+      pen = true;
+    });
+    svg.append(svgEl('path', { d: d.trim(), stroke: o.color, 'stroke-width': 2, fill: 'none', 'stroke-linejoin': 'round', class: 'mx-line' }));
+    const tip = node('div', 'mx-tip mx-tip-sm hidden');
+    tip.setAttribute('role', 'tooltip');
+    o.values.forEach((v, i) => {
+      if (v === null) return;
+      const dot = svgEl('circle', { cx: x(i).toFixed(1), cy: y(v).toFixed(1), r: 4, fill: o.color, stroke: '#0f1219', 'stroke-width': 2, class: 'mx-dotpt' });
+      dot.dataset.week = weeks[i].start;
+      dot.dataset.value = String(v);
+      const hit = svgEl('rect', { x: (x(i) - slot / 2).toFixed(1), y: 0, width: slot.toFixed(1), height: H, fill: 'transparent' });
+      hit.addEventListener('mouseenter', () => {
+        tip.textContent = o.tipText(weeks[i], v);
+        tip.classList.remove('hidden');
+        tip.style.left = `${Math.min(W - 190, Math.max(0, x(i) - 90)).toFixed(1)}px`;
+        tip.style.top = `${Math.max(0, y(v) - 60).toFixed(1)}px`;
+      });
+      hit.addEventListener('mouseleave', () => tip.classList.add('hidden'));
+      svg.append(dot, hit);
+    });
+    const lastI = o.values.findLastIndex((v) => v !== null);
+    if (lastI >= 0) {
+      const l = node('span', 'mx-bar-label', o.fmt(o.values[lastI]));
+      l.style.left = `${(x(lastI) - 30).toFixed(1)}px`;
+      l.style.top = `${Math.max(0, y(o.values[lastI]) - 24).toFixed(1)}px`;
+      labels.push(l);
+    }
+    wrap.append(svg, ...labels, tip);
+    row.append(stat, wrap);
+    return row;
+  }
+  // week labels under both charts
+  const axis = node('div', 'mx-qaxis');
+  axis.style.width = `${W}px`;
+  const every = Math.max(1, Math.ceil(48 / slot));
+  weeks.forEach((w, i) => {
+    if (i % every) return;
+    const l = node('span', 'mx-axis-x mx-axis-x-sm', `${mxUtc(w.start).getUTCDate()}/${mxUtc(w.start).getUTCMonth() + 1}`);
+    l.style.left = `${(x(i) - 24).toFixed(1)}px`;
+    axis.append(l);
+  });
+  host.append(axis);
+}
+
+function mxRenderAgents(host) {
+  host.append(node('h2', 'mx-h2', 'By agent'));
+  const r = mx.res.quality;
+  const q = r?.state === 'ok' ? r.data : null;
+  const state = mxChartState('quality', q && !q.byAgent.length ? 'No reviewed or finished cards in this period' : null);
+  if (state) return host.append(state);
+  const flow = mx.res.flow?.state === 'ok' ? mx.res.flow.data : null;
+  const table = node('table', 'mx-table');
+  const thead = node('thead');
+  const hr = node('tr');
+  for (const [text, cls] of [
+    ['Agent', 'l'],
+    ['Reviewed'],
+    ['Done'],
+    ['First-pass', 'fp'],
+    ['Avg rounds'],
+    ['Capped'],
+    ['Rework'],
+  ]) {
+    const th = node('th', cls ?? '', text);
+    th.scope = 'col';
+    hr.append(th);
+  }
+  thead.append(hr);
+  const tbody = node('tbody');
+  const rows = [...q.byAgent].sort((a, b) => b.reviewed - a.reviewed || b.done - a.done || (a.agent ?? '~').localeCompare(b.agent ?? '~'));
+  for (const a of rows) {
+    const tr = node('tr');
+    tr.dataset.agent = a.agent ?? '';
+    const th = node('th', 'l');
+    th.scope = 'row';
+    const name = a.agent ?? 'unassigned';
+    const who = node('span', 'mx-who');
+    who.append(avatarEl(teamByName.get(a.agent) ?? { name, color: a.agent ? accentFor(a.agent) : PL_NONE_COLOR }, 28), node('span', '', name));
+    // drill-down: the agent's done cards this period (flow's points)
+    const pts = flow ? flow.points.filter((p) => mxAgentOf(p.id) === a.agent) : [];
+    if (pts.length) {
+      const b = node('button', 'mx-who-btn');
+      b.type = 'button';
+      b.setAttribute('aria-label', `List ${name}'s ${mxPlural(pts.length, 'card')} done this period`);
+      b.append(who);
+      b.onclick = () => mxDrillDone(pts, `BY AGENT · ${name.toUpperCase()}`, mxWindowLabel());
+      th.append(b);
+    } else th.append(who);
+    const fp = node('td', 'fp');
+    if (a.firstPassRate === null) fp.textContent = '—';
+    else {
+      const cell = node('span', 'mx-fp');
+      const bar = node('span', 'mx-bar');
+      const fill = node('span', 'mx-bar-fill');
+      fill.style.width = `${Math.round(a.firstPassRate * 100)}%`;
+      bar.append(fill);
+      cell.append(bar, node('span', 'mono', `${Math.round(a.firstPassRate * 100)}%`));
+      fp.append(cell);
+    }
+    const capped = node('td', `mono${a.capped ? ' warn' : ' dim'}`, a.capped);
+    tr.append(
+      th,
+      node('td', 'mono', a.reviewed),
+      node('td', 'mono', a.done),
+      fp,
+      node('td', 'mono', a.avgRounds === null ? '—' : a.avgRounds.toFixed(2)),
+      capped,
+      node('td', 'mono', a.rework),
+    );
+    tbody.append(tr);
+  }
+  table.append(thead, tbody);
+  host.append(table);
+  const t = q.totals;
+  host.append(
+    node(
+      'p',
+      'mx-foot',
+      `Per agent = the member the card was assigned to. ${mxPlural(t.unreviewedDone, 'card')} reached done without a review; ${t.notYetReviewed} ${t.notYetReviewed === 1 ? 'isn’t' : 'aren’t'} reviewed yet.`,
+    ),
+  );
+}
+
+function mxRenderWaitingNow(host) {
+  const r = mx.res.wait;
+  const w = r?.state === 'ok' ? r.data : null;
+  const head = node('div', 'mx-panel-head');
+  head.append(node('h2', '', 'Waiting on you now'));
+  if (w) {
+    head.append(node('span', 'mx-badge', w.waiting.count), node('div', 'mx-grow'));
+    if (w.waiting.count) head.append(node('span', 'mx-panel-sub', `longest ${mxWait(w.waiting.longestMs)}`));
+  }
+  host.append(head);
+  const state = mxChartState('wait', w && !w.waiting.count ? 'Nothing is waiting on you' : null);
+  if (state) return host.append(state);
+  const m = mx.meta;
+  const canOpen = !EMBED && term.enabled;
+  const items = [
+    ...w.waiting.needsYou.map((n) => ({ kind: 'needs', board: n.project_id, card: n.task_id ? (m?.cards.get(n.task_id)?.title ?? null) : null, text: n.reason || 'A session is waiting on you', ms: n.waitingMs })),
+    ...w.waiting.blockers.map((b) => ({ kind: 'blocked', board: b.project_id, card: b.title, text: b.reason || 'Blocked', ms: b.waitingMs })),
+  ].sort((a, b) => b.ms - a.ms);
+  const list = node('ul', 'mx-wait-list');
+  for (const it of items) {
+    const li = node('li', `mx-wait-item ${it.kind}`);
+    const age = node('span', 'mx-wait-age');
+    const ageCls = it.kind === 'blocked' ? 'rose' : it.ms >= 30 * 60_000 ? 'amber' : '';
+    age.append(node('b', ageCls, mxWait(it.ms)), node('span', it.kind === 'blocked' ? 'rose' : 'amber', it.kind === 'blocked' ? 'blocked' : 'needs you'));
+    const main = node('span', 'mx-wait-main');
+    const meta = node('span', 'mx-drill-meta');
+    const b = m?.boardById.get(it.board);
+    const dot = node('span', 'mx-dot');
+    dot.style.background = b?.color ?? PL_NONE_COLOR;
+    meta.append(dot, [b?.label ?? 'unknown board', it.card].filter(Boolean).join(' · '));
+    main.append(meta, node('span', 'mx-wait-text', it.text));
+    li.append(age, main);
+    if (canOpen) {
+      const go = node('button', 'mx-answer', 'Answer');
+      go.type = 'button';
+      go.setAttribute('aria-label', `Answer in ${b?.label ?? 'the board'}'s terminal`);
+      go.onclick = () => openBoardTerminal(it.board, m?.workspaceId);
+      li.append(go);
+    } else li.append(node('span', 'mx-answer-note', `Answer in ${b?.label ?? 'the board'}'s terminal`));
+    list.append(li);
+  }
+  host.append(list);
+}
+
+function mxRenderWaitTime(host) {
+  const head = node('div', 'mx-panel-head');
+  head.append(
+    node('h2', '', 'Time waiting on you'),
+    node('div', 'mx-grow'),
+    mxToggle('Group by', [['board', 'By board'], ['phase', 'By phase']], mx.ui.waitBy, (v) => {
+      mx.ui.waitBy = v;
+      mxRenderBody();
+    }),
+  );
+  host.append(head);
+  const r = mx.res.wait;
+  const w = r?.state === 'ok' ? r.data : null;
+  const state = mxChartState('wait');
+  if (state) return host.append(state);
+  const sums = node('div', 'mx-wait-sums');
+  const sum = (cls, title, total, sub) => {
+    const el = node('div', `mx-wait-sum ${cls}`);
+    const k = node('span', 'mx-kicker');
+    k.append(node('span', `mx-sw ${cls === 'needs' ? 'mx-sw-needs' : 'hatch-rose'}`), title);
+    el.append(k, node('span', 'mx-big mx-big-md', mxWait(total)), node('span', 'mx-sub mono', sub));
+    return el;
+  };
+  const d = w.needsYou.duration;
+  const res = w.blocked.resolution;
+  sums.append(
+    sum('needs', 'NEEDS YOU', w.needsYou.totalMs, `${mxPlural(w.needsYou.count, 'wait')}${d.count ? ` · p50 ${mxWait(d.p50)} · p85 ${mxWait(d.p85)}` : ''}`),
+    sum('blocked', 'BLOCKED', w.blocked.totalMs, `${mxPlural(w.blocked.count, 'blocker')}${res.count ? ` · resolved p50 ${mxWait(res.p50)} · p85 ${mxWait(res.p85)}` : ''}`),
+  );
+  host.append(sums);
+  const byBoard = mx.ui.waitBy === 'board';
+  const m = mx.meta;
+  const rows = (byBoard ? w.byBoard : w.byPhase)
+    .map((x) => {
+      const board = byBoard ? x.project_id : x.phase_id === null ? null : (mxPhaseById(x.phase_id)?.board ?? null);
+      const b = board ? m?.boardById.get(board) : null;
+      const name = byBoard ? (b?.label ?? x.name ?? 'unknown board') : x.phase_id === null ? 'No phase' : `${m && m.boards.length > 1 && b ? `${b.label} · ` : ''}${x.title ?? 'unknown phase'}`;
+      return { name, color: b?.color ?? PL_NONE_COLOR, n: x.needsYou.totalMs, b: x.blocked.totalMs };
+    })
+    .filter((x) => x.n + x.b > 0)
+    .sort((a, b) => b.n + b.b - (a.n + a.b));
+  if (!rows.length) return host.append(node('div', 'mx-chart-state', 'No waiting in this period'));
+  const max = Math.max(...rows.map((x) => x.n + x.b));
+  const h = (ms) => (ms / 3_600_000).toFixed(1);
+  const bars = node('div', 'mx-wait-bars');
+  bars.setAttribute('role', 'img');
+  bars.setAttribute('aria-label', `Hours waiting ${byBoard ? 'by board' : 'by phase'}: ${rows.map((x) => `${x.name} ${h(x.n + x.b)} (${h(x.n)} needs you, ${h(x.b)} blocked)`).join('; ')}.`);
+  for (const x of rows) {
+    const row = node('div', 'mx-wait-row');
+    const name = node('span', 'mx-wait-name');
+    const dot = node('span', 'mx-dot');
+    dot.style.background = x.color;
+    name.append(dot, node('span', '', x.name));
+    name.title = x.name;
+    const bar = node('span', 'mx-wait-bar');
+    const nb = node('span', 'needs');
+    nb.style.width = `${((x.n / max) * 100).toFixed(1)}%`;
+    const bb = node('span', 'blocked');
+    bb.style.width = `${((x.b / max) * 100).toFixed(1)}%`;
+    bar.append(nb, bb);
+    bar.title = `needs you ${mxWait(x.n)} · blocked ${mxWait(x.b)}`;
+    const val = node('span', 'mx-wait-val');
+    val.append(node('b', '', `${h(x.n + x.b)}h`), ` · ${h(x.n)} + ${h(x.b)}`);
+    row.append(name, bar, val);
+    bars.append(row);
+  }
+  host.append(bars);
+}
+
+// ---------- Forecast ----------
+function mxForecastTargetName(t) {
+  const m = mx.meta;
+  if (t.kind === 'phase') return t.phase.title;
+  if (t.kind === 'plan') return t.plan.title;
+  if (!m || mx.f.scope === m.workspaceId) return m && m.boards.length > 1 ? `the whole ${m.boards[0].name} workspace` : (m?.boards[0]?.name ?? 'the board');
+  return m.boardById.get(mx.f.scope)?.label ?? 'the board';
+}
+
+function mxRenderForecast(host) {
+  const panel = mxPanel('mx-fc', 'Forecast');
+  host.replaceChildren(panel);
+  const m = mx.meta;
+  const t = mxForecastTarget();
+  const head = node('div', 'mx-panel-head');
+  head.append(node('h2', '', 'When will it be done?'));
+  if (m) {
+    const boards = mxScopeBoards();
+    const opts = boards.flatMap((b) => (m.phases.get(b.id) ?? []).map((p) => [`phase:${p.id}`, `Phase · ${boards.length > 1 ? `${b.label} · ` : ''}${p.title}`]));
+    if (mx.f.scope === m.workspaceId) opts.push(...m.plans.map((p) => [`plan:${p.id}`, `Plan · ${p.title}`]));
+    opts.push(['all', mx.f.scope === m.workspaceId ? (m.boards.length > 1 ? 'Whole workspace' : 'Whole board') : `Whole board · ${m.boardById.get(mx.f.scope)?.label ?? ''}`]);
+    const sel = mxSelect('Forecast', t.key, opts, (v) => mxSetFilter({ target: v }));
+    sel.classList.add('mx-fc-target');
+    head.append(sel);
+  }
+  head.append(node('div', 'mx-grow'));
+  const r = mx.res.forecastTarget;
+  const fc = r?.state === 'ok' ? r.data : null;
+  if (fc?.status === 'ok') head.append(node('span', 'mx-panel-sub', `${fc.runs.toLocaleString('en-US')} runs · seed ${fc.seed}`));
+  panel.append(head);
+  const state = mxChartState('forecastTarget');
+  if (state) return panel.append(state);
+  const name = mxForecastTargetName(t);
+  if (fc.status !== 'ok') return mxForecastEmpty(panel, fc, t, name);
+  if (fc.remaining === 0) return panel.append(node('div', 'mx-chart-state', `Nothing left to forecast: no open cards in ${name}.`));
+
+  const inDays = (d) => (d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`);
+  const tiles = node('div', 'mx-fc-tiles');
+  const tile = (cls, kicker, big, sub) => {
+    const el = node('div', `mx-fc-tile ${cls}`);
+    el.append(node('span', 'mx-kicker', kicker), node('span', 'mx-fc-big', big), node('span', 'mx-fc-sub', sub));
+    return el;
+  };
+  // "of N in <phase>": the phase's cards as the board lists them (tag-filtered like the forecast)
+  let of = '';
+  if (t.kind === 'phase' && m) {
+    const total = [...m.cards.values()].filter((c) => c.phase_id === t.id && (!mx.f.tag || c.tag === mx.f.tag)).length;
+    of = total >= fc.remaining ? `of ${total} in ${name}` : `in ${name}`;
+  } else of = t.kind === 'plan' ? `in plan ${name}` : `not done in ${name}`;
+  tiles.append(
+    tile('p50', '50% LIKELY BY', mxLongDay(fc.p50.date), inDays(fc.p50.days)),
+    tile('p85 plan', '85% LIKELY BY', mxLongDay(fc.p85.date), `${inDays(fc.p85.days)} · the date to plan on`),
+    tile('p95', '95% LIKELY BY', mxLongDay(fc.p95.date), inDays(fc.p95.days)),
+    tile('left', 'REMAINING', mxPlural(fc.remaining, 'card'), of),
+    tile('basis', 'BASED ON', mxPlural(fc.samples.days, 'day'), `${mxPlural(fc.samples.done, 'card')} done in that time`),
+  );
+  panel.append(tiles);
+
+  const today = mxAddDays(fc.p50.date, -fc.p50.days);
+  const hh = node('div', 'mx-panel-head');
+  hh.append(node('h3', '', `Finish day across ${fc.runs.toLocaleString('en-US')} runs`), node('span', 'mx-panel-sub', `days from today (${mxLongDay(today)})`));
+  panel.append(hh);
+  const histHost = node('div');
+  panel.append(histHost);
+  mxRenderHistogram(histHost, fc, today, panel.clientWidth - 40);
+  panel.append(
+    node(
+      'p',
+      'mx-note mx-how',
+      `We replay your last ${mxPlural(fc.samples.days, 'day')} of daily throughput ${fc.runs.toLocaleString('en-US')} times, drawing a random past day at a time, until the ${mxPlural(fc.remaining, 'remaining card')} ${fc.remaining === 1 ? 'is' : 'are'} done. No estimates needed. More history or steadier throughput narrows the spread.`,
+    ),
+  );
+}
+
+const MX_HIST_MAX_BARS = 90;
+function mxRenderHistogram(host, fc, today, width) {
+  const W = Math.max(480, width);
+  const counts = new Map(fc.histogram.map((b) => [b.days, b.count]));
+  const minD = fc.histogram[0].days;
+  const maxD = fc.histogram[fc.histogram.length - 1].days;
+  const lastD = Math.min(maxD, minD + MX_HIST_MAX_BARS - 1); // a long tail is lumped into the last bar ("N+")
+  const bins = [];
+  for (let d = minD; d <= lastD; d++) bins.push({ d, count: counts.get(d) ?? 0, tail: false });
+  if (maxD > lastD) {
+    const last = bins[bins.length - 1];
+    last.tail = true;
+    last.count = fc.histogram.filter((b) => b.days >= lastD).reduce((s, b) => s + b.count, 0);
+  }
+  const L = 56;
+  const R = W - 8;
+  const bw = (R - L) / bins.length;
+  // markers at the right edge of the 50 / 85 / 95% day's bar; labels that would collide go on a row below
+  let prevX = -Infinity;
+  let row = 0;
+  const marks = [
+    ['50', fc.p50, '#e8eaf0', '5 4', 1.5],
+    ['85', fc.p85, '#5dd3a8', null, 2],
+    ['95', fc.p95, '#aab2c5', '2 4', 1.5],
+  ].map(([p, pt, color, dash, sw]) => {
+    const x = L + (Math.min(pt.days, lastD) - minD + 1) * bw;
+    row = x - prevX < 150 ? row + 1 : 0;
+    prevX = x;
+    return { p, pt, color, dash, sw, x, row };
+  });
+  const T = 30 + Math.max(...marks.map((mk) => mk.row)) * 20;
+  const H = 330 + T;
+  const box = { L, R, T, B: H - 42 };
+  const ticks = mxNiceTicks(Math.max(...bins.map((b) => b.count)));
+  const yMax = ticks[ticks.length - 1];
+  const y = (v) => box.B - (v * (box.B - box.T)) / yMax;
+  const pad = Math.min(10, bw * 0.15);
+  const f = (v) => v.toFixed(1);
+  const wrap = node('div', 'mx-chart');
+  wrap.style.width = `${W}px`;
+  wrap.style.height = `${H}px`;
+  const svg = svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: 'img' });
+  svg.setAttribute('aria-label', `Histogram of simulated finish days. 50% by day ${fc.p50.days}, 85% by day ${fc.p85.days}, 95% by day ${fc.p95.days}.`);
+  const labels = mxGrid(svg, box, ticks, y, 44);
+  labels.forEach((l, i) => (l.textContent = ticks[i].toLocaleString('en-US')));
+  const tip = node('div', 'mx-tip hidden');
+  tip.setAttribute('role', 'tooltip');
+  const outline = svgEl('path', { d: '', fill: 'none', stroke: '#e8eaf0', 'stroke-width': 2, 'pointer-events': 'none' });
+  const barD = (i, v) => {
+    const x0 = box.L + i * bw + pad;
+    const w = bw - 2 * pad;
+    const yt = y(v);
+    const rr = Math.min(4, w / 2, box.B - yt);
+    return v > 0
+      ? `M${f(x0)},${box.B} V${f(yt + rr)} Q${f(x0)},${f(yt)} ${f(x0 + rr)},${f(yt)} H${f(x0 + w - rr)} Q${f(x0 + w)},${f(yt)} ${f(x0 + w)},${f(yt + rr)} V${box.B} Z`
+      : '';
+  };
+  let cum = fc.histogram.filter((b) => b.days < minD).reduce((s, b) => s + b.count, 0);
+  const every = Math.max(1, Math.ceil(88 / bw));
+  bins.forEach((b, i) => {
+    cum += b.count;
+    const d = barD(i, b.count);
+    if (d) {
+      const bar = svgEl('path', { d, fill: b.d <= fc.p85.days ? '#5dd3a8' : 'rgba(93,211,168,0.38)', class: 'mx-hist-bar' });
+      bar.dataset.days = String(b.d);
+      bar.dataset.count = String(b.count);
+      svg.append(bar);
+    }
+    const date = mxAddDays(today, b.d);
+    const doneBy = Math.round((cum / fc.runs) * 100);
+    const hit = svgEl('rect', { x: f(box.L + i * bw), y: box.T, width: f(bw), height: box.B - box.T, fill: 'transparent', class: 'mx-hist-hit' });
+    hit.dataset.days = String(b.d);
+    hit.addEventListener('mouseenter', () => {
+      outline.setAttribute('d', d);
+      tip.replaceChildren(
+        node('span', 'mx-tip-h', `Day ${b.d}${b.tail ? '+' : ''} · ${mxLongDay(date)}`),
+        node('span', 'mx-tip-row', `${b.count.toLocaleString('en-US')} ${b.count === 1 ? 'run' : 'runs'} finished ${b.tail ? 'then or later' : 'that day'}`),
+        node('span', 'mx-tip-row mx-tip-hi', `${doneBy}% of runs done by then`),
+      );
+      mxPlaceTip(tip, box.L + (i + 0.5) * bw, 140, W, 230);
+    });
+    hit.addEventListener('mouseleave', () => {
+      outline.setAttribute('d', '');
+      tip.classList.add('hidden');
+    });
+    svg.append(hit);
+    if (i % every === 0) {
+      const l = node('span', 'mx-axis-x mx-axis-x-lg', `${b.d}${b.tail ? '+' : ''}d · ${mxWeekdayDay(date)}`);
+      l.style.left = `${f(box.L + (i + 0.5) * bw - 40)}px`;
+      l.style.top = `${box.B + 12}px`;
+      labels.push(l);
+    }
+  });
+  svg.append(outline);
+  for (const mk of marks) {
+    const line = svgEl('path', { d: `M${f(mk.x)},${f(mk.row * 20 + 22)} V${box.B}`, stroke: mk.color, 'stroke-width': mk.sw, fill: 'none', class: 'mx-hist-mark' });
+    if (mk.dash) line.setAttribute('stroke-dasharray', mk.dash);
+    line.dataset.p = mk.p;
+    svg.append(line);
+    const l = node('span', 'mx-hist-label', `${mk.p}% · ${mxLongDay(mk.pt.date)}`);
+    l.dataset.p = mk.p;
+    l.style.color = mk.color;
+    l.style.left = `${f(Math.min(W - 150, Math.max(0, mk.x - 60)))}px`;
+    l.style.top = `${mk.row * 20}px`;
+    labels.push(l);
+  }
+  wrap.append(svg, ...labels, tip);
+  host.append(wrap);
+}
+
+// Not enough history: what's missing, and the whole workspace as a fallback when it has enough.
+function mxForecastEmpty(panel, fc, t, name) {
+  const m = mx.meta;
+  const box = node('div', 'mx-fc-empty');
+  const scopeLabel = m && mx.f.scope !== m.workspaceId ? ` (${m.boardById.get(mx.f.scope)?.label ?? ''})` : '';
+  const what = t.kind === 'phase' ? `PHASE · ${name}` : t.kind === 'plan' ? `PLAN · ${name}` : 'WHOLE BOARD';
+  box.append(node('span', 'mx-kicker', `FORECAST · ${what.toUpperCase()}${scopeLabel}`));
+  box.append(
+    node('h2', '', 'Not enough history yet'),
+    node(
+      'p',
+      'mx-fc-empty-lead',
+      `A forecast needs at least ${mxPlural(fc.need.days, 'day')} of work and ${mxPlural(fc.need.done, 'done card')} ${m && mx.f.scope !== m.workspaceId ? 'on this board' : 'in this workspace'}${mx.f.tag ? ` tagged ${mx.f.tag}` : ''}. It appears on its own once there's enough.`,
+    ),
+  );
+  const bars = node('div', 'mx-fc-need');
+  for (const [label, have, need] of [
+    ['DAYS OF HISTORY', fc.have.days, fc.need.days],
+    ['DONE CARDS', fc.have.done, fc.need.done],
+  ]) {
+    const el = node('div', 'mx-fc-need-item');
+    const top = node('span', 'mx-fc-need-top');
+    top.append(node('span', '', label), node('b', '', `${have} / ${need}`));
+    const bar = node('span', 'mx-bar mx-bar-lg');
+    bar.setAttribute('role', 'img');
+    bar.setAttribute('aria-label', `${have} of ${need} ${label.toLowerCase()}`);
+    const fill = node('span', 'mx-bar-fill blue');
+    fill.style.width = `${Math.min(100, (have / need) * 100)}%`;
+    bar.append(fill);
+    el.append(top, bar);
+    bars.append(el);
+  }
+  box.append(bars);
+  const all = mx.res.forecastAll;
+  if (m && mx.f.scope !== m.workspaceId && all) {
+    if (all.state === 'loading') box.append(node('p', 'mx-note', 'Checking the whole workspace…'));
+    else if (all.state === 'ok' && all.data.status === 'ok') {
+      box.append(node('p', 'mx-note', `Meanwhile, the whole ${m.boards[0].name} workspace has enough history: its forecast uses every board's throughput.`));
+      const go = node('button', 'mx-btn primary', 'Forecast the whole workspace');
+      go.type = 'button';
+      go.onclick = () => mxSetFilter({ scope: m.workspaceId, target: 'all' });
+      const actions = node('div', 'mx-fc-actions');
+      actions.append(go);
+      box.append(actions);
+    } else if (all.state === 'ok') box.append(node('p', 'mx-note', `The whole ${m.boards[0].name} workspace doesn't have enough history yet either.`));
+  }
+  panel.append(box);
+}
+
 // ---------- drill-down side panel ----------
 const mxBoardOf = (id, fallback) => mx.meta?.cards.get(id)?.board ?? fallback ?? null;
 const mxAgentOf = (id) => mx.meta?.cards.get(id)?.agent ?? null;
@@ -1739,7 +2719,9 @@ const mxScopeLabel = () => {
   return [scope, phase, mx.f.tag && `tag ${mx.f.tag}`, mx.f.agent && mx.f.agent].filter(Boolean).join(' · ');
 };
 
-function mxDrillDone(points, kicker, range) {
+// measure: which time the rows show and sort by (the Flow tab's Cycle / Lead toggle)
+function mxDrillDone(points, kicker, range, measure = 'cycle') {
+  const ms = (p) => (measure === 'lead' ? p.leadTimeMs : p.cycleTimeMs);
   const rows = points.map((p) => ({
     id: p.id,
     title: p.title,
@@ -1747,18 +2729,18 @@ function mxDrillDone(points, kicker, range) {
     agent: mxAgentOf(p.id),
     when: `done ${mxWeekdayDay(mxDayKey(p.doneAt, mx.f.tz))}`,
     at: p.doneAt,
-    value: p.cycleTimeMs,
-    valueText: mxSpan(p.cycleTimeMs),
+    value: ms(p),
+    valueText: mxSpan(ms(p)),
   }));
-  const cyc = [...points.map((p) => p.cycleTimeMs)].sort((a, b) => a - b);
+  const cyc = [...points.map(ms)].sort((a, b) => a - b);
   mxOpenDrill({
     kicker,
     title: `${mxPlural(rows.length, 'card')} done`,
     sub: `${range} · ${mxScopeLabel()}`,
-    stat: cyc.length ? `median cycle ${mxSpan(cyc[Math.ceil(cyc.length / 2) - 1])}` : '',
+    stat: cyc.length ? `median ${measure} ${mxSpan(cyc[Math.ceil(cyc.length / 2) - 1])}` : '',
     rows,
     sorts: [
-      ['value', 'Longest cycle time', (a, b) => b.value - a.value],
+      ['value', `Longest ${measure} time`, (a, b) => b.value - a.value],
       ['at', 'Done date', (a, b) => b.at - a.at],
       ['board', 'Board', mxByBoard],
     ],
@@ -2140,7 +3122,83 @@ function renderPhaseDetail() {
         )
         .join('')
     : '<li class="pd-card empty">no cards yet</li>';
+  // a re-render (any card event) keeps what's being typed into the budget field
+  const typing = document.activeElement?.id === 'pd-budget' && document.activeElement.dataset.phase === p.id ? document.activeElement.value : null;
   detail.innerHTML = `<div class="pd-detail"><div class="pd-detail-head"><span class="pd-detail-title">${esc(p.title)}</span><span class="pd-badge ${esc(p.status)}">${esc(p.status)}</span></div>${p.goal ? `<div class="pd-detail-goal">${esc(p.goal)}</div>` : ''}<h4>Cards ${done}/${pc.length}</h4><ul class="pd-cards">${rows}</ul></div>`;
+  detail.querySelector('.pd-detail h4').before(phaseBudgetField(p, typing));
+}
+
+// Phase detail: "Budget ($)" (empty = no budget), saved via PUT /phase/:id/budget on change; errors inline.
+// The phases list doesn't carry budgets: the current one is read from /metrics/cost's budgets, cached per phase.
+let pdBudgetMsg = null; // { phase, text, error }: the last save's result, kept across re-renders
+const pdBudgets = new Map(); // phase id → budget_usd (null = no budget) | { error }
+const pdBudgetLoads = new Set();
+function loadPhaseBudget(id) {
+  if (!projectId || pdBudgetLoads.has(id)) return;
+  pdBudgetLoads.add(id);
+  (async () => {
+    const res = await fetch(`/metrics/cost?project=${encodeURIComponent(projectId)}&phase=${encodeURIComponent(id)}&limit=1`);
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+    pdBudgets.set(id, body.budgets.find((b) => b.phase_id === id)?.budget ?? null);
+  })()
+    .catch((err) => {
+      if (!pdBudgets.has(id) || pdBudgets.get(id)?.error) pdBudgets.set(id, { error: err.message }); // keep a known value on a refresh failure
+    })
+    .finally(() => {
+      pdBudgetLoads.delete(id);
+      if (selectedPhaseId === id && activeView === 'phases') renderPhaseDetail();
+    });
+}
+function phaseBudgetField(p, typing) {
+  const field = node('div', 'pd-budget');
+  const label = node('label', 'pd-budget-label', 'Budget ($)');
+  label.htmlFor = 'pd-budget';
+  const input = node('input', 'st-num pd-budget-input');
+  input.id = 'pd-budget';
+  input.dataset.phase = p.id;
+  input.type = 'number';
+  input.min = '0';
+  input.step = 'any';
+  input.placeholder = 'no budget';
+  const known = pdBudgets.get(p.id);
+  if (known === undefined) {
+    if (activeView === 'phases') loadPhaseBudget(p.id);
+    input.disabled = true;
+    input.placeholder = 'loading…';
+  }
+  input.value = typing ?? (typeof known === 'number' ? known : '');
+  const mine = pdBudgetMsg?.phase === p.id ? pdBudgetMsg : known?.error ? { text: `Couldn't read the budget: ${known.error}`, error: true } : null;
+  const msg = node('span', `pd-budget-msg${mine?.error ? ' error' : ''}`, mine?.text ?? 'empty = no budget');
+  msg.setAttribute('role', 'status');
+  if (mine?.error) input.classList.add('bad');
+  const fail = (text) => {
+    pdBudgetMsg = { phase: p.id, text, error: true };
+    input.classList.add('bad');
+    msg.className = 'pd-budget-msg error';
+    msg.textContent = text;
+  };
+  input.onchange = async () => {
+    if (input.validity.badInput) return fail('Enter an amount in dollars, or leave it empty for no budget');
+    const v = input.value.trim() === '' ? null : Number(input.value);
+    if (v !== null && (!Number.isFinite(v) || v < 0)) return fail('The budget can’t be negative');
+    try {
+      const res = await fetch(`/phase/${encodeURIComponent(p.id)}/budget`, { method: 'PUT', body: JSON.stringify({ budget_usd: v }) });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      pdBudgets.set(p.id, body.budget_usd);
+      pdBudgetMsg = { phase: p.id, text: v === null ? 'Budget cleared' : 'Saved', error: false };
+      renderPhaseDetail();
+    } catch (err) {
+      fail(err.message);
+    }
+  };
+  field.append(label, input, msg);
+  if (typing !== null)
+    queueMicrotask(() => {
+      input.focus();
+    });
+  return field;
 }
 
 function cardEl(card) {
@@ -2859,6 +3917,148 @@ function showSettingsTab(tab) {
   if (tab === 'skills') loadSkills();
   if (tab === 'team') loadTeam();
   if (tab === 'board') renderBoardSettings();
+  if (tab === 'prices') loadPrices();
+}
+
+// Prices tab: the global price table (GET / PUT /settings/prices), USD per million tokens.
+const PRICE_TYPES = [
+  ['input', 'Input'],
+  ['output', 'Output'],
+  ['cache_read', 'Cache read'],
+  ['cache_creation', 'Cache write'],
+];
+const PRICE_MAX = 10_000;
+let pricesSeq = 0;
+async function loadPrices() {
+  const host = $('prices-editor');
+  const seq = ++pricesSeq;
+  host.replaceChildren(node('div', 'st-rowsub', 'Loading…'));
+  try {
+    const res = await fetch('/settings/prices');
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+    if (seq === pricesSeq) renderPrices(body);
+  } catch (err) {
+    if (seq !== pricesSeq) return;
+    const retry = node('button', 'st-ghost', 'Retry');
+    retry.onclick = loadPrices;
+    host.replaceChildren(node('div', 'pr-error', `Couldn't load the prices: ${err.message}`), retry);
+  }
+}
+function renderPrices(table, saved = false) {
+  const host = $('prices-editor');
+  const num = (v) => {
+    const i = node('input', 'st-num pr-num');
+    i.type = 'number';
+    i.min = '0';
+    i.max = String(PRICE_MAX);
+    i.step = 'any';
+    i.value = v ?? '';
+    return i;
+  };
+  const rows = []; // { id: input | null (the default row), rates: { type → input }, el }
+  const list = node('div', 'pr-table');
+  const head = node('div', 'pr-row pr-head');
+  head.append(node('span', 'pr-model', 'Model'), ...PRICE_TYPES.map(([, label]) => node('span', 'pr-cell', label)), node('span', 'pr-del'));
+  list.append(head);
+  const addRow = (id, rates) => {
+    const el = node('div', 'pr-row');
+    let idInput = null;
+    if (id === null) el.append(node('span', 'pr-model pr-default', 'Default (any other model)'));
+    else {
+      idInput = node('input', 'pr-id');
+      idInput.value = id;
+      idInput.placeholder = 'model id or prefix';
+      idInput.setAttribute('aria-label', 'Model id');
+      el.append(idInput);
+    }
+    const inputs = {};
+    for (const [type, label] of PRICE_TYPES) {
+      const i = num(rates?.[type]);
+      i.setAttribute('aria-label', `${id === null ? 'Default' : id || 'New model'} ${label} (USD per million tokens)`);
+      inputs[type] = i;
+      el.append(i);
+    }
+    const row = { id: idInput, rates: inputs, el };
+    if (id === null) el.append(node('span', 'pr-del'));
+    else {
+      const del = node('button', 'pr-del pr-del-btn', '✕');
+      del.title = 'Remove model';
+      del.setAttribute('aria-label', `Remove ${id || 'this model'}`);
+      del.onclick = () => {
+        rows.splice(rows.indexOf(row), 1);
+        el.remove();
+      };
+      el.append(del);
+    }
+    rows.push(row);
+    list.append(el);
+    return row;
+  };
+  for (const [id, rates] of Object.entries(table.models)) addRow(id, rates);
+  const def = addRow(null, table.default);
+  list.append(def.el); // the default row stays last
+  const status = node('div', 'pr-status');
+  if (table.placeholder) {
+    status.append(node('span', 'pr-badge', 'placeholder'), node('span', '', 'These are placeholder rates, not real prices. Set your rates and save.'));
+  } else if (saved) status.append(node('span', 'pr-badge ok', 'saved'), node('span', '', 'Prices saved.'));
+  else if (table.updated_at) status.append(node('span', '', `Last saved ${new Date(table.updated_at).toLocaleString()}`));
+  const err = node('div', 'pr-error');
+  err.setAttribute('role', 'alert');
+  const add = node('button', 'st-ghost', 'Add model');
+  add.onclick = () => {
+    const r = addRow('', null);
+    list.append(def.el);
+    r.id.focus();
+  };
+  const save = node('button', 'st-primary', 'Save prices');
+  save.onclick = async () => {
+    err.textContent = '';
+    for (const i of list.querySelectorAll('input')) i.classList.remove('bad');
+    const problems = [];
+    const bad = (input, msg) => {
+      input.classList.add('bad');
+      problems.push(msg);
+    };
+    const models = {};
+    const seen = new Set();
+    let dflt = null;
+    for (const r of rows) {
+      const rates = {};
+      const name = r.id ? r.id.value.trim() : 'Default';
+      if (r.id) {
+        if (!name) bad(r.id, 'Every model needs an id');
+        else if (seen.has(name.toLowerCase())) bad(r.id, `${name} is listed twice`);
+        seen.add(name.toLowerCase());
+      }
+      for (const [type, label] of PRICE_TYPES) {
+        const i = r.rates[type];
+        const v = i.value.trim() === '' || i.validity.badInput ? NaN : Number(i.value);
+        if (!Number.isFinite(v) || v < 0 || v > PRICE_MAX) bad(i, `${name || 'A model'}: ${label} must be a number from 0 to ${PRICE_MAX.toLocaleString('en-US')}`);
+        rates[type] = v;
+      }
+      if (r.id) models[name] = rates;
+      else dflt = rates;
+    }
+    if (problems.length) {
+      err.textContent = problems[0] + (problems.length > 1 ? ` (and ${problems.length - 1} more)` : '');
+      return;
+    }
+    save.disabled = true;
+    try {
+      const res = await fetch('/settings/prices', { method: 'PUT', body: JSON.stringify({ models, default: dflt }) });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      renderPrices(body, true);
+      if (activeView === 'metrics') mxLoad(); // costs + notes follow the new rates
+    } catch (e) {
+      err.textContent = e.message;
+      save.disabled = false;
+    }
+  };
+  const actions = node('div', 'pr-actions');
+  actions.append(add, node('div', 'mx-grow'), save);
+  host.replaceChildren(status, list, err, actions);
 }
 
 // Board tab: this board's stuck thresholds (hours) + WIP limits, saved server-side on change.
@@ -3116,11 +4316,12 @@ async function addTeamMember() {
   loadTeam();
 }
 
-$('settings-btn').onclick = () => {
+function openSettings(tab) {
   $('settings-modal').classList.remove('hidden');
-  showSettingsTab('general');
+  showSettingsTab(tab);
   renderGeneral();
-};
+}
+$('settings-btn').onclick = () => openSettings('general');
 $('settings-close').onclick = () => $('settings-modal').classList.add('hidden');
 $('settings-modal').onclick = (e) => { if (e.target === $('settings-modal')) $('settings-modal').classList.add('hidden'); };
 for (const b of document.querySelectorAll('.st-tab')) b.onclick = () => showSettingsTab(b.dataset.tab);
