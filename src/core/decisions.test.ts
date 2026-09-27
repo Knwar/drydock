@@ -3,7 +3,15 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { createPhase, createTask, createVertical, deleteProject, getOrCreateProject, mergeVerticals } from './board.js';
+import {
+  createPhase,
+  createTask,
+  createVertical,
+  deleteProject,
+  deleteTask,
+  getOrCreateProject,
+  mergeVerticals,
+} from './board.js';
 import { openDb } from './db.js';
 import {
   GovernanceError,
@@ -17,7 +25,7 @@ import {
   updateDecision,
   updateRisk,
 } from './decisions.js';
-import { createDraft } from './plan-drafts.js';
+import { createDraft, deleteDraft } from './plan-drafts.js';
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'kankan-decisions-'));
@@ -146,6 +154,72 @@ describe('decision log', () => {
     assert.equal(code(() => supersedeDecision(db, 'nope', { title: 'x', decision: 'y' })), 'not_found');
   });
 
+  it('supersede rejects a mismatched project_id and skips links whose target is gone', (t) => {
+    const { db, ws, web, cleanup } = setup();
+    t.after(cleanup);
+    const card = createTask(db, web.id, 'A');
+    const phase = createPhase(db, web.id, 'P');
+    const old = createDecision(db, {
+      project_id: web.id,
+      title: 't',
+      decision: 'd',
+      links: [
+        { target_type: 'card', target_id: card.id },
+        { target_type: 'phase', target_id: phase.id },
+      ],
+    });
+    assert.equal(code(() => supersedeDecision(db, old.id, { project_id: ws.id, title: 'x', decision: 'y' })), 'invalid');
+    assert.equal(getDecision(db, old.id).status, 'active');
+    db.prepare('DELETE FROM phases WHERE id = ?').run(phase.id); // a target removed without link cleanup
+    const { decision } = supersedeDecision(db, old.id, { project_id: web.id, title: 'x', decision: 'y' });
+    assert.deepEqual(decision.links, [{ target_type: 'card', target_id: card.id }]);
+  });
+
+  it('deleting a card or a plan draft drops the links onto it', (t) => {
+    const { db, ws, web, cleanup } = setup();
+    t.after(cleanup);
+    const card = createTask(db, web.id, 'A');
+    const keep = createTask(db, web.id, 'B');
+    const plan = createDraft(db, ws.id, 'Launch');
+    const d = createDecision(db, {
+      project_id: ws.id,
+      title: 't',
+      decision: 'd',
+      links: [
+        { target_type: 'card', target_id: card.id },
+        { target_type: 'card', target_id: keep.id },
+        { target_type: 'plan', target_id: plan.id },
+      ],
+    });
+    const r = createRisk(db, {
+      project_id: web.id,
+      title: 'r',
+      likelihood: 1,
+      impact: 1,
+      links: [{ target_type: 'card', target_id: card.id }],
+    });
+    deleteTask(db, card.id);
+    assert.deepEqual(getRisk(db, r.id).links, []);
+    assert.deepEqual(getDecision(db, d.id).links, [
+      { target_type: 'card', target_id: keep.id },
+      { target_type: 'plan', target_id: plan.id },
+    ]);
+    assert.equal(deleteDraft(db, plan.id), true);
+    assert.deepEqual(getDecision(db, d.id).links, [{ target_type: 'card', target_id: keep.id }]);
+  });
+
+  it('text search folds case for non-ASCII letters', (t) => {
+    const { db, ws, cleanup } = setup();
+    t.after(cleanup);
+    const d = createDecision(db, { project_id: ws.id, title: 'ÉCOLE mode', decision: 'd' });
+    const r = createRisk(db, { project_id: ws.id, title: 'r', description: 'Ärger mit Straße', likelihood: 1, impact: 1 });
+    assert.deepEqual(listDecisions(db, ws.id, { q: 'école' }).map((x) => x.id), [d.id]);
+    assert.deepEqual(listDecisions(db, ws.id, { q: 'É' }).map((x) => x.id), [d.id]);
+    assert.deepEqual(listRisks(db, ws.id, { q: 'ärger' }).map((x) => x.id), [r.id]);
+    // NFD input matches NFC text
+    assert.deepEqual(listDecisions(db, ws.id, { q: 'E\u0301cole' }).map((x) => x.id), [d.id]);
+  });
+
   it('list: workspace includes verticals; filters by status, text, card, phase', (t) => {
     const { db, ws, web, api, cleanup } = setup();
     t.after(cleanup);
@@ -169,7 +243,22 @@ describe('decision log', () => {
     });
     const ids = (list: { id: string }[]) => list.map((d) => d.id);
     assert.deepEqual(ids(listDecisions(db, ws.id)), [v.id, p.id, w.id], 'newest decided first');
-    assert.deepEqual(ids(listDecisions(db, web.id)), [v.id], 'a vertical lists only its own');
+    assert.deepEqual(
+      listDecisions(db, web.id).map((d) => [d.id, d.scope]),
+      [
+        [v.id, 'own'],
+        [w.id, 'workspace'],
+      ],
+      'a vertical lists its own + its workspace’s, not a sibling’s',
+    );
+    assert.deepEqual(
+      listDecisions(db, ws.id).map((d) => [d.id, d.scope]),
+      [
+        [v.id, 'vertical'],
+        [p.id, 'vertical'],
+        [w.id, 'own'],
+      ],
+    );
     assert.deepEqual(ids(listDecisions(db, ws.id, { q: 'seo' })), [v.id], 'text search is case-insensitive over rationale');
     assert.deepEqual(ids(listDecisions(db, ws.id, { q: 'WORKSPACE' })), [w.id]);
     assert.deepEqual(ids(listDecisions(db, ws.id, { card: card.id })), [v.id]);
@@ -234,6 +323,14 @@ describe('risk register', () => {
     const mid = createRisk(db, { project_id: ws.id, title: 'Mid', likelihood: 3, impact: 2 });
     const ids = (list: { id: string }[]) => list.map((r) => r.id);
     assert.deepEqual(ids(listRisks(db, ws.id)), [high.id, mid.id, low.id]);
+    assert.deepEqual(
+      listRisks(db, web.id).map((r) => [r.id, r.scope]),
+      [
+        [high.id, 'own'],
+        [mid.id, 'workspace'],
+        [low.id, 'workspace'],
+      ],
+    );
     updateRisk(db, mid.id, { status: 'closed' });
     assert.deepEqual(ids(listRisks(db, ws.id, { status: 'open' })), [high.id, low.id]);
     assert.deepEqual(ids(listRisks(db, ws.id, { card: card.id })), [high.id]);

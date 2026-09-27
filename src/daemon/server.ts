@@ -1214,7 +1214,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const allowed = !id ? ['GET', 'POST'] : action ? (kind === 'decisions' ? ['POST'] : []) : ['PATCH'];
     if (allowed.includes(method)) {
       if (method !== 'GET' && !isLoopback(req)) return json(res, 403, { error: 'forbidden' });
-      // tell the item's board (and its workspace, for a vertical's item) so an open panel can refresh
+      // tell every board whose panel lists the item, so it can refresh
       const announceGovernance = (item: { id: string; project_id: string }) => {
         const msg = {
           type: 'governance',
@@ -1222,9 +1222,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
           id: item.id,
           project_id: item.project_id,
         };
-        broadcaster.send(item.project_id, msg);
-        const ws = draftWorkspace(item.project_id);
-        if (ws && ws !== item.project_id) broadcaster.send(ws, msg);
+        // a vertical's item: its board + the workspace; a workspace item: the workspace + every vertical
+        const ws = draftWorkspace(item.project_id) ?? item.project_id;
+        const boards =
+          ws === item.project_id ? [ws, ...board.listVerticals(db, ws).map((v) => v.id)] : [item.project_id, ws];
+        for (const pid of boards) broadcaster.send(pid, msg);
       };
       try {
         if (method === 'GET') {

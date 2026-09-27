@@ -787,6 +787,7 @@ export function deleteTask(
     }
     db.prepare('DELETE FROM reviews WHERE task_id = ?').run(taskId);
     db.prepare('DELETE FROM task_events WHERE task_id = ?').run(taskId);
+    db.prepare(`DELETE FROM governance_links WHERE target_type = 'card' AND target_id = ?`).run(taskId);
     db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
     appendEvent(db, { project_id: task.project_id, type: 'delete', payload: { id: taskId, title: task.title } });
   })();

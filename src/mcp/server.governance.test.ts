@@ -96,6 +96,14 @@ describe('MCP decision + risk tools', () => {
 
     const err = await call('record_decision', { project_id: 'nope', title: 't', decision: 'd' });
     assert.equal(err.isError, true);
+    const mismatch = await call('record_decision', {
+      project_id: webId,
+      title: 't',
+      decision: 'd',
+      supersedes: sup.decision.id,
+    });
+    assert.equal(mismatch.isError, true);
+    assert.match(mismatch.content[0].text, /does not match/);
   });
 
   it('add → update → list risks', async () => {
@@ -119,6 +127,9 @@ describe('MCP decision + risk tools', () => {
     assert.deepEqual(await ok('list_risks', { project_id: wsId, status: 'open' }), []);
     const closed = await ok<{ id: string }[]>('list_risks', { project_id: wsId, status: 'closed' });
     assert.deepEqual(closed.map((x) => x.id), [r.id]);
+    const found = await ok<{ id: string; scope: string }[]>('list_risks', { project_id: webId, q: 'SANDBOX', card: cardId });
+    assert.deepEqual(found.map((x) => [x.id, x.scope]), [[r.id, 'own']]);
+    assert.deepEqual(await ok('list_risks', { project_id: webId, q: 'no-such-text' }), []);
     assert.equal((await call('update_risk', { risk_id: 'nope', title: 'x' })).isError, true);
   });
 });

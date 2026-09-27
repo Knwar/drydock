@@ -117,6 +117,34 @@ describe('/decisions + /risks routes', () => {
     assert.equal((await send('POST', `/risks/${d.id}/supersede`, {})).status, 404);
   });
 
+  it('a vertical lists its workspace’s items with scope markers', async () => {
+    const w = await ok<{ id: string }>('POST', '/decisions', { project_id: wsId, title: 'ws-scope', decision: 'd' });
+    const v = await ok<{ id: string }>('POST', '/decisions', { project_id: webId, title: 'web-scope', decision: 'd' });
+    const fromWeb = await ok<{ id: string; scope: string }[]>('GET', `/decisions?project=${webId}&q=-scope`);
+    assert.deepEqual(fromWeb.map((d) => [d.id, d.scope]).sort(), [[v.id, 'own'], [w.id, 'workspace']].sort());
+    const fromWs = await ok<{ id: string; scope: string }[]>('GET', `/decisions?project=${wsId}&q=-scope`);
+    assert.deepEqual(fromWs.map((d) => [d.id, d.scope]).sort(), [[v.id, 'vertical'], [w.id, 'own']].sort());
+  });
+
+  it('a WS client on a vertical receives governance for a workspace-level write', async () => {
+    const sock = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${webId}`);
+    const seen: any[] = [];
+    sock.on('message', (raw) => seen.push(JSON.parse(raw.toString())));
+    await new Promise((r) => sock.once('open', r));
+    try {
+      const d = await ok<{ id: string }>('POST', '/decisions', { project_id: wsId, title: 'fan-out', decision: 'd' });
+      const deadline = Date.now() + 5000;
+      while (!seen.some((m) => m.type === 'governance' && m.id === d.id) && Date.now() < deadline)
+        await new Promise((r) => setTimeout(r, 10));
+      assert.deepEqual(
+        seen.find((m) => m.type === 'governance' && m.id === d.id),
+        { type: 'governance', kind: 'decision', id: d.id, project_id: wsId },
+      );
+    } finally {
+      sock.terminate();
+    }
+  });
+
   it('a WS client on the workspace receives governance for a vertical’s write', async () => {
     const sock = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${wsId}`);
     const seen: any[] = [];

@@ -60,6 +60,10 @@ export interface ListFilter {
   phase?: string; // only items linked to this phase
 }
 
+/** Where a listed item comes from, relative to the listed board: its own, its workspace's, or one of its verticals'. */
+export type Scope = 'own' | 'workspace' | 'vertical';
+export type Listed<T> = T & { scope: Scope };
+
 /** A governance write or lookup failed; nothing was changed. code 'not_found' → 404, anything else → 400. */
 export class GovernanceError extends Error {
   code: string;
@@ -117,11 +121,27 @@ function workspaceOf(db: DB, projectId: string): string {
   return row.parent_id ?? row.id;
 }
 
-/** The project plus, when it is a workspace, its verticals. */
-function projectScope(db: DB, projectId: string): string[] {
-  workspaceOf(db, projectId);
-  const children = db.prepare('SELECT id FROM projects WHERE parent_id = ?').all(projectId) as { id: string }[];
-  return [projectId, ...children.map((c) => c.id)];
+/**
+ * The boards a list covers, each with its scope: the project itself ('own'),
+ * plus its verticals ('vertical') when it is a workspace, or its parent
+ * workspace ('workspace') when it is a vertical.
+ */
+function projectScope(db: DB, projectId: string): Map<string, Scope> {
+  const ws = workspaceOf(db, projectId);
+  const scope = new Map<string, Scope>([[projectId, 'own']]);
+  if (ws !== projectId) scope.set(ws, 'workspace');
+  else
+    for (const c of db.prepare('SELECT id FROM projects WHERE parent_id = ?').all(projectId) as { id: string }[])
+      scope.set(c.id, 'vertical');
+  return scope;
+}
+
+/** Case- and accent-form-insensitive substring match, folded in JS so non-ASCII letters (É/é) match. */
+const fold = (s: string) => s.normalize('NFC').toLowerCase();
+function matchesText(row: Record<string, unknown>, q: string | undefined, textCols: string[]): boolean {
+  if (!q) return true;
+  const needle = fold(q);
+  return textCols.some((c) => typeof row[c] === 'string' && fold(row[c] as string).includes(needle));
 }
 
 function parseLinks(raw: unknown, key: string): Link[] {
@@ -136,16 +156,23 @@ function parseLinks(raw: unknown, key: string): Link[] {
   });
 }
 
-/** A link target must exist and sit in the same workspace as the item. */
-function checkTarget(db: DB, workspaceId: string, link: Link): void {
+/** The board owning a link target (a plan's workspace), or undefined when it no longer exists. */
+function targetOwner(db: DB, link: Link): string | undefined {
   const sql = {
     card: 'SELECT project_id AS owner FROM tasks WHERE id = ?',
     phase: 'SELECT project_id AS owner FROM phases WHERE id = ?',
     plan: 'SELECT workspace_id AS owner FROM plan_drafts WHERE id = ?',
   }[link.target_type];
-  const row = db.prepare(sql).get(link.target_id) as { owner: string } | undefined;
-  if (!row) throw notFound(`no such ${link.target_type}: ${link.target_id}`);
-  if (workspaceOf(db, row.owner) !== workspaceId)
+  return (db.prepare(sql).get(link.target_id) as { owner: string } | undefined)?.owner;
+}
+
+const targetExists = (db: DB, link: Link) => targetOwner(db, link) !== undefined;
+
+/** A link target must exist and sit in the same workspace as the item. */
+function checkTarget(db: DB, workspaceId: string, link: Link): void {
+  const owner = targetOwner(db, link);
+  if (owner === undefined) throw notFound(`no such ${link.target_type}: ${link.target_id}`);
+  if (workspaceOf(db, owner) !== workspaceId)
     throw invalid(`${link.target_type} ${link.target_id} is in another workspace`);
 }
 
@@ -177,25 +204,19 @@ function linksOf(db: DB, kind: Kind, itemId: string): Link[] {
     .all(kind, itemId) as Link[];
 }
 
-/** Shared WHERE for both lists: project scope, status, text search, linked card/phase. */
+/** Shared WHERE for both lists: project scope, status, linked card/phase. Text search runs in JS (matchesText). */
 function listWhere(
   db: DB,
   kind: Kind,
-  projectId: string,
+  scope: Map<string, Scope>,
   filter: ListFilter,
   table: 'decisions' | 'risks',
-  textCols: string[],
 ): { clause: string; params: string[] } {
-  const scope = projectScope(db, projectId);
-  const where = [`project_id IN (${scope.map(() => '?').join(', ')})`];
-  const params: string[] = [...scope];
+  const where = [`project_id IN (${[...scope.keys()].map(() => '?').join(', ')})`];
+  const params: string[] = [...scope.keys()];
   if (filter.status) {
     where.push('status = ?');
     params.push(filter.status);
-  }
-  if (filter.q) {
-    where.push(`(${textCols.map((c) => `instr(lower(COALESCE(${c}, '')), ?) > 0`).join(' OR ')})`);
-    params.push(...textCols.map(() => filter.q!.toLowerCase()));
   }
   for (const [type, id] of [
     ['card', filter.card],
@@ -282,16 +303,19 @@ export function updateDecision(db: DB, id: string, input: unknown): Decision {
 
 /**
  * Replace an active decision with a new one on the same board. The new one
- * inherits the old one's links (copied as-is) plus any given; the old one is
- * marked superseded and points at it. Returns both.
+ * inherits the old one's links whose target still exists, plus any given; the
+ * old one is marked superseded and points at it. A project_id other than the
+ * old one's board is rejected. Returns both.
  */
 export function supersedeDecision(db: DB, id: string, input: unknown): { superseded: Decision; decision: Decision } {
   const b = asObject(input);
   return db.transaction(() => {
     const old = getDecision(db, id);
     if (old.status !== 'active') throw new GovernanceError('already_superseded', `decision ${id} is already superseded`);
+    if (b.project_id !== undefined && b.project_id !== old.project_id)
+      throw invalid(`project_id ${String(b.project_id)} does not match decision ${id}'s board (${old.project_id})`);
     const created = createDecision(db, { ...b, project_id: old.project_id });
-    for (const l of old.links)
+    for (const l of old.links.filter((l) => targetExists(db, l)))
       db.prepare(
         'INSERT OR IGNORE INTO governance_links (kind, item_id, target_type, target_id, created_at) VALUES (?, ?, ?, ?, ?)',
       ).run('decision', created.id, l.target_type, l.target_id, now());
@@ -305,15 +329,21 @@ export function supersedeDecision(db: DB, id: string, input: unknown): { superse
   })();
 }
 
-/** Decisions of a project (and its verticals, when it is a workspace), newest decided first. */
-export function listDecisions(db: DB, projectId: string, filter: ListFilter = {}): Decision[] {
+/**
+ * Decisions of a project plus its workspace's (for a vertical) or its
+ * verticals' (for a workspace), each tagged with its scope; newest decided first.
+ */
+export function listDecisions(db: DB, projectId: string, filter: ListFilter = {}): Listed<Decision>[] {
   if (filter.status !== undefined && !DECISION_STATUSES.includes(filter.status as DecisionStatus))
     throw invalid(`status must be one of ${DECISION_STATUSES.join('|')}`);
-  const { clause, params } = listWhere(db, 'decision', projectId, filter, 'decisions', ['title', 'decision', 'rationale']);
+  const scope = projectScope(db, projectId);
+  const { clause, params } = listWhere(db, 'decision', scope, filter, 'decisions');
   const rows = db
     .prepare(`SELECT * FROM decisions WHERE ${clause} ORDER BY decided_at DESC, created_at DESC, rowid DESC`)
     .all(...params) as DecisionRow[];
-  return rows.map((r) => ({ ...r, links: linksOf(db, 'decision', r.id) }));
+  return rows
+    .filter((r) => matchesText(r, filter.q, ['title', 'decision', 'rationale']))
+    .map((r) => ({ ...r, links: linksOf(db, 'decision', r.id), scope: scope.get(r.project_id)! }));
 }
 
 // ── risks ──
@@ -416,13 +446,19 @@ export function updateRisk(db: DB, id: string, input: unknown): Risk {
   })();
 }
 
-/** Risks of a project (and its verticals, when it is a workspace), highest score first. */
-export function listRisks(db: DB, projectId: string, filter: ListFilter = {}): Risk[] {
+/**
+ * Risks of a project plus its workspace's (for a vertical) or its verticals'
+ * (for a workspace), each tagged with its scope; highest score first.
+ */
+export function listRisks(db: DB, projectId: string, filter: ListFilter = {}): Listed<Risk>[] {
   if (filter.status !== undefined && !RISK_STATUSES.includes(filter.status as RiskStatus))
     throw invalid(`status must be one of ${RISK_STATUSES.join('|')}`);
-  const { clause, params } = listWhere(db, 'risk', projectId, filter, 'risks', ['title', 'description', 'mitigation']);
+  const scope = projectScope(db, projectId);
+  const { clause, params } = listWhere(db, 'risk', scope, filter, 'risks');
   const rows = db
     .prepare(`SELECT * FROM risks WHERE ${clause} ORDER BY likelihood * impact DESC, updated_at DESC, rowid DESC`)
     .all(...params) as RiskRow[];
-  return rows.map((r) => toRisk(db, r));
+  return rows
+    .filter((r) => matchesText(r, filter.q, ['title', 'description', 'mitigation']))
+    .map((r) => ({ ...toRisk(db, r), scope: scope.get(r.project_id)! }));
 }

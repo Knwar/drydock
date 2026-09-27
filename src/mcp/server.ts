@@ -633,7 +633,7 @@ server.registerTool(
   'record_decision',
   {
     description:
-      "Record a decision in the project's decision log. Use it whenever the user makes or confirms a decision that changes scope, behaviour or design (not for routine card routing). Include the rationale, and link the affected cards/phases/plans (same workspace). A workspace-wide decision goes on the workspace's project_id; a vertical-only one on the vertical's. To replace an earlier decision pass supersedes=<its id>: the new one lands on the old one's board, inherits its links and the old one is marked superseded. Returns the decision (or {superseded, decision}).",
+      "Record a decision in the project's decision log. Use it whenever the user makes or confirms a decision that changes scope, behaviour or design (not for routine card routing). Include the rationale, and link the affected cards/phases/plans (same workspace). A workspace-wide decision goes on the workspace's project_id; a vertical-only one on the vertical's. To replace an earlier decision pass supersedes=<its id> with the old decision's own project_id (a different one is rejected): the new one inherits its links and the old one is marked superseded. Returns the decision (or {superseded, decision}).",
     inputSchema: {
       project_id: z.string(),
       title: z.string(),
@@ -654,7 +654,7 @@ server.registerTool(
   'list_decisions',
   {
     description:
-      "The decision log, newest first. A workspace id includes its verticals' decisions. Check it before re-deciding something. Filters: status (active|superseded), q (text search), card / phase (only decisions linked to it).",
+      "The decision log, newest first. Check it before re-deciding something. Each item carries scope: 'own' (this board's), 'workspace' (listing a vertical also returns its workspace's decisions, which apply to it) or 'vertical' (listing a workspace also returns its verticals' decisions; see project_id). Filters: status (active|superseded), q (case-insensitive text search), card / phase (only decisions linked to it).",
     inputSchema: {
       project_id: z.string(),
       status: z.enum(['active', 'superseded']).optional(),
@@ -714,15 +714,18 @@ server.registerTool(
   'list_risks',
   {
     description:
-      "The risk register, highest score first. A workspace id includes its verticals' risks. Filter by status (open|mitigating|closed|occurred).",
+      "The risk register, highest score first. Each item carries scope: 'own' (this board's), 'workspace' (listing a vertical also returns its workspace's risks) or 'vertical' (listing a workspace also returns its verticals' risks; see project_id). Filters: status (open|mitigating|closed|occurred), q (case-insensitive text search), card / phase (only risks linked to it).",
     inputSchema: {
       project_id: z.string(),
       status: z.enum(['open', 'mitigating', 'closed', 'occurred']).optional(),
+      q: z.string().optional(),
+      card: z.string().optional(),
+      phase: z.string().optional(),
     },
   },
-  ({ project_id, status }) => {
+  ({ project_id, ...filter }) => {
     const params = new URLSearchParams({ project: project_id });
-    if (status) params.set('status', status);
+    for (const [k, v] of Object.entries(filter)) if (v) params.set(k, v);
     return api('GET', `/risks?${params}`);
   },
 );
