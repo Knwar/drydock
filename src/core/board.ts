@@ -395,7 +395,7 @@ export class MergeError extends Error {
 /**
  * Merge vertical `fromId` into sibling vertical `intoId`: every card (renumbered
  * after into's, in from's order) with its card_activity, task_events, sync_links,
- * plus from's subscriptions, wait_intervals and undelivered outbox rows. Phases are appended to
+ * plus from's subscriptions, wait_intervals, decisions, risks and undelivered outbox rows. Phases are appended to
  * into's roadmap or folded into into's active phase. Optionally renames/re-roots
  * into (taking from's root is allowed). from's row is deleted. One transaction.
  */
@@ -478,6 +478,9 @@ export function mergeVerticals(
         fromId,
       );
       db.prepare(`UPDATE tasks SET phase_id = NULL WHERE project_id = ? AND lane = 'done'`).run(fromId);
+      db.prepare(
+        `DELETE FROM governance_links WHERE target_type = 'phase' AND target_id IN (SELECT id FROM phases WHERE project_id = ?)`,
+      ).run(fromId);
       db.prepare('DELETE FROM phases WHERE project_id = ?').run(fromId);
     }
 
@@ -501,6 +504,9 @@ export function mergeVerticals(
       `UPDATE wait_intervals SET ended_at = MAX(started_at, ?), closed_by = 'forget' WHERE project_id = ? AND ended_at IS NULL`,
     ).run(now(), fromId);
     db.prepare('UPDATE wait_intervals SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
+    // decisions + risks follow the board (their links name card/phase ids, which don't change)
+    db.prepare('UPDATE decisions SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
+    db.prepare('UPDATE risks SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
     // undelivered outbox rows follow the board; processed rows stay as history
     db.prepare(
       `UPDATE outbox SET project_id = ? WHERE project_id = ? AND (status = 'pending' OR status IS NULL)`,
@@ -595,6 +601,17 @@ export function deleteProject(db: DB, projectId: string): void {
     db.prepare('DELETE FROM card_activity WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM wait_intervals WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM task_events WHERE project_id = ?').run(projectId);
+    // decisions + risks: links from this board's items, links onto its cards/phases/plans, then the items
+    db.prepare(
+      `DELETE FROM governance_links
+        WHERE (kind = 'decision' AND item_id IN (SELECT id FROM decisions WHERE project_id = ?))
+           OR (kind = 'risk' AND item_id IN (SELECT id FROM risks WHERE project_id = ?))
+           OR (target_type = 'card' AND target_id IN (SELECT id FROM tasks WHERE project_id = ?))
+           OR (target_type = 'phase' AND target_id IN (SELECT id FROM phases WHERE project_id = ?))
+           OR (target_type = 'plan' AND target_id IN (SELECT id FROM plan_drafts WHERE workspace_id = ?))`,
+    ).run(projectId, projectId, projectId, projectId, projectId);
+    db.prepare('DELETE FROM decisions WHERE project_id = ?').run(projectId);
+    db.prepare('DELETE FROM risks WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM tasks WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM phases WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM plan_drafts WHERE workspace_id = ?').run(projectId);

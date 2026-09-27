@@ -174,6 +174,46 @@ CREATE TABLE IF NOT EXISTS wait_intervals (  -- time a session sat waiting on th
   closed_by   TEXT                        -- the state it left for (working|idle|offline), or 'restart'
 );
 
+CREATE TABLE IF NOT EXISTS decisions (  -- decision log: what was decided, why, by whom (workspace-level items use the workspace id)
+  id            TEXT PRIMARY KEY,         -- short id
+  project_id    TEXT NOT NULL,            -- the board it belongs to (a workspace, vertical or standalone project)
+  title         TEXT NOT NULL,
+  decision      TEXT NOT NULL,            -- markdown: what was decided
+  rationale     TEXT,                     -- markdown: why, or null
+  decided_by    TEXT,                     -- who made/confirmed it (e.g. 'user'), or null
+  decided_at    INTEGER NOT NULL,         -- epoch ms
+  status        TEXT NOT NULL DEFAULT 'active',  -- active|superseded
+  superseded_by TEXT,                     -- the decision that replaced this one, or null
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS risks (  -- risk register: score = likelihood x impact
+  id          TEXT PRIMARY KEY,           -- short id
+  project_id  TEXT NOT NULL,              -- the board it belongs to (a workspace, vertical or standalone project)
+  title       TEXT NOT NULL,
+  description TEXT,
+  likelihood  INTEGER NOT NULL,           -- 1-5
+  impact      INTEGER NOT NULL,           -- 1-5
+  owner       TEXT,
+  mitigation  TEXT,
+  status      TEXT NOT NULL DEFAULT 'open',  -- open|mitigating|closed|occurred
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  closed_at   INTEGER                     -- epoch ms it became closed|occurred, null while open|mitigating
+);
+
+-- One link table for both kinds: a single link/unlink/filter code path, and one cleanup statement
+-- per project delete. kind + item_id name the decision/risk; target_* the card, phase or plan draft.
+CREATE TABLE IF NOT EXISTS governance_links (
+  kind        TEXT NOT NULL,              -- decision|risk
+  item_id     TEXT NOT NULL,
+  target_type TEXT NOT NULL,              -- card|phase|plan
+  target_id   TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (kind, item_id, target_type, target_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_project_lane ON tasks(project_id, lane, position);
 CREATE INDEX IF NOT EXISTS idx_phases_project ON phases(project_id, position);
 CREATE INDEX IF NOT EXISTS idx_events_recent ON task_events(project_id, created_at);
@@ -185,3 +225,6 @@ CREATE INDEX IF NOT EXISTS idx_events_task ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task_type ON task_events(task_id, type, created_at);
 CREATE INDEX IF NOT EXISTS idx_plan_drafts_workspace ON plan_drafts(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_wait_intervals_project ON wait_intervals(project_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_decisions_project ON decisions(project_id, decided_at);
+CREATE INDEX IF NOT EXISTS idx_risks_project ON risks(project_id);
+CREATE INDEX IF NOT EXISTS idx_governance_links_target ON governance_links(target_type, target_id);
