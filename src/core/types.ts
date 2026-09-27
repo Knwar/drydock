@@ -282,8 +282,43 @@ export interface BoardSummary {
   active: { id: string; title: string; lane: Lane; agent: string | null; blocked: boolean; lane_since: number }[];
   blocked: number; // open cards with a raised blocker
   settings: BoardSettings; // stuck thresholds + WIP limits
-  phase: { id: string; title: string; done: number; total: number } | null; // the active phase
+  phase: { id: string; title: string; done: number; total: number } | null; // the active phase (or the filter's)
   totals: CardTotals & { cards: number };
+  shown: boolean; // the filters leave this board on the dashboard (scope; a phase → its board)
+}
+
+/** Dashboard / Home filters. scope: a board id (none or the workspace id → every board);
+ *  from / to (epoch ms, inclusive) bound when a done card entered done. */
+export interface CardFilter {
+  scope?: string | null;
+  phase?: string | null;
+  tag?: string | null;
+  agent?: string | null;
+  from?: number | null;
+  to?: number | null;
+}
+
+/** One card on GET /workspace/cards. lane_since: when it entered its lane (backlog: its last update). */
+export interface WorkspaceCard {
+  id: string;
+  title: string;
+  board: string;
+  lane: Lane;
+  phase_id: string | null;
+  tag: string | null;
+  agent: string | null;
+  lane_since: number;
+  blocked: boolean;
+}
+
+/** GET /workspace/cards: the cards matching the filters, plus the filter options (the whole workspace's). */
+export interface WorkspaceCards {
+  workspace_id: string;
+  boards: BoardRef[];
+  phases: { id: string; title: string; status: PhaseStatus; board: string }[];
+  tags: string[];
+  agents: string[];
+  cards: WorkspaceCard[];
 }
 
 /** An attention item tagged with the board it came from. */

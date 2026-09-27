@@ -27,6 +27,7 @@ import {
   getNowBuilding,
   getUpNext,
   getAttention,
+  humanSpan,
   findProject,
   getWorkspace,
   getWorkspaceSummary,
@@ -810,6 +811,28 @@ describe('attention', () => {
     assert.equal(getAttention(db, project.id)[0].severity, 'warn');
     agedEvents(db, t.id, 30 * 60_000); // ~50m quiet total
     assert.equal(getAttention(db, project.id)[0].severity, 'blocker');
+  });
+
+  it('names the quiet / waiting spans in human units, not raw minutes', () => {
+    const { db, project } = setup();
+    const quiet = createTask(db, project.id, 'Quiet', { requirements: 'x' });
+    moveTask(db, quiet.id, 'in_progress');
+    agedEvents(db, quiet.id, (3 * 24 + 21) * 3_600_000); // 5580m
+    const review = createTask(db, project.id, 'Review', { requirements: 'x' });
+    moveTask(db, review.id, 'in_review');
+    agedEvents(db, review.id, 125 * 60_000);
+    const reasons = new Map(getAttention(db, project.id).map((i) => [i.card_id, i.reason]));
+    assert.equal(reasons.get(quiet.id), 'Agent quiet 3d 21h — may be stuck');
+    assert.equal(reasons.get(review.id), 'In review 2h 5m, no verdict — dispatch reviewer');
+  });
+
+  it('humanSpan: minutes, hours + minutes, days + hours; a zero tail dropped', () => {
+    assert.equal(humanSpan(0), '0m');
+    assert.equal(humanSpan(16 * 60_000), '16m');
+    assert.equal(humanSpan(60 * 60_000), '1h');
+    assert.equal(humanSpan(125 * 60_000), '2h 5m');
+    assert.equal(humanSpan(48 * 3_600_000), '2d');
+    assert.equal(humanSpan(5566 * 60_000), '3d 20h');
   });
 
   it('flags an in_review card with no verdict after the grace window', () => {

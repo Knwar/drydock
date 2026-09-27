@@ -38,6 +38,9 @@ function loadPlaywright() {
 const { chromium } = loadPlaywright();
 
 // ---- scratch daemon + seed ----
+const base = `http://127.0.0.1:${PORT}`;
+// the port must be free: never drive (or seed) a daemon this script didn't start
+if (await fetch(base + '/').then(() => true, () => false)) throw new Error(`something already answers on ${PORT}: pick another PORT`);
 const S = mkdtempSync(join(tmpdir(), 'kankan-filters-'));
 mkdirSync(join(S, 'data')); // metrics-seed.mjs writes its backdated history to <S>/data/board.db
 const daemon = spawn(process.execPath, ['--import', 'tsx', 'src/daemon/server.ts'], {
@@ -45,15 +48,19 @@ const daemon = spawn(process.execPath, ['--import', 'tsx', 'src/daemon/server.ts
   env: { ...process.env, PORT: String(PORT), DB_PATH: join(S, 'data', 'board.db'), KANKAN_TERMINAL: '0', KANKAN_AUTOPILOT: '0', KANKAN_DISPATCHER: '0' },
   stdio: 'ignore',
 });
-const base = `http://127.0.0.1:${PORT}`;
+let exited = null; // the daemon's exit code/signal, if it dies before we kill it
+daemon.on('exit', (code, signal) => (exited = { code, signal }));
 let browser = null;
 let fails = 0;
 try {
   for (let i = 0; ; i++) {
+    if (exited) throw new Error(`daemon exited early: ${JSON.stringify(exited)}`);
     try {
       await fetch(base + '/');
+      if (exited) throw new Error(`daemon exited early: ${JSON.stringify(exited)}`); // someone else answered
       break;
-    } catch {
+    } catch (err) {
+      if (exited) throw err;
       if (i > 80) throw new Error(`daemon did not start on ${PORT}`);
       await new Promise((r) => setTimeout(r, 250));
     }
@@ -475,6 +482,19 @@ const moveCard = async (board, from, to) => {
   await post(`/task/${c.id}/move`, { lane: to });
   return c;
 };
+// The dashboard's / Home's data reads (fetch GETs), by path: the filters' per-board fan-out
+// (/board, /phases, /task/<id>) must be gone. (The current board's own live reads — /attention,
+// /git/status — ride its board socket, not the view's refetch.)
+const VIEW_READS = ['/workspace/summary', '/workspace/cards', '/home', '/session', '/workspace', '/board', '/phases'];
+const dataReqs = (pg) => {
+  const list = [];
+  pg.on('request', (r) => {
+    const u = new URL(r.url());
+    if (r.resourceType() === 'fetch' && r.method() === 'GET' && (VIEW_READS.includes(u.pathname) || u.pathname.startsWith('/task/'))) list.push(u.pathname);
+  });
+  return list;
+};
+const reqLog = dataReqs(page);
 await page.goto(`${base}/?project=${seed.ws}&view=dashboard&tag=api`);
 await settledDash();
 await page.click(`${D} .fb-chip`);
@@ -482,13 +502,19 @@ await page.waitForSelector(`${D} .fb-bar select[data-fb="tag"]`);
 await page.focus(`${D} select[data-fb="tag"]`);
 await page.evaluate(() => (document.activeElement.__mark = 'tag'));
 {
-  const q0 = await page.evaluate(() => dash.summary.boards[0].lanes.queued);
+  // tile counts are under tag=api: check the refetch against the unfiltered queued total instead
+  const q0 = (await api(`/workspace/summary?project=${seed.ws}`)).boards[0].lanes.queued;
+  await page.evaluate(() => (window.__sum0 = dash.summary));
+  reqLog.length = 0;
   await moveCard(seed.ws, 'backlog', 'queued'); // a live 'card' message → refetch (+ a filtered meta reload)
-  await page.waitForFunction((q) => dash.summary.boards[0].lanes.queued === q + 1, q0, { timeout: 10000 }).catch(() => {});
+  await page.waitForFunction(() => dash.summary !== window.__sum0, null, { timeout: 10000 }).catch(() => {});
   await page.waitForTimeout(2500); // the meta reload lands too
-  ok((await page.evaluate(() => dash.summary.boards[0].lanes.queued)) === q0 + 1, 'the refetch did happen (summary updated)');
+  ok((await page.evaluate(() => dash.summary !== window.__sum0)) && (await api(`/workspace/summary?project=${seed.ws}`)).boards[0].lanes.queued === q0 + 1, 'the refetch did happen (summary updated)');
   const s = await page.evaluate(() => ({ mark: document.activeElement.__mark, value: document.activeElement.value }));
   ok(s.mark === 'tag' && s.value === 'api', 'dashboard: a refetch keeps the focused Tag select (same element, same value)', s);
+  console.log(`     dashboard refetch while filtered: ${reqLog.length} requests (${reqLog.join(', ')})`);
+  ok(reqLog.length <= 2 && reqLog.filter((u) => u === '/workspace/summary').length === 1, 'dashboard: ≤ 2 requests per refetch while filtered (summary + cards)', reqLog);
+  ok(!reqLog.some((u) => /^\/(board|phases|task\/)/.test(u)), 'dashboard: no per-board fan-out', reqLog);
 }
 // custom range popover: a half-typed range survives a refetch
 await page.click(`${D} .mx-range .mx-chip`);
@@ -510,14 +536,20 @@ await page.waitForSelector(`${H} .fb-bar select[data-fb="agent"]`);
 await page.focus(`${H} select[data-fb="agent"]`);
 await page.evaluate(() => (document.activeElement.__mark = 'agent'));
 {
+  // lane counts are under tag=api: move an api-tagged backlog card so they visibly move
   const v0 = await page.$$eval('.home-vlanes', (es) => es.map((e) => e.textContent).join('|'));
-  await moveCard(seed.api, 'backlog', 'queued');
+  const mv = (await api(`/board?project=${seed.api}`)).find((x) => x.lane === 'backlog' && x.tag === 'api') ?? (await api(`/board?project=${seed.api}`)).find((x) => x.lane === 'backlog');
+  reqLog.length = 0;
+  await post(`/task/${mv.id}/move`, { lane: 'queued' });
   await page.waitForFunction((v) => [...document.querySelectorAll('.home-vlanes')].map((e) => e.textContent).join('|') !== v, v0, { timeout: 10000 }).catch(() => {});
   await page.waitForTimeout(2000);
   const v1 = await page.$$eval('.home-vlanes', (es) => es.map((e) => e.textContent).join('|'));
-  ok(v1 !== v0, 'Home: the refetch did happen (lane counts moved)', { v0, v1 });
+  ok(v1 !== v0, 'Home: the refetch did happen (lane counts moved)', { v0, v1, tag: mv.tag });
   const s = await page.evaluate(() => ({ mark: document.activeElement.__mark, fb: document.activeElement.dataset?.fb }));
   ok(s.mark === 'agent', 'Home: a refetch keeps the focused Agent select', s);
+  console.log(`     Home refetch while filtered: ${reqLog.length} requests (${reqLog.join(', ')})`);
+  ok(reqLog.length <= 2 && reqLog.filter((u) => u === '/home').length === 1, 'Home: ≤ 2 requests per refetch while filtered (/home + cards)', reqLog);
+  ok(!reqLog.some((u) => /^\/(board|phases|task\/)/.test(u)), 'Home: no per-board fan-out (no Up-next /task reads)', reqLog);
 }
 
 // ---- keyboard: the chip and Clear keep focus; aria ----
@@ -541,38 +573,71 @@ ok((await page.evaluate(() => document.activeElement.dataset.fb)) === 'tag', 'ch
 
 // ---- one load per open; none in embed without filters ----
 {
-  // a fresh tab: meta loads (one /board read of the Main board each) never outnumber summary loads
+  // a fresh tab: meta loads (one /workspace/cards read each) never outnumber summary loads
   const tab = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const reqs = [];
   tab.on('request', (r) => reqs.push(r.url()));
   await tab.goto(`${base}/?project=${seed.ws}&view=dashboard&tag=ui`);
   await tab.waitForFunction(() => dctx.meta && document.querySelector('.dash-tile'), null, { timeout: 15000 });
   await tab.waitForTimeout(1500);
-  const metaLoads = reqs.filter((u) => u.includes(`/board?project=${seed.ws}`)).length;
+  const metaLoads = reqs.filter((u) => u.includes('/workspace/cards?')).length;
   const summaries = reqs.filter((u) => u.includes('/workspace/summary')).length;
   ok(metaLoads >= 1 && metaLoads <= summaries, 'dashboard open with filters: no double load (meta loads ≤ summary loads)', { metaLoads, summaries });
+  ok(!reqs.some((u) => /\/(board|phases)\?project=/.test(u)), 'dashboard open with filters: no per-board /board or /phases reads', reqs.filter((u) => /\/(board|phases)\?/.test(u)));
   reqs.length = 0;
   await tab.goto(`${base}/?project=${seed.ws}&view=dashboard&embed=1`);
   await tab.waitForSelector('.dash-tile');
   await tab.waitForTimeout(1500);
-  ok(!reqs.some((u) => u.includes('/board?project=')), 'embed without filters: no filter data loaded', reqs.filter((u) => u.includes('/board?')));
+  ok(!reqs.some((u) => u.includes('/workspace/cards?') || u.includes('/board?project=')), 'embed without filters: no filter data loaded', reqs.filter((u) => u.includes('/workspace/cards?') || u.includes('/board?')));
   await tab.close();
 }
 
-// ---- loading states while the cards load (never "Nothing matching…") ----
-await page.route('**/board?project=*', async (r) => {
+// ---- loading states while a filter change's read is on its way (never "Nothing matching…") ----
+const slow = async (r) => {
   await new Promise((res) => setTimeout(res, 2500));
   await r.continue().catch(() => {});
-});
+};
 await page.goto(`${base}/?project=${seed.ws}&view=home&tag=ui`);
-await page.waitForFunction(() => home.data, null, { timeout: 10000 });
+await settledHome();
+await page.route('**/home?*', slow);
+await page.click(`${H} .fb-chip`);
+await page.selectOption(hsel('Tag'), 'db');
 await page.waitForTimeout(200);
-ok((await page.$eval('#home-now .home-hero-title', (e) => e.textContent)) === 'Loading…', 'Home: "Loading…" (not "Nothing matching") before the cards land');
+ok((await page.$eval('#home-now .home-hero-title', (e) => e.textContent)) === 'Loading…' && (await page.$eval('#home-upnext .home-empty', (e) => e.textContent)) === 'Loading…', 'Home: "Loading…" (not the previous filters\' data, not "Nothing matching") before /home lands');
+await page.unroute('**/home?*', slow);
 await page.goto(`${base}/?project=${seed.ws}&view=dashboard&tag=ui`);
-await page.waitForFunction(() => dash.summary, null, { timeout: 10000 });
+await settledDash();
+await page.route('**/workspace/summary?*', slow);
+await page.click(`${D} .fb-chip`);
+await page.selectOption(dsel('Tag'), 'db');
 await page.waitForTimeout(200);
-ok((await page.$eval('.dash-grid', (e) => e.textContent)).startsWith('Loading') && (await page.$eval('.dash-attn', (e) => e.textContent)).includes('Loading'), 'dashboard: loading state before the cards land');
-await page.unroute('**/board?project=*');
+ok((await page.$eval('.dash-grid', (e) => e.textContent)).startsWith('Loading') && (await page.$eval('.dash-attn', (e) => e.textContent)).includes('Loading'), 'dashboard: loading state before the summary for the new filters lands');
+await page.unroute('**/workspace/summary?*', slow);
+
+// ---- carry-over: filter options landing while the user is in the bar ("Loading boards…") ----
+// the deferred redraw runs once focus leaves the bar, so the Scope / Phase / Tag / Agent selects appear
+{
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const held = async (r) => {
+    await gate;
+    await r.continue().catch(() => {});
+  };
+  await page.route('**/workspace/cards?*', held);
+  await page.goto(`${base}/?project=${seed.ws}&view=dashboard`);
+  await page.waitForSelector('.dash-tile');
+  await page.click(`${D} .fb-chip`);
+  await page.waitForSelector(`${D} .fb-bar .mx-dim`);
+  await page.focus(`${D} .mx-seg-btn[data-fb="range-2w"]`);
+  release();
+  await page.waitForFunction(() => dctx.meta, null, { timeout: 10000 });
+  await page.waitForTimeout(200);
+  ok(!!(await page.$(`${D} .fb-bar .mx-dim`)), 'options landed while focus was in the bar: its redraw waits');
+  await page.click('.dash-head-name'); // focus leaves the bar
+  await page.waitForTimeout(200);
+  ok((await page.$$eval(`${D} .fb-bar label.mx-field > span`, (es) => es.map((e) => e.textContent))).join('|') === 'Scope|Phase|Tag|Agent', 'focus left the bar: the deferred redraw ran (selects shown)');
+  await page.unroute('**/workspace/cards?*', held);
+}
 
 // ---- the needs-you drill counts "items" once a session waits ----
 await post('/status', { project_id: seed.web, agent: 'orchestrator', verb: 'needs you', detail: 'permission prompt' });
@@ -585,6 +650,30 @@ await page.waitForSelector('#dashboard-view .mx-drill');
   const n = await page.$$eval('.mx-drill-row', (rs) => rs.length);
   ok((await page.$eval('.mx-drill-count', (e) => e.textContent)) === `${n} items`, 'needs-you drill with a waiting session: "N items"', n);
   await shot('dash-8-needs-you-items');
+}
+
+// ---- a relative range crossing midnight: an idle dashboard / OBS embed never drops to "Loading…" ----
+// (the data's key is the range as chosen, not its epoch ms: those move when the day rolls over)
+for (const [what, at, q] of [
+  ['2w across Sunday → Monday (the window moves)', (() => { const d = new Date(); d.setDate(d.getDate() + ((7 - d.getDay()) % 7)); d.setHours(23, 59, 0, 0); return d; })(), 'range=2w'],
+]) {
+  for (const embed of [false, true]) {
+    const tab = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    await tab.clock.install({ time: at });
+    await tab.goto(`${base}/?project=${seed.ws}&view=dashboard&${q}${embed ? '&embed=1' : ''}`);
+    await tab.waitForFunction(() => document.querySelector('.dash-tile') && dctx.meta, null, { timeout: 15000 });
+    await tab.clock.fastForward('02:00'); // past midnight, no refetch
+    // a status ping redraws Needs you in place (no refetch); then a full redraw of the same data
+    await post('/status', { project_id: seed.api, agent: 'orchestrator', verb: 'Edit', detail: 'x.ts' });
+    await tab.waitForTimeout(400);
+    const attn = await tab.$eval('.dash-attn', (e) => e.textContent);
+    await tab.evaluate(() => renderDashboard());
+    const grid = await tab.$eval('.dash-grid', (e) => e.textContent);
+    const tiles = (await tab.$$('.dash-tile')).length;
+    const day = await tab.evaluate(() => new Date().getDate());
+    ok(!attn.includes('Loading') && !grid.startsWith('Loading') && tiles === 4 && day !== at.getDate(), `midnight (${what}${embed ? ', embed' : ''}): tiles + Needs you stay, no "Loading…"`, { attn: attn.slice(0, 40), grid: grid.slice(0, 40), tiles, day });
+    await tab.close();
+  }
 }
 
 ok(errors.length === 0, 'no page errors', errors);

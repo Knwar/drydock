@@ -12,12 +12,15 @@ import {
   type AttentionSeverity,
   type BoardSettings,
   type BoardSummary,
+  type CardFilter,
   type CardPlacement,
   type CardSummary,
   type CardTotals,
   type ProjectStats,
   type EventType,
   type Lane,
+  type WorkspaceCard,
+  type WorkspaceCards,
   type NowBuildingItem,
   type Phase,
   type PlacementTarget,
@@ -1288,16 +1291,18 @@ export function getActiveCards(db: DB, projectId: string): CardSummary[] {
 
 /** The backlog cards getNextCard picks from, in pick order: scoped to the
  *  active phase when the project has one, else the whole backlog; by position. */
-function backlogInPickOrder(db: DB, projectId: string): Task[] {
-  const active = getActivePhase(db, projectId);
+function backlogInPickOrder(db: DB, projectId: string, f: CardFilter = {}): Task[] {
+  // a phase filter picks that phase's backlog instead of the active one
+  const active = f.phase ? null : getActivePhase(db, projectId);
+  const w = cardWhere(f);
   return (
     active
       ? db.prepare(
-          `SELECT * FROM tasks WHERE project_id = ? AND lane = 'backlog' AND phase_id = ? ORDER BY position`,
-        ).all(projectId, active.id)
+          `SELECT * FROM tasks WHERE project_id = ? AND lane = 'backlog' AND phase_id = ? AND ${w.sql} ORDER BY position`,
+        ).all(projectId, active.id, ...w.params)
       : db.prepare(
-          `SELECT * FROM tasks WHERE project_id = ? AND lane = 'backlog' ORDER BY position`,
-        ).all(projectId)
+          `SELECT * FROM tasks WHERE project_id = ? AND lane = 'backlog' AND ${w.sql} ORDER BY position`,
+        ).all(projectId, ...w.params)
   ) as Task[];
 }
 
@@ -1511,6 +1516,15 @@ const REVIEW_GRACE_MS = 10 * 60_000;
 const MERGE_GRACE_MS = 10 * 60_000;
 const SEV_RANK: Record<AttentionSeverity, number> = { blocker: 0, warn: 1, info: 2 };
 
+/** A span in human units, to the minute: "25m", "5h 12m", "3d 21h" (a zero tail dropped: "2h", "3d"). */
+export function humanSpan(ms: number): string {
+  const m = Math.max(0, Math.round(ms / 60_000));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+  return h % 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : `${Math.floor(h / 24)}d`;
+}
+
 /**
  * Cards that need a human decision, ranked. Pure reads over tasks/reviews/
  * task_events. One row per card — the most severe applicable reason wins.
@@ -1542,7 +1556,6 @@ export function getAttention(db: DB, projectId: string): AttentionItem[] {
     `SELECT MAX(created_at) AS t FROM task_events WHERE task_id = ? AND type = 'move' AND payload LIKE '%"to":"in_review"%'`,
   );
 
-  const mins = (ms: number) => Math.round(ms / 60_000);
   const items: AttentionItem[] = [];
 
   for (const t of tasks) {
@@ -1595,7 +1608,7 @@ export function getAttention(db: DB, projectId: string): AttentionItem[] {
           ...base,
           kind: 'stalled',
           severity: idle > STALL_HARD_MS ? 'blocker' : 'warn',
-          reason: `Agent quiet ${mins(idle)}m — may be stuck`,
+          reason: `Agent quiet ${humanSpan(idle)} — may be stuck`,
           since: last,
         });
         continue;
@@ -1608,7 +1621,7 @@ export function getAttention(db: DB, projectId: string): AttentionItem[] {
           ...base,
           kind: 'awaiting_review',
           severity: 'warn',
-          reason: `In review ${mins(nowTs - entered)}m, no verdict — dispatch reviewer`,
+          reason: `In review ${humanSpan(nowTs - entered)}, no verdict — dispatch reviewer`,
           since: entered,
         });
         continue;
@@ -1657,21 +1670,64 @@ export function getAttention(db: DB, projectId: string): AttentionItem[] {
   return items;
 }
 
+// ── dashboard / Home filters (scope, phase, tag, agent; the date range bounds done cards) ──
+
+/** When a done card entered done: its latest move there, else its last update. */
+const DONE_AT_SQL = `COALESCE((SELECT MAX(e.created_at) FROM task_events e WHERE e.task_id = tasks.id AND e.type = 'move' AND json_extract(e.payload, '$.to') = 'done'), tasks.updated_at)`;
+
+/** SQL over `tasks` for a filter's card-level parts (phase, tag, agent, the done range). Scope is per board: see inScope. */
+function cardWhere(f: CardFilter): { sql: string; params: (string | number)[] } {
+  const where = ['1'];
+  const params: (string | number)[] = [];
+  for (const [col, v] of [['phase_id', f.phase], ['tag', f.tag], ['assigned_agent', f.agent]] as const) {
+    if (v) {
+      where.push(`tasks.${col} = ?`);
+      params.push(v);
+    }
+  }
+  if (f.from != null) {
+    where.push(`(tasks.lane != 'done' OR ${DONE_AT_SQL} >= ?)`);
+    params.push(f.from);
+  }
+  if (f.to != null) {
+    where.push(`(tasks.lane != 'done' OR ${DONE_AT_SQL} <= ?)`);
+    params.push(f.to);
+  }
+  return { sql: where.join(' AND '), params };
+}
+
+/** Any card-level filter (the counts then differ from the plain ones). */
+const cardFiltered = (f: CardFilter) => !!(f.phase || f.tag || f.agent || f.from != null || f.to != null);
+
+/** Is a board in the filter's scope? None or the workspace id → every board. */
+const inScope = (f: CardFilter, workspaceId: string, boardId: string) =>
+  !f.scope || f.scope === workspaceId || f.scope === boardId;
+
+/** Does a board show under the filters: in scope and, under a phase filter, the phase's
+ *  board (an unknown phase hides no board; its cards match nothing anyway). */
+export function boardShown(db: DB, f: CardFilter, workspaceId: string, boardId: string): boolean {
+  if (!inScope(f, workspaceId, boardId)) return false;
+  if (!f.phase) return true;
+  const p = db.prepare('SELECT project_id FROM phases WHERE id = ?').get(f.phase) as { project_id: string } | undefined;
+  return !p || p.project_id === boardId;
+}
+
 // ── workspace summary: one cross-board read for the whole workspace ──
-function boardSummary(db: DB, p: Project): BoardSummary {
+function boardSummary(db: DB, p: Project, f: CardFilter = {}, shown = true): BoardSummary {
+  const w = cardWhere(f);
   const lanes = Object.fromEntries(LANES.map((l) => [l, 0])) as Record<Lane, number>;
   const counts = db
-    .prepare('SELECT lane, COUNT(*) AS n FROM tasks WHERE project_id = ? GROUP BY lane')
-    .all(p.id) as { lane: Lane; n: number }[];
+    .prepare(`SELECT lane, COUNT(*) AS n FROM tasks WHERE project_id = ? AND ${w.sql} GROUP BY lane`)
+    .all(p.id, ...w.params) as { lane: Lane; n: number }[];
   for (const { lane, n } of counts) lanes[lane] = n;
   const active = (
     db
       .prepare(
         `SELECT id, title, lane, assigned_agent, blocked_at, ${LANE_SINCE_SQL} AS lane_since FROM tasks
-         WHERE project_id = ? AND lane IN ('in_progress', 'in_review')
+         WHERE project_id = ? AND lane IN ('in_progress', 'in_review') AND ${w.sql}
          ORDER BY CASE lane WHEN 'in_progress' THEN 0 ELSE 1 END, position`,
       )
-      .all(p.id) as (Pick<Task, 'id' | 'title' | 'lane' | 'assigned_agent' | 'blocked_at'> & { lane_since: number })[]
+      .all(p.id, ...w.params) as (Pick<Task, 'id' | 'title' | 'lane' | 'assigned_agent' | 'blocked_at'> & { lane_since: number })[]
   ).map((t) => ({
     id: t.id,
     title: t.title,
@@ -1683,13 +1739,18 @@ function boardSummary(db: DB, p: Project): BoardSummary {
   const { n: blocked } = db
     .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE project_id = ? AND blocked_at IS NOT NULL AND lane != 'done'`)
     .get(p.id) as { n: number };
-  const ap = db
-    .prepare(`SELECT id, title FROM phases WHERE project_id = ? AND status = 'active' ORDER BY position LIMIT 1`)
-    .get(p.id) as Pick<Phase, 'id' | 'title'> | undefined;
+  // the phase: the filter's (when it's this board's), else the active one. Its progress is the
+  // whole phase's under the tag / agent filters (the date range doesn't apply)
+  const ap = (
+    f.phase
+      ? db.prepare(`SELECT id, title FROM phases WHERE id = ? AND project_id = ?`).get(f.phase, p.id)
+      : db.prepare(`SELECT id, title FROM phases WHERE project_id = ? AND status = 'active' ORDER BY position LIMIT 1`).get(p.id)
+  ) as Pick<Phase, 'id' | 'title'> | undefined;
+  const pw = cardWhere({ tag: f.tag, agent: f.agent });
   const prog = ap
     ? (db
-        .prepare(`SELECT COUNT(*) AS total, SUM(lane = 'done') AS done FROM tasks WHERE phase_id = ?`)
-        .get(ap.id) as { total: number; done: number | null })
+        .prepare(`SELECT COUNT(*) AS total, SUM(lane = 'done') AS done FROM tasks WHERE phase_id = ? AND ${pw.sql}`)
+        .get(ap.id, ...pw.params) as { total: number; done: number | null })
     : null;
   return {
     project: { id: p.id, name: p.name, root_path: p.root_path, parent_id: p.parent_id, autopilot: p.autopilot },
@@ -1699,6 +1760,7 @@ function boardSummary(db: DB, p: Project): BoardSummary {
     settings: getBoardSettings(db, p.id),
     phase: ap && prog ? { id: ap.id, title: ap.title, done: prog.done ?? 0, total: prog.total } : null,
     totals: getTotals(db, p.id),
+    shown,
   };
 }
 
@@ -1710,13 +1772,24 @@ function boardSummary(db: DB, p: Project): BoardSummary {
 // Rank for a board with no attention items: one past the least severe rank, so empty boards sort last.
 const NO_ATTENTION_RANK = Object.keys(SEV_RANK).length;
 
-export function getWorkspaceSummary(db: DB, projectId: string): WorkspaceSummary {
+export function getWorkspaceSummary(db: DB, projectId: string, f: CardFilter = {}): WorkspaceSummary {
   // one read transaction: every board is read from the same consistent snapshot
   return db.transaction((): WorkspaceSummary => {
     const { workspace, verticals } = getWorkspace(db, projectId);
     const projects = [workspace, ...verticals];
+    const shown = new Map(projects.map((p) => [p.id, boardShown(db, f, workspace.id, p.id)]));
+    const tagOf = db.prepare('SELECT tag FROM tasks WHERE id = ?');
+    // Needs you under the filters: the shown boards' items whose card matches phase / agent / tag
+    const keep = (i: AttentionItem) =>
+      (!f.phase || i.phase_id === f.phase) &&
+      (!f.agent || i.agent === f.agent) &&
+      (!f.tag || (tagOf.get(i.card_id) as { tag: string | null } | undefined)?.tag === f.tag);
     const perBoard = projects.map((p) =>
-      getAttention(db, p.id).map((i): WorkspaceAttentionItem => ({ ...i, project_id: p.id, project_name: p.name })),
+      shown.get(p.id)
+        ? getAttention(db, p.id)
+            .filter(keep)
+            .map((i): WorkspaceAttentionItem => ({ ...i, project_id: p.id, project_name: p.name }))
+        : [],
     );
     const worst = (items: WorkspaceAttentionItem[]) =>
       Math.min(NO_ATTENTION_RANK, ...items.map((i) => SEV_RANK[i.severity]));
@@ -1726,7 +1799,7 @@ export function getWorkspaceSummary(db: DB, projectId: string): WorkspaceSummary
       .flatMap((b) => b.items);
     return {
       workspace: { id: workspace.id, name: workspace.name },
-      boards: projects.map((p) => boardSummary(db, p)),
+      boards: projects.map((p) => boardSummary(db, p, f, shown.get(p.id))),
       attention,
     };
   })();
@@ -1768,16 +1841,17 @@ export function cardAgents(db: DB, taskIds: string[], projectIds: string[]): Map
 }
 
 /** Per-board lane counts (every lane present, zero-filled) for the given boards. */
-export function laneCounts(db: DB, projectIds: string[]): Map<string, Record<Lane, number>> {
+export function laneCounts(db: DB, projectIds: string[], f: CardFilter = {}): Map<string, Record<Lane, number>> {
   const map = new Map(
     projectIds.map((id) => [id, Object.fromEntries(LANES.map((l) => [l, 0])) as Record<Lane, number>]),
   );
+  const w = cardWhere(f);
   for (const ids of chunks(projectIds)) {
     const rows = db
       .prepare(
-        `SELECT project_id, lane, COUNT(*) AS n FROM tasks WHERE project_id IN (${marks(ids.length)}) GROUP BY project_id, lane`,
+        `SELECT project_id, lane, COUNT(*) AS n FROM tasks WHERE project_id IN (${marks(ids.length)}) AND ${w.sql} GROUP BY project_id, lane`,
       )
-      .all(...ids) as { project_id: string; lane: Lane; n: number }[];
+      .all(...ids, ...w.params) as { project_id: string; lane: Lane; n: number }[];
     for (const r of rows) map.get(r.project_id)![r.lane] = r.n;
   }
   return map;
@@ -1810,14 +1884,19 @@ function waitingOn(db: DB, dependsOn: string | null): WaitingOn[] {
  * board's 2nd pick, … — so one busy board can't crowd out the others.
  *
  * total_pending = queued + pickable (phase-scoped) backlog across the scope.
+ *
+ * Filters: only the shown boards (scope; a phase → its board), their cards matching
+ * phase / tag / agent; a phase filter picks that phase's backlog instead of the active one.
  */
-export function getUpNext(db: DB, projectId: string, n = 3): UpNext {
-  const boards = homeScope(db, projectId);
-  const queuedStmt = db.prepare(`SELECT * FROM tasks WHERE project_id = ? AND lane = 'queued' ORDER BY position`);
+export function getUpNext(db: DB, projectId: string, n = 3, f: CardFilter = {}): UpNext {
+  const workspaceId = getWorkspace(db, projectId).workspace.id;
+  const boards = homeScope(db, projectId).filter((p) => boardShown(db, f, workspaceId, p.id));
+  const w = cardWhere(f);
+  const queuedStmt = db.prepare(`SELECT * FROM tasks WHERE project_id = ? AND lane = 'queued' AND ${w.sql} ORDER BY position`);
   const perBoard = boards.map((p) => ({
     board: p,
-    queued: queuedStmt.all(p.id) as Task[],
-    backlog: backlogInPickOrder(db, p.id),
+    queued: queuedStmt.all(p.id, ...w.params) as Task[],
+    backlog: backlogInPickOrder(db, p.id, f),
   }));
   const ordered: { task: Task; board: Project }[] = [];
   for (const b of perBoard) for (const task of b.queued) ordered.push({ task, board: b.board });
@@ -1839,10 +1918,13 @@ export function getUpNext(db: DB, projectId: string, n = 3): UpNext {
   return { items, total_pending: ordered.length };
 }
 
-/** in_progress then in_review cards across the scope (lane, then board order, then position). */
-export function getNowBuilding(db: DB, projectId: string): NowBuildingItem[] {
-  const boards = homeScope(db, projectId);
-  const stmt = db.prepare(`SELECT * FROM tasks WHERE project_id = ? AND lane = ? ORDER BY position`);
+/** in_progress then in_review cards across the scope (lane, then board order, then position);
+ *  under filters, the in-scope boards' cards matching phase / tag / agent. */
+export function getNowBuilding(db: DB, projectId: string, f: CardFilter = {}): NowBuildingItem[] {
+  const workspaceId = getWorkspace(db, projectId).workspace.id;
+  const boards = homeScope(db, projectId).filter((p) => inScope(f, workspaceId, p.id));
+  const w = cardWhere(f);
+  const stmt = db.prepare(`SELECT * FROM tasks WHERE project_id = ? AND lane = ? AND ${w.sql} ORDER BY position`);
   // moveTask logs payload {from, to}; the latest move into the current lane is when it got there
   const enteredAt = db.prepare(
     `SELECT MAX(created_at) AS t FROM task_events WHERE task_id = ? AND type = 'move' AND json_extract(payload, '$.to') = ?`,
@@ -1850,7 +1932,7 @@ export function getNowBuilding(db: DB, projectId: string): NowBuildingItem[] {
   const items: NowBuildingItem[] = [];
   for (const lane of ['in_progress', 'in_review'] as const) {
     for (const p of boards) {
-      for (const t of stmt.all(p.id, lane) as Task[]) {
+      for (const t of stmt.all(p.id, lane, ...w.params) as Task[]) {
         const subs: Subtask[] = t.subtasks ? JSON.parse(t.subtasks) : [];
         const entered = enteredAt.get(t.id, lane) as { t: number | null };
         items.push({
@@ -1871,10 +1953,26 @@ export function getNowBuilding(db: DB, projectId: string): NowBuildingItem[] {
 }
 
 /** Every team member with their activity (card_activity.agent = member name)
- *  summed across the scope; members without activity get zeros. */
-export function getAgentBoard(db: DB, projectId: string): AgentBoardEntry[] {
+ *  summed across the scope; members without activity get zeros. Filters: an agent →
+ *  just them; a phase, tag or narrower scope → the members with a matching card. */
+export function getAgentBoard(db: DB, projectId: string, f: CardFilter = {}): AgentBoardEntry[] {
+  const scope = homeScope(db, projectId);
+  const workspaceId = getWorkspace(db, projectId).workspace.id;
+  const inView = scope.filter((p) => inScope(f, workspaceId, p.id));
+  let names: Set<string> | null = null;
+  if (f.phase || f.tag || inView.length < scope.length) {
+    const w = cardWhere({ ...f, agent: null });
+    names = new Set();
+    for (const p of inView) {
+      const rows = db
+        .prepare(`SELECT DISTINCT assigned_agent AS a FROM tasks WHERE project_id = ? AND assigned_agent IS NOT NULL AND ${w.sql}`)
+        .all(p.id, ...w.params) as { a: string }[];
+      for (const r of rows) names.add(r.a);
+    }
+  }
+  const shows = (name: string) => (!f.agent || name === f.agent) && (!names || names.has(name));
   const byAgent = new Map<string, { lines_added: number; lines_removed: number; ms: number; cards: number }>();
-  for (const p of homeScope(db, projectId)) {
+  for (const p of scope) {
     for (const s of getStats(db, p.id).agents) {
       const acc = byAgent.get(s.agent) ?? { lines_added: 0, lines_removed: 0, ms: 0, cards: 0 };
       acc.lines_added += s.lines_added;
@@ -1885,6 +1983,7 @@ export function getAgentBoard(db: DB, projectId: string): AgentBoardEntry[] {
     }
   }
   return listTeam(db)
+    .filter((m) => shows(m.name))
     .map((m): AgentBoardEntry => {
       const a = byAgent.get(m.name) ?? { lines_added: 0, lines_removed: 0, ms: 0, cards: 0 };
       return {
@@ -1900,6 +1999,54 @@ export function getAgentBoard(db: DB, projectId: string): AgentBoardEntry[] {
       };
     })
     .sort((a, b) => b.lines_added - a.lines_added || a.name.localeCompare(b.name));
+}
+
+/** Every card's lane_since (see LANE_SINCE_SQL); done → when it entered done; backlog → its last update. */
+const CARD_SINCE_SQL = `COALESCE(${LANE_SINCE_SQL}, CASE WHEN tasks.lane = 'done' THEN ${DONE_AT_SQL} ELSE tasks.updated_at END)`;
+
+/**
+ * The dashboard's / Home's drill-down cards and filter options in one read. projectId: any
+ * board of the workspace. cards: the in-scope boards' cards matching the filters (board
+ * order, then lane, position) — the scope defaults to projectId's own (a workspace id
+ * covers its verticals, a vertical id itself); the options (boards, phases, tags, agents
+ * incl. the team) cover the whole workspace, unfiltered.
+ */
+export function getWorkspaceCards(db: DB, projectId: string, filter: CardFilter = {}): WorkspaceCards {
+  return db.transaction((): WorkspaceCards => {
+    const { workspace, verticals } = getWorkspace(db, projectId);
+    const f = { ...filter, scope: filter.scope ?? projectId };
+    const boards = [workspace, ...verticals];
+    const w = cardWhere(f);
+    const cardStmt = db.prepare(
+      `SELECT id, title, lane, phase_id, tag, assigned_agent AS agent, blocked_at, ${CARD_SINCE_SQL} AS lane_since
+       FROM tasks WHERE project_id = ? AND ${w.sql} ORDER BY lane, position`,
+    );
+    const cards: WorkspaceCard[] = [];
+    for (const b of boards) {
+      if (!inScope(f, workspace.id, b.id)) continue;
+      for (const r of cardStmt.all(b.id, ...w.params) as (Omit<WorkspaceCard, 'board' | 'blocked'> & { blocked_at: number | null })[]) {
+        const { blocked_at, ...c } = r;
+        cards.push({ ...c, board: b.id, blocked: blocked_at != null });
+      }
+    }
+    const ids = boards.map((b) => b.id);
+    const phaseRows = db
+      .prepare(`SELECT id, title, status, project_id AS board FROM phases WHERE project_id IN (${marks(ids.length)}) ORDER BY position`)
+      .all(...ids) as WorkspaceCards['phases'];
+    const order = new Map(ids.map((id, i) => [id, i]));
+    const phases = phaseRows.sort((a, b) => order.get(a.board)! - order.get(b.board)!); // stable: position within a board
+    const present = (col: 'tag' | 'assigned_agent') =>
+      (db.prepare(`SELECT DISTINCT ${col} AS v FROM tasks WHERE project_id IN (${marks(ids.length)}) AND ${col} IS NOT NULL AND ${col} != ''`).all(...ids) as { v: string }[]).map((r) => r.v);
+    const agents = new Set([...listTeam(db).map((m) => m.name), ...present('assigned_agent')]);
+    return {
+      workspace_id: workspace.id,
+      boards: boards.map((b) => ({ id: b.id, name: b.name })),
+      phases,
+      tags: present('tag').sort(),
+      agents: [...agents].sort((a, b) => a.localeCompare(b)),
+      cards,
+    };
+  })();
 }
 
 // ── sync_links: local<->remote link state for the bridge (Phase 5 foundations) ──
