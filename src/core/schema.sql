@@ -214,6 +214,16 @@ CREATE TABLE IF NOT EXISTS governance_links (
   PRIMARY KEY (kind, item_id, target_type, target_id)
 );
 
+CREATE TABLE IF NOT EXISTS milestones (  -- dated project milestones (workspace-level items use the workspace id)
+  id          TEXT PRIMARY KEY,           -- short id
+  project_id  TEXT NOT NULL,              -- the board it belongs to (a workspace, vertical or standalone project)
+  title       TEXT NOT NULL,
+  date        TEXT NOT NULL,              -- YYYY-MM-DD
+  phase_id    TEXT,                       -- optional phase it marks (same workspace), null when none/deleted
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_project_lane ON tasks(project_id, lane, position);
 CREATE INDEX IF NOT EXISTS idx_phases_project ON phases(project_id, position);
 CREATE INDEX IF NOT EXISTS idx_events_recent ON task_events(project_id, created_at);
@@ -227,4 +237,5 @@ CREATE INDEX IF NOT EXISTS idx_plan_drafts_workspace ON plan_drafts(workspace_id
 CREATE INDEX IF NOT EXISTS idx_wait_intervals_project ON wait_intervals(project_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_decisions_project ON decisions(project_id, decided_at);
 CREATE INDEX IF NOT EXISTS idx_risks_project ON risks(project_id);
+CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id, date);
 CREATE INDEX IF NOT EXISTS idx_governance_links_target ON governance_links(target_type, target_id);

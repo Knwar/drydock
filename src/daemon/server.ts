@@ -16,6 +16,8 @@ import * as metrics from '../core/metrics.js';
 import * as waitTime from '../core/wait-time.js';
 import * as quality from '../core/quality.js';
 import * as forecast from '../core/forecast.js';
+import * as milestones from '../core/milestones.js';
+import * as schedule from '../core/schedule.js';
 import * as cost from '../core/cost.js';
 import * as usageBurn from '../core/usage-burn.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
@@ -1259,6 +1261,34 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
   }
 
+  // ── milestones (reads open, writes loopback-only); a write re-announces the phases of every board listing it, so their Phases views refresh ──
+  const msMatch = pathname.match(/^\/milestones(?:\/([^/]+))?$/);
+  if (msMatch && (msMatch[1] ? ['PATCH', 'DELETE'] : ['GET', 'POST']).includes(method)) {
+    if (method !== 'GET' && !isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+    try {
+      if (method === 'GET') {
+        const project = url.searchParams.get('project');
+        if (!project) return json(res, 400, { error: 'project required' });
+        return json(res, 200, milestones.listMilestones(db, project));
+      }
+      const id = msMatch[1];
+      let item: milestones.Milestone;
+      if (method === 'DELETE') item = milestones.deleteMilestone(db, id);
+      else {
+        const b = await readBody(req);
+        item = id ? milestones.updateMilestone(db, id, b) : milestones.createMilestone(db, b);
+      }
+      // every board that lists it: a workspace item → the workspace + its verticals; a vertical's → it + its workspace
+      const ws = draftWorkspace(item.project_id) ?? item.project_id;
+      const boards = ws === item.project_id ? [ws, ...board.listVerticals(db, ws).map((v) => v.id)] : [item.project_id, ws];
+      for (const pid of boards) announcePhases(pid);
+      return json(res, 200, method === 'DELETE' ? { deleted: item.id } : item);
+    } catch (err) {
+      if (!(err instanceof governance.GovernanceError)) throw err;
+      return json(res, err.code === 'not_found' ? 404 : 400, { error: err.message, code: err.code });
+    }
+  }
+
   const projMatch = pathname.match(/^\/project\/([^/]+)(?:\/(repo|autopilot|settings))?$/);
   if (projMatch && projMatch[1] !== 'new' && projMatch[1] !== 'pick') {
     const [, pid, action] = projMatch;
@@ -1488,6 +1518,23 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       }
       const tag = q.get('tag') || undefined;
       return json(res, 200, forecast.forecast(db, { projectId: project, tag }, target, { tz, now: Date.now(), weeks, seed }));
+    } catch (err) {
+      const status = err instanceof metrics.MetricsParamError ? 400 : 500;
+      return json(res, status, { error: (err as Error).message });
+    }
+  }
+
+  // ── schedule (core/schedule.ts): every phase (incl. the verticals') vs its target date, + milestones ──
+  if (method === 'GET' && pathname === '/metrics/schedule') {
+    const q = url.searchParams;
+    const project = q.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
+    try {
+      const seed = forecast.intParam(q.get('seed'), 'seed', 0, 2 ** 32 - 1);
+      return json(res, 200, schedule.schedule(db, project, { tz, now: Date.now(), seed }));
     } catch (err) {
       const status = err instanceof metrics.MetricsParamError ? 400 : 500;
       return json(res, status, { error: (err as Error).message });
@@ -1784,6 +1831,21 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!db.prepare('SELECT 1 FROM phases WHERE id = ?').get(budgetMatch[1])) return json(res, 404, { error: 'unknown phase' });
     try {
       const phase = board.setPhaseBudget(db, budgetMatch[1], b.budget_usd);
+      announcePhases(phase.project_id);
+      return json(res, 200, phase);
+    } catch (err) {
+      return json(res, 400, { error: (err as Error).message });
+    }
+  }
+  const targetMatch = pathname.match(/^\/phase\/([^/]+)\/target$/);
+  if (method === 'PUT' && targetMatch) {
+    if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+    const b = await readBody(req);
+    if (typeof b !== 'object' || b === null || Array.isArray(b) || !('target_date' in b))
+      return json(res, 400, { error: 'body must be {target_date: YYYY-MM-DD, or null to clear}' });
+    if (!db.prepare('SELECT 1 FROM phases WHERE id = ?').get(targetMatch[1])) return json(res, 404, { error: 'unknown phase' });
+    try {
+      const phase = board.setPhaseTarget(db, targetMatch[1], b.target_date);
       announcePhases(phase.project_id);
       return json(res, 200, phase);
     } catch (err) {

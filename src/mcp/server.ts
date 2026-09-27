@@ -345,14 +345,27 @@ server.registerTool(
   'update_phase',
   {
     description:
-      'Park, activate, close, or reorder a roadmap phase. Activating demotes the current active phase to planned. Judgment move — use advance_phase for the normal phase loop.',
+      'Park, activate, close, or reorder a roadmap phase, and/or set its target date (target_date YYYY-MM-DD, null clears). Activating demotes the current active phase to planned. Judgment move — use advance_phase for the normal phase loop.',
     inputSchema: {
       phase_id: z.string(),
       status: z.enum(['planned', 'active', 'done']).optional(),
       position: z.number().int().min(1).optional(),
+      target_date: z.string().nullable().optional(),
     },
   },
-  ({ phase_id, status, position }) => api('POST', `/phase/${phase_id}`, { status, position }),
+  async ({ phase_id, status, position, target_date }) => {
+    const other = status !== undefined || position !== undefined;
+    if (target_date === undefined) return api('POST', `/phase/${phase_id}`, { status, position });
+    const t = await api('PUT', `/phase/${encodeURIComponent(phase_id)}/target`, { target_date });
+    if (!other) return t;
+    // both asked: say exactly which half happened
+    if (t.isError)
+      return { content: [{ type: 'text', text: `target_date rejected: ${t.content[0].text}; status/position change skipped` }], isError: true };
+    const r = await api('POST', `/phase/${phase_id}`, { status, position });
+    if (r.isError)
+      return { content: [{ type: 'text', text: `target_date saved; status/position change failed: ${r.content[0].text}` }], isError: true };
+    return r;
+  },
 );
 
 server.registerTool(
