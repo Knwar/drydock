@@ -215,6 +215,7 @@ function applyEvent(msg) {
     refreshAttention();
   } else if (msg.type === 'card') {
     cards.set(msg.card.id, msg.card);
+    scheduleReloadSoon();
     renderBoard();
     renderPhaseList();
     refreshAttention();
@@ -223,6 +224,7 @@ function applyEvent(msg) {
     if (msg.card.id === openCardId) refreshCardModal();
   } else if (msg.type === 'card_removed') {
     cards.delete(msg.card_id);
+    scheduleReloadSoon();
     renderBoard();
     renderPhaseList();
     refreshAttention();
@@ -574,7 +576,10 @@ function setView(name) {
   homeView.classList.toggle('hidden', name !== 'home');
   plannerView.classList.toggle('hidden', name !== 'planner');
   if (name === 'scm') refreshFiles();
-  if (name === 'phases') renderPhaseDetail();
+  if (name === 'phases') {
+    loadSchedule(); // fresh pills on every open
+    renderPhaseDetail();
+  }
   if (name === 'attention') renderAttention();
   if (name === 'metrics' && prev !== 'metrics') openMetrics();
   else if (name !== 'metrics' && prev === 'metrics') closeMetrics();
@@ -3204,7 +3209,9 @@ function phaseBudgetField(p, typing) {
 }
 
 // ── Phases: target dates, schedule status (GET /metrics/schedule) and milestones ──
-// pdSched.phases is the roadmap array the schedule was loaded for: a new one (init / phases broadcast) → reload.
+// The schedule reloads while the Phases view is visible: when it opens, when the roadmap array is replaced
+// (init / phases broadcast — milestone and target writes send one; pdSched.phases is the array it was loaded
+// for), and 2s after the last card event (a move changes the remaining counts).
 let pdSched = { phases: null, project: null, byPhase: new Map(), milestones: [], allPhases: [] };
 let pdSchedSeq = 0;
 async function loadSchedule() {
@@ -3225,6 +3232,12 @@ async function loadSchedule() {
   renderPhaseList();
   renderMilestones();
 }
+let pdSchedTimer = null;
+function scheduleReloadSoon() {
+  if (activeView !== 'phases') return;
+  clearTimeout(pdSchedTimer);
+  pdSchedTimer = setTimeout(() => activeView === 'phases' && loadSchedule(), 2000);
+}
 const pdSchedFor = (phaseId) => (pdSched.project === projectId ? pdSched.byPhase.get(phaseId) : null);
 
 // "Tue 6 Oct" for a YYYY-MM-DD day (a calendar day: no time zone shift)
@@ -3234,16 +3247,17 @@ const pdDay = (d) => {
   const t = new Date(`${d}T00:00:00Z`);
   return `${PD_DOW[t.getUTCDay()]} ${t.getUTCDate()} ${PD_MON[t.getUTCMonth()]}`;
 };
-const SCHED_LABEL = { on_track: 'on track', at_risk: 'at risk', late: 'late', unknown: 'unknown', done: 'done' };
+const SCHED_LABEL = { on_track: 'on track', at_risk: 'at risk', late: 'late', unknown: 'unknown', complete: 'complete', done: 'done' };
 
 /** Tooltip: "85% by Tue 6 Oct · target Mon 5 Oct", else what's known. */
 function schedTip(x) {
   const parts = [];
   if (x.status === 'done') parts.push('phase done');
-  else if (!x.target_date) parts.push('no target date');
-  else if (!x.p85) parts.push(x.status === 'late' ? `${x.remaining} card${x.remaining === 1 ? '' : 's'} left` : 'not enough history to forecast');
-  if (x.p85 && x.status !== 'done') parts.push(`85% by ${pdDay(x.p85)}`);
+  else if (x.status === 'complete' || x.status === 'unknown') parts.push(x.reason);
+  else if (!x.p85) parts.push(`${x.remaining} card${x.remaining === 1 ? '' : 's'} left`);
+  if (x.p85) parts.push(`85% by ${pdDay(x.p85)}`);
   if (x.target_date) parts.push(`target ${pdDay(x.target_date)}`);
+  if (x.history === 'workspace') parts.push('workspace history');
   return parts.join(' · ');
 }
 

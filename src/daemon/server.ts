@@ -1261,7 +1261,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
   }
 
-  // ── milestones (reads open, writes loopback-only); a write re-announces the board's phases so the Phases view refreshes ──
+  // ── milestones (reads open, writes loopback-only); a write re-announces the phases of every board listing it, so their Phases views refresh ──
   const msMatch = pathname.match(/^\/milestones(?:\/([^/]+))?$/);
   if (msMatch && (msMatch[1] ? ['PATCH', 'DELETE'] : ['GET', 'POST']).includes(method)) {
     if (method !== 'GET' && !isLoopback(req)) return json(res, 403, { error: 'forbidden' });
@@ -1278,7 +1278,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         const b = await readBody(req);
         item = id ? milestones.updateMilestone(db, id, b) : milestones.createMilestone(db, b);
       }
-      announcePhases(item.project_id);
+      // every board that lists it: a workspace item → the workspace + its verticals; a vertical's → it + its workspace
+      const ws = draftWorkspace(item.project_id) ?? item.project_id;
+      const boards = ws === item.project_id ? [ws, ...board.listVerticals(db, ws).map((v) => v.id)] : [item.project_id, ws];
+      for (const pid of boards) announcePhases(pid);
       return json(res, 200, method === 'DELETE' ? { deleted: item.id } : item);
     } catch (err) {
       if (!(err instanceof governance.GovernanceError)) throw err;

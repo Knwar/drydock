@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { WebSocket } from 'ws';
 import { openDb } from '../core/db.js';
 import { startDaemon } from './test-daemon.js';
 
@@ -104,6 +105,10 @@ describe('phase targets, milestones and /metrics/schedule', () => {
     assert.equal(by.soon.remaining, 3);
     assert.equal(by.later.status, 'on_track');
     assert.match(by.later.p85, /^\d{4}-\d\d-\d\d$/);
+    assert.deepEqual([by.soon.queued, by.later.queued], [3, 4], 'later queues behind soon on web');
+    assert.equal(by.later.history, 'board', 'web forecasts from its own history');
+    assert.equal(by['api v1'].history, 'workspace', 'api has none: falls back to the workspace');
+    assert.match(by['api v1'].reason, /forecast uses workspace history; api has too little$/);
     assert.deepEqual(by.later.milestones.map((m: any) => m.id), [beta.id]);
     assert.equal(s.milestones.length, 2);
     for (const p of s.phases)
@@ -111,6 +116,30 @@ describe('phase targets, milestones and /metrics/schedule', () => {
         assert.ok(k in p, k);
     const web = await ok('GET', `/metrics/schedule?project=${webId}&tz=UTC`);
     assert.deepEqual(web.phases.map((p: any) => p.title), ['soon', 'later'], 'a vertical: its own phases');
+    const webSeeded = await ok('GET', `/metrics/schedule?project=${webId}&tz=UTC&seed=5`);
+    const noMs = ({ milestones: _, ...rest }: any) => rest; // milestone scope is relative to the viewer
+    for (const p of webSeeded.phases) assert.deepEqual(noMs(p), noMs(by[p.title]), `${p.title}: same answer from web and the workspace`);
+
+    // a workspace milestone write re-announces the verticals' phases too; a vertical's reaches the workspace
+    const heard = async (listen: string, write: () => Promise<unknown>) => {
+      const sock = new WebSocket(`ws://127.0.0.1:${daemon.port}/ws?project=${listen}`);
+      const seen: any[] = [];
+      sock.on('message', (raw) => seen.push(JSON.parse(raw.toString())));
+      await new Promise((r) => sock.once('open', r));
+      try {
+        await new Promise((r) => setTimeout(r, 100)); // past the init message
+        seen.length = 0;
+        await write();
+        const deadline = Date.now() + 3000;
+        while (!seen.some((m) => m.type === 'phases' && m.project_id === listen) && Date.now() < deadline)
+          await new Promise((r) => setTimeout(r, 10));
+        return seen.some((m) => m.type === 'phases' && m.project_id === listen);
+      } finally {
+        sock.terminate();
+      }
+    };
+    assert.ok(await heard(apiId, () => ok('PATCH', `/milestones/${beta.id}`, { title: 'Public beta' })), 'ws item → vertical hears');
+    assert.ok(await heard(wsId, () => ok('PATCH', `/milestones/${onApi.id}`, { title: 'API freeze' })), 'vertical item → ws hears');
     assert.equal((await send('GET', '/metrics/schedule')).status, 400);
     assert.equal((await send('GET', '/metrics/schedule?project=nope')).status, 404);
     assert.equal((await send('GET', `/metrics/schedule?project=${wsId}&tz=Not/AZone`)).status, 400);

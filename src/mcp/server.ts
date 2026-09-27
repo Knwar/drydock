@@ -354,11 +354,17 @@ server.registerTool(
     },
   },
   async ({ phase_id, status, position, target_date }) => {
-    if (target_date !== undefined) {
-      const r = await api('PUT', `/phase/${encodeURIComponent(phase_id)}/target`, { target_date });
-      if (r.isError || (status === undefined && position === undefined)) return r;
-    }
-    return api('POST', `/phase/${phase_id}`, { status, position });
+    const other = status !== undefined || position !== undefined;
+    if (target_date === undefined) return api('POST', `/phase/${phase_id}`, { status, position });
+    const t = await api('PUT', `/phase/${encodeURIComponent(phase_id)}/target`, { target_date });
+    if (!other) return t;
+    // both asked: say exactly which half happened
+    if (t.isError)
+      return { content: [{ type: 'text', text: `target_date rejected: ${t.content[0].text}; status/position change skipped` }], isError: true };
+    const r = await api('POST', `/phase/${phase_id}`, { status, position });
+    if (r.isError)
+      return { content: [{ type: 'text', text: `target_date saved; status/position change failed: ${r.content[0].text}` }], isError: true };
+    return r;
   },
 );
 

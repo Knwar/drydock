@@ -59,7 +59,7 @@ describe('MCP update_phase target_date', () => {
     assert.equal(await target(), null);
     const bad = await call('update_phase', { phase_id: phaseId, target_date: '2026-02-30', status: 'done' });
     assert.ok(bad.isError);
-    assert.match(bad.content[0].text, /YYYY-MM-DD/);
+    assert.match(bad.content[0].text, /^target_date rejected: .*YYYY-MM-DD.*; status\/position change skipped$/);
     assert.equal((await ok('get_phases', { project_id: pid }))[0].status, 'active', 'a rejected target skips the status change');
   });
 });
