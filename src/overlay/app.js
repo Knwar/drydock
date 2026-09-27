@@ -724,13 +724,18 @@ async function fbLoadMeta(project, { plans: withPlans = false } = {}) {
 // The dashboard's / Home's filters as query params for /workspace/summary, /home and
 // /workspace/cards. The scope is left out when it's the view's default (the workspace, or a
 // vertical Home's own board: the server's defaults); the range as epoch ms (to inclusive).
-function fbParams(ctx) {
+// relative: the range as chosen ("range=2w", a custom range's days) — the key a view compares
+// its data against, so it doesn't go stale when the day rolls over and "2w" resolves anew.
+function fbParams(ctx, relative = false) {
   const f = ctx.f;
   const workspaceId = ctx.workspaceId ?? ctx.meta?.workspaceId;
   const q = new URLSearchParams();
   if (f.scope && f.scope !== workspaceId && f.scope !== ctx.lockScope) q.set('scope', f.scope);
   for (const k of ['phase', 'tag', 'agent']) if (f[k]) q.set(k, f[k]);
-  if (f.range !== 'all') {
+  if (f.range !== 'all' && relative) {
+    q.set('range', f.range);
+    if (f.range === 'custom') for (const k of ['from', 'to']) if (f[k]) q.set(k, f[k]);
+  } else if (f.range !== 'all') {
     const w = fbWindowMs(f);
     if (Number.isFinite(w.from)) q.set('from', String(w.from));
     if (Number.isFinite(w.to)) q.set('to', String(w.to - 1));
@@ -738,10 +743,11 @@ function fbParams(ctx) {
   return q.toString();
 }
 // One read for the filter options and the matching cards (GET /workspace/cards): a meta
-// like fbLoadMeta's, its cards already filtered (key: the params they match).
+// like fbLoadMeta's, its cards already filtered (key: the filters they match, see fbParams).
 async function fbLoadCards(project, ctx) {
-  const key = fbParams(ctx);
-  const r = await mxGet(`/workspace/cards?project=${encodeURIComponent(project)}${key ? `&${key}` : ''}`);
+  const key = fbParams(ctx, true);
+  const params = fbParams(ctx);
+  const r = await mxGet(`/workspace/cards?project=${encodeURIComponent(project)}${params ? `&${params}` : ''}`);
   const boards = fbBoards(r.boards);
   const phases = new Map(boards.map((b) => [b.id, []]));
   for (const p of r.phases) phases.get(p.board)?.push(p);
@@ -4928,9 +4934,10 @@ async function loadDashboard() {
   const project = dash.workspace ?? currentProject();
   if (!project) return;
   const seq = ++dash.loadSeq;
-  const key = fbParams(dctx);
+  const key = fbParams(dctx, true);
+  const params = fbParams(dctx);
   try {
-    const res = await fetch(`/workspace/summary?project=${encodeURIComponent(project)}${key ? `&${key}` : ''}`);
+    const res = await fetch(`/workspace/summary?project=${encodeURIComponent(project)}${params ? `&${params}` : ''}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const summary = await res.json();
     if (seq !== dash.loadSeq) return; // a newer load (other filters) owns the view
@@ -4969,7 +4976,7 @@ function dashReloadMeta() {
 }
 // Fresh meta for a drill-down (the counts may have moved, or the filters changed, since it loaded).
 async function dashMeta() {
-  if (!dctx.meta || dctx.metaDirty || dctx.meta.key !== fbParams(dctx)) await dashReloadMeta();
+  if (!dctx.meta || dctx.metaDirty || dctx.meta.key !== fbParams(dctx, true)) await dashReloadMeta();
   return dctx.meta;
 }
 function dashSetFilter(patch) {
@@ -4980,7 +4987,7 @@ function dashSetFilter(patch) {
   loadDashboard();
 }
 // The summary on screen was read with other filters (one for these is on its way).
-const dashLoading = () => dash.summaryKey !== fbParams(dctx);
+const dashLoading = () => dash.summaryKey !== fbParams(dctx, true);
 // Boards the filters leave on the dashboard (scope; a phase → its board): the server's call.
 const dashShown = () => dash.summary.boards.filter((b) => b.shown !== false);
 // force: open / a filter change. Otherwise (a refetch or load landed) only when stale, and
@@ -5144,6 +5151,7 @@ function openDashboard() {
   dctx.customOpen = false;
   dctx.open = false; // the chip starts collapsed
   dctx.needMeta = !EMBED || dashActive(); // loaded once the summary lands (loadDashboard)
+  loadTeamCache(); // fresh names / avatars for the tiles' agent chips
   renderDashboard(); // last good summary, or the loading state
   renderDashFilters(true);
   loadDashboard();
@@ -5454,6 +5462,7 @@ function openHome() {
   hctx.customOpen = false;
   hctx.open = false; // the chip starts collapsed
   hctx.needMeta = !EMBED || homeFiltered(); // loaded once /home lands (loadHome)
+  if (homeFiltered()) loadTeamCache(); // a filtered /home carries only the matching agents, not the roster
   renderHome(); // last good data, or the loading state
   renderHomeFilters(true);
   loadHome();
@@ -5470,7 +5479,7 @@ function homeReloadMeta() {
   });
 }
 async function homeMeta() {
-  if (!hctx.meta || hctx.metaDirty || hctx.meta.key !== fbParams(hctx)) await homeReloadMeta();
+  if (!hctx.meta || hctx.metaDirty || hctx.meta.key !== fbParams(hctx, true)) await homeReloadMeta();
   return hctx.meta;
 }
 function homeSetFilter(patch) {
@@ -5482,7 +5491,7 @@ function homeSetFilter(patch) {
   loadHome();
 }
 // The /home on screen was read with other filters (one for these is on its way).
-const homeLoading = () => home.key !== fbParams(hctx);
+const homeLoading = () => home.key !== fbParams(hctx, true);
 // force: open / a filter change. Otherwise (a refetch or load landed) only when stale, and
 // never while the user is in the bar.
 function renderHomeFilters(force) {
@@ -5518,10 +5527,11 @@ async function loadHome() {
   const project = currentProject();
   if (!project) return;
   const seq = ++home.loadSeq;
-  const key = fbParams(hctx);
+  const key = fbParams(hctx, true);
+  const params = fbParams(hctx);
   let data;
   try {
-    const res = await fetch(`/home?project=${encodeURIComponent(project)}${key ? `&${key}` : ''}`);
+    const res = await fetch(`/home?project=${encodeURIComponent(project)}${params ? `&${params}` : ''}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     data = await res.json();
     if (seq !== home.loadSeq) return; // a newer load (other filters) owns the view
@@ -5569,6 +5579,7 @@ async function loadHome() {
 // Board WS (this project) and the all-projects socket (workspace boards) both land here.
 function onHomeMessage(msg) {
   if (msg.type === 'status') applyHomeStatus(msg);
+  if (msg.type === 'init' && home.key) loadTeamCache(); // (re)connected while filtered: the roster isn't on /home
   if (HOME_REFETCH.includes(msg.type)) scheduleDashboardRefetch();
 }
 

@@ -652,6 +652,30 @@ await page.waitForSelector('#dashboard-view .mx-drill');
   await shot('dash-8-needs-you-items');
 }
 
+// ---- a relative range crossing midnight: an idle dashboard / OBS embed never drops to "Loading…" ----
+// (the data's key is the range as chosen, not its epoch ms: those move when the day rolls over)
+for (const [what, at, q] of [
+  ['2w across Sunday → Monday (the window moves)', (() => { const d = new Date(); d.setDate(d.getDate() + ((7 - d.getDay()) % 7)); d.setHours(23, 59, 0, 0); return d; })(), 'range=2w'],
+]) {
+  for (const embed of [false, true]) {
+    const tab = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    await tab.clock.install({ time: at });
+    await tab.goto(`${base}/?project=${seed.ws}&view=dashboard&${q}${embed ? '&embed=1' : ''}`);
+    await tab.waitForFunction(() => document.querySelector('.dash-tile') && dctx.meta, null, { timeout: 15000 });
+    await tab.clock.fastForward('02:00'); // past midnight, no refetch
+    // a status ping redraws Needs you in place (no refetch); then a full redraw of the same data
+    await post('/status', { project_id: seed.api, agent: 'orchestrator', verb: 'Edit', detail: 'x.ts' });
+    await tab.waitForTimeout(400);
+    const attn = await tab.$eval('.dash-attn', (e) => e.textContent);
+    await tab.evaluate(() => renderDashboard());
+    const grid = await tab.$eval('.dash-grid', (e) => e.textContent);
+    const tiles = (await tab.$$('.dash-tile')).length;
+    const day = await tab.evaluate(() => new Date().getDate());
+    ok(!attn.includes('Loading') && !grid.startsWith('Loading') && tiles === 4 && day !== at.getDate(), `midnight (${what}${embed ? ', embed' : ''}): tiles + Needs you stay, no "Loading…"`, { attn: attn.slice(0, 40), grid: grid.slice(0, 40), tiles, day });
+    await tab.close();
+  }
+}
+
 ok(errors.length === 0, 'no page errors', errors);
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 } finally {
