@@ -395,7 +395,7 @@ export class MergeError extends Error {
 /**
  * Merge vertical `fromId` into sibling vertical `intoId`: every card (renumbered
  * after into's, in from's order) with its card_activity, task_events, sync_links,
- * plus from's subscriptions, wait_intervals, decisions, risks and undelivered outbox rows. Phases are appended to
+ * plus from's subscriptions, wait_intervals, decisions, risks, milestones and undelivered outbox rows. Phases are appended to
  * into's roadmap or folded into into's active phase. Optionally renames/re-roots
  * into (taking from's root is allowed). from's row is deleted. One transaction.
  */
@@ -481,6 +481,9 @@ export function mergeVerticals(
       db.prepare(
         `DELETE FROM governance_links WHERE target_type = 'phase' AND target_id IN (SELECT id FROM phases WHERE project_id = ?)`,
       ).run(fromId);
+      db.prepare('UPDATE milestones SET phase_id = NULL WHERE phase_id IN (SELECT id FROM phases WHERE project_id = ?)').run(
+        fromId,
+      );
       db.prepare('DELETE FROM phases WHERE project_id = ?').run(fromId);
     }
 
@@ -507,6 +510,7 @@ export function mergeVerticals(
     // decisions + risks follow the board (their links name card/phase ids, which don't change)
     db.prepare('UPDATE decisions SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
     db.prepare('UPDATE risks SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
+    db.prepare('UPDATE milestones SET project_id = ? WHERE project_id = ?').run(intoId, fromId);
     // undelivered outbox rows follow the board; processed rows stay as history
     db.prepare(
       `UPDATE outbox SET project_id = ? WHERE project_id = ? AND (status = 'pending' OR status IS NULL)`,
@@ -612,6 +616,11 @@ export function deleteProject(db: DB, projectId: string): void {
     ).run(projectId, projectId, projectId, projectId, projectId);
     db.prepare('DELETE FROM decisions WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM risks WHERE project_id = ?').run(projectId);
+    // milestones: this board's, and other boards' pointers at its phases
+    db.prepare('DELETE FROM milestones WHERE project_id = ?').run(projectId);
+    db.prepare('UPDATE milestones SET phase_id = NULL WHERE phase_id IN (SELECT id FROM phases WHERE project_id = ?)').run(
+      projectId,
+    );
     db.prepare('DELETE FROM tasks WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM phases WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM plan_drafts WHERE workspace_id = ?').run(projectId);
@@ -910,6 +919,7 @@ export function createPhase(
     status: 'planned',
     position: (max.max ?? 0) + 1,
     budget_usd: null,
+    target_date: null,
     created_at: ts,
     updated_at: ts,
   };
@@ -970,6 +980,7 @@ export function getPhases(db: DB, projectId: string): PhaseView[] {
       status: p.status,
       position: p.position,
       budget_usd: p.budget_usd,
+      target_date: p.target_date,
       progress: { done: done ?? 0, total },
     };
   });
@@ -1050,6 +1061,23 @@ export function setPhaseBudget(db: DB, phaseId: string, budget: number | null): 
   getPhase(db, phaseId);
   // updated_at left alone: a done phase's burn chart ends at it
   db.prepare('UPDATE phases SET budget_usd = ? WHERE id = ?').run(budget, phaseId);
+  return getPhase(db, phaseId);
+}
+
+/** True for a real calendar day written YYYY-MM-DD. */
+export function isIsoDate(v: unknown): v is string {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const [y, m, d] = v.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+}
+
+/** Set (a YYYY-MM-DD day) or clear (null) a phase's target finish date. */
+export function setPhaseTarget(db: DB, phaseId: string, target: string | null): Phase {
+  if (target !== null && !isIsoDate(target)) throw new Error('target_date must be a YYYY-MM-DD date or null');
+  getPhase(db, phaseId);
+  // updated_at left alone, as for the budget: a done phase's burn chart ends at it
+  db.prepare('UPDATE phases SET target_date = ? WHERE id = ?').run(target, phaseId);
   return getPhase(db, phaseId);
 }
 

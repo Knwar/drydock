@@ -29,6 +29,7 @@ export interface Phase {
   status: PhaseStatus; // planned → active → done
   position: number;
   budget_usd: number | null; // optional spend budget (USD), or null
+  target_date: string | null; // optional target finish day (YYYY-MM-DD), or null
   created_at: number;
   updated_at: number;
 }
@@ -42,6 +43,8 @@ export interface PhaseView {
   position: number;
   /** USD; null = no budget. */
   budget_usd: number | null;
+  /** YYYY-MM-DD; null = no target. */
+  target_date: string | null;
   progress: { done: number; total: number };
 }
 

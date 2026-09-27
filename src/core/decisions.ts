@@ -113,7 +113,7 @@ function asObject(input: unknown): Input {
 }
 
 /** The workspace a project belongs to (itself when top-level). Unknown → not_found. */
-function workspaceOf(db: DB, projectId: string): string {
+export function workspaceOf(db: DB, projectId: string): string {
   const row = db.prepare('SELECT id, parent_id FROM projects WHERE id = ?').get(projectId) as
     | { id: string; parent_id: string | null }
     | undefined;
@@ -126,7 +126,7 @@ function workspaceOf(db: DB, projectId: string): string {
  * plus its verticals ('vertical') when it is a workspace, or its parent
  * workspace ('workspace') when it is a vertical.
  */
-function projectScope(db: DB, projectId: string): Map<string, Scope> {
+export function projectScope(db: DB, projectId: string): Map<string, Scope> {
   const ws = workspaceOf(db, projectId);
   const scope = new Map<string, Scope>([[projectId, 'own']]);
   if (ws !== projectId) scope.set(ws, 'workspace');

@@ -58,6 +58,7 @@ export function migrate(db: DB): void {
   }
   const phaseCols = (db.pragma('table_info(phases)') as { name: string }[]).map((c) => c.name);
   if (!phaseCols.includes('budget_usd')) db.exec('ALTER TABLE phases ADD COLUMN budget_usd REAL');
+  if (!phaseCols.includes('target_date')) db.exec('ALTER TABLE phases ADD COLUMN target_date TEXT');
   if (cols.includes('assigned_agent')) backfillActivityAgents(db); // absent only on hand-built test tables
 }
 
