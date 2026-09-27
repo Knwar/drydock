@@ -24,7 +24,7 @@ import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js
 import { openDb } from '../core/db.js';
 import { cardLines } from '../core/lines.js';
 import { cachedCodeVersion, readCodeVersion } from './code-version.js';
-import type { PlanDraft, Project, Task } from '../core/types.js';
+import type { CardFilter, PlanDraft, Project, Task } from '../core/types.js';
 import { looksLikeClaude, NUDGE_PROMPT, resetsAtMs, shouldNudge, type NudgeInput } from './autopilot.js';
 import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
@@ -886,27 +886,58 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
     return json(res, 200, board.getWorkspace(db, project));
   }
+  // Dashboard / Home filters: scope, phase, tag, agent; from / to (epoch ms or YYYY-MM-DD in tz,
+  // inclusive) bound when a done card entered done. A bad from / to / tz → a 400 message.
+  const cardFilter = (q: URLSearchParams): CardFilter | string => {
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return `invalid tz: ${tz}`;
+    const f: CardFilter = { scope: q.get('scope'), phase: q.get('phase'), tag: q.get('tag'), agent: q.get('agent') };
+    try {
+      for (const edge of ['from', 'to'] as const) {
+        const v = q.get(edge);
+        if (v) f[edge] = metrics.parseTime(v, tz, edge);
+      }
+    } catch (err) {
+      if (err instanceof metrics.MetricsParamError) return err.message;
+      throw err;
+    }
+    return f;
+  };
   if (method === 'GET' && pathname === '/workspace/summary') {
     const project = url.searchParams.get('project');
     if (!project) return json(res, 400, { error: 'project required' });
     if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
-    const summary = board.getWorkspaceSummary(db, project);
+    const f = cardFilter(url.searchParams);
+    if (typeof f === 'string') return json(res, 400, { error: f });
+    const summary = board.getWorkspaceSummary(db, project, f);
     const now = Date.now();
     return json(res, 200, {
       ...summary,
       boards: summary.boards.map((b) => ({ ...b, session: states.view(b.project.id, now) })),
     });
   }
+  if (method === 'GET' && pathname === '/workspace/cards') {
+    const project = url.searchParams.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const f = cardFilter(url.searchParams);
+    if (typeof f === 'string') return json(res, 400, { error: f });
+    return json(res, 200, board.getWorkspaceCards(db, project, f));
+  }
   if (method === 'GET' && pathname === '/home') {
     const project = url.searchParams.get('project');
     if (!project) return json(res, 400, { error: 'project required' });
     if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const parsed = cardFilter(url.searchParams);
+    if (typeof parsed === 'string') return json(res, 400, { error: parsed });
     const now = Date.now();
     // one read transaction: every /home query sees the same consistent snapshot
     const body = db.transaction(() => {
       const view = board.getWorkspace(db, project);
       const self = view.workspace.id === project ? view.workspace : view.verticals.find((v) => v.id === project)!;
       const standalone = self.parent_id === null && view.verticals.length === 0;
+      // Home on a vertical covers that board: its scope by default
+      const f: CardFilter = { ...parsed, scope: parsed.scope ?? (self.parent_id !== null ? self.id : null) };
       const scope = board.homeScope(db, project);
       const sessions = new Map(scope.map((p) => [p.id, states.view(p.id, now)]));
       const activity = (e: StatusEntry | null | undefined) => (e ? `${e.verb} ${e.detail}`.trim() : null);
@@ -920,7 +951,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       // counts below) and, for a workspace, every board the verticals list shows
       const boards = standalone ? scope : [view.workspace, ...view.verticals];
       const lanes = board.laneCounts(db, boards.map((p) => p.id));
-      const nowBuilding = board.getNowBuilding(db, project).map((card) => {
+      const shownLanes = board.laneCounts(db, boards.map((p) => p.id), f); // the verticals list: under the filters
+      const nowBuilding = board.getNowBuilding(db, project, f).map((card) => {
         const session = sessions.get(card.board.id)!;
         let entry =
           latest(entriesOf(session).filter((e) => e.task_id === card.id)) ??
@@ -936,7 +968,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         allEntries.flatMap((e) => (e.task_id !== null ? [e.task_id] : [])),
         scope.map((p) => p.id),
       );
-      const agents = board.getAgentBoard(db, project).map((m) => {
+      const agents = board.getAgentBoard(db, project, f).map((m) => {
         const entry =
           latest(
             allEntries.filter((e) => {
@@ -951,14 +983,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         project: { id: self.id, name: self.name, parent_id: self.parent_id },
         workspace: standalone ? null : view,
         now_building: nowBuilding,
-        up_next: board.getUpNext(db, project),
+        up_next: board.getUpNext(db, project, 3, f),
         agents,
         verticals: standalone
           ? []
           : boards.map((p) => ({
               project: { id: p.id, name: p.name },
-              lanes: lanes.get(p.id)!,
+              lanes: shownLanes.get(p.id)!,
               session: states.view(p.id, now),
+              shown: board.boardShown(db, f, view.workspace.id, p.id),
             })),
       };
     })();
