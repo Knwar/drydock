@@ -207,6 +207,7 @@ function applyEvent(msg) {
     openCardFromUrl();
     if (activeView === 'planner' && !plan.project) openPlanner(); // ?view=planner opened before the project was known
     if (activeView === 'metrics' && !mx.project) openMetrics(); // ?view=metrics opened before the project was known
+    if (activeView === 'governance' && !gov.project) openGovernance(); // ?view=governance opened before the project was known
     highlightCardsFromUrl();
   } else if (msg.type === 'phases') {
     phases = msg.phases;
@@ -253,6 +254,8 @@ function applyEvent(msg) {
     renderUsage(msg.usage);
   } else if (msg.type === 'verticals') {
     onVerticals(msg);
+  } else if (msg.type === 'governance') {
+    gvOnMessage();
   } else if (msg.type === 'settings' && msg.project_id === projectId) {
     boardSettings = msg.settings;
     renderBoard();
@@ -546,6 +549,8 @@ const railMetrics = document.getElementById('rail-metrics');
 const railDashboard = document.getElementById('rail-dashboard');
 const railHome = document.getElementById('rail-home');
 const railPlanner = document.getElementById('rail-planner');
+const railGovernance = document.getElementById('rail-governance');
+const governanceView = document.getElementById('governance-view');
 const plannerView = document.getElementById('planner-view');
 const homeView = document.getElementById('home-view');
 const attentionView = document.getElementById('attention-view');
@@ -553,7 +558,7 @@ const scmView = document.getElementById('scm-view');
 const phasesView = document.getElementById('phases-view');
 const metricsView = document.getElementById('metrics-view');
 const dashboardView = document.getElementById('dashboard-view');
-let activeView = 'kanban'; // 'home' | 'attention' | 'kanban' | 'scm' | 'phases' | 'metrics' | 'dashboard' | 'planner'
+let activeView = 'kanban'; // 'home' | 'attention' | 'kanban' | 'scm' | 'phases' | 'metrics' | 'dashboard' | 'planner' | 'governance'
 
 // Non-kanban views take over the whole board area (full-screen).
 function setView(name) {
@@ -574,6 +579,7 @@ function setView(name) {
   railDashboard.classList.toggle('active', name === 'dashboard');
   railHome.classList.toggle('active', name === 'home');
   railPlanner.classList.toggle('active', name === 'planner');
+  railGovernance.classList.toggle('active', name === 'governance');
   attentionView.classList.toggle('hidden', name !== 'attention');
   boardEl.classList.toggle('hidden', name !== 'kanban');
   scmView.classList.toggle('hidden', name !== 'scm');
@@ -582,6 +588,8 @@ function setView(name) {
   dashboardView.classList.toggle('hidden', name !== 'dashboard');
   homeView.classList.toggle('hidden', name !== 'home');
   plannerView.classList.toggle('hidden', name !== 'planner');
+  governanceView.classList.toggle('hidden', name !== 'governance');
+  if (name !== 'governance' && prev === 'governance') closeGovernance(); // drops ?tab before Metrics reads it
   if (name === 'scm') refreshFiles();
   if (name === 'phases') {
     loadSchedule(); // fresh pills on every open
@@ -596,6 +604,7 @@ function setView(name) {
   if (name === 'home' && prev !== 'home') openHome();
   if (name === 'planner' && prev !== 'planner') openPlanner();
   else if (name !== 'planner' && prev === 'planner') closePlanner();
+  if (name === 'governance' && prev !== 'governance') openGovernance();
 }
 
 railAttention.onclick = () => setView('attention');
@@ -606,6 +615,7 @@ railMetrics.onclick = () => setView('metrics');
 railDashboard.onclick = () => setView('dashboard');
 railHome.onclick = () => setView('home');
 railPlanner.onclick = () => setView('planner');
+railGovernance.onclick = () => setView('governance');
 
 // ── token / duration formatters (card modal) ────────────────────────
 const fmtTokens = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n | 0));
@@ -4844,7 +4854,7 @@ $('team-add-btn').onclick = addTeamMember;
 // Every user-controlled string goes in via textContent (node() below) — never innerHTML.
 const URL_VIEW_RAW = new URLSearchParams(location.search).get('view');
 const URL_VIEW = URL_VIEW_RAW === 'stats' ? 'metrics' : URL_VIEW_RAW; // ?view=stats: the old Stats view's links
-const URL_VIEWS = ['home', 'attention', 'kanban', 'scm', 'phases', 'metrics', 'planner'];
+const URL_VIEWS = ['home', 'attention', 'kanban', 'scm', 'phases', 'metrics', 'planner', 'governance'];
 const EMBED = new URLSearchParams(location.search).get('embed') === '1';
 const dash = { checked: false, workspace: null, summary: null, failed: false, fetchRetry: 1000, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null, refetchFirst: null, skipOpenFetch: false, nudged: new Map() };
 const DASH_LANES = [['backlog', 'backlog'], ['queued', 'queued'], ['in_progress', 'in prog'], ['in_review', 'review'], ['done', 'done']];
@@ -10048,6 +10058,643 @@ function showNewPlanForm() {
   if (EMBED) return;
   $('pl-new-form').classList.remove('hidden');
   $('pl-new-title').focus();
+}
+
+// ── Governance: decision log + risk register (?view=governance[&tab=risks]) ──
+// Lists come from GET /decisions|/risks?project=<this board>: the board's own items plus its
+// workspace's (on a vertical) or its verticals' (on the workspace), each tagged with a scope.
+// Rule: an item is edited on the board it lives on. Only 'own' items get Edit / Supersede /
+// status controls here; workspace items seen from a vertical (and vertical items seen from the
+// workspace) are read-only, with a link to open them on their own board.
+const GV_TABS = [
+  { id: 'decisions', label: 'Decisions' },
+  { id: 'risks', label: 'Risks' },
+];
+const GV_RISK_STATUS = ['open', 'mitigating', 'closed', 'occurred'];
+const GV_REFRESH_MS = 150;
+const gov = { project: null, tab: 'decisions', q: '', decisions: null, risks: null, dErr: null, rErr: null, meta: null, seq: 0, timer: null, err: '', closedOpen: false, modal: false };
+
+const gvFold = (s) => String(s ?? '').normalize('NFC').toLowerCase();
+const gvSev = (score) => (score >= 15 ? 'hi' : score >= 8 ? 'mid' : 'low');
+const gvDay = (ts) => new Date(ts).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+const gvIsClosed = (r) => r.status === 'closed' || r.status === 'occurred';
+
+async function gvApi(method, path, body) {
+  const res = await fetch(path, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const out = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(out?.error ?? `HTTP ${res.status}`);
+  return out;
+}
+
+function gvWriteUrl() {
+  const url = new URL(location.href);
+  url.searchParams.set('view', 'governance');
+  if (gov.tab === 'decisions') url.searchParams.delete('tab');
+  else url.searchParams.set('tab', gov.tab);
+  history.replaceState(null, '', url);
+}
+
+function openGovernance() {
+  gov.tab = new URLSearchParams(location.search).get('tab') === 'risks' ? 'risks' : 'decisions';
+  const project = currentProject();
+  if (project) {
+    gov.project = project;
+    gvWriteUrl();
+  }
+  gvRenderShell();
+  if (!project) return; // the init message calls back
+  gvLoadMeta();
+  gvLoad();
+}
+function closeGovernance() {
+  gov.seq++;
+  clearTimeout(gov.timer);
+  const url = new URL(location.href);
+  if (url.searchParams.get('view') === 'governance') url.searchParams.delete('view');
+  url.searchParams.delete('tab');
+  history.replaceState(null, '', url);
+}
+
+// Boards, phases, cards, plans of the workspace: link chip names + the link pickers.
+function gvLoadMeta() {
+  const project = gov.project;
+  fbLoadMeta(project, { plans: true }).then(
+    (meta) => {
+      if (project !== gov.project) return;
+      gov.meta = meta;
+      if (activeView === 'governance') gvRenderBody();
+    },
+    () => {}, // chips fall back to ids, the pickers stay empty
+  );
+}
+
+async function gvLoad() {
+  const seq = ++gov.seq;
+  const q = `?project=${encodeURIComponent(gov.project)}`;
+  const [d, r] = await Promise.allSettled([gvApi('GET', `/decisions${q}`), gvApi('GET', `/risks${q}`)]);
+  if (seq !== gov.seq) return;
+  if (d.status === 'fulfilled') [gov.decisions, gov.dErr] = [d.value, null];
+  else gov.dErr = d.reason.message;
+  if (r.status === 'fulfilled') [gov.risks, gov.rErr] = [r.value, null];
+  else gov.rErr = r.reason.message;
+  if (activeView === 'governance') gvRenderBody();
+}
+
+// WS `governance`: another client (or this one) wrote an item this board lists.
+function gvOnMessage() {
+  if (activeView !== 'governance' || !gov.project) return;
+  clearTimeout(gov.timer);
+  gov.timer = setTimeout(gvLoad, GV_REFRESH_MS);
+}
+
+function gvRenderShell() {
+  const head = node('div', 'mx-head');
+  head.id = 'gv-head';
+  const bar = node('div', 'gv-bar');
+  bar.id = 'gv-bar';
+  const body = node('div', 'gv-body');
+  body.id = 'gv-body';
+  const wrap = node('div', 'mx-wrap');
+  wrap.append(head, bar, body);
+  governanceView.replaceChildren(wrap);
+  gvRenderHead();
+  gvRenderBar();
+  gvRenderBody();
+}
+
+function gvRenderHead() {
+  const tabs = node('nav', 'mx-tabs');
+  tabs.setAttribute('aria-label', 'Governance sections');
+  for (const t of GV_TABS) {
+    const b = node('button', 'mx-tab', t.label);
+    b.type = 'button';
+    b.dataset.tab = t.id;
+    if (t.id === gov.tab) b.setAttribute('aria-current', 'page');
+    b.onclick = () => {
+      if (t.id === gov.tab) return;
+      gov.tab = t.id;
+      gov.err = '';
+      if (gov.project) gvWriteUrl();
+      gvRenderHead();
+      gvRenderBar();
+      gvRenderBody();
+    };
+    tabs.append(b);
+  }
+  const add = node('button', 'mx-btn primary gv-add', gov.tab === 'risks' ? 'Add risk' : 'Add decision');
+  add.type = 'button';
+  add.id = 'gv-add';
+  add.disabled = !gov.project;
+  add.onclick = () => (gov.tab === 'risks' ? gvRiskForm('add') : gvDecisionForm('add'));
+  $('gv-head').replaceChildren(node('h1', 'mx-title', 'Governance'), tabs, node('div', 'mx-grow'), add);
+}
+
+// The search box (Decisions) is built once per shell so typing never loses focus.
+function gvRenderBar() {
+  const bar = $('gv-bar');
+  let search = $('gv-search');
+  if (!search) {
+    search = node('input', 'gv-search');
+    search.id = 'gv-search';
+    search.type = 'search';
+    search.placeholder = 'Search decisions';
+    search.setAttribute('aria-label', 'Search decisions');
+    search.value = gov.q;
+    search.oninput = () => {
+      gov.q = search.value;
+      gvRenderBody();
+    };
+    const err = node('div', 'gv-err');
+    err.id = 'gv-err';
+    err.setAttribute('role', 'alert');
+    bar.append(search, err);
+  }
+  search.hidden = gov.tab !== 'decisions';
+  $('gv-err').textContent = gvErrText();
+}
+
+// The bar's alert: a failed status change, and a failed refresh of a list already shown (kept, stale).
+function gvErrText() {
+  const [items, err, what] = gov.tab === 'risks' ? [gov.risks, gov.rErr, 'risks'] : [gov.decisions, gov.dErr, 'decisions'];
+  return [gov.err, items && err ? `Couldn't refresh the ${what}: ${err}` : ''].filter(Boolean).join(' · ');
+}
+
+function gvState(text, cls = '') {
+  return node('div', `mx-state ${cls}`, text);
+}
+
+function gvRenderBody() {
+  const body = $('gv-body');
+  if (!body) return;
+  const fk = document.activeElement?.dataset?.fk && body.contains(document.activeElement) ? document.activeElement.dataset.fk : null;
+  const scrollTop = body.closest('.mx-wrap')?.scrollTop;
+  const [items, err, what] = gov.tab === 'risks' ? [gov.risks, gov.rErr, 'risks'] : [gov.decisions, gov.dErr, 'decisions'];
+  const out = [];
+  if (!gov.project || (!items && !err)) out.push(gvState('Loading…'));
+  else if (err && !items) {
+    const box = node('div', 'mx-state mx-error');
+    box.setAttribute('role', 'alert');
+    const retry = node('button', 'mx-btn', 'Retry');
+    retry.type = 'button';
+    retry.onclick = () => {
+      gov.dErr = gov.rErr = null;
+      gvRenderBody();
+      gvLoad();
+    };
+    box.append(node('div', '', `Couldn't load the ${what}: ${err}`), retry);
+    out.push(box);
+  } else if (gov.tab === 'risks') out.push(...gvRiskList(items));
+  else out.push(...gvDecisionList(items));
+  body.replaceChildren(...out);
+  if ($('gv-err')) $('gv-err').textContent = gvErrText();
+  if (scrollTop !== undefined) body.closest('.mx-wrap').scrollTop = scrollTop;
+  if (fk) body.querySelector(`[data-fk="${CSS.escape(fk)}"]`)?.focus();
+}
+
+// ---------- shared bits ----------
+function gvScopeBadge(item) {
+  const name = item.scope === 'vertical' ? (gov.meta?.boardById.get(item.project_id)?.name ?? 'vertical') : item.scope;
+  const b = node('span', `gv-scope ${item.scope}`, name);
+  b.title = item.scope === 'own' ? 'On this board' : item.scope === 'workspace' ? 'On the workspace board' : `On the ${name} board`;
+  return b;
+}
+
+function gvLinkInfo(l) {
+  const m = gov.meta;
+  if (l.target_type === 'card') {
+    const c = m?.cards.get(l.target_id);
+    return { kind: 'card', label: c?.title ?? l.target_id, board: c?.board ?? null, known: !!c };
+  }
+  if (l.target_type === 'phase') {
+    const p = fbPhaseById(m, l.target_id);
+    return { kind: 'phase', label: p?.title ?? l.target_id, board: p?.board ?? null, known: !!p };
+  }
+  const p = m?.plans.find((x) => x.id === l.target_id);
+  return { kind: 'plan', label: p?.title ?? l.target_id, board: m?.workspaceId ?? null, known: !!p };
+}
+
+function gvOpenLink(l, info) {
+  if (l.target_type === 'card') return mxOpenCard(l.target_id, info.board);
+  if (l.target_type === 'phase') {
+    if (info.board === projectId) {
+      selectedPhaseId = l.target_id;
+      setView('phases');
+      return renderPhaseList();
+    }
+    location.search = `?project=${encodeURIComponent(info.board)}&view=phases`;
+    return;
+  }
+  const url = new URL(location.href);
+  url.searchParams.set('plan', l.target_id);
+  history.replaceState(null, '', url);
+  setView('planner');
+}
+
+function gvLinkChip(l, itemId) {
+  const info = gvLinkInfo(l);
+  const chip = node('button', `gv-chip k-${info.kind}`);
+  chip.type = 'button';
+  chip.dataset.fk = `link:${itemId}:${l.target_type}:${l.target_id}`;
+  chip.append(node('span', 'gv-chip-k', info.kind), node('span', 'gv-chip-v', info.label));
+  const where = info.board && info.board !== projectId ? gov.meta?.boardById.get(info.board)?.label : null;
+  if (where) chip.append(node('span', 'gv-chip-b', where));
+  chip.disabled = !info.known;
+  chip.title = info.known ? `Open ${info.kind} ${info.label}` : `${info.kind} ${l.target_id} (not found)`;
+  chip.onclick = () => gvOpenLink(l, info);
+  return chip;
+}
+
+function gvLinks(item) {
+  const box = node('div', 'gv-links');
+  for (const l of item.links) box.append(gvLinkChip(l, item.id));
+  return box;
+}
+
+// A read-only item: where to edit it.
+function gvElsewhere(item) {
+  const board = gov.meta?.boardById.get(item.project_id);
+  const b = node('button', 'gv-ro', `Read-only · edit on ${item.scope === 'workspace' ? 'the workspace' : (board?.name ?? 'its board')}`);
+  b.type = 'button';
+  b.dataset.fk = `ro:${item.id}`;
+  b.onclick = () => (location.search = `?project=${encodeURIComponent(item.project_id)}&view=governance${gov.tab === 'risks' ? '&tab=risks' : ''}`);
+  return b;
+}
+
+function gvActionBtn(text, fk, onClick, label) {
+  const b = node('button', 'mx-btn', text);
+  b.type = 'button';
+  b.dataset.fk = fk;
+  if (label) b.setAttribute('aria-label', label);
+  b.onclick = onClick;
+  return b;
+}
+
+// Scroll to an item (clearing a search that hides it) and flash it.
+function gvReveal(id) {
+  let el = document.querySelector(`#gv-body [data-id="${CSS.escape(id)}"]`);
+  if (!el && gov.q) {
+    gov.q = '';
+    $('gv-search').value = '';
+    gvRenderBody();
+    el = document.querySelector(`#gv-body [data-id="${CSS.escape(id)}"]`);
+  }
+  if (!el) return;
+  el.scrollIntoView({ block: 'center' });
+  el.focus();
+  el.classList.remove('gv-flash');
+  void el.offsetWidth;
+  el.classList.add('gv-flash');
+}
+
+// ---------- decisions ----------
+function gvDecisionList(all) {
+  if (!all.length) return [gvState('No decisions yet. Record the first with Add decision.', 'gv-empty')];
+  const q = gvFold(gov.q.trim());
+  const shown = q ? all.filter((d) => ['title', 'decision', 'rationale'].some((k) => gvFold(d[k]).includes(q))) : all;
+  if (!shown.length) return [gvState(`No decisions match “${gov.q.trim()}”.`, 'gv-empty')];
+  const list = node('div', 'gv-list');
+  list.setAttribute('role', 'list');
+  list.setAttribute('aria-label', 'Decisions, newest first');
+  const byId = new Map(all.map((d) => [d.id, d]));
+  for (const d of shown) {
+    const row = node('article', `gv-item gv-decision ${d.status}`);
+    row.setAttribute('role', 'listitem');
+    row.dataset.id = d.id;
+    row.tabIndex = -1;
+    const top = node('div', 'gv-top');
+    const pill = node('span', `gv-pill ${d.status}`, d.status);
+    top.append(node('h3', 'gv-title', d.title), gvScopeBadge(d), pill, node('div', 'mx-grow'));
+    if (d.scope === 'own') {
+      top.append(gvActionBtn('Edit', `edit:${d.id}`, () => gvDecisionForm('edit', d), `Edit decision ${d.title}`));
+      if (d.status === 'active') top.append(gvActionBtn('Supersede', `sup:${d.id}`, () => gvDecisionForm('supersede', d), `Supersede decision ${d.title}`));
+    } else top.append(gvElsewhere(d));
+    row.append(top, node('p', 'gv-text', d.decision));
+    if (d.rationale) {
+      const why = node('p', 'gv-why');
+      why.append(node('span', 'gv-k', 'Why '), document.createTextNode(d.rationale));
+      row.append(why);
+    }
+    const meta = node('div', 'gv-meta', [d.decided_by, gvDay(d.decided_at)].filter(Boolean).join(' · '));
+    row.append(meta);
+    if (d.status === 'superseded' && d.superseded_by) {
+      const sup = node('div', 'gv-super');
+      const next = byId.get(d.superseded_by);
+      const link = node('button', 'gv-super-link', next ? next.title : 'the replacement');
+      link.type = 'button';
+      link.dataset.fk = `next:${d.id}`;
+      link.onclick = () => gvReveal(d.superseded_by);
+      sup.append(document.createTextNode('Superseded by '), link);
+      row.append(sup);
+    }
+    if (d.links.length) row.append(gvLinks(d));
+    list.append(row);
+  }
+  return [list];
+}
+
+// ---------- risks ----------
+function gvRiskRow(r) {
+  const row = node('article', `gv-item gv-risk ${r.status}`);
+  row.setAttribute('role', 'listitem');
+  row.dataset.id = r.id;
+  row.tabIndex = -1;
+  const score = node('div', `gv-score ${gvSev(r.score)}`);
+  score.append(node('span', 'gv-score-n', r.score), node('span', 'gv-score-f', `${r.likelihood}×${r.impact}`));
+  score.title = `Score ${r.score}: likelihood ${r.likelihood} × impact ${r.impact}`;
+  const main = node('div', 'gv-risk-main');
+  const top = node('div', 'gv-top');
+  top.append(node('h3', 'gv-title', r.title), gvScopeBadge(r), node('span', `gv-pill ${r.status}`, r.status), node('div', 'mx-grow'));
+  if (r.scope === 'own') {
+    const sel = node('select', 'gv-status');
+    sel.dataset.fk = `status:${r.id}`;
+    sel.setAttribute('aria-label', `Status of ${r.title}`);
+    for (const s of GV_RISK_STATUS) sel.append(new Option(s, s));
+    sel.value = r.status;
+    sel.onchange = async () => {
+      try {
+        await gvApi('PATCH', `/risks/${encodeURIComponent(r.id)}`, { status: sel.value });
+        gov.err = '';
+        gvLoad();
+      } catch (err) {
+        gov.err = `Couldn't change the status of “${r.title}”: ${err.message}`;
+        gvRenderBody();
+      }
+    };
+    top.append(sel, gvActionBtn('Edit', `edit:${r.id}`, () => gvRiskForm('edit', r), `Edit risk ${r.title}`));
+  } else top.append(gvElsewhere(r));
+  main.append(top);
+  if (r.description) main.append(node('p', 'gv-text', r.description));
+  const facts = node('div', 'gv-facts');
+  const fact = (k, v, cls = '') => {
+    const f = node('div', `gv-fact ${cls}`);
+    f.append(node('span', 'gv-k', k), node('span', v ? '' : 'gv-none', v || '—'));
+    return f;
+  };
+  facts.append(fact('Owner', r.owner, 'owner'), fact('Mitigation', r.mitigation, 'mitigation'));
+  main.append(facts);
+  if (r.links.length) main.append(gvLinks(r));
+  row.append(score, main);
+  return row;
+}
+
+function gvRiskList(all) {
+  if (!all.length) return [gvState('No risks yet. Log the first with Add risk.', 'gv-empty')];
+  const open = all.filter((r) => !gvIsClosed(r));
+  const closed = all.filter(gvIsClosed);
+  const out = [];
+  const legend = node('div', 'gv-legend');
+  legend.append(
+    node('span', 'mx-dim', 'Score = likelihood × impact, highest first'),
+    node('span', 'gv-dot hi', '≥ 15'),
+    node('span', 'gv-dot mid', '≥ 8'),
+    node('span', 'gv-dot low', '< 8'),
+  );
+  out.push(legend);
+  if (open.length) {
+    const list = node('div', 'gv-list');
+    list.setAttribute('role', 'list');
+    list.setAttribute('aria-label', 'Open risks by score');
+    list.append(...open.map(gvRiskRow));
+    out.push(list);
+  } else out.push(gvState('No open risks.', 'gv-empty'));
+  if (closed.length) {
+    const det = node('details', 'gv-closed');
+    det.open = gov.closedOpen;
+    det.ontoggle = () => (gov.closedOpen = det.open);
+    const sum = node('summary', 'gv-closed-sum', `Closed & occurred (${closed.length})`);
+    sum.dataset.fk = 'closed-summary';
+    const list = node('div', 'gv-list');
+    list.setAttribute('role', 'list');
+    list.setAttribute('aria-label', 'Closed and occurred risks');
+    list.append(...closed.map(gvRiskRow));
+    det.append(sum, list);
+    out.push(det);
+  }
+  return out;
+}
+
+// ---------- forms (openModal) ----------
+let gvUid = 0;
+function gvField(label, input, hint) {
+  const id = `gv-f${++gvUid}`;
+  input.id = id;
+  const wrap = node('div', 'gv-field');
+  const l = node('label', 'sv-label', label);
+  l.htmlFor = id;
+  wrap.append(l, input);
+  if (hint) wrap.append(node('div', 'gv-hint', hint));
+  return wrap;
+}
+function gvInput(value, { area = false, type = 'text' } = {}) {
+  const el = node(area ? 'textarea' : 'input', 'sv-input');
+  if (area) el.rows = 3;
+  else el.type = type;
+  el.value = value ?? '';
+  return el;
+}
+
+// Link editor: chips (× removes) + a picker of the workspace's phases and cards.
+function gvLinkEditor(initial) {
+  const links = initial.map((l) => ({ ...l }));
+  const wrap = node('div', 'gv-field');
+  const chips = node('div', 'gv-links');
+  const pick = node('select', 'sv-input gv-pick');
+  pick.id = `gv-f${++gvUid}`;
+  const label = node('label', 'sv-label', 'Links');
+  label.htmlFor = pick.id;
+  const key = (l) => `${l.target_type}:${l.target_id}`;
+  function render() {
+    chips.replaceChildren(
+      ...links.map((l, i) => {
+        const info = gvLinkInfo(l);
+        const chip = node('span', `gv-chip k-${info.kind} static`);
+        chip.append(node('span', 'gv-chip-k', info.kind), node('span', 'gv-chip-v', info.label));
+        const x = node('button', 'gv-chip-x', '×');
+        x.type = 'button';
+        x.setAttribute('aria-label', `Remove link to ${info.kind} ${info.label}`);
+        x.onclick = () => {
+          links.splice(i, 1);
+          render();
+          pick.focus();
+        };
+        chip.append(x);
+        return chip;
+      }),
+    );
+    if (!links.length) chips.append(node('span', 'gv-hint', 'No links.'));
+    const have = new Set(links.map(key));
+    pick.replaceChildren(new Option(gov.meta ? 'Link a phase or card…' : 'Loading boards…', ''));
+    for (const b of gov.meta?.boards ?? []) {
+      const phasesG = document.createElement('optgroup');
+      phasesG.label = `${b.label} · phases`;
+      for (const p of gov.meta.phases.get(b.id) ?? []) if (!have.has(`phase:${p.id}`)) phasesG.append(new Option(p.title, `phase:${p.id}`));
+      const cardsG = document.createElement('optgroup');
+      cardsG.label = `${b.label} · cards`;
+      for (const c of gov.meta.cards.values()) if (c.board === b.id && !have.has(`card:${c.id}`)) cardsG.append(new Option(c.title, `card:${c.id}`));
+      for (const g of [phasesG, cardsG]) if (g.children.length) pick.append(g);
+    }
+  }
+  pick.onchange = () => {
+    if (!pick.value) return;
+    const [target_type, target_id] = pick.value.split(/:(.*)/s);
+    links.push({ target_type, target_id });
+    render();
+    pick.focus();
+  };
+  render();
+  wrap.append(label, chips, pick);
+  // {link, unlink} against the item's current links
+  const diff = () => {
+    const now = new Set(links.map(key));
+    const was = new Set(initial.map(key));
+    return { link: links.filter((l) => !was.has(key(l))), unlink: initial.filter((l) => !now.has(key(l))) };
+  };
+  return { el: wrap, links: () => links.map((l) => ({ ...l })), diff };
+}
+
+// The dialog chrome: title, subtitle, a <form> (Enter submits), inline server error, Cancel/Save.
+function gvDialog({ title, sub, fields, submitText, fk, onSubmit }) {
+  if (gov.modal) return;
+  gov.modal = true;
+  let busy = false;
+  const n = ++gvUid;
+  const modal = openModal({
+    labelledBy: `gv-dlg-t${n}`,
+    describedBy: `gv-dlg-s${n}`,
+    busy: () => busy,
+    onClose: () => (gov.modal = false),
+    fallbackFocus: () => (fk && document.querySelector(`[data-fk="${CSS.escape(fk)}"]`)) || $('gv-add'),
+  });
+  const { dlg, close, mount } = modal;
+  dlg.classList.add('gv-dialog');
+  const h = node('h2', 'sv-title', title);
+  h.id = `gv-dlg-t${n}`;
+  const s = node('p', 'sv-sub', sub);
+  s.id = `gv-dlg-s${n}`;
+  const form = node('form', 'gv-form');
+  form.noValidate = true;
+  const err = node('div', 'sv-error gv-form-err');
+  err.setAttribute('role', 'alert');
+  const foot = node('div', 'sv-foot');
+  const cancel = node('button', 'home-btn', 'Cancel');
+  cancel.type = 'button';
+  cancel.onclick = () => !busy && close();
+  const save = node('button', 'home-btn primary', submitText);
+  save.type = 'submit';
+  foot.append(node('span', 'sv-foot-note'), cancel, save);
+  form.append(...fields, err, foot);
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    busy = true;
+    save.disabled = cancel.disabled = true;
+    err.textContent = '';
+    try {
+      await onSubmit();
+      busy = false;
+      close();
+      gvLoad();
+    } catch (ex) {
+      busy = false;
+      save.disabled = cancel.disabled = false;
+      err.textContent = ex.message;
+    }
+  };
+  // Cmd/Ctrl+Enter submits from a textarea too
+  form.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+  dlg.append(h, s, form);
+  mount();
+  form.querySelector('input, textarea')?.focus();
+}
+
+const gvText = (el) => el.value.trim();
+// add: omit empty optionals; edit: an emptied optional clears (null)
+const gvOpt = (el, mode) => (gvText(el) ? el.value : mode === 'edit' ? null : undefined);
+
+function gvDecisionForm(mode, d) {
+  const title = gvInput(mode === 'edit' || mode === 'supersede' ? d.title : '');
+  const decision = gvInput(mode === 'edit' ? d.decision : '', { area: true });
+  const rationale = gvInput(mode === 'edit' ? d.rationale : '', { area: true });
+  const by = gvInput(mode === 'edit' ? d.decided_by : '');
+  const links = gvLinkEditor(mode === 'edit' ? d.links : []);
+  const fields = [gvField('Title', title), gvField('Decision', decision), gvField('Rationale', rationale), gvField('Decided by', by), links.el];
+  const text = () => ({ title: title.value, decision: decision.value, rationale: gvOpt(rationale, mode), decided_by: gvOpt(by, mode) });
+  const cfg = {
+    add: {
+      title: 'Add a decision',
+      sub: 'Recorded on this board.',
+      submitText: 'Add decision',
+      onSubmit: () => gvApi('POST', '/decisions', { project_id: gov.project, ...text(), links: links.links() }),
+    },
+    edit: {
+      title: 'Edit decision',
+      sub: d?.title,
+      submitText: 'Save',
+      onSubmit: () => gvApi('PATCH', `/decisions/${encodeURIComponent(d.id)}`, { ...text(), ...links.diff() }),
+    },
+    supersede: {
+      title: 'Supersede decision',
+      sub: `Replaces “${d?.title}”. The new decision keeps its links; add more below.`,
+      submitText: 'Supersede',
+      onSubmit: () => gvApi('POST', `/decisions/${encodeURIComponent(d.id)}/supersede`, { ...text(), links: links.links() }),
+    },
+  }[mode];
+  gvDialog({ ...cfg, fields, fk: d ? `${mode === 'supersede' ? 'sup' : 'edit'}:${d.id}` : null });
+}
+
+function gvRiskForm(mode, r) {
+  const edit = mode === 'edit';
+  const title = gvInput(edit ? r.title : '');
+  const desc = gvInput(edit ? r.description : '', { area: true });
+  const lik = gvInput(edit ? r.likelihood : 3, { type: 'number' });
+  const imp = gvInput(edit ? r.impact : 3, { type: 'number' });
+  for (const el of [lik, imp]) Object.assign(el, { min: 1, max: 5, step: 1 });
+  const score = node('div', 'gv-score-preview');
+  score.setAttribute('aria-live', 'polite');
+  const paint = () => {
+    const s = Number(lik.value) * Number(imp.value);
+    const okN = Number.isInteger(s) && s > 0;
+    score.className = `gv-score-preview ${okN ? gvSev(s) : ''}`;
+    score.textContent = okN ? `Score ${s}` : 'Score —';
+  };
+  lik.oninput = imp.oninput = paint;
+  paint();
+  const owner = gvInput(edit ? r.owner : '');
+  const mit = gvInput(edit ? r.mitigation : '', { area: true });
+  const status = node('select', 'sv-input');
+  for (const s of GV_RISK_STATUS) status.append(new Option(s, s));
+  status.value = edit ? r.status : 'open';
+  const links = gvLinkEditor(edit ? r.links : []);
+  const li = node('div', 'gv-row');
+  li.append(gvField('Likelihood (1-5)', lik), gvField('Impact (1-5)', imp), score);
+  const fields = [gvField('Title', title), gvField('Description', desc), li, gvField('Owner', owner), gvField('Mitigation', mit), gvField('Status', status), links.el];
+  // a blank rating goes to the server as null, so its 400 text explains it
+  const num = (el) => (el.value.trim() === '' ? null : Number(el.value));
+  const body = () => ({
+    title: title.value,
+    description: gvOpt(desc, mode),
+    likelihood: num(lik),
+    impact: num(imp),
+    owner: gvOpt(owner, mode),
+    mitigation: gvOpt(mit, mode),
+    status: status.value,
+  });
+  gvDialog({
+    title: edit ? 'Edit risk' : 'Add a risk',
+    sub: edit ? r.title : 'Logged on this board. Score = likelihood × impact.',
+    submitText: edit ? 'Save' : 'Add risk',
+    fields,
+    fk: edit ? `edit:${r.id}` : null,
+    onSubmit: () =>
+      edit
+        ? gvApi('PATCH', `/risks/${encodeURIComponent(r.id)}`, { ...body(), ...links.diff() })
+        : gvApi('POST', '/risks', { project_id: gov.project, ...body(), links: links.links() }),
+  });
 }
 
 // Show the landing view at once — no Kanban flash while the first board data and
