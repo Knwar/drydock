@@ -627,4 +627,107 @@ server.registerTool(
   ({ plan_id, mode }) => api('POST', `/plan-drafts/${encodeURIComponent(plan_id)}/run`, { mode }),
 );
 
+const link = z.object({ target_type: z.enum(['card', 'phase', 'plan']), target_id: z.string() });
+
+server.registerTool(
+  'record_decision',
+  {
+    description:
+      "Record a decision in the project's decision log. Use it whenever the user makes or confirms a decision that changes scope, behaviour or design (not for routine card routing). Include the rationale, and link the affected cards/phases/plans (same workspace). A workspace-wide decision goes on the workspace's project_id; a vertical-only one on the vertical's. To replace an earlier decision pass supersedes=<its id> with the old decision's own project_id (a different one is rejected): the new one inherits its links and the old one is marked superseded. Returns the decision (or {superseded, decision}).",
+    inputSchema: {
+      project_id: z.string(),
+      title: z.string(),
+      decision: z.string().describe('what was decided'),
+      rationale: z.string().optional().describe('why'),
+      decided_by: z.string().optional().describe("who made or confirmed it, e.g. 'user'"),
+      links: z.array(link).optional(),
+      supersedes: z.string().optional().describe('id of the active decision this one replaces'),
+    },
+  },
+  ({ supersedes, ...input }) =>
+    supersedes
+      ? api('POST', `/decisions/${encodeURIComponent(supersedes)}/supersede`, input)
+      : api('POST', '/decisions', input),
+);
+
+server.registerTool(
+  'list_decisions',
+  {
+    description:
+      "The decision log, newest first. Check it before re-deciding something. Each item carries scope: 'own' (this board's), 'workspace' (listing a vertical also returns its workspace's decisions, which apply to it) or 'vertical' (listing a workspace also returns its verticals' decisions; see project_id). Filters: status (active|superseded), q (case-insensitive text search), card / phase (only decisions linked to it).",
+    inputSchema: {
+      project_id: z.string(),
+      status: z.enum(['active', 'superseded']).optional(),
+      q: z.string().optional(),
+      card: z.string().optional(),
+      phase: z.string().optional(),
+    },
+  },
+  ({ project_id, ...filter }) => {
+    const params = new URLSearchParams({ project: project_id });
+    for (const [k, v] of Object.entries(filter)) if (v) params.set(k, v);
+    return api('GET', `/decisions?${params}`);
+  },
+);
+
+server.registerTool(
+  'add_risk',
+  {
+    description:
+      'Open a risk in the risk register when a risk to delivery is identified (a dependency that may slip, an unproven approach, usage limits, a flaky area, a decision still pending). likelihood and impact are 1-5; score = likelihood x impact. Link the cards/phases it threatens. Returns the risk.',
+    inputSchema: {
+      project_id: z.string(),
+      title: z.string(),
+      likelihood: z.number().int().min(1).max(5),
+      impact: z.number().int().min(1).max(5),
+      description: z.string().optional(),
+      owner: z.string().optional(),
+      mitigation: z.string().optional(),
+      links: z.array(link).optional(),
+    },
+  },
+  (input) => api('POST', '/risks', input),
+);
+
+server.registerTool(
+  'update_risk',
+  {
+    description:
+      'Update a risk: re-rate it, record the mitigation, or move its status (open → mitigating → closed, or occurred if it happened). link / unlink add or remove card/phase/plan links. Returns the risk.',
+    inputSchema: {
+      risk_id: z.string(),
+      title: z.string().optional(),
+      description: z.string().nullable().optional(),
+      likelihood: z.number().int().min(1).max(5).optional(),
+      impact: z.number().int().min(1).max(5).optional(),
+      owner: z.string().nullable().optional(),
+      mitigation: z.string().nullable().optional(),
+      status: z.enum(['open', 'mitigating', 'closed', 'occurred']).optional(),
+      link: z.array(link).optional(),
+      unlink: z.array(link).optional(),
+    },
+  },
+  ({ risk_id, ...patch }) => api('PATCH', `/risks/${encodeURIComponent(risk_id)}`, patch),
+);
+
+server.registerTool(
+  'list_risks',
+  {
+    description:
+      "The risk register, highest score first. Each item carries scope: 'own' (this board's), 'workspace' (listing a vertical also returns its workspace's risks) or 'vertical' (listing a workspace also returns its verticals' risks; see project_id). Filters: status (open|mitigating|closed|occurred), q (case-insensitive text search), card / phase (only risks linked to it).",
+    inputSchema: {
+      project_id: z.string(),
+      status: z.enum(['open', 'mitigating', 'closed', 'occurred']).optional(),
+      q: z.string().optional(),
+      card: z.string().optional(),
+      phase: z.string().optional(),
+    },
+  },
+  ({ project_id, ...filter }) => {
+    const params = new URLSearchParams({ project: project_id });
+    for (const [k, v] of Object.entries(filter)) if (v) params.set(k, v);
+    return api('GET', `/risks?${params}`);
+  },
+);
+
 await server.connect(new StdioServerTransport());

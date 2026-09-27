@@ -11,6 +11,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import * as board from '../core/board.js';
 import * as subscriptions from '../core/subscriptions.js';
 import * as drafts from '../core/plan-drafts.js';
+import * as governance from '../core/decisions.js';
 import * as metrics from '../core/metrics.js';
 import * as waitTime from '../core/wait-time.js';
 import * as quality from '../core/quality.js';
@@ -1203,6 +1204,58 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return json(res, 200, result);
     } catch (err) {
       return draftError(res, err);
+    }
+  }
+
+  // ── decision log + risk register (reads open, writes loopback-only) ──
+  const govMatch = pathname.match(/^\/(decisions|risks)(?:\/([^/]+)(?:\/(supersede))?)?$/);
+  if (govMatch) {
+    const [, kind, id, action] = govMatch;
+    const allowed = !id ? ['GET', 'POST'] : action ? (kind === 'decisions' ? ['POST'] : []) : ['PATCH'];
+    if (allowed.includes(method)) {
+      if (method !== 'GET' && !isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+      // tell every board whose panel lists the item, so it can refresh
+      const announceGovernance = (item: { id: string; project_id: string }) => {
+        const msg = {
+          type: 'governance',
+          kind: kind === 'decisions' ? 'decision' : 'risk',
+          id: item.id,
+          project_id: item.project_id,
+        };
+        // a vertical's item: its board + the workspace; a workspace item: the workspace + every vertical
+        const ws = draftWorkspace(item.project_id) ?? item.project_id;
+        const boards =
+          ws === item.project_id ? [ws, ...board.listVerticals(db, ws).map((v) => v.id)] : [item.project_id, ws];
+        for (const pid of boards) broadcaster.send(pid, msg);
+      };
+      try {
+        if (method === 'GET') {
+          const project = url.searchParams.get('project');
+          if (!project) return json(res, 400, { error: 'project required' });
+          const p = (k: string) => url.searchParams.get(k) || undefined;
+          const filter = { status: p('status'), q: p('q'), card: p('card'), phase: p('phase') };
+          return json(
+            res,
+            200,
+            kind === 'decisions' ? governance.listDecisions(db, project, filter) : governance.listRisks(db, project, filter),
+          );
+        }
+        const b = await readBody(req);
+        if (action === 'supersede') {
+          const result = governance.supersedeDecision(db, id, b);
+          announceGovernance(result.superseded);
+          announceGovernance(result.decision);
+          return json(res, 200, result);
+        }
+        let item: { id: string; project_id: string };
+        if (kind === 'decisions') item = id ? governance.updateDecision(db, id, b) : governance.createDecision(db, b);
+        else item = id ? governance.updateRisk(db, id, b) : governance.createRisk(db, b);
+        announceGovernance(item);
+        return json(res, 200, item);
+      } catch (err) {
+        if (!(err instanceof governance.GovernanceError)) throw err;
+        return json(res, err.code === 'not_found' ? 404 : 400, { error: err.message, code: err.code });
+      }
     }
   }
 

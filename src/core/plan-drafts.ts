@@ -238,9 +238,12 @@ export function listDrafts(db: DB, workspaceId: string): PlanDraftSummary[] {
     .all(workspaceId) as PlanDraftSummary[];
 }
 
-/** Remove a draft; returns whether a row was deleted. */
+/** Remove a draft (and decision/risk links onto it); returns whether a row was deleted. */
 export function deleteDraft(db: DB, id: string): boolean {
-  return db.prepare('DELETE FROM plan_drafts WHERE id = ?').run(id).changes > 0;
+  return db.transaction(() => {
+    db.prepare(`DELETE FROM governance_links WHERE target_type = 'plan' AND target_id = ?`).run(id);
+    return db.prepare('DELETE FROM plan_drafts WHERE id = ?').run(id).changes > 0;
+  })();
 }
 
 /** Rename a draft (a set_title op: bumps version). */
