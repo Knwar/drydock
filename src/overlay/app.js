@@ -559,7 +559,10 @@ function setView(name) {
   activeView = name;
   if (prev !== name) {
     mx.drill?.close(); // a drill-down belongs to the view that opened it
-    if (prev === 'dashboard' || prev === 'home') fbClearUrl(prev); // before the next view reads the URL
+    if (prev === 'dashboard' || prev === 'home') {
+      fbClearUrl(prev); // before the next view reads the URL
+      fbCancelMeta(prev === 'dashboard' ? dctx : hctx); // an in-flight filtered load never lands on a closed view
+    }
   }
   railAttention.classList.toggle('active', name === 'attention');
   railKanban.classList.toggle('active', name === 'kanban');
@@ -701,24 +704,46 @@ async function fbLoadMeta(project, { plans: withPlans = false } = {}) {
   meta.agents = [...agents].sort((a, b) => a.localeCompare(b));
   return meta;
 }
-// (Re)load a dashboard / Home ctx's meta; onReady runs once it lands (never for a superseded load).
+// (Re)load a dashboard / Home ctx's meta; onReady runs once it lands. One load at a time: a
+// request while one is in flight queues a single follow-up (the latest wins), and a load
+// superseded by fbCancelMeta (the view closed) never applies. Resolves once the queue drains.
 function fbReloadMeta(ctx, project, onReady) {
-  const seq = ++ctx.metaSeq;
   ctx.metaDirty = false;
+  if (ctx.metaLoading) {
+    ctx.metaAgain = { project, onReady };
+    return ctx.metaReady;
+  }
+  ctx.metaLoading = true;
+  const seq = ++ctx.metaSeq;
+  const settle = () => {
+    ctx.metaLoading = false;
+    const again = ctx.metaAgain;
+    ctx.metaAgain = null;
+    return again && seq === ctx.metaSeq ? fbReloadMeta(ctx, again.project, again.onReady) : ctx.meta;
+  };
   ctx.metaReady = fbLoadMeta(project).then(
     (meta) => {
-      if (seq !== ctx.metaSeq) return ctx.metaReady;
+      if (seq !== ctx.metaSeq) return ctx.meta; // cancelled: a newer load owns the queue
       ctx.meta = meta;
       if (ctx.f.scope && !meta.boardById.has(ctx.f.scope)) ctx.f.scope = null;
-      onReady();
-      return meta;
+      ctx.filtersStale = true; // new options / labels: the next render may redraw the filters
+      const next = settle(); // a queued reload supersedes this one: skip the render
+      if (next === ctx.meta && !ctx.metaLoading) onReady();
+      return next;
     },
     () => {
-      if (seq === ctx.metaSeq) ctx.metaDirty = true;
-      return ctx.meta;
+      if (seq !== ctx.metaSeq) return ctx.meta;
+      ctx.metaDirty = true;
+      return settle();
     },
   );
   return ctx.metaReady;
+}
+// Drop in-flight loads (the view closed): their results never apply.
+function fbCancelMeta(ctx) {
+  ctx.metaSeq++;
+  ctx.metaLoading = false;
+  ctx.metaAgain = null;
 }
 
 function fbPhaseById(meta, id) {
@@ -802,7 +827,21 @@ function fbActiveLabels(ctx, fields) {
 }
 
 // The full bar. opts: fields (which controls), onChange(patch), rangeId (the range button's id, if any).
+// Redraw host keeping keyboard focus on the same control (data-fb key), else on fallback.
+function fbKeepFocus(host, fallback, draw) {
+  const a = document.activeElement;
+  const key = a && host.contains(a) ? a.dataset.fb : null;
+  draw();
+  if (key) (host.querySelector(`[data-fb="${key}"]`) ?? host.querySelector(`[data-fb="${fallback}"]`))?.focus();
+}
+const fbKey = (el, key) => {
+  (el.matches('select, button, input') ? el : el.querySelector('select')).dataset.fb = key;
+  return el;
+};
 function filterBar(host, ctx, opts) {
+  fbKeepFocus(host, 'range-custom', () => drawFilterBar(host, ctx, opts));
+}
+function drawFilterBar(host, ctx, opts) {
   const { fields, onChange, rangeId } = opts;
   const m = ctx.meta;
   const f = ctx.f;
@@ -813,18 +852,21 @@ function filterBar(host, ctx, opts) {
       // the API expands a workspace id to every board, so "all boards" or one vertical
       const scopes = m.boards.length > 1 ? [[m.workspaceId, `${m.boards[0].name} · all boards`], ...m.boards.slice(1).map((b) => [b.id, b.label])] : [[m.workspaceId, m.boards[0].name]];
       items.push(
-        mxSelect('Scope', f.scope ?? m.workspaceId, scopes, (v) => {
-          const boards = v === m.workspaceId ? m.boards : m.boards.filter((b) => b.id === v);
-          const keep = f.phase && boards.some((b) => (m.phases.get(b.id) ?? []).some((p) => p.id === f.phase));
-          onChange({ scope: v, phase: keep ? f.phase : '' });
-        }),
+        fbKey(
+          mxSelect('Scope', f.scope ?? m.workspaceId, scopes, (v) => {
+            const boards = v === m.workspaceId ? m.boards : m.boards.filter((b) => b.id === v);
+            const keep = f.phase && boards.some((b) => (m.phases.get(b.id) ?? []).some((p) => p.id === f.phase));
+            onChange({ scope: v, phase: keep ? f.phase : '' });
+          }),
+          'scope',
+        ),
       );
     }
     const boards = fbScopeBoards(ctx);
     const phaseOpts = boards.flatMap((b) => (m.phases.get(b.id) ?? []).map((p) => [p.id, boards.length > 1 ? `${b.label} · ${p.title}` : p.title]));
-    if (has('phase')) items.push(mxSelect('Phase', f.phase, [['', 'All phases'], ...phaseOpts], (v) => onChange({ phase: v })));
-    if (has('tag')) items.push(mxSelect('Tag', f.tag, [['', 'Any'], ...m.tags.map((t) => [t, t])], (v) => onChange({ tag: v })));
-    if (has('agent')) items.push(mxSelect('Agent', f.agent, [['', 'Anyone'], ...m.agents.map((a) => [a, a])], (v) => onChange({ agent: v })));
+    if (has('phase')) items.push(fbKey(mxSelect('Phase', f.phase, [['', 'All phases'], ...phaseOpts], (v) => onChange({ phase: v })), 'phase'));
+    if (has('tag')) items.push(fbKey(mxSelect('Tag', f.tag, [['', 'Any'], ...m.tags.map((t) => [t, t])], (v) => onChange({ tag: v })), 'tag'));
+    if (has('agent')) items.push(fbKey(mxSelect('Agent', f.agent, [['', 'Anyone'], ...m.agents.map((a) => [a, a])], (v) => onChange({ agent: v })), 'agent'));
   } else items.push(node('span', 'mx-dim', 'Loading boards…'));
   items.push(node('div', 'mx-grow'));
 
@@ -833,7 +875,7 @@ function filterBar(host, ctx, opts) {
     ranges.setAttribute('role', 'group');
     ranges.setAttribute('aria-label', 'Date range');
     for (const [id, text] of MX_RANGES) {
-      const b = node('button', 'mx-seg-btn', text);
+      const b = fbKey(node('button', 'mx-seg-btn', text), `range-${id}`);
       b.type = 'button';
       b.setAttribute('aria-pressed', String(f.range === id));
       b.onclick = () => {
@@ -844,7 +886,7 @@ function filterBar(host, ctx, opts) {
     }
     items.push(ranges);
 
-    const rangeBtn = node('button', 'mx-chip mono', fbWindowLabel(ctx));
+    const rangeBtn = fbKey(node('button', 'mx-chip mono', fbWindowLabel(ctx)), 'range-custom');
     if (rangeId) rangeBtn.id = rangeId;
     rangeBtn.type = 'button';
     rangeBtn.title = 'Custom range';
@@ -873,7 +915,9 @@ function filterBar(host, ctx, opts) {
       const fromDefault = w.from ?? (ctx.window ? mxDayKey(ctx.window.from, f.tz) : mxAddDays(today, -27));
       const [fl, fi] = input('From', f.range === 'custom' ? f.from : fromDefault);
       const [tl, ti] = input('To', f.range === 'custom' ? f.to || today : today);
-      const apply = node('button', 'mx-btn primary', 'Apply');
+      fbKey(fi, 'from');
+      fbKey(ti, 'to');
+      const apply = fbKey(node('button', 'mx-btn primary', 'Apply'), 'apply');
       apply.type = 'button';
       const err = node('span', 'mx-pop-err');
       apply.onclick = () => {
@@ -889,7 +933,7 @@ function filterBar(host, ctx, opts) {
   }
 
   if (has('tz')) {
-    const tzSel = mxSelect('', f.tz, mxTzOptions(), (v) => onChange({ tz: v }));
+    const tzSel = fbKey(mxSelect('', f.tz, mxTzOptions(), (v) => onChange({ tz: v })), 'tz');
     tzSel.classList.add('mx-tz');
     tzSel.querySelector('select').setAttribute('aria-label', 'Time zone');
     tzSel.firstChild.remove();
@@ -899,14 +943,31 @@ function filterBar(host, ctx, opts) {
 }
 
 // The compact form: a "Filters" chip naming the active filters (+ Clear); clicking it expands the bar.
+// opts.barId: the bar's id (the chip's aria-controls). Keyboard focus survives the redraw
+// (Clear, once gone, hands it to the chip).
 function filterChip(host, ctx, opts) {
+  fbKeepFocus(host, 'chip', () => drawFilterChip(host, ctx, opts));
+  ctx.filtersStale = false;
+}
+// A redraw that's not the user's doing (fresh options / labels after a load): never while they're
+// in the bar (an open select, a half-typed custom range) — it waits for the next chance instead.
+function filterChipSoft(host, ctx, opts) {
+  const bar = host.querySelector('.fb-bar');
+  const busy = ctx.customOpen || (bar && (bar.contains(document.activeElement) || !bar.querySelector(':scope > .mx-dim')));
+  if (busy) ctx.filtersStale = true;
+  else filterChip(host, ctx, opts);
+}
+function drawFilterChip(host, ctx, opts) {
   const active = fbActiveLabels(ctx, opts.fields);
-  const chip = node('button', `fb-chip${active.length ? ' on' : ''}`);
+  const chip = fbKey(node('button', `fb-chip${active.length ? ' on' : ''}`), 'chip');
   chip.type = 'button';
   chip.setAttribute('aria-expanded', String(!!ctx.open));
+  if (opts.barId) chip.setAttribute('aria-controls', opts.barId);
   chip.append(node('span', 'fb-chip-k', 'Filters'));
   if (active.length) chip.append(node('span', 'fb-chip-v', active.join(' · ')));
-  chip.append(node('span', 'fb-caret', ctx.open ? '▴' : '▾'));
+  const caret = node('span', 'fb-caret', ctx.open ? '▴' : '▾');
+  caret.setAttribute('aria-hidden', 'true');
+  chip.append(caret);
   chip.onclick = () => {
     ctx.open = !ctx.open;
     ctx.customOpen = false;
@@ -915,8 +976,9 @@ function filterChip(host, ctx, opts) {
   const row = node('div', 'fb-row');
   row.append(chip);
   if (active.length) {
-    const clear = node('button', 'fb-clear', 'Clear');
+    const clear = fbKey(node('button', 'fb-clear', 'Clear'), 'clear');
     clear.type = 'button';
+    clear.setAttribute('aria-label', 'Clear filters');
     clear.onclick = () => {
       ctx.customOpen = false;
       opts.onChange(fbDefaults(ctx));
@@ -926,6 +988,7 @@ function filterChip(host, ctx, opts) {
   const parts = [row];
   if (ctx.open) {
     const bar = node('div', 'mx-filters fb-bar');
+    if (opts.barId) bar.id = opts.barId;
     bar.setAttribute('role', 'group');
     bar.setAttribute('aria-label', 'Filters');
     filterBar(bar, ctx, opts);
@@ -933,6 +996,8 @@ function filterChip(host, ctx, opts) {
   }
   host.replaceChildren(...parts);
 }
+// Any non-default filter (the chip would name it).
+const fbAnyActive = (ctx, fields) => fbActiveLabels(ctx, fields).length > 0;
 
 // A drill-down of cards (dashboard / Home counts): title, board, lane, agent; Open / Open all in Kanban.
 function fbDrillCards(ctx, host, { kicker, title, cards, range }) {
@@ -3055,7 +3120,7 @@ function mxOpenAll(ids, board) {
 }
 
 // ctx: whose meta names the boards (Metrics' mx, the dashboard's, Home's); host: the view it covers.
-function mxOpenDrill({ kicker, title, sub, stat, rows, sorts, total, ctx = mx, host = metricsView }) {
+function mxOpenDrill({ kicker, title, sub, stat, rows, sorts, total, unit = 'card', ctx = mx, host = metricsView }) {
   mx.drill?.close();
   const opener = document.activeElement;
   const backdrop = node('div', 'mx-drill-backdrop');
@@ -3110,7 +3175,7 @@ function mxOpenDrill({ kicker, title, sub, stat, rows, sorts, total, ctx = mx, h
 
   const foot = node('div', 'mx-drill-foot');
   const openable = rows.filter((r) => r.id && r.board);
-  foot.append(node('span', 'mx-drill-count', total && total > rows.length ? `showing ${rows.length} of ${total}` : mxPlural(rows.length, 'card')), node('div', 'mx-grow'));
+  foot.append(node('span', 'mx-drill-count', total && total > rows.length ? `showing ${rows.length} of ${total}` : mxPlural(rows.length, unit)), node('div', 'mx-grow'));
   const byBoard = new Map();
   for (const r of openable) {
     if (!byBoard.has(r.board)) byBoard.set(r.board, []);
@@ -4612,10 +4677,16 @@ async function loadDashboard() {
   dctx.metaDirty = true;
   if (activeView === 'dashboard') {
     renderDashboard();
-    if (fbCardFiltered(dctx)) dashReloadMeta();
+    // once per open (the filter options), and on every refetch while the filters count from the cards
+    if (dctx.needMeta || fbCardFiltered(dctx) || (dashActive() && !dctx.meta)) {
+      dctx.needMeta = false;
+      dashReloadMeta();
+    }
   }
 }
 
+// Embed (OBS) has no chip: its filters come from the URL only, and without any the cards aren't needed.
+const dashActive = () => fbAnyActive(dctx, DASH_FILTER_FIELDS);
 function dashReloadMeta() {
   return fbReloadMeta(dctx, dash.workspace ?? currentProject(), () => activeView === 'dashboard' && renderDashboard());
 }
@@ -4628,7 +4699,8 @@ function dashSetFilter(patch) {
   dctx.f = { ...dctx.f, ...patch, tz: MX_LOCAL_TZ };
   fbSyncUrl('dashboard', dctx);
   renderDashboard();
-  if (fbCardFiltered(dctx) && dctx.metaDirty) dashReloadMeta();
+  renderDashFilters(true);
+  if (fbCardFiltered(dctx) && (dctx.metaDirty || !dctx.meta)) dashReloadMeta();
 }
 // Boards the filters leave on the dashboard (scope; a phase → its board).
 const dashShown = () => dash.summary.boards.filter((b) => fbBoardShown(dctx, b.project.id));
@@ -4637,12 +4709,18 @@ function dashLanes(b) {
   if (!fbCardFiltered(dctx)) return b.lanes ?? {};
   return dctx.meta ? fbCounts(dctx, b.project.id) : null;
 }
-function renderDashFilters() {
+// force: open / a filter change. Otherwise (a refetch or load landed) only when stale, and
+// never while the user is in the bar.
+function renderDashFilters(force) {
   const host = $('dashboard-body').querySelector('.dash-filters');
   if (!host || EMBED) return;
-  filterChip(host, dctx, { fields: DASH_FILTER_FIELDS, onChange: dashSetFilter });
+  const opts = { fields: DASH_FILTER_FIELDS, onChange: dashSetFilter, barId: 'dash-fb-bar' };
+  if (force) filterChip(host, dctx, opts);
+  else if (dctx.filtersStale) filterChipSoft(host, dctx, opts);
 }
 const dashRangeLabel = () => (dctx.f.range === 'all' ? '' : `done ${dctx.f.range === 'custom' ? fbWindowLabel(dctx) : `in ${dctx.f.range}`}`);
+// The tiny done-lane label: "done 2w", "done 3 Aug–26 Sep".
+const dashDoneLabel = () => `done ${dctx.f.range === 'custom' ? fbWindowLabel(dctx).replace(' – ', '–') : dctx.f.range}`;
 async function dashDrillLane(b, lane, isMain) {
   const meta = await dashMeta();
   if (!meta || activeView !== 'dashboard') return;
@@ -4700,6 +4778,7 @@ async function dashDrillNeedsYou() {
   mxOpenDrill({
     ctx: dctx,
     host: dashboardView,
+    unit: waiting.length ? 'item' : 'card', // a waiting session isn't a card
     kicker: 'NEEDS YOU · NOW',
     title: `${mxPlural(rows.length, 'item')} need${rows.length === 1 ? 's' : ''} you`,
     sub: fbScopeLabel(dctx),
@@ -4796,8 +4875,9 @@ function openDashboard() {
   dctx.f = { ...fbReadUrl(new URLSearchParams(location.search), 'all'), tz: MX_LOCAL_TZ };
   dctx.customOpen = false;
   dctx.open = false; // the chip starts collapsed
-  dashReloadMeta(); // the filter options, and the cards filtered counts come from
+  dctx.needMeta = !EMBED || dashActive(); // loaded once the summary lands (loadDashboard)
   renderDashboard(); // last good summary, or the loading state
+  renderDashFilters(true);
   loadDashboard();
   if (!dash.ws && !dash.retryTimer) {
     dash.skipOpenFetch = true;
@@ -4840,16 +4920,26 @@ function renderDashboard() {
     return;
   }
   const grid = node('div', 'dash-grid');
-  const shown = dashShown();
-  grid.append(...shown.map((b) => dashTile(b, b === dash.summary.boards[0])));
-  if (!shown.length) grid.append(node('div', 'dt-empty', 'No boards match the filters.'));
+  if (dashActive() && !dctx.meta) grid.append(node('div', 'dt-empty', 'Loading the filtered boards…'));
+  else {
+    const shown = dashShown();
+    grid.append(...shown.map((b) => dashTile(b, b === dash.summary.boards[0])));
+    if (!shown.length) grid.append(node('div', 'dt-empty', 'No boards match the filters.'));
+  }
   const layout = node('div', 'dash-layout');
   layout.append(grid, node('aside', 'dash-attn'));
-  const top = node('div', 'dash-top');
-  top.append(node('div', 'dash-head'), node('div', 'dash-filters fb-host'));
-  host.replaceChildren(top, layout);
+  // the head row (name + filters) is built once and kept: a refetch never touches the filter controls
+  let top = host.querySelector(':scope > .dash-top');
+  const old = host.querySelector(':scope > .dash-layout');
+  if (top && old) old.replaceWith(layout);
+  else {
+    top = node('div', 'dash-top');
+    top.append(node('div', 'dash-head'), node('div', 'dash-filters fb-host'));
+    host.replaceChildren(top, layout);
+    dctx.filtersStale = true;
+  }
   renderDashHead();
-  renderDashFilters();
+  renderDashFilters(false);
   renderDashAttn();
 }
 
@@ -4872,6 +4962,11 @@ function renderDashAttn() {
   const panel = $('dashboard-body').querySelector('.dash-attn');
   if (!panel || !dash.summary) return;
   const clickable = !EMBED;
+  if (dashActive() && !dctx.meta) {
+    const head = node('div', 'da-head');
+    head.append(node('span', 'da-title', 'Needs you'));
+    return panel.replaceChildren(head, node('div', 'da-empty', 'Loading…'));
+  }
   const { waiting, items } = dashNeedsYou();
   const total = waiting.length + items.length;
 
@@ -4984,7 +5079,7 @@ function dashTile(b, isMain) {
     const n = counts ? (counts[lane] ?? 0) : null;
     const wip = filtered || n === null ? null : wipOf(lane, n, b.settings ?? DEFAULT_BOARD_SETTINGS);
     const ranged = lane === 'done' && dctx.f.range !== 'all';
-    l.append(node('span', 'dt-lane-n', n === null ? '…' : wip ? `${n}/${wip.limit}` : n), node('span', 'dt-lane-l', ranged ? (dctx.f.range === 'custom' ? `${label}*` : `${label} ${dctx.f.range}`) : label));
+    l.append(node('span', 'dt-lane-n', n === null ? '…' : wip ? `${n}/${wip.limit}` : n), node('span', `dt-lane-l${ranged ? ' ranged' : ''}`, ranged ? dashDoneLabel() : label));
     if (!EMBED) {
       l.type = 'button';
       l.title = ranged ? `Done ${fbWindowLabel(dctx)}: list them` : `List the ${LANE_LABELS[lane]} cards`;
@@ -5102,9 +5197,11 @@ function openHome() {
   if (hctx.lockScope) hctx.f.scope = hctx.lockScope;
   hctx.customOpen = false;
   hctx.open = false; // the chip starts collapsed
+  hctx.needMeta = !EMBED || homeFiltered(); // loaded once /home lands (loadHome)
   home.upNextF = null;
   renderHome(); // last good data, or the loading state
-  loadHome(); // (re)loads the filter meta once it lands
+  renderHomeFilters(true);
+  loadHome();
 }
 
 function homeReloadMeta() {
@@ -5128,13 +5225,18 @@ function homeSetFilter(patch) {
   fbSyncUrl('home', hctx);
   home.upNextF = null; // the previous filters' list
   renderHome();
-  if (hctx.metaDirty && homeFiltered()) homeReloadMeta(); // its onReady recomputes Up next
+  renderHomeFilters(true);
+  if (homeFiltered() && (hctx.metaDirty || !hctx.meta)) homeReloadMeta(); // its onReady recomputes Up next
   else homeUpNextFiltered();
 }
-function renderHomeFilters() {
+// force: open / a filter change. Otherwise (a refetch or load landed) only when stale, and
+// never while the user is in the bar.
+function renderHomeFilters(force) {
   const host = $('home-filters');
   if (!host || EMBED) return;
-  filterChip(host, hctx, { fields: homeFields(), onChange: homeSetFilter });
+  const opts = { fields: homeFields(), onChange: homeSetFilter, barId: 'home-fb-bar' };
+  if (force) filterChip(host, hctx, opts);
+  else if (hctx.filtersStale) filterChipSoft(host, hctx, opts);
 }
 // Now building under the filters (meta supplies phase / tag; /home's lane, agent and board are fresher).
 function homeNowItems() {
@@ -5236,7 +5338,10 @@ async function loadHome() {
   setTeamCache(data.agents); // /home carries the roster: keeps chips fresh after outside edits
   if (activeView !== 'home') return;
   hctx.metaDirty = true; // the cards may have moved: reload now if the filters count from them
-  if (!hctx.meta || homeFiltered()) homeReloadMeta();
+  if (hctx.needMeta || homeFiltered()) {
+    hctx.needMeta = false;
+    homeReloadMeta();
+  }
   renderHome();
   loadSuggestions();
   // in a workspace, the other boards' traffic arrives on the all-projects socket
@@ -5680,7 +5785,7 @@ function renderHome() {
     return;
   }
   renderHomeHead();
-  renderHomeFilters();
+  renderHomeFilters(false);
   renderHomeNow();
   renderHomeVerticals();
   renderHomeAgents();
@@ -5726,6 +5831,10 @@ function renderHomeNow() {
   }
   host.replaceChildren(label);
   host.classList.toggle('empty', !cur);
+  if (homeFiltered() && !hctx.meta) {
+    host.classList.add('empty');
+    return host.append(node('div', 'home-hero-title muted', 'Loading…'));
+  }
   if (!cur) {
     host.append(node('div', 'home-hero-title muted', homeFiltered() ? 'Nothing matching in flight' : 'Nothing in flight'));
     const top = homeUpNext().items[0];
@@ -5852,7 +5961,8 @@ function renderHomeAgents() {
   // filters: the agent → just them; scope / phase / tag → members with a matching card
   let agents = d.agents;
   if (hctx.f.agent) agents = agents.filter((m) => m.name === hctx.f.agent);
-  if (hctx.meta && (hctx.f.phase || hctx.f.tag || homeScoped())) {
+  if (hctx.f.phase || hctx.f.tag || homeScoped()) {
+    if (!hctx.meta) return host.replaceChildren(node('div', 'home-empty', 'Loading…'));
     const names = new Set(fbCards({ ...hctx, f: { ...hctx.f, agent: '' } }, (c) => !!c.agent).map((c) => c.agent));
     agents = agents.filter((m) => names.has(m.name));
   }

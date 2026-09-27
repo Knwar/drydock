@@ -2508,3 +2508,5 @@ button.home-count:hover { color: var(--text); opacity: 1; }
   font-family: var(--mx-ui);
 }
 #dashboard-view .mx-drill button, #dashboard-view .mx-drill select, #home-view .mx-drill button, #home-view .mx-drill select { font-family: inherit; cursor: pointer; }
+/* the done lane under a date range names it ("done 2w", "done 3 Aug–26 Sep"): may wrap to two lines */
+.dt-lane-l.ranged { white-space: normal; line-height: 1.15; text-align: center; overflow-wrap: anywhere; }
