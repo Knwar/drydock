@@ -36,6 +36,7 @@ import {
   getOrCreateProject,
   getPhase,
   getPhases,
+  setPhaseBudget,
   getRecentEvents,
   getStats,
   listSyncLinks,
@@ -700,6 +701,9 @@ describe('phases', () => {
     moveTask(db, a.id, 'done');
     const [view] = getPhases(db, project.id);
     assert.deepEqual(view.progress, { done: 1, total: 2 });
+    assert.equal(view.budget_usd, null);
+    setPhaseBudget(db, p1.id, 42.5);
+    assert.equal(getPhases(db, project.id)[0].budget_usd, 42.5);
     assert.equal(getBoard(db, project.id)[0].phase_id, p1.id);
   });
 

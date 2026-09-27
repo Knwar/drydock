@@ -210,9 +210,6 @@ function applyEvent(msg) {
     highlightCardsFromUrl();
   } else if (msg.type === 'phases') {
     phases = msg.phases;
-    // a budget may have changed: forget the others, refresh the one on screen (its value stays until then)
-    for (const id of [...pdBudgets.keys()]) if (id !== selectedPhaseId) pdBudgets.delete(id);
-    if (activeView === 'phases' && pdBudgets.has(selectedPhaseId)) loadPhaseBudget(selectedPhaseId);
     renderBoard(); // active phase may have changed → board scope shifts
     renderPhaseList();
     refreshAttention();
@@ -3129,27 +3126,7 @@ function renderPhaseDetail() {
 }
 
 // Phase detail: "Budget ($)" (empty = no budget), saved via PUT /phase/:id/budget on change; errors inline.
-// The phases list doesn't carry budgets: the current one is read from /metrics/cost's budgets, cached per phase.
 let pdBudgetMsg = null; // { phase, text, error }: the last save's result, kept across re-renders
-const pdBudgets = new Map(); // phase id → budget_usd (null = no budget) | { error }
-const pdBudgetLoads = new Set();
-function loadPhaseBudget(id) {
-  if (!projectId || pdBudgetLoads.has(id)) return;
-  pdBudgetLoads.add(id);
-  (async () => {
-    const res = await fetch(`/metrics/cost?project=${encodeURIComponent(projectId)}&phase=${encodeURIComponent(id)}&limit=1`);
-    const body = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
-    pdBudgets.set(id, body.budgets.find((b) => b.phase_id === id)?.budget ?? null);
-  })()
-    .catch((err) => {
-      if (!pdBudgets.has(id) || pdBudgets.get(id)?.error) pdBudgets.set(id, { error: err.message }); // keep a known value on a refresh failure
-    })
-    .finally(() => {
-      pdBudgetLoads.delete(id);
-      if (selectedPhaseId === id && activeView === 'phases') renderPhaseDetail();
-    });
-}
 function phaseBudgetField(p, typing) {
   const field = node('div', 'pd-budget');
   const label = node('label', 'pd-budget-label', 'Budget ($)');
@@ -3161,14 +3138,8 @@ function phaseBudgetField(p, typing) {
   input.min = '0';
   input.step = 'any';
   input.placeholder = 'no budget';
-  const known = pdBudgets.get(p.id);
-  if (known === undefined) {
-    if (activeView === 'phases') loadPhaseBudget(p.id);
-    input.disabled = true;
-    input.placeholder = 'loading…';
-  }
-  input.value = typing ?? (typeof known === 'number' ? known : '');
-  const mine = pdBudgetMsg?.phase === p.id ? pdBudgetMsg : known?.error ? { text: `Couldn't read the budget: ${known.error}`, error: true } : null;
+  input.value = typing ?? (p.budget_usd ?? '');
+  const mine = pdBudgetMsg?.phase === p.id ? pdBudgetMsg : null;
   const msg = node('span', `pd-budget-msg${mine?.error ? ' error' : ''}`, mine?.text ?? 'empty = no budget');
   msg.setAttribute('role', 'status');
   if (mine?.error) input.classList.add('bad');
@@ -3186,7 +3157,8 @@ function phaseBudgetField(p, typing) {
       const res = await fetch(`/phase/${encodeURIComponent(p.id)}/budget`, { method: 'PUT', body: JSON.stringify({ budget_usd: v }) });
       const body = await res.json().catch(() => null);
       if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
-      pdBudgets.set(p.id, body.budget_usd);
+      const local = phases.find((x) => x.id === p.id);
+      if (local) local.budget_usd = body.budget_usd; // the phases broadcast follows
       pdBudgetMsg = { phase: p.id, text: v === null ? 'Budget cleared' : 'Saved', error: false };
       renderPhaseDetail();
     } catch (err) {
