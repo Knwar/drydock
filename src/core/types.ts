@@ -40,6 +40,8 @@ export interface PhaseView {
   goal: string | null;
   status: PhaseStatus;
   position: number;
+  /** USD; null = no budget. */
+  budget_usd: number | null;
   progress: { done: number; total: number };
 }
 

@@ -951,6 +951,7 @@ export function getPhases(db: DB, projectId: string): PhaseView[] {
       goal: p.goal,
       status: p.status,
       position: p.position,
+      budget_usd: p.budget_usd,
       progress: { done: done ?? 0, total },
     };
   });
