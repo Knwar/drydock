@@ -1041,7 +1041,12 @@ function mxRenderHead() {
     const at = new Date(mx.loadedAt ?? Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     status.textContent = `As of ${at} · ${mxPlural(flow.cards, 'card')} · ${mxPlural(flow.partial, 'partial history', 'partial histories')}`;
   }
-  head.replaceChildren(node('h1', 'mx-title', 'Metrics'), tabs, node('div', 'mx-grow'), status);
+  const report = node('a', 'mx-tab', 'Weekly report');
+  report.href = `/report.html?${new URLSearchParams({ project: mx.f.scope ?? mx.project })}`;
+  report.target = '_blank';
+  report.rel = 'noopener';
+  report.style.cssText = 'display:inline-flex;align-items:center;text-decoration:none';
+  head.replaceChildren(node('h1', 'mx-title', 'Metrics'), tabs, node('div', 'mx-grow'), status, report);
 }
 
 function mxSelect(label, value, options, onChange) {

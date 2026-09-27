@@ -1,0 +1,87 @@
+/* Status report page: the overlay's design tokens (styles.css :root + the Metrics view's fonts), light + dark, print-friendly. */
+:root {
+  --bg: #0b0d12;
+  --lane-bg: rgba(255, 255, 255, 0.045);
+  --card-bg: #1b1f2a;
+  --text: #e8eaf0;
+  --dim: #8b93a7;
+  --accent: #5dd3a8;
+  --line: rgba(255, 255, 255, 0.10);
+  --amber: #e5c07b;
+  --red: #f0a0a7;
+  --mx-ui: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mx-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f8fa;
+    --lane-bg: rgba(0, 0, 0, 0.035);
+    --card-bg: #ffffff;
+    --text: #1b1f2a;
+    --dim: #5b6275;
+    --accent: #1f9e74;
+    --line: rgba(0, 0, 0, 0.12);
+    --amber: #a86e00;
+    --red: #c2414d;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { font: 14px/1.5 var(--mx-ui); }
+.mono { font-family: var(--mx-mono); }
+.rp { max-width: 1040px; margin: 0 auto; padding: 28px 24px 48px; display: flex; flex-direction: column; gap: 22px; }
+.rp-dim { color: var(--dim); }
+.rp-small { font-size: 12px; }
+.rp-error { color: var(--red); }
+
+.rp-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 20px; border-bottom: 1px solid var(--line); padding-bottom: 16px; }
+.rp-head h1 { margin: 0; font-size: 26px; font-weight: 600; }
+.rp-sub { font-family: var(--mx-mono); font-size: 12.5px; color: var(--dim); }
+.rp-grow { flex: 1; }
+.rp-overall { display: flex; align-items: center; gap: 10px; }
+.rp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rp-seg { display: flex; gap: 4px; padding: 4px; border-radius: 10px; background: var(--lane-bg); }
+.rp-btn { font: inherit; font-size: 13px; height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-bg); color: var(--text); cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; }
+.rp-seg .rp-btn { border-color: transparent; background: transparent; color: var(--dim); }
+.rp-seg .rp-btn[aria-current="true"] { background: rgba(93, 211, 168, 0.18); color: var(--text); }
+.rp-btn:hover { color: var(--text); }
+.rp-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rp-copied { font-size: 12px; color: var(--accent); min-width: 5em; }
+
+section h2 { margin: 0 0 10px; font-size: 17px; font-weight: 600; }
+section h3 { margin: 12px 0 6px; font-size: 14px; font-weight: 600; color: var(--dim); }
+.rp ul { margin: 0; padding-left: 20px; }
+.rp li { margin: 2px 0; }
+.rp-meta { color: var(--dim); font-size: 12.5px; }
+
+.rp-pill { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 2px 9px; border-radius: 999px; white-space: nowrap; background: rgba(139, 147, 167, 0.16); color: var(--dim); }
+.rp-pill.green { background: rgba(93, 211, 168, 0.16); color: var(--accent); }
+.rp-pill.amber { background: rgba(229, 192, 123, 0.18); color: var(--amber); }
+.rp-pill.red { background: rgba(240, 160, 167, 0.18); color: var(--red); }
+.rp-pill.done { background: none; box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent); }
+.rp-pill.big { font-size: 13px; padding: 4px 12px; }
+
+table.rp-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.rp-table th { text-align: left; font-weight: 600; color: var(--dim); font-size: 12px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.rp-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.rp-table .rp-waits { margin-top: 4px; font-size: 12.5px; color: var(--amber); }
+
+.rp-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.rp-tile { padding: 12px 14px; border-radius: 10px; background: var(--card-bg); border: 1px solid var(--line); }
+.rp-tile-label { font-size: 12px; color: var(--dim); }
+.rp-tile-value { font-family: var(--mx-mono); font-size: 22px; font-weight: 600; margin-top: 2px; }
+.rp-tile-note { font-size: 12px; color: var(--dim); margin-top: 2px; }
+.rp-caveats { margin-top: 10px; font-size: 12px; color: var(--dim); }
+
+@media print {
+  :root { --bg: #fff; --card-bg: #fff; --text: #111; --dim: #555; --line: #ccc; --accent: #1f7a5a; --amber: #8a5a00; --red: #a3303b; --lane-bg: transparent; }
+  body { font-size: 11.5pt; }
+  .rp { max-width: none; padding: 0; gap: 16px; }
+  .rp-actions, button, .rp-btn { display: none !important; }
+  section { break-inside: avoid-page; }
+  h2, h3 { break-after: avoid; }
+  tr, li, .rp-tile { break-inside: avoid; }
+  .rp-pill { box-shadow: inset 0 0 0 1px currentColor; background: none; }
+  a { color: inherit; text-decoration: none; }
+}
