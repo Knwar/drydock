@@ -39,6 +39,9 @@ function loadPlaywright() {
 const { chromium } = loadPlaywright();
 
 // ---- scratch daemon ----
+const base = `http://127.0.0.1:${PORT}`;
+// the port must be free: never drive (or write to) a daemon this script didn't start
+if (await fetch(base + '/').then(() => true, () => false)) throw new Error(`something already answers on ${PORT}: pick another PORT`);
 const S = mkdtempSync(join(tmpdir(), 'kankan-governance-'));
 mkdirSync(join(S, 'data'));
 const daemon = spawn(process.execPath, ['--import', 'tsx', 'src/daemon/server.ts'], {
@@ -46,15 +49,19 @@ const daemon = spawn(process.execPath, ['--import', 'tsx', 'src/daemon/server.ts
   env: { ...process.env, PORT: String(PORT), DB_PATH: join(S, 'data', 'board.db'), KANKAN_TERMINAL: '0', KANKAN_AUTOPILOT: '0', KANKAN_DISPATCHER: '0' },
   stdio: 'ignore',
 });
-const base = `http://127.0.0.1:${PORT}`;
+let exited = null; // the daemon's exit code/signal, if it dies before we kill it
+daemon.on('exit', (code, signal) => (exited = { code, signal }));
 let browser = null;
 let fails = 0;
 try {
   for (let i = 0; ; i++) {
+    if (exited) throw new Error(`daemon exited early: ${JSON.stringify(exited)}`);
     try {
       await fetch(base + '/');
+      if (exited) throw new Error(`daemon exited early: ${JSON.stringify(exited)}`); // someone else answered
       break;
-    } catch {
+    } catch (err) {
+      if (exited) throw err;
       if (i > 80) throw new Error(`daemon did not start on ${PORT}`);
       await new Promise((r) => setTimeout(r, 250));
     }
@@ -166,7 +173,7 @@ try {
   const oldRow = itemBy(page, 'Use Stripe for payments');
   ok((await oldRow.locator('.gv-pill').textContent()) === 'superseded', 'old decision marked superseded');
   ok((await oldRow.locator('.gv-super').textContent()) === 'Superseded by Use Adyen for payments', 'superseded links to the replacement');
-  ok((await oldRow.getByRole('button', { name: 'Supersede' }).count()) === 0, 'a superseded decision offers no Supersede');
+  ok((await oldRow.getByRole('button', { name: /^(Edit|Supersede)/ }).count()) === 0, 'a superseded decision is read-only (no Edit / Supersede)');
   const newRow = itemBy(page, 'Use Adyen for payments');
   ok((await newRow.locator('.gv-pill').textContent()) === 'active', 'replacement is active');
   ok((await newRow.locator('.gv-chip').count()) === 2, 'replacement inherits the links');
@@ -329,6 +336,7 @@ try {
   ok(true, 'Retry recovers');
   // "Failed to load resource" console lines from the routed 500s are filtered by watch()
 
+  ok(!exited, 'the daemon stayed up for the whole run', exited);
   ok(errors.length === 0, 'no page errors', errors);
 } catch (err) {
   fails++;

@@ -10066,6 +10066,7 @@ function showNewPlanForm() {
 // Rule: an item is edited on the board it lives on. Only 'own' items get Edit / Supersede /
 // status controls here; workspace items seen from a vertical (and vertical items seen from the
 // workspace) are read-only, with a link to open them on their own board.
+// UI-only: the routes accept edits to any item from any loopback client.
 const GV_TABS = [
   { id: 'decisions', label: 'Decisions' },
   { id: 'risks', label: 'Risks' },
@@ -10364,10 +10365,12 @@ function gvDecisionList(all) {
     const top = node('div', 'gv-top');
     const pill = node('span', `gv-pill ${d.status}`, d.status);
     top.append(node('h3', 'gv-title', d.title), gvScopeBadge(d), pill, node('div', 'mx-grow'));
-    if (d.scope === 'own') {
-      top.append(gvActionBtn('Edit', `edit:${d.id}`, () => gvDecisionForm('edit', d), `Edit decision ${d.title}`));
-      if (d.status === 'active') top.append(gvActionBtn('Supersede', `sup:${d.id}`, () => gvDecisionForm('supersede', d), `Supersede decision ${d.title}`));
-    } else top.append(gvElsewhere(d));
+    if (d.scope !== 'own') top.append(gvElsewhere(d));
+    else if (d.status === 'active')
+      top.append(
+        gvActionBtn('Edit', `edit:${d.id}`, () => gvDecisionForm('edit', d), `Edit decision ${d.title}`),
+        gvActionBtn('Supersede', `sup:${d.id}`, () => gvDecisionForm('supersede', d), `Supersede decision ${d.title}`),
+      ); // a superseded decision is read-only history
     row.append(top, node('p', 'gv-text', d.decision));
     if (d.rationale) {
       const why = node('p', 'gv-why');
