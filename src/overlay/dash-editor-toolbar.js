@@ -8,6 +8,7 @@
 const deTb = { el: null, undo: null, redo: null, save: null, cancel: null, add: null, more: null, notice: null, noticeText: null, theirs: null, errors: null, status: null };
 const DE_TB_NOTICE = 'This dashboard was changed elsewhere.';
 let deTbStatusTimer = 0;
+let deTbReloading = false; // "Reload theirs" is fetching: the other actions wait
 
 const deTbPid = () => dw.board || currentProject();
 
@@ -81,12 +82,13 @@ function deTbBuild() {
 function deTbSync() {
   if (!deTb.el) return;
   const busy = deState.saving;
-  deTb.undo.disabled = busy || !deCanUndo();
-  deTb.redo.disabled = busy || !deCanRedo();
-  deTb.save.disabled = busy || !deState.dirty;
-  deTb.cancel.disabled = busy;
-  deTb.more.disabled = busy;
-  deTb.add.disabled = busy;
+  const hold = busy || deTbReloading;
+  deTb.undo.disabled = hold || !deCanUndo();
+  deTb.redo.disabled = hold || !deCanRedo();
+  deTb.save.disabled = hold || !deState.dirty;
+  deTb.cancel.disabled = hold;
+  deTb.more.disabled = hold;
+  deTb.add.disabled = hold;
   deTb.add.hidden = typeof deLibraryOpen !== 'function';
   deTb.save.textContent = busy ? 'Saving…' : 'Save';
   deTb.save.setAttribute('aria-busy', String(busy));
@@ -101,11 +103,11 @@ function deTbFlash(text) {
 }
 
 function deTbUndo() {
-  if (deState.saving) return;
+  if (deState.saving || deTbReloading) return;
   deUndo();
 }
 function deTbRedo() {
-  if (deState.saving) return;
+  if (deState.saving || deTbReloading) return;
   deRedo();
 }
 
@@ -164,9 +166,19 @@ function deTbHideNotice(say) {
 
 // "Reload theirs": fetch the stored layout first; only then discard, show it and edit it.
 async function deTbReloadTheirs() {
-  if (!deState.active || deState.saving) return;
+  if (!deState.active || deState.saving || deTbReloading) return;
   const pid = deTbPid();
   deTb.theirs.disabled = true;
+  deTbReloading = true;
+  deTbSync();
+  try {
+    await deTbReloadRun(pid);
+  } finally {
+    deTbReloading = false;
+    deTbSync();
+  }
+}
+async function deTbReloadRun(pid) {
   let layout;
   try {
     const res = await fetch(`/project/${encodeURIComponent(pid)}/layout`);
@@ -181,6 +193,12 @@ async function deTbReloadTheirs() {
     return;
   }
   if (!deState.active || deTbPid() !== pid) return; // left edit mode / switched board meanwhile
+  if (deState.saving) {
+    // a save started anyway (another module / the core): never discard under it
+    deTb.theirs.disabled = false;
+    deTb.noticeText.textContent = `${DE_TB_NOTICE} A save is in progress, so it wasn’t reloaded.`;
+    return void deAnnounce('A save is in progress, so the dashboard wasn’t reloaded');
+  }
   deTbHideNotice();
   deExit(); // discard (its refetch, if any, returns early: we're editing again by then)
   dwRenderLayout(layout); // becomes dw.layout: the base deEnter copies
@@ -203,7 +221,7 @@ document.addEventListener('keydown', (e) => {
 
 // ── save ──
 async function deTbSave() {
-  if (!deState.active || deState.saving || !deState.dirty) return;
+  if (!deState.active || deState.saving || deTbReloading || !deState.dirty) return;
   const pid = deTbPid();
   const draft = deState.draft;
   const snap = JSON.stringify(draft);
