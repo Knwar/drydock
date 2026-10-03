@@ -1,6 +1,6 @@
 // ── Dashboard editor: moving and resizing widgets (globals prefix dd) ──
 // Classic script loaded after dash-editor.js; builds on its API (deState, deApply, deDecorate,
-// deMenuItems, deAnnounce, deNodeFor, deWidgetTitle, deMenuClose) and layout-ops.js's lo* ops.
+// deMenuItems, deAnnounce, deNodeFor, deSelect, deWidgetTitle, deMenuClose) and layout-ops.js's lo* ops.
 //   Pointer drag: from a widget's .de-handle or header (past 4px) to any visible slot
 //   Keyboard: Space on .de-handle picks up, arrows move, Space drops, Escape cancels
 //   Menus: widget → Move / Size, row → Height
@@ -96,7 +96,8 @@ function ddShow(slotEl, index, geo, gap) {
     slotEl?.classList.add('de-drop-target');
     ddLit = slotEl;
   }
-  if (!slotEl) return void ddLine?.remove();
+  // an empty slot: its highlight only (a line would run through its "Empty slot" text)
+  if (!slotEl || !geo.frames.length) return void ddLine?.remove();
   if (!ddLine) {
     ddLine = node('div', 'de-drop-line');
     ddLine.setAttribute('aria-hidden', 'true');
@@ -104,8 +105,7 @@ function ddShow(slotEl, index, geo, gap) {
   if (!ddLine.isConnected) document.body.append(ddLine);
   const { r, frames } = geo;
   let y;
-  if (!frames.length) y = r.top + r.height / 2;
-  else if (index <= 0) y = frames[0].top - gap / 2;
+  if (index <= 0) y = frames[0].top - gap / 2;
   else if (index >= frames.length) y = frames[frames.length - 1].bottom + gap / 2;
   else y = (frames[index - 1].bottom + frames[index].top) / 2;
   y = Math.max(r.top - gap / 2, Math.min(y, r.bottom + gap / 2));
@@ -369,7 +369,7 @@ function ddDragStop(st, drop, released = false) {
   ddSwallowClick(released);
   if (!hit?.slot) return;
   if (hit.refused) return void deAnnounce('A tab group cannot go inside another tab group');
-  ddMove(st.id, hit.slot.id, hit.index, st.title);
+  if (ddMove(st.id, hit.slot.id, hit.index, st.title)) deSelect({ kind: 'widget', id: st.id });
 }
 
 // ── keyboard pick-up (on .de-handle, capture phase: ahead of its menu click) ──
@@ -456,7 +456,7 @@ function ddKbEnd(drop) {
   ddHide();
   if (!drop) return void deAnnounce(`Move cancelled. ${k.title} is back in place`);
   if (k.pos.slotId === k.origin.slotId && k.pos.index === k.origin.index) return void deAnnounce(`Dropped ${k.title}. No change`);
-  ddMove(k.id, k.pos.slotId, k.pos.index, k.title);
+  if (ddMove(k.id, k.pos.slotId, k.pos.index, k.title)) deSelect({ kind: 'widget', id: k.id });
   // the drop re-rendered the handle away: focus its successor
   document.querySelector(`[data-de-for="${CSS.escape(`widget:${k.id}`)}"]`)?.focus();
 }
