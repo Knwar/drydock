@@ -89,7 +89,7 @@ button.kpi-main:disabled { cursor: progress; }
 .kpi-k { font-size: 10.5px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; }
 .kpi-v { font-size: 13px; color: var(--text); }
 .kpi-sub { font-size: 12px; color: var(--dim); }
-.kpi-pcts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.kpi-pcts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .kpi-pct, .kpi-milestone, .kpi-spark { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .kpi-reason { font-size: 12px; color: var(--dim); line-height: 1.45; overflow-wrap: anywhere; }
 .kpi-spark .mx-spark { display: block; }

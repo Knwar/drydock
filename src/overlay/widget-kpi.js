@@ -21,12 +21,6 @@ function kpiGet(ctx, path, params) {
   return ctx.shared(url, () => mxGet(url));
 }
 
-// /metrics/flow over the last `weeks` ISO weeks (this one included), under Home's filters.
-function kpiFlow(ctx, f, weeks) {
-  const from = mxAddDays(mxMonday(mxDayKey(Date.now(), MX_LOCAL_TZ)), -7 * (weeks - 1));
-  return kpiGet(ctx, '/metrics/flow', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, tag: f.tag, agent: f.agent, from });
-}
-
 const kpiDay = (day) => `${MX_MONTHS[mxUtc(day).getUTCMonth()]} ${mxUtc(day).getUTCDate()}`; // Oct 20
 
 function kpiStatus(kind, text) {
@@ -77,14 +71,8 @@ async function kpiScheduleLoad(ctx) {
   const phase = f.phase ? s.phases.find((p) => p.id === f.phase) : s.phases.find((p) => p.project_id === f.project && p.phase_status === 'active');
   if (!phase) return { empty: 'No active phase to track' };
   if (!phase.target_date) return { empty: 'Set a target date on the active phase to track it' };
-  let p95 = null;
-  if (ctx.size !== 'S' && phase.p85) {
-    const fc = await kpiGet(ctx, '/metrics/forecast', { project: f.project, phase: phase.id, tz: MX_LOCAL_TZ });
-    // a separate simulation from the schedule's: never show a p95 earlier than its p85
-    if (fc.status === 'ok') p95 = fc.p95.date < phase.p85 ? phase.p85 : fc.p95.date;
-  }
   const next = s.milestones.filter((m) => m.date >= s.today).sort((a, b) => a.date.localeCompare(b.date))[0] ?? null;
-  return { phase, p95, next, today: s.today };
+  return { phase, next, today: s.today };
 }
 
 function kpiScheduleRender(el, d, ctx) {
@@ -97,7 +85,7 @@ function kpiScheduleRender(el, d, ctx) {
   if (ctx.size === 'S') return;
   const det = node('div', 'kpi-detail');
   const pct = node('div', 'kpi-pcts');
-  for (const [k, v] of [['p50', p.p50], ['p85', p.p85], ['p95', d.p95]]) {
+  for (const [k, v] of [['p50', p.p50], ['p85', p.p85]]) {
     const cell = node('div', 'kpi-pct');
     cell.append(node('span', 'kpi-k', k), node('span', 'kpi-v', v ? kpiDay(v) : '—'));
     pct.append(cell);
@@ -124,16 +112,17 @@ async function kpiBudgetLoad(ctx) {
     id = phases.find((p) => p.status === 'active')?.id;
   }
   if (!id) return { empty: 'No active phase to track' };
-  const cost = await kpiGet(ctx, '/metrics/cost', { project: f.project, tz: MX_LOCAL_TZ, phase: id, tag: f.tag, agent: f.agent, from: f.from, to: f.to, limit: 1 });
+  // phase-level: no tag / agent (the budget covers the whole phase); from / to only shape the weekly series
+  const cost = await kpiGet(ctx, '/metrics/cost', { project: f.project, tz: MX_LOCAL_TZ, phase: id, from: f.from, to: f.to, limit: 1 });
   const b = cost.budgets.find((x) => x.phase_id === id);
   if (!b || b.budget === null) return { empty: 'Set a budget on the active phase to track spend' };
-  return { b, weekly: cost.weekly.slice(-8).map((w) => w.cost) };
+  return { b, weekly: cost.weekly.slice(-8) };
 }
 
 function kpiBudgetRender(el, d, ctx) {
   const b = d.b;
   const [kind, text] = b.overBudget ? ['bad', 'Over budget'] : b.projectedOverBudget ? ['warn', 'Projected over'] : ['ok', 'Within budget'];
-  const label = b.projected === null ? `no projection yet · ${b.title}` : `projected ${mxMoney(b.projected)} · ${b.title}`;
+  const label = `${b.title} spend to date (all-time) · ${b.projected === null ? 'no projection yet' : `projected ${mxMoney(b.projected)}`}`;
   el.append(kpiMain(mxMoney(b.actual), `of ${mxMoney(b.budget)}`, label, () => kpiOpenMetrics('overview'), 'Open cost in Metrics'), kpiStatus(kind, text));
   if (ctx.size === 'S') return;
   const det = node('div', 'kpi-detail');
@@ -156,7 +145,8 @@ function kpiBudgetRender(el, d, ctx) {
   det.append(bar, legend);
   if (ctx.size === 'L' && d.weekly.length >= 2) {
     const spark = node('div', 'kpi-spark');
-    spark.append(node('span', 'kpi-k', `weekly cost · last ${mxPlural(d.weekly.length, 'week')}`), mxSparkline(d.weekly));
+    const range = `${kpiDay(d.weekly[0].start)} – ${kpiDay(mxAddDays(d.weekly[d.weekly.length - 1].start, 6))}`;
+    spark.append(node('span', 'kpi-k', `weekly cost · ${range}`), mxSparkline(d.weekly.map((w) => w.cost)));
     det.append(spark);
   }
   el.append(det);
@@ -208,29 +198,29 @@ function kpiDecisionsRender(el, d, ctx) {
 }
 
 // ── throughput: "Is delivery speeding up?" (a trend, not a target: neutral) ──
+// One /metrics/flow read over the last 8 rolling 7-day windows ending now (no partial ISO week).
+const KPI_WEEK_MS = 7 * 86_400_000;
 async function kpiThroughputLoad(ctx) {
   const f = kpiFilters(ctx);
-  const sum = await kpiGet(ctx, '/metrics/summary', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, tag: f.tag, agent: f.agent });
-  const spark = ctx.size === 'S' ? null : (await kpiFlow(ctx, f, 8)).throughput.weekly.map((w) => w.count);
-  return { weeks: sum.throughput.map((w) => w.count), spark };
+  const now = Date.now();
+  const flow = await kpiGet(ctx, '/metrics/flow', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, tag: f.tag, agent: f.agent, from: now - 8 * KPI_WEEK_MS, to: now });
+  const windows = Array(8).fill(0); // oldest → newest; [7] = the last 7 days
+  for (const p of flow.points) {
+    const k = Math.floor((now - p.doneAt) / KPI_WEEK_MS);
+    if (k >= 0 && k < 8) windows[7 - k]++;
+  }
+  return { windows, recent: flow.points.filter((p) => now - p.doneAt < KPI_WEEK_MS), project: f.project, now };
 }
 
-async function kpiDrillWeek(ctx, btn) {
-  const f = kpiFilters(ctx);
+async function kpiDrillRecent(ctx, d, btn) {
   btn.disabled = true;
   try {
-    const flow = await kpiFlow(ctx, f, 1);
     const meta = await homeMeta();
-    const cards = flow.points.map((p) => {
+    const cards = d.recent.map((p) => {
       const c = meta?.cards.get(p.id);
-      return { ...(c ?? {}), id: p.id, title: p.title, board: c?.board ?? f.project, lane: 'done', lane_since: p.doneAt };
+      return { ...(c ?? {}), id: p.id, title: p.title, board: c?.board ?? d.project, lane: 'done', lane_since: p.doneAt };
     });
-    await ctx.drillCards({
-      kicker: 'THROUGHPUT · THIS WEEK',
-      title: `${mxPlural(cards.length, 'card')} done`,
-      cards,
-      range: `since ${mxLongDay(mxMonday(mxDayKey(Date.now(), MX_LOCAL_TZ)))}`,
-    });
+    await ctx.drillCards({ kicker: 'THROUGHPUT · LAST 7 DAYS', title: `${mxPlural(cards.length, 'card')} done`, cards, range: `since ${mxLongDay(mxDayKey(d.now - KPI_WEEK_MS, MX_LOCAL_TZ))}` });
   } catch (e) {
     console.error('kpi throughput drill', e);
   } finally {
@@ -239,22 +229,27 @@ async function kpiDrillWeek(ctx, btn) {
 }
 
 function kpiThroughputRender(el, d, ctx) {
-  const now = d.weeks[d.weeks.length - 1] ?? 0;
-  const avg = d.weeks.length ? d.weeks.reduce((s, x) => s + x, 0) / d.weeks.length : 0;
-  const avgText = mxNum(Math.round(avg * 10) / 10);
-  const main = kpiMain(String(now), 'done this week', `vs 4-wk avg ${avgText}`, () => kpiDrillWeek(ctx, main), 'List the cards done this week');
+  const last = d.windows[7];
+  const prior = d.windows.slice(3, 7); // the 4 windows before: now−35d … now−7d
+  const avg = prior.reduce((s, x) => s + x, 0) / prior.length;
+  const main = kpiMain(String(last), 'done · last 7 days', `vs prior 4-wk avg ${mxNum(Math.round(avg * 10) / 10)}`, () => kpiDrillRecent(ctx, d, main), 'List the cards done in the last 7 days');
   el.append(main);
-  const dir = now > avg ? 'up' : now < avg ? 'down' : 'flat';
-  const pct = avg > 0 ? Math.round((Math.abs(now - avg) / avg) * 100) : null;
   const trend = node('div', 'kpi-status kpi-trend');
-  const ico = node('span', 'kpi-ico', dir === 'up' ? '▲' : dir === 'down' ? '▼' : '=');
-  ico.setAttribute('aria-hidden', 'true');
-  const words = dir === 'flat' ? 'Level with average' : `${pct === null ? '' : `${pct}% `}${dir === 'up' ? 'above' : 'below'} average`;
-  trend.append(ico, node('span', 'kpi-status-text', words));
+  if (avg === 0) {
+    const ico = node('span', 'kpi-ico', '–');
+    ico.setAttribute('aria-hidden', 'true');
+    trend.append(ico, node('span', 'kpi-status-text', 'no prior data'));
+  } else {
+    const dir = last > avg ? 'up' : last < avg ? 'down' : 'flat';
+    const ico = node('span', 'kpi-ico', dir === 'up' ? '▲' : dir === 'down' ? '▼' : '=');
+    ico.setAttribute('aria-hidden', 'true');
+    const pct = Math.round((Math.abs(last - avg) / avg) * 100);
+    trend.append(ico, node('span', 'kpi-status-text', dir === 'flat' ? 'Level with average' : `${pct}% ${dir === 'up' ? 'above' : 'below'} average`));
+  }
   el.append(trend);
-  if (ctx.size === 'S' || !d.spark || d.spark.length < 2) return;
+  if (ctx.size === 'S') return;
   const spark = node('div', 'kpi-detail kpi-spark');
-  spark.append(node('span', 'kpi-k', 'cards done per week · last 8 weeks'), mxSparkline(d.spark));
+  spark.append(node('span', 'kpi-k', 'cards done per 7 days · last 8 windows'), mxSparkline(d.windows));
   el.append(spark);
 }
 
