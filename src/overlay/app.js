@@ -5375,10 +5375,9 @@ function dashTile(b, isMain) {
 // ── Home: default landing — now building, verticals, agents, up next, send ──
 // One read (GET /home) re-fetched on live board messages; status messages are
 // applied in place first. Every user-controlled string goes in via node().
-const home = { data: null, key: '', loadSeq: 0, failed: false, sessions: new Map(), target: null };
+const home = { data: null, key: '', loadSeq: 0, failed: false, sessions: new Map() };
 // status is applied in place (applyHomeStatus), never refetched; init = board socket (re)connected
 const HOME_REFETCH = ['init', 'card', 'card_removed', 'phases', 'event', 'verticals', 'autopilot'];
-const HOME_MAX_UP_NEXT = 3;
 // Home's filters (shared filter bar; no date range). lockScope: Home on a vertical covers that board only.
 const hctx = { f: fbReadUrl(new URLSearchParams(), 'all'), meta: null, metaSeq: 0, metaDirty: true, metaReady: null, customOpen: false, window: null, open: false, rangeDefault: 'all', lockScope: null, workspaceId: null };
 const homeFields = () => (hctx.meta && hctx.meta.boards.length > 1 && !hctx.lockScope ? ['scope', 'phase', 'tag', 'agent'] : ['phase', 'tag', 'agent']);
@@ -5433,8 +5432,6 @@ function homeSetFilter(patch) {
   renderHomeFilters(true);
   loadHome();
 }
-// The /home on screen was read with other filters (one for these is on its way).
-const homeLoading = () => home.key !== fbParams(hctx, true);
 // force: open / a filter change. Otherwise (a refetch or load landed) only when stale, and
 // never while the user is in the bar.
 function renderHomeFilters(force) {
@@ -5444,9 +5441,8 @@ function renderHomeFilters(force) {
   if (force) filterChip(host, hctx, opts);
   else if (hctx.filtersStale) filterChipSoft(host, hctx, opts);
 }
-// Now building / Up next: /home's, read under the filters (the server applies them).
+// Now building: /home's, read under the filters (the server applies them).
 const homeNowItems = () => home.data.now_building;
-const homeUpNext = () => (homeLoading() ? { items: [], total_pending: 0, loading: true } : home.data.up_next);
 async function homeDrillLane(project, lane) {
   await homeMeta();
   if (activeView !== 'home') return;
@@ -5562,17 +5558,6 @@ const homeLaneChip = (lane) => {
   return c;
 };
 const homeBoardChip = (board) => homeChip('board', homeBoardName(board), accentFor(board.name));
-
-function homeLabel(text, extra) {
-  const el = node('div', 'home-label', text);
-  if (extra) el.append(node('span', 'home-label-n', extra));
-  return el;
-}
-
-function homeOpenCard(card) {
-  if (card.board.id === projectId) openCardModal(card.id);
-  else location.search = `?project=${encodeURIComponent(card.board.id)}&card=${encodeURIComponent(card.id)}`;
-}
 
 async function homeQueue(id, btn) {
   btn.disabled = true;
@@ -5847,11 +5832,6 @@ function openAgentEditor(member) {
     document.removeEventListener('keydown', onKey, true);
     backdrop.remove();
     if (opener && opener.isConnected) opener.focus();
-    else if (opener) {
-      // Home re-rendered meanwhile: land on this member's (new) ✎ button
-      const again = [...document.querySelectorAll('.home-edit')].find((b) => b.dataset.id === member.id);
-      again?.focus();
-    }
   }
 
   function onKey(e) {
@@ -5947,9 +5927,6 @@ function renderHome() {
   if (!d) {
     $('home-name').textContent = '';
     $('home-sub').textContent = home.failed ? 'Couldn’t load Home — retrying…' : 'Loading…';
-    for (const id of ['home-now', 'home-verticals', 'home-agents', 'home-upnext']) $(id).replaceChildren();
-    $('home-verticals').classList.add('hidden');
-    $('home-send').classList.add('hidden');
     renderHomeSplit();
     return;
   }
@@ -5977,259 +5954,6 @@ function renderHomeHead() {
   $('home-usage').textContent = u.length ? `usage ${u.join(' · ')}` : '';
 }
 
-function renderHomeNow() {
-  const d = home.data;
-  const host = $('home-now');
-  const now = homeNowItems();
-  const [cur, ...rest] = now;
-  const label = homeLabel('Now building');
-  if (now.length > 1) {
-    const n = node(EMBED ? 'span' : 'button', 'home-label-n home-count', now.length);
-    if (!EMBED) {
-      n.type = 'button';
-      n.title = 'List them';
-      n.setAttribute('aria-label', `${now.length} in flight: list them`);
-      n.onclick = homeDrillNow;
-    }
-    label.append(n);
-  }
-  host.replaceChildren(label);
-  host.classList.toggle('empty', !cur);
-  if (homeLoading()) {
-    host.classList.add('empty');
-    return host.append(node('div', 'home-hero-title muted', 'Loading…'));
-  }
-  if (!cur) {
-    host.append(node('div', 'home-hero-title muted', homeFiltered() ? 'Nothing matching in flight' : 'Nothing in flight'));
-    const top = homeUpNext().items[0];
-    if (top) {
-      const row = node('div', 'home-hero-next');
-      const txt = node('div', 'home-hero-next-txt');
-      txt.append(node('span', 'home-dim', 'Up next: '), node('span', '', top.title));
-      row.append(txt);
-      const q = homeQueueBtn(top);
-      if (q) row.append(q);
-      host.append(row);
-    }
-    return;
-  }
-  const chips = node('div', 'home-chips-row');
-  if (d.workspace) chips.append(homeBoardChip(cur.board));
-  chips.append(homeLaneChip(cur.lane));
-  if (cur.blocked) chips.append(homeChip('blocked', '✋ blocked'));
-  const el = node('span', 'home-elapsed', fmtElapsed(cur.since));
-  el.dataset.since = cur.since;
-  chips.append(el);
-  host.append(chips, node('div', 'home-hero-title', cur.title));
-
-  const who = node('div', `home-activity${cur.activity ? ' on' : ''}`);
-  who.append(node('span', 'home-dot'));
-  const text = cur.agent
-    ? cur.activity ? `${cur.agent} · ${cur.activity}` : cur.agent
-    : cur.activity ? `unassigned · ${cur.activity}` : 'unassigned';
-  who.append(node('span', '', text));
-  host.append(who);
-
-  const { done, total } = cur.subtasks;
-  if (total) {
-    const prog = node('div', 'home-progress');
-    const bar = node('div', 'home-bar');
-    const fill = node('span', 'home-bar-fill');
-    fill.style.width = `${Math.round((100 * done) / total)}%`;
-    bar.append(fill);
-    prog.append(bar, node('span', 'home-progress-n', `${done}/${total}`));
-    host.append(prog);
-    if (cur.next_criterion) {
-      const nx = node('div', 'home-next');
-      nx.append(node('span', 'home-dim', 'Next up: '), node('span', '', cur.next_criterion));
-      host.append(nx);
-    }
-  }
-
-  const actions = node('div', 'home-actions');
-  const open = node('button', 'home-btn primary', 'Open card');
-  open.onclick = () => homeOpenCard(cur);
-  actions.append(open);
-  if (term.enabled) {
-    const watch = node('button', 'home-btn', 'Watch terminal');
-    watch.onclick = () => openBoardTerminal(cur.board.id);
-    actions.append(watch);
-  }
-  host.append(actions);
-
-  if (rest.length) {
-    const list = node('div', 'home-others');
-    for (const c of rest) {
-      const row = node('button', 'home-other');
-      if (d.workspace) row.append(homeBoardChip(c.board));
-      row.append(node('span', 'home-other-title', c.title));
-      if (c.blocked) row.append(node('span', 'home-blocked-mark', '✋'));
-      row.append(homeLaneChip(c.lane));
-      row.onclick = () => homeOpenCard(c);
-      list.append(row);
-    }
-    host.append(list);
-  }
-}
-
-function renderHomeVerticals() {
-  const d = home.data;
-  const host = $('home-verticals');
-  const on = d.verticals.length > 0;
-  host.classList.toggle('hidden', !on);
-  $('home-top').classList.toggle('solo', !on);
-  if (!on) return host.replaceChildren();
-  const list = node('div', 'home-vlist');
-  const loading = homeLoading();
-  const shown = d.verticals.filter((v) => v.shown !== false); // the server's call (scope; a phase → its board)
-  for (const v of shown) {
-    const s = v.session ?? { state: 'offline' };
-    const row = node('div', 'home-vrow');
-    row.dataset.state = s.state;
-    const head = node('div', 'home-vhead');
-    const pill = node('span', 'dt-pill');
-    pill.append(node('span', 'dt-dot'), node('span', '', DASH_STATE[s.state] ?? s.state));
-    head.append(node('span', 'home-vname', homeBoardName(v.project)), pill);
-    const wsv = d.workspace?.verticals ?? [];
-    const mb = wsv.some((x) => x.id === v.project.id) ? mergeButton(v.project.id, v.project.name, wsv.length) : null;
-    if (mb) head.append(mb);
-    // lane counts (the server's, under the filters), each opening its cards
-    const counts = loading ? null : v.lanes;
-    const lanes = node('div', 'home-vlanes');
-    DASH_LANES.forEach(([lane, label], i) => {
-      if (i) lanes.append(' · ');
-      const text = `${counts ? (counts[lane] ?? 0) : '…'} ${label}`;
-      if (EMBED) return lanes.append(text);
-      const b = node('button', 'home-vlane', text);
-      b.type = 'button';
-      b.title = `List the ${LANE_LABELS[lane]} cards`;
-      b.onclick = () => homeDrillLane(v.project, lane);
-      lanes.append(b);
-    });
-    row.append(head, lanes);
-    list.append(row);
-  }
-  if (!shown.length) list.append(node('div', 'home-empty', 'No boards match the filters.'));
-  const foot = node('button', 'home-link', 'Dashboard →');
-  foot.onclick = () => setView('dashboard');
-  host.replaceChildren(homeLabel('Verticals', `${shown.length}`), list, foot);
-}
-
-function renderHomeAgents() {
-  const d = home.data;
-  const host = $('home-agents');
-  // filters (the server applies them): the agent → just them; scope / phase / tag → members with a matching card
-  if (homeLoading()) return host.replaceChildren(node('div', 'home-empty', 'Loading…'));
-  const agents = d.agents;
-  if (!agents.length) {
-    host.replaceChildren(node('div', 'home-empty', home.key ? 'No agents match the filters.' : 'No team members yet — add them in Settings → Team.'));
-    return;
-  }
-  host.replaceChildren(
-    ...agents.map((m) => {
-      const card = node('div', 'home-agent');
-      const top = node('div', 'home-agent-top');
-      const id = node('div', 'home-agent-id');
-      id.append(node('div', 'home-agent-name', m.name), node('div', 'home-agent-skill', m.skill ?? 'no skill'));
-      const edit = node('button', 'home-edit', '✎');
-      edit.setAttribute('aria-label', `Edit ${m.name}`);
-      edit.title = `Edit ${m.name}`;
-      edit.dataset.id = m.id;
-      edit.onclick = () => openAgentEditor(m);
-      top.append(avatarEl(m, 44), id, edit);
-      const stats = node('div', 'home-agent-stats');
-      const stat = (val, label, cls) => {
-        const s = node('div', 'home-stat');
-        s.append(node('div', `home-stat-val ${cls ?? ''}`, val), node('div', 'home-stat-label', label));
-        return s;
-      };
-      stats.append(stat(`+${m.lines_added}`, 'lines written', 'add'), stat(`${m.hours}`, 'hours worked'));
-      const now = node('div', `home-activity${m.now ? ' on' : ''}`);
-      now.append(node('span', 'home-dot'), node('span', 'home-agent-now', m.now ?? 'idle'));
-      card.append(top, stats, now);
-      return card;
-    }),
-  );
-}
-
-function renderHomeUpNext() {
-  const d = home.data;
-  const host = $('home-upnext');
-  const up = homeUpNext();
-  const items = up.items.slice(0, HOME_MAX_UP_NEXT);
-  host.replaceChildren(homeLabel('Up next'));
-  const list = node('div', 'home-uplist');
-  if (!items.length) {
-    const empty = up.loading ? 'Loading…' : homeFiltered() ? 'Nothing waiting matches the filters.' : 'Nothing waiting — the board is clear.';
-    list.append(node('div', 'home-empty', empty));
-  }
-  for (const it of items) {
-    const row = node('div', 'home-uprow');
-    const main = node('div', 'home-upmain');
-    const top = node('div', 'home-chips-row');
-    if (d.workspace) top.append(homeBoardChip(it.board));
-    top.append(homeLaneChip(it.lane));
-    main.append(top, node('div', 'home-uptitle', it.title));
-    let status;
-    if (it.ready) status = node('div', 'home-status ready', 'Ready');
-    else {
-      const w = it.waiting_on
-        .map((x) => (x.title == null ? 'an unknown card' : `${x.title} (${x.board_name})`))
-        .join(', ');
-      status = node('div', 'home-status waiting', w === 'an unknown card' ? 'Waiting on an unknown card' : `Waiting on: ${w}`);
-    }
-    main.append(status);
-    row.append(main);
-    const q = homeQueueBtn(it);
-    if (q) row.append(q);
-    list.append(row);
-  }
-  const all = node('button', 'home-link', `View all ${up.total_pending} in Kanban →`);
-  all.onclick = () => setView('kanban');
-  host.append(list, all);
-}
-
-// The Send box is static markup (so typing survives re-renders): only the
-// target options, the needs-you gate and visibility are refreshed here.
-function homeTargets() {
-  const d = home.data;
-  if (!d) return [];
-  return d.verticals.length
-    ? d.verticals.map((v) => ({ id: v.project.id, name: homeBoardName(v.project) }))
-    : [{ id: d.project.id, name: d.project.name }];
-}
-
-function renderHomeSend() {
-  const box = $('home-send');
-  const on = term.enabled && !!term.token && !!home.data;
-  box.classList.toggle('hidden', !on);
-  $('home-bottom').classList.toggle('solo', !on);
-  if (!on) return;
-  const targets = homeTargets();
-  if (!targets.some((t) => t.id === home.target)) {
-    home.target = (targets.find((t) => t.id === currentProject()) ?? targets[0])?.id ?? null;
-  }
-  const sel = $('home-send-target');
-  sel.replaceChildren(
-    ...targets.map((t) => {
-      const st = home.sessions.get(t.id)?.state ?? 'offline';
-      return Object.assign(document.createElement('option'), { value: t.id, textContent: `${t.name} — ${DASH_STATE[st] ?? st}` });
-    }),
-  );
-  sel.value = home.target ?? '';
-  const needs = home.sessions.get(home.target)?.state === 'needs_you';
-  $('home-send-btn').disabled = needs || home.sending === true;
-  const res = $('home-send-result');
-  if (needs) {
-    res.textContent = 'Waiting for a decision — answer it in the terminal';
-    res.className = 'warn';
-  } else if (res.dataset.gate === '1') {
-    res.textContent = '';
-    res.className = '';
-  }
-  res.dataset.gate = needs ? '1' : '';
-}
-
 // Type `text` into a board's Claude session (POST /pty/send: token-gated, idle
 // sessions only). Used by Home's Send to agent and the planner's Run dialog.
 async function ptySend(project, text) {
@@ -6254,36 +5978,6 @@ async function ptySend(project, text) {
     return { ok: false, message: 'Could not reach the daemon' };
   }
 }
-
-async function homeSend() {
-  const text = $('home-send-text').value.trim();
-  const res = $('home-send-result');
-  if (!text || !home.target) return;
-  home.sending = true;
-  $('home-send-btn').disabled = true;
-  res.textContent = 'Sending…';
-  res.className = '';
-  const sent = await ptySend(home.target, text);
-  res.textContent = sent.message;
-  res.className = sent.ok ? 'ok' : 'err';
-  if (sent.ok) $('home-send-text').value = '';
-  res.dataset.gate = '';
-  home.sending = false;
-  renderHomeSend();
-}
-
-$('home-send-target').onchange = (e) => {
-  home.target = e.target.value;
-  $('home-send-result').textContent = '';
-  renderHomeSend();
-};
-for (const chip of document.querySelectorAll('#home-send .home-chip')) {
-  chip.onclick = () => {
-    $('home-send-text').value = chip.dataset.text;
-    $('home-send-text').focus();
-  };
-}
-$('home-send-btn').onclick = homeSend;
 
 // ── Verticals: suggestion toast (Home) + Split dialog ──
 // GET /project/:id/vertical-suggestions feeds the toast; the dialog drives
