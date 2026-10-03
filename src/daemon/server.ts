@@ -610,26 +610,44 @@ function recountCard(task: Task): void {
   });
 }
 
+/** What the branch is compared against: its merge-base with the default branch
+ *  (local, else origin's). On the default branch itself → its upstream (unpushed
+ *  commits), else HEAD (uncommitted only). `label` names it for the UI. */
+async function diffBase(root: string, branch: string): Promise<{ base: string; label: string }> {
+  const tryGit = (...args: string[]) => git(root, ...args).then((o) => o.trim(), () => '');
+  const originHead = await tryGit('symbolic-ref', '--short', 'refs/remotes/origin/HEAD'); // "origin/main"
+  const names = originHead ? [originHead.replace(/^origin\//, '')] : ['main', 'master'];
+  for (const name of names) {
+    const refs = branch === name ? ['@{upstream}'] : [name, `origin/${name}`];
+    for (const ref of refs) {
+      const base = await tryGit('merge-base', 'HEAD', ref);
+      if (base) return { base, label: ref === '@{upstream}' ? (await tryGit('rev-parse', '--abbrev-ref', ref)) || ref : ref };
+    }
+  }
+  return { base: 'HEAD', label: 'HEAD' };
+}
+
+/** Every file the branch changed vs its base (committed or not) plus untracked ones. */
 async function gitStatus(root: string) {
   const branch = (await git(root, 'rev-parse', '--abbrev-ref', 'HEAD')).trim();
-  const porcelain = await git(root, 'status', '--porcelain');
-  const files = porcelain
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      const path = line.slice(3);
-      return {
-        status: line.slice(0, 2).trim(),
-        path: path.includes(' -> ') ? path.split(' -> ')[1] : path, // renames
-      };
-    });
+  const { base, label } = await diffBase(root, branch);
+  // -z: NUL-separated, unquoted paths. Rename/copy rows are "R100\0old\0new".
+  const tokens = (await git(root, 'diff', '--name-status', '-M', '-z', base)).split('\0');
+  const files: { status: string; path: string }[] = [];
+  for (let i = 0; i < tokens.length - 1; ) {
+    const status = tokens[i++];
+    if (status[0] === 'R' || status[0] === 'C') i++; // skip the old path
+    files.push({ status: status[0], path: tokens[i++] });
+  }
+  const untracked = await git(root, 'ls-files', '--others', '--exclude-standard', '-z');
+  for (const path of untracked.split('\0').filter(Boolean)) files.push({ status: '??', path });
   let remote: string | null = null;
   try {
     remote = (await git(root, 'remote', 'get-url', 'origin')).trim() || null;
   } catch {
     /* no origin remote */
   }
-  return { branch, files, remote };
+  return { branch, base: label, files, remote };
 }
 
 /** Attach a GitHub repo to a folder, smartly by folder state: clone into an empty
@@ -657,7 +675,9 @@ async function attachRepo(root: string, url: string): Promise<{ ok: boolean; act
 }
 
 async function gitDiff(root: string, file: string): Promise<string> {
-  const tracked = await git(root, 'diff', 'HEAD', '--', file);
+  const branch = (await git(root, 'rev-parse', '--abbrev-ref', 'HEAD')).trim();
+  const { base } = await diffBase(root, branch);
+  const tracked = await git(root, 'diff', '-M', base, '--', file);
   if (tracked) return tracked;
   // untracked file → whole content as additions (no-index exits 1 on diff)
   try {

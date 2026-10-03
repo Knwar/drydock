@@ -987,8 +987,6 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
   line-height: 1.4;
   text-align: center;
 }
-.rail-tab[data-sev="blocker"][data-count]:not([data-count=""])::after { background: #e06c75; color: #fff; }
-.rail-tab[data-sev="warn"][data-count]:not([data-count=""])::after { background: #e5c07b; color: #0d0f14; }
 
 /* attention queue (single ranked list) */
 .att-group {

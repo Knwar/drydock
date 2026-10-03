@@ -203,7 +203,7 @@ function applyEvent(msg) {
     renderUsage(msg.usage);
     renderBoard();
     renderPhaseList();
-    refreshAttention();
+    setInitialView();
     openCardFromUrl();
     if (activeView === 'planner' && !plan.project) openPlanner(); // ?view=planner opened before the project was known
     if (activeView === 'metrics' && !mx.project) openMetrics(); // ?view=metrics opened before the project was known
@@ -213,13 +213,11 @@ function applyEvent(msg) {
     phases = msg.phases;
     renderBoard(); // active phase may have changed → board scope shifts
     renderPhaseList();
-    refreshAttention();
   } else if (msg.type === 'card') {
     cards.set(msg.card.id, msg.card);
     scheduleReloadSoon();
     renderBoard();
     renderPhaseList();
-    refreshAttention();
     if (activeView === 'scm') refreshFiles();
     else refreshScmBadge();
     if (msg.card.id === openCardId) refreshCardModal();
@@ -228,7 +226,6 @@ function applyEvent(msg) {
     scheduleReloadSoon();
     renderBoard();
     renderPhaseList();
-    refreshAttention();
     if (msg.card_id === openCardId) closeCardModal();
   } else if (msg.type === 'project_removed') {
     // the project we're viewing is gone — merged away → land on the merged board
@@ -245,7 +242,6 @@ function applyEvent(msg) {
       const verdict = ev.payload && JSON.parse(ev.payload).verdict;
       if (verdict in reviews) reviews[verdict] += 1;
       renderStats();
-      refreshAttention();
     }
     if (['tool', 'build_start', 'build_end', 'check'].includes(ev.type)) pulse(ev.task_id);
   } else if (msg.type === 'status') {
@@ -454,13 +450,15 @@ document.addEventListener('click', (e) => {
 // ── board scoping by active phase ───────────────────────────────────
 const activePhaseId = () => phases.find((p) => p.status === 'active')?.id ?? null;
 
-// The board shows the active phase only — but only once phases exist. Flat /
+// The board shows the active phase (plus every done card) — but only once phases exist. Flat /
 // legacy projects (no phases) keep showing every card.
 function visibleCards() {
   const apid = activePhaseId();
   const all = [...cards.values()];
-  // cards highlighted from Metrics' "Open all" stay visible whatever their phase
-  return phases.length && apid ? all.filter((c) => c.phase_id === apid || kanbanHighlight.has(c.id)) : all;
+  // done cards (every phase's history) and cards highlighted from Metrics' "Open all" stay visible whatever their phase
+  return phases.length && apid
+    ? all.filter((c) => c.phase_id === apid || c.lane === 'done' || kanbanHighlight.has(c.id))
+    : all;
 }
 
 // ── lane health: age in lane, stuck flags, WIP limits ───────────────
@@ -540,8 +538,7 @@ function wipOf(lane, n, settings) {
   return limit ? { n, limit, over: n > limit } : null;
 }
 
-// ── activity rail: view switcher (Attention / Kanban / Git / Phases) ─
-const railAttention = document.getElementById('rail-attention');
+// ── activity rail: view switcher (Kanban / Git / Phases / …) ─
 const railKanban = document.getElementById('rail-kanban');
 const railScm = document.getElementById('rail-scm');
 const railPhases = document.getElementById('rail-phases');
@@ -553,12 +550,11 @@ const railGovernance = document.getElementById('rail-governance');
 const governanceView = document.getElementById('governance-view');
 const plannerView = document.getElementById('planner-view');
 const homeView = document.getElementById('home-view');
-const attentionView = document.getElementById('attention-view');
 const scmView = document.getElementById('scm-view');
 const phasesView = document.getElementById('phases-view');
 const metricsView = document.getElementById('metrics-view');
 const dashboardView = document.getElementById('dashboard-view');
-let activeView = 'kanban'; // 'home' | 'attention' | 'kanban' | 'scm' | 'phases' | 'metrics' | 'dashboard' | 'planner' | 'governance'
+let activeView = 'kanban'; // 'home' | 'kanban' | 'scm' | 'phases' | 'metrics' | 'dashboard' | 'planner' | 'governance'
 
 // Non-kanban views take over the whole board area (full-screen).
 function setView(name) {
@@ -571,7 +567,6 @@ function setView(name) {
       fbCancelMeta(prev === 'dashboard' ? dctx : hctx); // an in-flight filtered load never lands on a closed view
     }
   }
-  railAttention.classList.toggle('active', name === 'attention');
   railKanban.classList.toggle('active', name === 'kanban');
   railScm.classList.toggle('active', name === 'scm');
   railPhases.classList.toggle('active', name === 'phases');
@@ -580,7 +575,6 @@ function setView(name) {
   railHome.classList.toggle('active', name === 'home');
   railPlanner.classList.toggle('active', name === 'planner');
   railGovernance.classList.toggle('active', name === 'governance');
-  attentionView.classList.toggle('hidden', name !== 'attention');
   boardEl.classList.toggle('hidden', name !== 'kanban');
   scmView.classList.toggle('hidden', name !== 'scm');
   phasesView.classList.toggle('hidden', name !== 'phases');
@@ -595,7 +589,6 @@ function setView(name) {
     loadSchedule(); // fresh pills on every open
     renderPhaseDetail();
   }
-  if (name === 'attention') renderAttention();
   if (name === 'metrics' && prev !== 'metrics') openMetrics();
   else if (name !== 'metrics' && prev === 'metrics') closeMetrics();
   if (name !== 'kanban' && kanbanHighlight.size) clearKanbanHighlight();
@@ -607,7 +600,6 @@ function setView(name) {
   if (name === 'governance' && prev !== 'governance') openGovernance();
 }
 
-railAttention.onclick = () => setView('attention');
 railKanban.onclick = () => setView('kanban');
 railScm.onclick = () => setView('scm');
 railPhases.onclick = () => setView('phases');
@@ -3325,74 +3317,17 @@ document.addEventListener(
   true,
 );
 
-// stall/grace signals fire no WS event — poll so quiet agents still surface.
-setInterval(refreshAttention, 30000);
-
-// ── attention queue: the "needs you now" list ───────────────────────
-let attentionItems = [];
+// ── initial view: ?view= wins, else the user's Settings choice (once) ──
 let initialViewSet = false;
-const SEV_LABEL = { blocker: 'Blockers', warn: 'Needs attention', info: 'FYI' };
 
-async function refreshAttention() {
-  if (!projectId) return;
-  try {
-    attentionItems = await (await gitApi(`/attention?project=${projectId}`)).json();
-  } catch {
-    attentionItems = [];
-  }
-  const blockers = attentionItems.filter((i) => i.severity === 'blocker').length;
-  const warns = attentionItems.filter((i) => i.severity === 'warn').length;
-  railAttention.dataset.count = blockers || warns || '';
-  railAttention.dataset.sev = blockers ? 'blocker' : warns ? 'warn' : '';
-  if (activeView === 'attention') renderAttention();
-  // default view on first load, honoring the user's Settings choice — unless
-  // ?view=dashboard is pending the workspace probe (it wins if the dashboard opens).
-  if (!initialViewSet) {
-    if (URL_VIEW === 'dashboard') await dashProbe;
-    if (initialViewSet) return;
-    initialViewSet = true;
-    if (URL_VIEW && URL_VIEW !== 'dashboard' && URL_VIEWS.includes(URL_VIEW)) return setView(URL_VIEW); // ?view= wins
-    const dv = SETTINGS.defaultView;
-    if (dv === 'home') setView('home');
-    else if (dv === 'attention' || (dv === 'smart' && blockers)) setView('attention');
-  }
-}
-
-function ago(ts) {
-  const m = Math.max(0, Math.round((Date.now() - ts) / 60000));
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
-}
-
-function renderAttention() {
-  const host = document.getElementById('attention-list');
-  if (attentionItems.length === 0) {
-    host.innerHTML = '<div class="att-empty">All clear — nothing needs you.</div>';
-    return;
-  }
-  host.replaceChildren(
-    ...['blocker', 'warn', 'info'].flatMap((sev) => {
-      const rows = attentionItems.filter((i) => i.severity === sev);
-      if (!rows.length) return [];
-      const head = document.createElement('div');
-      head.className = 'att-group';
-      head.textContent = SEV_LABEL[sev];
-      return [
-        head,
-        ...rows.map((i) => {
-          const meta = [`${ago(i.since)} in state`];
-          if (i.blocking) meta.push(`<span class="att-blocks">blocks ${i.blocking}</span>`);
-          if (i.agent) meta.push(esc(i.agent));
-          const b = document.createElement('button');
-          b.className = `att-row ${esc(i.severity)}`;
-          b.innerHTML = `<span class="att-dot"></span><span class="att-main"><span class="att-title">${esc(i.title)}</span><span class="att-reason">${esc(i.reason)}</span></span><span class="att-meta">${meta.join(' · ')}</span><span class="att-arrow">→</span>`;
-          b.onclick = () => openCardModal(i.card_id);
-          return b;
-        }),
-      ];
-    }),
-  );
+async function setInitialView() {
+  if (initialViewSet) return;
+  // ?view=dashboard waits on the workspace probe (it wins if the dashboard opens)
+  if (URL_VIEW === 'dashboard') await dashProbe;
+  if (initialViewSet) return;
+  initialViewSet = true;
+  if (URL_VIEW && URL_VIEW !== 'dashboard' && URL_VIEWS.includes(URL_VIEW)) return setView(URL_VIEW);
+  if (SETTINGS.defaultView === 'home') setView('home');
 }
 
 const accentFor = (name) => ACCENTS[[...String(name)].reduce((a, c) => a + c.charCodeAt(0), 0) % ACCENTS.length];
@@ -3995,8 +3930,9 @@ async function refreshScmBadge() {
 }
 
 async function refreshFiles() {
-  const { branch, files, remote } = await (await gitApi(`/git/status?project=${projectId}`)).json();
-  $('scm-branch').textContent = `${files.length} change${files.length === 1 ? '' : 's'} · ${branch}`;
+  const { branch, base, files, remote } = await (await gitApi(`/git/status?project=${projectId}`)).json();
+  const vs = base && base !== 'HEAD' ? ` vs ${base}` : '';
+  $('scm-branch').textContent = `${files.length} change${files.length === 1 ? '' : 's'} · ${branch}${vs}`;
   $('scm-attach').classList.toggle('hidden', !!remote);
   railScm.dataset.count = files.length ? String(files.length) : '';
   const list = $('git-files');
@@ -4010,7 +3946,7 @@ async function refreshFiles() {
     }),
   );
   if (files.length) selectFile(files[0].path, list.firstChild);
-  else $('git-diff').innerHTML = '<div class="dl meta"><span class="ln"></span><span class="ln"></span><span class="dt">working tree clean</span></div>';
+  else $('git-diff').innerHTML = `<div class="dl meta"><span class="ln"></span><span class="ln"></span><span class="dt">${vs ? `no changes${esc(vs)}` : 'working tree clean'}</span></div>`;
 }
 
 async function selectFile(path, li) {
@@ -4448,7 +4384,8 @@ $('term-resize').addEventListener('mousedown', (e) => {
 const SETTINGS = {
   accent: localStorage.getItem('settings.accent') || '#5dd3a8',
   reduceMotion: localStorage.getItem('settings.reduceMotion') === '1',
-  defaultView: localStorage.getItem('settings.defaultView') || 'home', // never changed → Home
+  // never changed → Home; the retired Attention / Smart choices land on Kanban
+  defaultView: ({ smart: 'kanban', attention: 'kanban' })[localStorage.getItem('settings.defaultView')] || localStorage.getItem('settings.defaultView') || 'home',
 };
 const ACCENTS = ['#5dd3a8', '#61afef', '#b57edc', '#e5c07b', '#e06c75', '#56b6c2'];
 
@@ -4885,7 +4822,7 @@ $('team-add-btn').onclick = addTeamMember;
 // Every user-controlled string goes in via textContent (node() below) — never innerHTML.
 const URL_VIEW_RAW = new URLSearchParams(location.search).get('view');
 const URL_VIEW = URL_VIEW_RAW === 'stats' ? 'metrics' : URL_VIEW_RAW; // ?view=stats: the old Stats view's links
-const URL_VIEWS = ['home', 'attention', 'kanban', 'scm', 'phases', 'metrics', 'planner', 'governance'];
+const URL_VIEWS = ['home', 'kanban', 'scm', 'phases', 'metrics', 'planner', 'governance'];
 const EMBED = new URLSearchParams(location.search).get('embed') === '1';
 const dash = { checked: false, workspace: null, summary: null, summaryKey: '', loadSeq: 0, failed: false, fetchRetry: 1000, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null, refetchFirst: null, skipOpenFetch: false, nudged: new Map() };
 const DASH_LANES = [['backlog', 'backlog'], ['queued', 'queued'], ['in_progress', 'in prog'], ['in_review', 'review'], ['done', 'done']];
@@ -4897,7 +4834,7 @@ const DASH_FILTER_FIELDS = ['scope', 'phase', 'tag', 'agent', 'range'];
 const DASH_NUDGE_PULSE_MS = 2400;
 
 if (EMBED) document.body.classList.add('embed');
-// Resolves once initDashboard's /workspace probe has settled; refreshAttention
+// Resolves once initDashboard's /workspace probe has settled; setInitialView
 // waits on it before applying the default view when ?view=dashboard is set.
 let dashProbeDone;
 const dashProbe = new Promise((r) => (dashProbeDone = r));
@@ -7842,7 +7779,12 @@ function renderPlanGraph(v, m) {
         ? node('span', 'pl-node-meta warn', 'No spec yet')
         : node('span', 'pl-node-meta', `${crit} criteri${crit === 1 ? 'on' : 'a'}`);
     b.append(top, node('span', 'pl-node-title', n.title || 'Untitled'), meta);
-    b.onclick = () => selectPlanNode(n.id);
+    b.onclick = () => {
+      selectPlanNode(n.id);
+      if (!live) return; // Plan mode: the side editor opens
+      const s = planLiveOf(v, n); // Live is read-only: open the board card's details in place
+      if (s.cardId && s.kind !== 'removed') openCardModal(s.cardId);
+    };
     parts.push(b);
     if (live) applyLiveNode(b, n, v, boardName);
     else if (!EMBED) {
@@ -10671,7 +10613,7 @@ function gvRiskForm(mode, r) {
 }
 
 // Show the landing view at once — no Kanban flash while the first board data and
-// attention fetch are in flight. 'smart' and ?view=dashboard still wait for data;
+// view setup are in flight. ?view=dashboard still waits for the workspace probe;
 // scm needs the project id before it can load.
 const EARLY_VIEW = URL_VIEW === 'dashboard' ? null : URL_VIEWS.includes(URL_VIEW) ? URL_VIEW : SETTINGS.defaultView === 'home' ? 'home' : null;
 if (EARLY_VIEW && EARLY_VIEW !== 'scm') setView(EARLY_VIEW);
