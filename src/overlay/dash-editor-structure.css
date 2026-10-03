@@ -1,1 +1,213 @@
-/* Dashboard editor: structure (stub). Styles arrive with its feature card. */
+/* ── Dashboard editor: structure (rows, column dividers, sections, tabs) ──
+   Quiet until wanted: + lines and dividers surface on hover / focus; the end-of-container
+   buttons stay faint so an empty section still shows where its rows go. */
+
+.ds-plus { font-size: 14px; line-height: 1; font-weight: 500; }
+
+/* between rows: a zero-footprint strip exactly over the gap, a + line on hover / focus */
+.ds-ins {
+  position: relative;
+  flex: none;
+  height: var(--dw-gap);
+  margin: calc(-1 * var(--dw-gap)) 0;
+  z-index: 3;
+}
+.ds-ins::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 1px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.ds-ins-btn {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  background: #1c2130;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.ds-ins:hover::before, .ds-ins:focus-within::before { opacity: 0.6; }
+.ds-ins:hover .ds-ins-btn, .ds-ins-btn:focus-visible, .ds-ins-btn[aria-expanded="true"] { opacity: 1; }
+.ds-ins-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* end of a section / tab panel: a faint dashed "+ Add row" */
+.ds-add-end { flex: none; display: flex; }
+.ds-add-end-btn, .ds-add-section-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.ds-add-end-btn:hover, .ds-add-end-btn:focus-visible, .ds-add-end-btn[aria-expanded="true"],
+.ds-add-section-btn:hover, .ds-add-section-btn:focus-visible {
+  opacity: 1;
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+.ds-add-end-btn:focus-visible, .ds-add-section-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dw-sec-body:hover > .ds-add-end > .ds-add-end-btn, .dw-tabs-panel:hover > .ds-add-end > .ds-add-end-btn { opacity: 0.8; }
+
+/* bottom of the dashboard */
+.ds-add-section { display: flex; align-items: center; gap: 8px; }
+.ds-add-section-btn { height: 32px; font-size: 12px; }
+.ds-add-section > .ds-inline { flex: 1; }
+
+/* column dividers: a hit strip over the gap between two slots; line on hover / focus / drag */
+.de-editing .dw-row { position: relative; }
+.ds-div {
+  --c: 6;
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: calc((100% - 11 * var(--dw-gap)) / 12 * var(--c) + (var(--c) - 0.5) * var(--dw-gap));
+  width: var(--dw-gap);
+  transform: translateX(-50%);
+  z-index: 3;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.ds-div::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+.dw-row:hover > .ds-div::before { opacity: 1; }
+.ds-div:hover::before, .ds-div:focus-visible::before, .ds-div.ds-dragging::before { opacity: 1; background: var(--accent); }
+.ds-div:focus-visible::after {
+  content: '';
+  position: absolute;
+  inset: -2px 0;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+}
+.ds-div-label {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 2px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: #1a1f2b;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  color: var(--text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+}
+.ds-div.ds-dragging > .ds-div-label, .ds-div:focus-visible > .ds-div-label { opacity: 1; }
+.dw-row.ds-resizing { cursor: col-resize; user-select: none; }
+.dw-row.ds-resizing .dw-slot { transition: none; }
+
+/* the column picker: a crisp 12-column diagram per item */
+.ds-picker { min-width: 240px; max-width: 400px; }
+.ds-dia {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 2px;
+  width: 54px;
+  height: 14px;
+}
+.ds-dia-col {
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.de-menu-item:hover .ds-dia-col, .de-menu-item:focus .ds-dia-col, .de-menu-item[aria-checked="true"] .ds-dia-col {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: none;
+}
+
+/* inline title inputs */
+.ds-inline {
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: #11151e;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.ds-inline-section {
+  width: min(320px, 100%);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.ds-inline-tab { position: absolute; z-index: 4; box-sizing: border-box; }
+.dw-tab.ds-renaming { visibility: hidden; }
+
+/* tabs: + beside the core's tab and widget handles, over the strip's end */
+.ds-tab-add { position: absolute; top: 8px; right: 64px; z-index: 2; }
+.de-editing .dw-tabs-strip { padding-right: 92px; }
+.dw-widget:hover > .ds-tab-add, .dw-widget:focus-within > .ds-tab-add { opacity: 1; }
+
+/* a refused edit, shown as well as announced */
+.ds-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 64px;
+  z-index: 1001;
+  transform: translate(-50%, 8px);
+  max-width: min(480px, calc(100vw - 32px));
+  padding: 8px 14px;
+  border: 1px solid rgba(229, 192, 123, 0.35);
+  border-radius: 10px;
+  background: #1a1f2b;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  color: #e5c07b;
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.ds-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-ins::before, .ds-ins-btn, .ds-add-end-btn, .ds-add-section-btn, .ds-div::before, .ds-toast { transition: none; }
+}
