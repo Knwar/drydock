@@ -1,0 +1,188 @@
+/* ── Dashboard editor core: edit-mode chrome on Home's #dash-root ──
+   Calm and quiet: handles appear on hover / focus, the selection is an accent outline and the
+   only layout change between view and edit is the slim bar above each row. */
+
+/* the Edit dashboard button (Home header): desktop only, never embedded, gone while editing */
+.home-edit {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.home-edit:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.24); }
+.home-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+body.embed .home-edit, body.de-editing .home-edit { display: none; }
+@media (max-width: 799px) {
+  .home-edit { display: none; }
+}
+
+.de-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* handles: small icon buttons, faint until their target is hovered, focused or selected */
+.de-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: #1c2130;
+  color: var(--dim);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.de-btn:hover, .de-btn[aria-expanded="true"] { color: var(--text); border-color: rgba(255, 255, 255, 0.24); }
+.de-btn:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
+.de-btn[aria-expanded="true"] { opacity: 1; }
+
+/* widget frames */
+.de-editing .dw-widget { position: relative; cursor: default; }
+.de-editing .dw-widget:not([data-type="tabs"]) > .dw-body { pointer-events: none; } /* widgets are inert while editing */
+.de-editing .dw-widget > .dw-head { padding-right: 44px; }
+.de-handle { position: absolute; top: 8px; right: 8px; z-index: 2; }
+.dw-widget:hover > .de-handle, .dw-widget:focus-within > .de-handle, .dw-widget.de-selected > .de-handle { opacity: 1; }
+.de-editing .dw-widget:hover { border-color: rgba(255, 255, 255, 0.16); }
+.de-editing .dw-widget.de-selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* rows: a slim bar above each row */
+.de-row-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+  margin-bottom: calc(6px - var(--dw-gap));
+  padding: 0 4px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+  opacity: 0.7;
+}
+.de-row-bar:hover, .de-row-bar:focus-within, .de-row-bar.de-selected { opacity: 1; }
+.de-row-bar:hover .de-btn, .de-row-bar:focus-within .de-btn, .de-row-bar.de-selected .de-btn { opacity: 1; }
+.de-row-bar.de-selected { color: var(--accent); }
+.de-editing .dw-row.de-selected { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: 12px; }
+
+/* sections */
+.de-editing .dw-sec-head { position: relative; min-height: 14px; }
+.de-section-handle { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); }
+.dw-sec-head:hover .de-section-handle, .dw-sec-head:focus-within .de-section-handle, .dw-section.de-selected > .dw-sec-head .de-section-handle { opacity: 1; }
+.de-editing .dw-section.de-selected > .dw-sec-head .dw-sec-toggle { color: var(--accent); }
+
+/* tabs */
+.de-tab-handle { flex: none; align-self: center; margin-left: auto; position: sticky; right: 0; }
+.dw-tabs-strip:hover .de-tab-handle, .dw-tabs-strip:focus-within .de-tab-handle { opacity: 1; }
+.de-editing .dw-tab.de-selected { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
+
+/* empty slots: a dashed drop area */
+.de-slot-empty {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed rgba(255, 255, 255, 0.16);
+  border-radius: 16px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.de-slot-empty .de-btn { opacity: 0.6; }
+.de-slot-empty:hover .de-btn, .de-slot-empty:focus-within .de-btn { opacity: 1; }
+.de-editing .dw-slot.de-selected > .de-slot-empty { border-color: var(--accent); border-style: solid; }
+
+/* the shared popup menu */
+.de-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 180px;
+  max-width: 280px;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: #1a1f2b;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+}
+.de-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.de-menu-item:hover, .de-menu-item:focus { background: rgba(255, 255, 255, 0.07); outline: none; }
+.de-menu-item:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.de-menu-item[aria-expanded="true"] { background: rgba(255, 255, 255, 0.07); }
+.de-menu-item[aria-disabled="true"] { color: var(--dim); opacity: 0.55; cursor: default; }
+.de-menu-item.danger { color: #e06c75; }
+.de-menu-check { flex: none; width: 12px; color: var(--accent); }
+.de-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.de-menu-caret { flex: none; color: var(--dim); }
+.de-menu-sep { height: 1px; margin: 4px 6px; background: rgba(255, 255, 255, 0.08); }
+
+/* temporary escape hatch (the toolbar card hides it) */
+.de-hatch {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  z-index: 30;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 6px 6px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: #1a1f2b;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+  color: var(--dim);
+}
+.de-hatch-note:empty { display: none; }
+.de-hatch-note { color: #e5c07b; }
+.de-hatch-done {
+  padding: 4px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.de-hatch-done:hover { background: rgba(255, 255, 255, 0.1); }
+.de-hatch-done:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .de-btn { transition: none; }
+}

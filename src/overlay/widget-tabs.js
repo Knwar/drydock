@@ -22,8 +22,9 @@ function dwTabsSelect(st, ctx, id, focus) {
   }
   // the previous tab's widgets leave the DOM: drop them from the refresh / status loops
   st.panel.replaceChildren();
+  st.panel.dataset.tabId = tab.id;
   dwPrune();
-  if (tab.rows?.length) dwRenderRows(st.panel, tab.rows, ctx);
+  if (tab.rows?.length) dwRenderRows(st.panel, tab.rows, ctx, tab.id);
   else st.panel.append(node('div', 'dw-empty', 'Nothing in this tab'));
   st.panel.scrollTop = 0;
   if (focus) st.buttons[st.tabs.indexOf(tab)].focus();
@@ -52,6 +53,7 @@ function dwTabsBuild(el, tabs, ctx) {
     const b = node('button', 'dw-tab', t.title);
     b.type = 'button';
     b.id = `${uid}-tab-${i}`;
+    b.dataset.tabId = t.id;
     b.setAttribute('role', 'tab');
     b.setAttribute('aria-controls', st.panel.id);
     b.onclick = () => select(t.id, false);
