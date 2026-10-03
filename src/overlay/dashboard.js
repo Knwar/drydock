@@ -141,12 +141,13 @@ async function dwLoadLayout() {
   if (!root || !board) return; // no project yet: the first /home read (dwRefresh) brings us back
   if (dw.editing) {
     if (dw.board === board) return void dwRenderLayout(); // Home reopened mid-edit: the draft again
-    if (typeof deExit === 'function') deExit({ discard: true }); // another board: the edit is moot
+    if (typeof deAbandon === 'function') deAbandon(); // another board: the edit is moot (announced if dirty)
   }
   const seq = ++dw.layoutSeq;
   if (dw.board !== board) {
     dw.last.clear();
     dw.layout = null;
+    if (typeof deSyncEditBtn === 'function') deSyncEditBtn(); // nothing to edit until it loads
     root.replaceChildren(node('div', 'dw-root-msg', 'Loading dashboard…'));
   }
   dw.board = board;
@@ -356,7 +357,15 @@ function dwRetitle() {
   for (const inst of dw.instances) if (inst.frame.isConnected) dwFrameTitle(inst);
 }
 
+// While editing, a widget's body content is inert (no keyboard / clicks); the body itself still
+// scrolls. Applied after every paint, since a paint replaces the content.
+function dwInertBody(body) {
+  const on = dw.editing && body.parentElement?.dataset.widgetType !== 'tabs';
+  for (const c of body.children) c.inert = on;
+}
+
 function dwState(inst, state) {
+  dwInertBody(inst.body);
   for (const s of ['loading', 'error', 'empty', 'stale']) inst.frame.classList.toggle(`is-${s}`, s === state);
   if (state !== 'stale') inst.asof.textContent = '';
 }
@@ -378,6 +387,7 @@ function dwPaint(inst, data) {
     console.error('widget render', inst.w.type, e);
     dwError(inst, e);
   }
+  dwInertBody(inst.body);
 }
 
 function dwError(inst, e) {

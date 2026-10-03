@@ -5,18 +5,32 @@
 // dwAfterRender, dwDef).
 //
 // State
-//   deState = { active, base, draft, past[], future[], dirty, selected: { kind, id } | null }
-//     base: the layout at deEnter; draft: the layout being edited (also dw.layout while active).
+//   deState = { active, base, draft, past[], future[], dirty, saving, selected: { kind, id } | null }
+//     base: the layout at deEnter (or the last save); draft: the layout being edited (also
+//     dw.layout while active); saving: between deBeginSave() and deEndSave().
 //     kind ∈ 'widget' | 'row' | 'section' | 'slot' | 'tab'. Treat every layout as immutable.
 //
 // Lifecycle
-//   deEnter() → bool          enter from dw.layout (≥800px, not in embed); renders the draft
-//   deExit({ discard }?)      discard: back to base; otherwise the draft stays on screen.
-//                             Saving is the toolbar's job: after a successful PUT it calls deExit().
+//   deEnter() → bool          enter from dw.layout (≥800px, not in embed; the Edit dashboard
+//                             button is disabled until a layout has rendered); renders the draft
+//   deExit({ saved }?)        leave edit mode. Default: DISCARD (base back on screen; an unsaved
+//                             draft never stays rendered as if saved). { saved: true }: the draft
+//                             stays, used by the toolbar after a successful PUT.
+//   deRequestExit()           Done / Esc / Cancel: dirty → "Discard unsaved changes?" dialog
+//                             (Discard / Keep editing), otherwise exits at once. The viewport
+//                             dropping below 800px mid-edit does the same.
+//   deAbandon()               exit discarding without asking (the board changed); announces
+//                             "Unsaved dashboard edits were discarded" when dirty.
+//
+// Saving (the toolbar card owns the PUT):
+//   deBeginSave(); const ok = (await fetch(PUT …)).ok; deEndSave(ok); if (ok) deExit({ saved: true });
+//   While saving (and 2s after a successful save) a live layout message for this board is our own
+//   echo: no 'external-change', no notice. deEndSave(true) also makes the draft the new base
+//   (dirty false, emits 'change').
 //
 // Edits (feature modules call lo* ops from layout-ops.js and hand the result here; never mutate)
 //   deApply(layout, label, { coalesce }?) → bool
-//       validates with loValidate (refused: announces the first error, returns false); pushes the
+//       a no-op (same JSON as the draft) returns true without a history step. Otherwise validates with loValidate (refused: announces the first error, returns false); pushes the
 //       draft to past (cap 100), clears future, renders, announces label, emits 'change'.
 //       coalesce: a key; while the last step has the same key and is under 1s old the draft is
 //       replaced without a new history step (typing in the config drawer).
@@ -25,15 +39,16 @@
 // Selection, events, announcements
 //   deSelect({ kind, id } | null)   accent outline on the node; emits 'select'
 //   deOn(event, fn) → off()         'enter' | 'exit' | 'change' | 'select' | 'render' | 'external-change'
-//                                   ('render' gets the rendered root; 'exit' gets { discard })
+//                                   ('render' gets the rendered root; 'exit' gets { saved })
 //   deAnnounce(text)                one polite aria-live region
 //   deFind(layout, kind, id) → the layout object (section / row / slot / widget / tab) or null
 //   deNodeFor(kind, id) → its element on screen or null
 //
 // Menus
 //   deMenu(anchorEl, items)   the one shared popup menu (role=menu, arrows / Home / End /
-//                             Enter / Space, Esc closes and refocuses the anchor, Right / Left
-//                             open / close submenus). Item: { label, onSelect?, children?,
+//                             Enter / Space, Esc and Tab close and refocus the anchor, Right / Left
+//                             open / close submenus, hovering a parent opens its submenu without
+//                             moving focus; scrolls past max-height; closes on scroll / resize). Item: { label, onSelect?, children?,
 //                             disabled?, checked?, radio?, danger? } or { separator: true }.
 //                             checked !== undefined → menuitemcheckbox (radio: true → menuitemradio).
 //   deMenuItems(kind, fn)     contribute items: fn(id, info) → items[]; info = { kind, id, item, el,
@@ -45,20 +60,24 @@
 //   widget frames: .de-handle button ("Widget options: <title>") → 'widget' items
 //   rows: a slim .de-row-bar (before the row, data-row-id) with a .de-row-handle → 'row' items
 //   section heads: .de-section-handle → 'section' items
-//   tab strips: .de-tab-handle (the selected tab) + context menu / Shift+F10 on a tab → 'tab' items
+//   tabs widgets: .de-tab-handle (the selected tab; on the frame, outside the tablist) + context
+//     menu / Shift+F10 on a tab → 'tab' items
+//   widget bodies (except tabs) are inert while editing: they still scroll, a click selects the frame
 //   empty slots: .de-slot-empty "Empty slot" with a .de-slot-handle → 'slot' items
 //   Every handle carries data-de-for="<kind>:<id>" (a tab strip's: "tabs:<widget id>"). Clicking a frame / row / section / slot selects it.
 //   deDecorate(fn)  fn(root) after the core's decoration (drag listeners etc.)
 //
 // Escape hatch: #de-hatch (a "Done" button + the "changed elsewhere" notice) until the toolbar
-// card lands; the toolbar hides it (#de-hatch { display: none }). Esc exits too, unless something
-// else claimed it.
+// card lands; the toolbar hides it (#de-hatch { display: none }). Esc → deRequestExit() too, only
+// on Home with no dialog / card modal open and nothing else having claimed it.
 
 const DE_HISTORY_CAP = 100;
 const DE_COALESCE_MS = 1000;
 const DE_KINDS = ['widget', 'row', 'section', 'slot', 'tab'];
 
-const deState = { active: false, base: null, draft: null, past: [], future: [], dirty: false, selected: null };
+const DE_SAVE_ECHO_MS = 2000;
+const deState = { active: false, base: null, draft: null, past: [], future: [], dirty: false, saving: false, selected: null };
+let deSavedAt = 0; // the last successful save (its live echo may land just after)
 let deLastStep = null; // { coalesce, at } of the newest history step
 let deExternal = false; // a live layout change arrived while editing
 const deListeners = new Map(); // event → Set(fn)
@@ -147,7 +166,7 @@ const deWide = () => window.matchMedia('(min-width: 800px)').matches;
 
 function deEnter() {
   if (deState.active || EMBED || !dw.layout || !deWide()) return false;
-  Object.assign(deState, { active: true, base: deClone(dw.layout), draft: deClone(dw.layout), past: [], future: [], dirty: false, selected: null });
+  Object.assign(deState, { active: true, base: deClone(dw.layout), draft: deClone(dw.layout), past: [], future: [], dirty: false, saving: false, selected: null });
   deLastStep = null;
   deExternal = false;
   dw.editing = true;
@@ -160,12 +179,13 @@ function deEnter() {
   return true;
 }
 
-function deExit({ discard = false } = {}) {
+function deExit({ saved = false } = {}) {
   if (!deState.active) return;
-  const layout = discard ? deState.base : deState.draft;
+  const layout = saved ? deState.draft : deState.base;
+  const wasDirty = deState.dirty;
   const refetch = deExternal;
   deMenuClose(false);
-  Object.assign(deState, { active: false, base: null, draft: null, past: [], future: [], dirty: false, selected: null });
+  Object.assign(deState, { active: false, base: null, draft: null, past: [], future: [], dirty: false, saving: false, selected: null });
   deLastStep = null;
   deExternal = false;
   dw.editing = false;
@@ -173,15 +193,63 @@ function deExit({ discard = false } = {}) {
   document.body.classList.remove('de-editing');
   deHatch(false);
   dwRenderLayout(layout);
-  deEmit('exit', { discard });
-  deAnnounce(discard ? 'Changes discarded' : 'Done editing');
+  deEmit('exit', { saved });
+  deAnnounce(saved ? 'Dashboard saved' : wasDirty ? 'Changes discarded' : 'Done editing');
   if (refetch) dwLoadLayout(); // the layout changed elsewhere meanwhile: show the stored one
   $('home-edit')?.focus();
+}
+
+// Done / Esc / Cancel: ask before throwing away unsaved edits.
+function deRequestExit() {
+  if (!deState.active) return;
+  if (!deState.dirty) return void deExit();
+  if (svModal) return; // a dialog is already up
+  const { dlg, close, mount } = openModal({ labelledBy: 'de-discard-title', describedBy: 'de-discard-sub', busy: () => false, fallbackFocus: () => $('home-edit') });
+  const title = node('h2', 'sv-title', 'Discard unsaved changes?');
+  title.id = 'de-discard-title';
+  const sub = node('p', 'sv-sub', 'Your edits to this dashboard haven’t been saved.');
+  sub.id = 'de-discard-sub';
+  const foot = node('div', 'sv-foot');
+  const keep = node('button', 'home-btn', 'Keep editing');
+  keep.type = 'button';
+  keep.onclick = close;
+  const discard = node('button', 'home-btn pl-danger', 'Discard');
+  discard.type = 'button';
+  discard.onclick = () => {
+    close();
+    deExit();
+  };
+  foot.append(node('span', 'sv-foot-note'), keep, discard);
+  dlg.append(title, sub, foot);
+  mount();
+  keep.focus();
+}
+
+// The board changed under the editor: no one to ask, so discard and say so.
+function deAbandon() {
+  if (!deState.active) return;
+  const dirty = deState.dirty;
+  deExit();
+  if (dirty) deAnnounce('Unsaved dashboard edits were discarded');
+}
+
+// The toolbar's PUT: its own live layout echo isn't a change made elsewhere.
+function deBeginSave() {
+  if (deState.active) deState.saving = true;
+}
+function deEndSave(ok) {
+  deState.saving = false;
+  if (!ok || !deState.active) return;
+  deSavedAt = Date.now();
+  deState.base = deState.draft;
+  deState.dirty = false;
+  deEmit('change');
 }
 
 // The live layout changed while editing (dashboard.js calls this instead of refetching).
 function deExternalChange() {
   if (!deState.active) return;
+  if (deState.saving || Date.now() - deSavedAt < DE_SAVE_ECHO_MS) return; // our own save's echo
   deExternal = true;
   const note = $('de-hatch-note');
   if (note) note.textContent = 'The dashboard was changed elsewhere. Saving will replace that change.';
@@ -200,6 +268,7 @@ function deCommit(layout) {
 
 function deApply(newLayout, label, opts = {}) {
   if (!deState.active || !newLayout) return false;
+  if (deJson(newLayout) === deJson(deState.draft)) return true; // a no-op: no history step
   if (typeof loValidate === 'function') {
     const errors = loValidate(newLayout);
     if (errors?.length) {
@@ -297,10 +366,13 @@ function deMenu(anchorEl, items) {
   anchorEl?.setAttribute('aria-expanded', 'true');
   deMenuOpenLevel(items, anchorEl, null);
   document.addEventListener('pointerdown', deMenuOutside, true);
+  document.addEventListener('scroll', deMenuOnScroll, true);
+  window.addEventListener('resize', deMenuOnResize);
   return deMenuState;
 }
 
-function deMenuOpenLevel(items, anchor, parentBtn) {
+// focus: move focus to the new level's first item (keyboard), not when opened by hover
+function deMenuOpenLevel(items, anchor, parentBtn, focus = true) {
   const level = deMenuState.levels.length;
   const menu = node('div', `de-menu${level ? ' de-submenu' : ''}`);
   menu.id = `de-menu-${++deMenuSeq}`;
@@ -344,9 +416,9 @@ function deMenuOpenLevel(items, anchor, parentBtn) {
       deMenuActivate(level, it, b);
     });
     b.addEventListener('pointerenter', () => {
+      if (deMenuState?.levels[level + 1]?.parentBtn === b) return; // its submenu is already open
       deMenuTrim(level + 1);
-      b.focus();
-      if (it.children?.length && !it.disabled) deMenuOpenLevel(it.children, b, b);
+      if (it.children?.length && !it.disabled) deMenuOpenLevel(it.children, b, b, false);
     });
     b._deItem = it;
     buttons.push(b);
@@ -356,7 +428,7 @@ function deMenuOpenLevel(items, anchor, parentBtn) {
   document.body.append(menu);
   deMenuState.levels.push({ el: menu, items, buttons, parentBtn });
   deMenuPlace(menu, anchor, !!parentBtn);
-  buttons[0]?.focus();
+  if (focus) buttons[0]?.focus();
 }
 
 function deMenuPlace(menu, anchor, side) {
@@ -388,6 +460,8 @@ function deMenuClose(refocus = true) {
   deMenuTrim(0);
   deMenuState = null;
   document.removeEventListener('pointerdown', deMenuOutside, true);
+  document.removeEventListener('scroll', deMenuOnScroll, true);
+  window.removeEventListener('resize', deMenuOnResize);
   anchor?.setAttribute('aria-expanded', 'false');
   if (refocus) deRefocus(anchor);
 }
@@ -399,6 +473,15 @@ function deRefocus(anchor) {
   const key = anchor.dataset?.deFor;
   const next = key && document.querySelector(`[data-de-for="${CSS.escape(key)}"]`);
   if (next) next.focus();
+}
+
+// the anchor moved away from a fixed menu: close it (scrolling inside the menu is fine)
+function deMenuOnScroll(e) {
+  if (deMenuState?.levels.some((lv) => lv.el === e.target || lv.el.contains(e.target))) return;
+  deMenuClose(false);
+}
+function deMenuOnResize() {
+  deMenuClose(false);
 }
 
 function deMenuOutside(e) {
@@ -469,8 +552,8 @@ function deMenuKey(e, level) {
       } else deMenuClose(true);
       break;
     case 'Tab':
-      deMenuClose(false);
-      return; // focus moves on as usual
+      deMenuClose(true); // back on the anchor
+      break;
     default:
       return;
   }
@@ -541,6 +624,7 @@ function deDecorateRoot(root) {
     head.append(deHandle('de-section-handle', 'section', sec.dataset.sectionId, `Section options: ${title}`));
   }
   for (const strip of root.querySelectorAll('.dw-tabs-strip')) deDecorateTabs(strip);
+  for (const body of root.querySelectorAll('.dw-widget:not([data-widget-type="tabs"]) > .dw-body')) dwInertBody(body);
   for (const slot of root.querySelectorAll('.dw-slot[data-slot-id]')) {
     if (slot.querySelector(':scope > .dw-widget, :scope > .de-slot-empty')) continue;
     const box = node('div', 'de-slot-empty');
@@ -567,11 +651,19 @@ function deDecorateTabs(strip) {
       deMenuFor('tab', tab.dataset.tabId, tab);
     });
   }
-  if (strip.querySelector('.de-tab-handle')) return;
-  // always the selected tab's menu
-  const b = deHandle('de-tab-handle', 'tab', () => selected()?.dataset.tabId, 'Tab options: selected tab');
-  b.dataset.deFor = `tabs:${strip.closest('.dw-widget')?.dataset.widgetId}`;
-  strip.append(b);
+  // one handle per tabs widget, on its frame (outside the tablist): always the selected tab's menu
+  const frame = strip.closest('.dw-widget');
+  if (!frame || frame.querySelector(':scope > .de-tab-handle')) return;
+  const label = () => `Tab options: ${selected()?.textContent ?? ''}`;
+  const b = deHandle('de-tab-handle', 'tab', () => selected()?.dataset.tabId, label());
+  b.dataset.deFor = `tabs:${frame.dataset.widgetId}`;
+  const relabel = () => {
+    b.setAttribute('aria-label', label());
+    b.title = label();
+  };
+  b.addEventListener('focus', relabel);
+  b.addEventListener('pointerenter', relabel);
+  frame.append(b);
 }
 
 // after every render (layout or tab panel): decorate while editing
@@ -588,6 +680,22 @@ dwAfterRender((root) => {
   deMark();
   deEmit('render', root);
 });
+
+// a click in a widget's (inert) body selects the widget and goes no further: its links and
+// buttons stay dead while editing, wheel / touch scrolling of the body still works
+$('dash-root')?.addEventListener(
+  'click',
+  (e) => {
+    if (!deState.active) return;
+    const body = e.target.closest?.('.dw-body');
+    const frame = body?.parentElement;
+    if (!frame?.matches('.dw-widget[data-widget-id]') || frame.dataset.widgetType === 'tabs') return;
+    e.preventDefault();
+    e.stopPropagation();
+    deSelect({ kind: 'widget', id: frame.dataset.widgetId });
+  },
+  { capture: true },
+);
 
 // clicking a frame / row / section / empty slot selects it (inner-most first)
 $('dash-root')?.addEventListener('click', (e) => {
@@ -614,19 +722,32 @@ function deHatch(show) {
   note.setAttribute('role', 'status');
   const done = node('button', 'de-hatch-done', 'Done');
   done.type = 'button';
-  done.onclick = () => deExit();
+  done.onclick = () => deRequestExit();
   hatch.append(note, done);
   $('home-body')?.prepend(hatch);
 }
 
+// a dialog (openModal's, the card modal) owns the keyboard
+const deDialogOpen = () => svModal || !!document.querySelector('.sv-backdrop') || !$('card-modal')?.classList.contains('hidden');
+
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || !deState.active || e.defaultPrevented || deMenuState) return;
+  if (activeView !== 'home' || deDialogOpen()) return;
   if (e.target.closest?.('input, textarea, select, [contenteditable], [role="dialog"], dialog')) return;
-  if (typeof anyDialogOpen === 'function' && anyDialogOpen()) return;
   e.preventDefault();
-  deExit();
+  deRequestExit();
 });
 
-// the Edit dashboard button (hidden below 800px and in embed: CSS)
+// narrower than 800px mid-edit: like Done
+window.matchMedia('(min-width: 800px)').addEventListener('change', (e) => {
+  if (!e.matches && deState.active) deRequestExit();
+});
+
+// the Edit dashboard button (hidden below 800px and in embed: CSS), enabled once a layout rendered
 const deEditBtn = $('home-edit');
 if (deEditBtn) deEditBtn.onclick = () => deEnter();
+function deSyncEditBtn() {
+  if (deEditBtn) deEditBtn.disabled = !dw.layout;
+}
+dwAfterRender(deSyncEditBtn);
+deSyncEditBtn();

@@ -15,7 +15,8 @@
   white-space: nowrap;
   cursor: pointer;
 }
-.home-edit:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.24); }
+.home-edit:disabled { opacity: 0.45; cursor: default; }
+.home-edit:hover:not(:disabled) { color: var(--text); border-color: rgba(255, 255, 255, 0.24); }
 .home-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 body.embed .home-edit, body.de-editing .home-edit { display: none; }
 @media (max-width: 799px) {
@@ -56,7 +57,7 @@ body.embed .home-edit, body.de-editing .home-edit { display: none; }
 
 /* widget frames */
 .de-editing .dw-widget { position: relative; cursor: default; }
-.de-editing .dw-widget:not([data-type="tabs"]) > .dw-body { pointer-events: none; } /* widgets are inert while editing */
+.de-editing .dw-widget:not([data-type="tabs"]) > .dw-body { cursor: default; } /* content inert (JS), the body still scrolls */
 .de-editing .dw-widget > .dw-head { padding-right: 44px; }
 .de-handle { position: absolute; top: 8px; right: 8px; z-index: 2; }
 .dw-widget:hover > .de-handle, .dw-widget:focus-within > .de-handle, .dw-widget.de-selected > .de-handle { opacity: 1; }
@@ -89,9 +90,10 @@ body.embed .home-edit, body.de-editing .home-edit { display: none; }
 .dw-sec-head:hover .de-section-handle, .dw-sec-head:focus-within .de-section-handle, .dw-section.de-selected > .dw-sec-head .de-section-handle { opacity: 1; }
 .de-editing .dw-section.de-selected > .dw-sec-head .dw-sec-toggle { color: var(--accent); }
 
-/* tabs */
-.de-tab-handle { flex: none; align-self: center; margin-left: auto; position: sticky; right: 0; }
-.dw-tabs-strip:hover .de-tab-handle, .dw-tabs-strip:focus-within .de-tab-handle { opacity: 1; }
+/* tabs: the selected tab's handle sits on the frame, beside the widget handle, over the strip's end */
+.de-tab-handle { position: absolute; top: 8px; right: 36px; z-index: 2; }
+.de-editing .dw-tabs-strip { padding-right: 64px; }
+.dw-widget:hover > .de-tab-handle, .dw-widget:focus-within > .de-tab-handle { opacity: 1; }
 .de-editing .dw-tab.de-selected { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
 
 /* empty slots: a dashed drop area */
@@ -117,6 +119,9 @@ body.embed .home-edit, body.de-editing .home-edit { display: none; }
   z-index: 1000;
   min-width: 180px;
   max-width: 280px;
+  max-height: min(420px, calc(100vh - 16px));
+  overflow-y: auto;
+  scrollbar-width: thin;
   padding: 4px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 10px;
@@ -126,6 +131,7 @@ body.embed .home-edit, body.de-editing .home-edit { display: none; }
   flex-direction: column;
 }
 .de-menu-item {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
