@@ -134,3 +134,7 @@
 .aa-p-stat dt { font-size: 11px; color: var(--dim); }
 .aa-p-stat dd { margin: 2px 0 0; font-size: 13px; color: #c5cad6; font-variant-numeric: tabular-nums; }
 .aa-p-note { margin: 0; font-size: 11.5px; color: var(--dim); opacity: 0.85; }
+
+/* boards whose session waits on the human (quiet, under the summary) */
+.aa-waiting { flex: none; display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; color: #e5c07b; }
+.aa-waiting-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

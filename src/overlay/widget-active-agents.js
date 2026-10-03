@@ -47,7 +47,7 @@ function aaInfo(data, a) {
   const card = aaCard(data, a);
   const needsYou = !!card && sessions.get(card.board.id)?.state === 'needs_you';
   let state = 'idle';
-  if (card?.blocked || needsYou) state = 'blocked';
+  if (card?.blocked) state = 'blocked'; // only its own card's blocker: a needs_you board shows in the header
   else if (card?.lane === 'in_review' || (aaIsReviewer(a, card, sessions) && (card || a.now))) state = 'reviewing';
   else if (card || a.now) state = 'working';
   return { a, card, state, needsYou };
@@ -72,6 +72,25 @@ function aaSince(since, cls) {
   const el = node('span', cls, fmtElapsed(since));
   el.dataset.since = String(since); // app.js's Home tick keeps it current
   return el;
+}
+
+// Boards whose session waits on the human: one quiet line each (max 2, then +N).
+function aaWaiting(data) {
+  const names = new Map((data.verticals ?? []).map((v) => [v.project.id, v.project]));
+  if (data.project) names.set(data.project.id, names.get(data.project.id) ?? data.project);
+  for (const nb of data.now_building ?? []) if (!names.has(nb.board.id)) names.set(nb.board.id, nb.board);
+  const waiting = [];
+  for (const [id, s] of aaSessions(data)) {
+    if (s?.state !== 'needs_you') continue;
+    const b = names.get(id);
+    if (!b) continue; // not a board this Home shows
+    waiting.push(typeof homeBoardName === 'function' ? homeBoardName(b) : b.name);
+  }
+  if (!waiting.length) return null;
+  const box = node('div', 'aa-waiting');
+  for (const name of waiting.slice(0, 2)) box.append(node('div', 'aa-waiting-line', `${name} is waiting on you`));
+  if (waiting.length > 2) box.append(node('div', 'aa-waiting-line', `+${waiting.length - 2}`));
+  return box;
 }
 
 function aaSummary(rows) {
@@ -102,7 +121,7 @@ function aaStack(rows) {
   return stack;
 }
 
-function aaRow(r, data, ctx) {
+function aaRow(r, data, ctx, el) {
   const { a, card } = r;
   const row = node('button', `aa-row aa-row-${r.state}`);
   row.type = 'button';
@@ -122,7 +141,7 @@ function aaRow(r, data, ctx) {
   main.append(top, line);
   if (ctx.size === 'L') main.append(node('div', 'aa-quiet', `${a.cards} card${a.cards === 1 ? '' : 's'} · ${a.hours} h all-time`));
   row.append(avatarEl(a, 30), main);
-  row.onclick = () => aaOpenPanel(a.id, data, ctx);
+  row.onclick = () => aaOpenPanel(a.id, data, ctx, el);
   return row;
 }
 
@@ -132,7 +151,10 @@ function aaPaint(el, data, ctx) {
   el.replaceChildren();
   if (ctx.size === 'S') {
     const wrap = node('div', 'aa-s');
-    wrap.append(aaSummary(rows), aaStack(rows));
+    wrap.append(aaSummary(rows));
+    const waitingS = aaWaiting(data);
+    if (waitingS) wrap.append(waitingS);
+    wrap.append(aaStack(rows));
     el.append(wrap);
     return;
   }
@@ -141,21 +163,26 @@ function aaPaint(el, data, ctx) {
   for (const r of rows) {
     const item = node('div', 'aa-item');
     item.setAttribute('role', 'listitem');
-    item.append(aaRow(r, data, ctx));
+    item.append(aaRow(r, data, ctx, el));
     list.append(item);
   }
-  el.append(aaSummary(rows), list);
+  el.append(aaSummary(rows));
+  const waiting = aaWaiting(data);
+  if (waiting) el.append(waiting);
+  el.append(list);
   // a live repaint keeps keyboard focus on the same agent's row
   if (focused) list.querySelector(`[data-agent="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
 }
 
 // ── side panel ──
-function aaOpenPanel(agentId, data, ctx) {
+function aaOpenPanel(agentId, data, ctx, el) {
   if (svModal || aaPanel.close) return;
   const { backdrop, dlg, close, mount } = openModal({
     labelledBy: 'aa-panel-title',
     describedBy: 'aa-panel-sub',
     busy: () => false,
+    // a live repaint replaced the opening row: focus its successor (else the first row)
+    fallbackFocus: () => el.querySelector(`[data-agent="${CSS.escape(agentId)}"]`) ?? el.querySelector('.aa-row'),
     onClose: () => Object.assign(aaPanel, { close: null, agentId: null, paint: null }),
   });
   backdrop.classList.add('aa-backdrop');
@@ -168,6 +195,10 @@ function aaOpenPanel(agentId, data, ctx) {
     if (!a) return close();
     const r = aaInfo(d, a);
     const card = r.card;
+    if (!card?.blocked) {
+      reasonFor = null; // unblocked: a later blocker fetches its own reason
+      reason = null;
+    }
 
     const head = node('div', 'aa-p-head');
     const id = node('div', 'aa-p-id');
