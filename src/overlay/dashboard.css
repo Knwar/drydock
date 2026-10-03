@@ -1,0 +1,156 @@
+/* ── Dashboard renderer (Home's #dash-root): sections, 12-col rows, widget frames + states ── */
+#dash-root {
+  --dw-gap: 14px;
+  --dw-row: 88px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+.dw-root-msg { font-size: 12.5px; color: var(--dim); padding: 6px 4px; }
+
+/* sections */
+.dw-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.dw-sec-head { display: flex; align-items: center; padding: 0 4px; }
+.dw-sec-toggle {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 0; border: none; background: none; cursor: pointer;
+  color: var(--dim); font: inherit; font-size: 10.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.14em;
+}
+.dw-sec-toggle:hover { color: var(--text); }
+.dw-sec-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+.dw-sec-caret { display: inline-block; font-size: 10px; transition: transform 0.15s ease; }
+.dw-section.collapsed .dw-sec-caret { transform: rotate(-90deg); }
+.dw-section.collapsed .dw-sec-body { display: none; }
+.dw-sec-body { display: flex; flex-direction: column; gap: var(--dw-gap); min-width: 0; }
+
+/* rows: 12 columns, fixed height = height × 88px plus the gaps between those units */
+.dw-row {
+  --h: 1;
+  --dw-row-h: calc(var(--h) * var(--dw-row) + (var(--h) - 1) * var(--dw-gap));
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--dw-gap);
+  height: var(--dw-row-h);
+  min-width: 0;
+}
+.dw-slot {
+  --span: 12;
+  grid-column: span var(--span);
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-gap);
+  min-width: 0;
+  min-height: 0;
+}
+
+/* widget frame: stacked widgets in a slot split its height evenly */
+.dw-widget {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #151923;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 16px;
+  overflow: hidden;
+}
+.dw-head {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 16px 0;
+  min-width: 0;
+}
+.dw-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dw-asof { flex: none; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.dw-asof:empty { display: none; }
+.dw-body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  padding: 10px 16px 14px;
+  overflow: auto;
+  scrollbar-width: thin;
+  font-variant-numeric: tabular-nums;
+}
+.dw-head.hidden + .dw-body { padding-top: 14px; }
+
+/* states */
+.dw-placeholder, .dw-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+.dw-placeholder { opacity: 0.75; }
+
+.dw-error {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  font-size: 12.5px;
+}
+.dw-error-msg { color: #e06c75; overflow-wrap: anywhere; max-width: 100%; }
+.dw-root-msg.dw-error { align-items: flex-start; height: auto; }
+.dw-retry {
+  padding: 4px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dw-retry:hover { background: rgba(255, 255, 255, 0.1); }
+.dw-retry:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.dw-widget.is-stale .dw-body { opacity: 0.6; }
+
+.dw-skel { display: flex; flex-direction: column; gap: 10px; padding-top: 2px; }
+.dw-skel-bar {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04) 25%, rgba(255, 255, 255, 0.09) 50%, rgba(255, 255, 255, 0.04) 75%);
+  background-size: 200% 100%;
+  animation: dw-shimmer 1.4s ease-in-out infinite;
+}
+.dw-skel-bar.w60 { width: 60%; }
+.dw-skel-bar.w90 { width: 90%; }
+.dw-skel-bar.w75 { width: 75%; }
+@keyframes dw-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dw-skel-bar { animation: none; background: rgba(255, 255, 255, 0.06); }
+  .dw-sec-caret { transition: none; }
+}
+body.reduce-motion .dw-skel-bar { animation: none; }
+
+/* below 800px: slots stack in order, each keeping its row's height */
+@media (max-width: 799px) {
+  .dw-row { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .dw-slot { grid-column: auto; height: var(--dw-row-h); }
+}
