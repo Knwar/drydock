@@ -128,7 +128,8 @@ function ddScroller() {
 const ddBusy = () => !!(ddDrag || ddKb || ddResize);
 
 // A gesture just ended (dropped or cancelled): swallow the click its release produces (the
-// handle's menu, a selection). Armed until that release + 300ms; a new press disarms it.
+// handle's menu, a selection). Armed until that release + 300ms (at most 500ms after a cancel
+// with the button still down); a new press disarms it.
 function ddSwallowClick(released) {
   let timer = 0;
   const swallow = (e) => {
@@ -149,7 +150,10 @@ function ddSwallowClick(released) {
   window.addEventListener('click', swallow, true);
   window.addEventListener('pointerdown', disarm, true);
   if (released) arm();
-  else window.addEventListener('pointerup', arm, true);
+  else {
+    window.addEventListener('pointerup', arm, true);
+    timer = setTimeout(disarm, 500); // the release may never reach us: never stay armed
+  }
 }
 
 // ── pointer drag ──
@@ -201,6 +205,8 @@ function ddPointerDown(e, frame) {
     ddDragStop(st, true, true);
   };
   const onCancel = (ev) => mine(ev) && ddDragStop(st, false);
+  // only the source's own capture: a child's lostpointercapture (touch / pen) bubbles here too
+  const onLost = (ev) => ev.target === src && onCancel(ev);
   const onBlur = () => ddDragStop(st, false);
   const onKey = (ev) => {
     if (ev.key !== 'Escape' || !st.active) return;
@@ -210,21 +216,23 @@ function ddPointerDown(e, frame) {
     deAnnounce('Move cancelled');
   };
   const onScroll = () => (st.stale = true);
+  window.addEventListener('resize', onScroll);
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
   window.addEventListener('pointercancel', onCancel);
   window.addEventListener('blur', onBlur);
   window.addEventListener('keydown', onKey, true);
   document.addEventListener('scroll', onScroll, { capture: true, passive: true });
-  src.addEventListener('lostpointercapture', onCancel);
+  src.addEventListener('lostpointercapture', onLost);
   st.off = () => {
+    window.removeEventListener('resize', onScroll);
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
     window.removeEventListener('pointercancel', onCancel);
     window.removeEventListener('blur', onBlur);
     window.removeEventListener('keydown', onKey, true);
     document.removeEventListener('scroll', onScroll, { capture: true });
-    src.removeEventListener('lostpointercapture', onCancel);
+    src.removeEventListener('lostpointercapture', onLost);
   };
 }
 
@@ -259,22 +267,23 @@ function ddDragStart(st) {
 // Hit targets, measured once per drag and again after anything scrolls or re-renders.
 // A tab panel's slots are clipped to the panel (they may scroll out of it) and win over the
 // slot holding the tab group.
+const ddClip = (a, b) => ({ left: Math.max(a.left, b.left), right: Math.min(a.right, b.right), top: Math.max(a.top, b.top), bottom: Math.min(a.bottom, b.bottom) });
+
 function ddDragCache(st) {
   const root = $('dash-root');
+  const sr = st.scroller.getBoundingClientRect();
+  const scr = ddClip(sr, { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight });
   st.slots = [];
   for (const el of root ? root.querySelectorAll('.dw-slot[data-slot-id]') : []) {
     if (!el.getClientRects().length) continue; // a collapsed section
     const panel = el.parentElement?.closest('.dw-tabs-panel');
     const geo = ddSlotGeo(el, st.id);
-    let clip = geo.r;
-    if (panel) {
-      const p = panel.getBoundingClientRect();
-      clip = { left: Math.max(clip.left, p.left), right: Math.min(clip.right, p.right), top: Math.max(clip.top, p.top), bottom: Math.min(clip.bottom, p.bottom) };
-    }
+    // only the part on screen: inside the scroller's view (and the tab panel's)
+    let clip = ddClip(geo.r, scr);
+    if (panel) clip = ddClip(clip, panel.getBoundingClientRect());
     st.slots.push({ el, id: el.dataset.slotId, inTab: !!panel, refused: st.tabs && !!panel, clip, ...geo });
   }
-  const sr = st.scroller.getBoundingClientRect();
-  st.edge = { top: Math.max(sr.top, 0), bottom: Math.min(sr.bottom, window.innerHeight) };
+  st.edge = { top: scr.top, bottom: scr.bottom };
   st.stale = false;
 }
 
@@ -497,6 +506,7 @@ function ddResizeGesture(e, el, bodyClass, onMove, onEnd) {
     stop(true, true);
   };
   const onCancel = (ev) => mine(ev) && stop(false);
+  const onLost = (ev) => ev.target === el && onCancel(ev); // not a child's capture bubbling up
   const onBlur = () => stop(false);
   const onKey = (ev) => {
     if (ev.key !== 'Escape') return;
@@ -514,7 +524,7 @@ function ddResizeGesture(e, el, bodyClass, onMove, onEnd) {
     window.removeEventListener('pointercancel', onCancel);
     window.removeEventListener('blur', onBlur);
     window.removeEventListener('keydown', onKey, true);
-    el.removeEventListener('lostpointercapture', onCancel);
+    el.removeEventListener('lostpointercapture', onLost);
     cancelAnimationFrame(g.raf);
     try {
       el.releasePointerCapture(g.pointerId);
@@ -535,7 +545,7 @@ function ddResizeGesture(e, el, bodyClass, onMove, onEnd) {
   window.addEventListener('pointercancel', onCancel);
   window.addEventListener('blur', onBlur);
   window.addEventListener('keydown', onKey, true);
-  el.addEventListener('lostpointercapture', onCancel);
+  el.addEventListener('lostpointercapture', onLost);
   paint();
 }
 
