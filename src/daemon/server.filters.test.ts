@@ -174,9 +174,9 @@ describe('daemon dashboard / Home filters', () => {
     assert.deepEqual(h.now_building, []);
     assert.deepEqual(h.verticals.map((v: any) => v.shown), [false, true, false]);
     assert.deepEqual(h.agents, []); // no assigned card in W2
-    // unfiltered: queued first, then the active phases' backlogs round-robin
+    // unfiltered: queued first, then the active phases' backlogs round-robin (all 4 fit under the cap of 8)
     const all = await home(ws);
-    assert.deepEqual(byId(all.up_next.items), [c.webQueued, c.wsBack, c.webBack1]);
+    assert.deepEqual(byId(all.up_next.items), [c.webQueued, c.wsBack, c.webBack1, c.apiBack]);
     assert.equal(all.up_next.total_pending, 4);
   });
 

@@ -1005,7 +1005,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         project: { id: self.id, name: self.name, parent_id: self.parent_id },
         workspace: standalone ? null : view,
         now_building: nowBuilding,
-        up_next: board.getUpNext(db, project, 3, f),
+        up_next: board.getUpNext(db, project, 8, f),
         agents,
         verticals: standalone
           ? []

@@ -185,6 +185,14 @@ describe('daemon GET /home', () => {
     assert.equal(h.agents.find((m: any) => m.name === 'Ada').now, null);
   });
 
+  it('up_next carries up to 8 items (the L widget shows them all)', async () => {
+    const id = await project(join(daemon!.dbDir, 'many'));
+    for (let i = 1; i <= 10; i++) await task(id, `Card ${i}`);
+    const h = await home(id);
+    assert.equal(h.up_next.items.length, 8);
+    assert.equal(h.up_next.total_pending, 10);
+  });
+
   it('unknown id → 404, missing param → 400', async () => {
     const res = await fetch(`${base}/home?project=does-not-exist`);
     assert.equal(res.status, 404);
