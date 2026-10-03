@@ -21,6 +21,7 @@ import * as schedule from '../core/schedule.js';
 import * as cost from '../core/cost.js';
 import * as report from '../core/report.js';
 import * as usageBurn from '../core/usage-burn.js';
+import * as dashboard from '../core/dashboard.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
 import { cardLines } from '../core/lines.js';
@@ -1343,7 +1344,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
   }
 
-  const projMatch = pathname.match(/^\/project\/([^/]+)(?:\/(repo|autopilot|settings))?$/);
+  const projMatch = pathname.match(/^\/project\/([^/]+)(?:\/(repo|autopilot|settings|layout))?$/);
   if (projMatch && projMatch[1] !== 'new' && projMatch[1] !== 'pick') {
     const [, pid, action] = projMatch;
     if (method === 'DELETE' && !action) {
@@ -1388,6 +1389,24 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       }
       broadcaster.send(pid, { type: 'settings', project_id: pid, settings });
       return json(res, 200, settings);
+    }
+    // dashboard layout: reads open, writes loopback-only; a write tells the board's clients to refetch
+    if (action === 'layout' && ['GET', 'PUT', 'DELETE'].includes(method)) {
+      if (!projectRoot(pid)) return json(res, 404, { error: 'unknown project' });
+      if (method === 'GET') return json(res, 200, dashboard.getLayout(db, pid));
+      if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+      let result;
+      if (method === 'PUT') {
+        const b = await readBody(req);
+        const errors = dashboard.validateLayout(b.layout);
+        if (errors.length) return json(res, 400, { error: 'invalid layout', errors });
+        dashboard.saveLayout(db, pid, b.layout);
+        result = { layout: b.layout, source: 'saved' };
+      } else {
+        result = dashboard.resetLayout(db, pid);
+      }
+      broadcaster.send(pid, { type: 'layout', project_id: pid });
+      return json(res, 200, result);
     }
   }
 
@@ -1690,6 +1709,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     } catch (err) {
       const status = err instanceof metrics.MetricsParamError ? 400 : 500;
       return json(res, status, { error: (err as Error).message });
+    }
+  }
+  // dashboard templates: builtins (variant per ?project= board type, solo when absent) then user-saved
+  if (pathname === '/dashboard/templates') {
+    if (method === 'GET') {
+      const project = url.searchParams.get('project');
+      if (project && !projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+      return json(res, 200, dashboard.listTemplates(db, project ? dashboard.isWorkspaceBoard(db, project) : false));
+    }
+    if (method === 'POST') {
+      if (!isLoopback(req)) return json(res, 403, { error: 'forbidden' });
+      const b = await readBody(req);
+      if (typeof b.name !== 'string' || !b.name.trim()) return json(res, 400, { error: 'name (non-empty string) required' });
+      const errors = dashboard.validateLayout(b.layout);
+      if (errors.length) return json(res, 400, { error: 'invalid layout', errors });
+      return json(res, 200, dashboard.saveTemplate(db, b.name.trim(), b.layout));
     }
   }
   if (pathname === '/settings/prices') {

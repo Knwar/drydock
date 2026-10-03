@@ -103,6 +103,40 @@ export interface CardSummary {
   lane_since: number | null; // epoch ms an in-flight card entered its lane (last move into it, else creation); null otherwise
 }
 
+/** A board's dashboard: sections of rows of slots of widgets (dashboard_layouts.layout). */
+export interface DashboardLayout {
+  version: 1;
+  sections: DashSection[];
+}
+
+export interface DashSection {
+  id: string;
+  title: string;
+  collapsed?: boolean;
+  rows: DashRow[];
+}
+
+export interface DashRow {
+  id: string;
+  height: number; // integer row units 1-12 (1 unit = 88px, rendered by the UI)
+  slots: DashSlot[];
+}
+
+/** A column in a row; spans in a row sum to <= 12, and its widgets stack vertically. */
+export interface DashSlot {
+  id: string;
+  span: number; // integer 1-12
+  widgets: DashWidget[];
+}
+
+/** A tab group is a widget of type 'tabs' with params { tabs: [{ id, title, rows }] } (never nested). */
+export interface DashWidget {
+  id: string;
+  type: string;
+  size: 'S' | 'M' | 'L' | 'XL';
+  params: Record<string, unknown>;
+}
+
 /** Per-board work-in-progress health config (projects.board_settings). */
 export interface BoardSettings {
   stuck_hours: { queued: number; in_progress: number; in_review: number }; // a card longer than this in the lane is "stuck"

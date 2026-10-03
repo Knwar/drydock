@@ -627,6 +627,7 @@ export function deleteProject(db: DB, projectId: string): void {
     db.prepare('DELETE FROM tasks WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM phases WHERE project_id = ?').run(projectId);
     db.prepare('DELETE FROM plan_drafts WHERE workspace_id = ?').run(projectId);
+    db.prepare('DELETE FROM dashboard_layouts WHERE project_id = ?').run(projectId);
     // a deleted workspace's verticals become standalone (boards intact), never cascade-deleted
     db.prepare('UPDATE projects SET parent_id = NULL WHERE parent_id = ?').run(projectId);
     db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
