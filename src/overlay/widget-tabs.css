@@ -1,1 +1,67 @@
-/* Dashboard widget(s): tabs. Stub: styles arrive with its widget card. */
+/* Dashboard widget: tab group. Underline tabs; the panel fills the widget's fixed
+   height and the active tab's rows scroll inside it. */
+.dw-widget[data-type="tabs"] > .dw-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.dw-tabs-strip {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  margin: 0 -4px 12px;
+  padding: 0 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.dw-tabs-strip::-webkit-scrollbar { display: none; }
+
+.dw-tab {
+  flex: none;
+  position: relative;
+  padding: 6px 10px 9px;
+  border: none;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.dw-tab::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: transparent;
+}
+.dw-tab:hover { color: var(--text); }
+/* selected: weight + underline, not colour alone */
+.dw-tab.selected { color: var(--text); font-weight: 600; }
+.dw-tab.selected::after { background: var(--accent); }
+.dw-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
+
+.dw-tabs-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-gap);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.dw-tabs-panel:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+/* nested rows keep their own fixed height; the panel scrolls when they're taller */
+.dw-tabs-panel > .dw-row { flex: none; }
+.dw-tabs-panel > .dw-empty { flex: 1; }
+/* nested widget frames sit on a slightly lighter surface than the group */
+.dw-tabs-panel .dw-widget { background: rgba(255, 255, 255, 0.025); border-radius: 12px; }
+
+.dw-body[data-size="M"] .dw-tab { padding: 5px 8px 8px; font-size: 12px; }
