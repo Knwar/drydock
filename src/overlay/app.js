@@ -543,7 +543,6 @@ const railKanban = document.getElementById('rail-kanban');
 const railScm = document.getElementById('rail-scm');
 const railPhases = document.getElementById('rail-phases');
 const railMetrics = document.getElementById('rail-metrics');
-const railDashboard = document.getElementById('rail-dashboard');
 const railHome = document.getElementById('rail-home');
 const railPlanner = document.getElementById('rail-planner');
 const railGovernance = document.getElementById('rail-governance');
@@ -571,7 +570,6 @@ function setView(name) {
   railScm.classList.toggle('active', name === 'scm');
   railPhases.classList.toggle('active', name === 'phases');
   railMetrics.classList.toggle('active', name === 'metrics');
-  railDashboard.classList.toggle('active', name === 'dashboard');
   railHome.classList.toggle('active', name === 'home');
   railPlanner.classList.toggle('active', name === 'planner');
   railGovernance.classList.toggle('active', name === 'governance');
@@ -604,7 +602,6 @@ railKanban.onclick = () => setView('kanban');
 railScm.onclick = () => setView('scm');
 railPhases.onclick = () => setView('phases');
 railMetrics.onclick = () => setView('metrics');
-railDashboard.onclick = () => setView('dashboard');
 railHome.onclick = () => setView('home');
 railPlanner.onclick = () => setView('planner');
 railGovernance.onclick = () => setView('governance');
@@ -4818,12 +4815,14 @@ $('team-cancel').onclick = () => $('team-form').classList.add('hidden');
 $('team-add-btn').onclick = addTeamMember;
 
 // ── workspace dashboard: one live tile per board (Main + verticals) ───
-// Also its own URL for an OBS scene: ?project=<id>&view=dashboard[&embed=1].
+// Only an OBS scene's URL opens it now: ?project=<id>&view=dashboard&embed=1. Home is the
+// landing page, so ?view=dashboard without embed opens Home.
 // Every user-controlled string goes in via textContent (node() below) — never innerHTML.
-const URL_VIEW_RAW = new URLSearchParams(location.search).get('view');
-const URL_VIEW = URL_VIEW_RAW === 'stats' ? 'metrics' : URL_VIEW_RAW; // ?view=stats: the old Stats view's links
-const URL_VIEWS = ['home', 'kanban', 'scm', 'phases', 'metrics', 'planner', 'governance'];
 const EMBED = new URLSearchParams(location.search).get('embed') === '1';
+const URL_VIEW_RAW = new URLSearchParams(location.search).get('view');
+// ?view=stats: the old Stats view's links; ?view=dashboard (not embedded): the old Dashboard's links
+const URL_VIEW = URL_VIEW_RAW === 'stats' ? 'metrics' : URL_VIEW_RAW === 'dashboard' && !EMBED ? 'home' : URL_VIEW_RAW;
+const URL_VIEWS = ['home', 'kanban', 'scm', 'phases', 'metrics', 'planner', 'governance'];
 const dash = { checked: false, workspace: null, summary: null, summaryKey: '', loadSeq: 0, failed: false, fetchRetry: 1000, ids: new Set(), ws: null, retry: 1000, retryTimer: null, refetchTimer: null, refetchFirst: null, skipOpenFetch: false, nudged: new Map() };
 const DASH_LANES = [['backlog', 'backlog'], ['queued', 'queued'], ['in_progress', 'in prog'], ['in_review', 'review'], ['done', 'done']];
 const DASH_STATE = { working: 'working', idle: 'idle', needs_you: '⚠ needs you', offline: 'offline' };
@@ -4846,8 +4845,7 @@ function node(tag, cls, text) {
   return el;
 }
 
-// Once per page: is the current project part of a workspace? Shows the rail
-// button, and honors ?view=dashboard.
+// Once per page: is the current project part of a workspace? Honors ?view=dashboard&embed=1.
 async function initDashboard() {
   if (dash.checked) return;
   const project = currentProject();
@@ -4862,7 +4860,6 @@ async function initDashboard() {
   }
   const inWorkspace = !!view && (view.verticals.length > 0 || view.workspace.id !== project);
   if (view) dctx.workspaceId = dash.workspace = view.workspace.id;
-  railDashboard.classList.toggle('hidden', !inWorkspace);
   if (URL_VIEW === 'dashboard' && inWorkspace && !initialViewSet) {
     initialViewSet = true; // the URL wins over the default-view setting
     setView('dashboard');
