@@ -152,6 +152,27 @@ dwRegister({
 // result survive refreshes (a focused textarea gets its focus + caret back).
 const wlSends = new Map(); // `${board}:${widget id}` → state
 
+// Drop kept send boxes that left the dashboard (another board, or a widget no longer laid out),
+// so their detached DOM and listeners aren't retained.
+function wlPruneSends(board) {
+  const live = new Set(dw.instances.filter((i) => i.frame.isConnected).map((i) => i.w.id));
+  for (const [key, st] of wlSends) {
+    if (st.board !== board || (!st.root.isConnected && !live.has(st.id))) wlSends.delete(key);
+  }
+}
+
+// Is the terminal on? term.* once initTerminal has run; until then one /config probe per
+// page (dropped on failure so a later refresh retries).
+let wlTermProbe = null;
+function wlTerminalOn() {
+  if (term.enabled && term.token) return Promise.resolve(true);
+  if (!wlTermProbe) {
+    wlTermProbe = wlJson('/config').then((c) => !!(c.terminal && c.token));
+    wlTermProbe.catch(() => (wlTermProbe = null));
+  }
+  return wlTermProbe.catch(() => false);
+}
+
 function wlSendTargets(d) {
   return d.verticals.length ? d.verticals.map((v) => ({ id: v.project.id, name: wlBoardName(d, v.project) })) : [{ id: d.project.id, name: d.project.name }];
 }
@@ -161,7 +182,7 @@ function wlSessionState(d, pid) {
 
 function wlSendBuild(ctx) {
   const id = ctx.id;
-  const st = { data: null, target: null, sending: false, gate: false, focused: false };
+  const st = { id, board: ctx.projectId, data: null, target: null, sending: false, gate: false, focused: false };
   st.root = node('div', 'wl wl-send');
   st.sel = node('select', 'st-select wl-send-target');
   st.sel.id = `${id}-send-target`;
@@ -253,13 +274,13 @@ dwRegister({
   sizes: ['M', 'L'],
   async load(ctx) {
     const d = await wlHome(ctx);
-    // the terminal may still be starting up (initTerminal): ask /config ourselves
-    const terminal = (term.enabled && !!term.token) || (await ctx.shared('config', () => wlJson('/config')).then((c) => !!(c.terminal && c.token), () => false));
+    const terminal = EMBED ? false : await wlTerminalOn(); // the terminal may still be starting up (initTerminal)
     return { home: d, terminal };
   },
   render(el, data, ctx) {
     if (EMBED || !data.terminal) return { empty: 'The terminal is off, so there is no session to send to' };
     const key = `${ctx.projectId}:${ctx.id}`;
+    wlPruneSends(ctx.projectId);
     let st = wlSends.get(key);
     if (!st) wlSends.set(key, (st = wlSendBuild(ctx)));
     st.data = data.home;
@@ -283,6 +304,7 @@ dwRegister({
 // the Dashboard view's state and filters, so it isn't reused here).
 const WL_TILE_CARDS = { L: 3, XL: DASH_MAX_CARDS };
 
+const wlAgentsText = (s) => (s.agents?.length ? `+${s.agents.length} agent${s.agents.length === 1 ? '' : 's'}` : '');
 function wlTileWhat(s) {
   return s.main ? `${s.main.verb} ${s.main.detail ?? ''}`.trim() : s.state === 'offline' ? 'no session' : '—';
 }
@@ -305,7 +327,7 @@ function wlTile(b, isMain, size) {
 
   const sub = node('div', 'dt-sub');
   sub.append(node('span', 'dt-what', wlTileWhat(s)));
-  if (s.agents?.length) sub.append(node('span', 'dt-agents', `+${s.agents.length} agent${s.agents.length === 1 ? '' : 's'}`));
+  sub.append(node('span', 'dt-agents', wlAgentsText(s)));
   tile.append(sub);
 
   const lanes = node('div', 'dt-lanes');
@@ -386,5 +408,7 @@ dwRegister({
     wlPaintState(tile, msg.session);
     const what = tile.querySelector('.dt-what');
     if (what) what.textContent = wlTileWhat(msg.session);
+    const agents = tile.querySelector('.dt-agents');
+    if (agents) agents.textContent = wlAgentsText(msg.session);
   },
 });

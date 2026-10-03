@@ -55,6 +55,9 @@ button.wl-vlane:focus-visible { outline: 2px solid var(--accent); outline-offset
 /* workspace boards: compact Dashboard tiles */
 .wl-boards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; align-content: start; }
 .wl-tile { gap: 9px; padding: 11px 13px 10px; color: inherit; text-decoration: none; }
+div.wl-tile { cursor: default; } /* embed: not a link */
+div.wl-tile:hover { background: var(--lane-bg); }
+.wl-tile .dt-agents:empty { display: none; }
 .wl-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .wl-tile .dt-name { font-size: 14px; }
 .wl-tile .dt-pill { font-size: 9.5px; padding: 2px 8px; }
