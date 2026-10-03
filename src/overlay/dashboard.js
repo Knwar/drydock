@@ -83,7 +83,8 @@ function dwRefresh(data, err) {
   dwNewCycle(home);
   if (!dw.layout || dw.board !== currentProject()) return void dwLoadLayout();
   dwPrune();
-  for (const inst of [...dw.instances]) dwLoad(inst, dw.cache);
+  // a tabs widget re-rendering mid-loop replaces its children: skip the detached ones
+  for (const inst of [...dw.instances]) if (inst.frame.isConnected) dwLoad(inst, dw.cache);
 }
 
 // Live messages for Home's boards (both sockets): status → onStatus; layout → refetch it.
@@ -155,7 +156,10 @@ function dwRenderLayout() {
 const dwCollapseKey = (secId) => `dw.collapsed.${dw.board}.${secId}`;
 function dwSection(sec) {
   const el = node('section', 'dw-section');
-  const stored = localStorage.getItem(dwCollapseKey(sec.id));
+  let stored = null;
+  try {
+    stored = localStorage.getItem(dwCollapseKey(sec.id));
+  } catch {} // storage unavailable: the layout's default
   let collapsed = stored === null ? !!sec.collapsed : stored === '1';
   const toggle = node('button', 'dw-sec-toggle');
   toggle.type = 'button';
@@ -169,8 +173,10 @@ function dwSection(sec) {
   };
   toggle.onclick = () => {
     collapsed = !collapsed;
-    localStorage.setItem(dwCollapseKey(sec.id), collapsed ? '1' : '0');
     apply();
+    try {
+      localStorage.setItem(dwCollapseKey(sec.id), collapsed ? '1' : '0');
+    } catch {} // not persisted, still applies this session
   };
   apply();
   const head = node('header', 'dw-sec-head');
@@ -212,8 +218,9 @@ function dwRenderRows(host, rows, ctx) {
 // ── widgets ──
 function dwSize(w, def) {
   if (!DW_NARROW.matches || !def) return w.size;
-  const smaller = DW_SIZES[DW_SIZES.indexOf(w.size) - 1];
-  return smaller && def.sizes.includes(smaller) ? smaller : w.size;
+  // the nearest smaller tier the widget supports; none → the configured size
+  for (let i = DW_SIZES.indexOf(w.size) - 1; i >= 0; i--) if (def.sizes.includes(DW_SIZES[i])) return DW_SIZES[i];
+  return w.size;
 }
 
 function dwWidget(w) {
@@ -345,10 +352,15 @@ function dwPrune() {
   dw.instances = dw.instances.filter((i) => i.frame.isConnected);
 }
 
-// crossing 800px: slots stack (CSS) and widgets re-render one tier smaller, from their last data
+// crossing 800px: slots stack (CSS) and widgets re-render one tier smaller, from their last data.
+// Off Home nothing renders: reopening Home re-fetches and re-renders the layout (dwOpen).
 DW_NARROW.addEventListener('change', () => {
-  if (dw.layout) dwRenderLayout();
+  if (dw.layout && activeView === 'home') dwRenderLayout();
 });
 
-// app.js may have opened Home before this file loaded (EARLY_VIEW): mount now.
-if (activeView === 'home') dwOpen();
+// app.js may have opened Home before this file loaded (EARLY_VIEW): mount now, and if
+// that /home read already landed (its dwRefresh call was skipped) hand it to the widgets.
+if (activeView === 'home') {
+  dwOpen();
+  if (home.data && home.key === fbParams(hctx, true)) dwRefresh(home.data);
+}

@@ -147,6 +147,7 @@
   .dw-skel-bar { animation: none; background: rgba(255, 255, 255, 0.06); }
   .dw-sec-caret { transition: none; }
 }
+body.reduce-motion .dw-skel-bar { animation: none; }
 
 /* below 800px: slots stack in order, each keeping its row's height */
 @media (max-width: 799px) {
