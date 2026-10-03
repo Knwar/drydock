@@ -5,9 +5,9 @@
 // deUndo/deRedo, deOn, deMenu, deAnnounce, deExit, deRequestExit, deBeginSave/deEndSave,
 // deDialogOpen) and layout-ops.js (loFind). Never mutates a layout.
 
-const deTb = { el: null, undo: null, redo: null, save: null, cancel: null, add: null, more: null, notice: null, errors: null, status: null };
+const deTb = { el: null, undo: null, redo: null, save: null, cancel: null, add: null, more: null, notice: null, noticeText: null, theirs: null, errors: null, status: null };
+const DE_TB_NOTICE = 'This dashboard was changed elsewhere.';
 let deTbStatusTimer = 0;
-let deTbReenterUntil = 0; // "Reload theirs": re-enter once the refetched layout has rendered
 
 const deTbPid = () => dw.board || currentProject();
 
@@ -59,9 +59,11 @@ function deTbBuild() {
   // the "changed elsewhere" notice
   deTb.notice = node('div', 'de-tb-notice hidden');
   deTb.notice.setAttribute('role', 'status');
-  const nText = node('span', 'de-tb-notice-text', 'This dashboard was changed elsewhere.');
+  const nText = node('span', 'de-tb-notice-text', DE_TB_NOTICE);
+  deTb.noticeText = nText;
   const theirs = deTbButton('de-tb-link', 'Reload theirs', 'Reload theirs: discard your edits and load the latest dashboard', () => deTbReloadTheirs());
   const mine = deTbButton('de-tb-link', 'Keep mine', 'Keep mine: saving will overwrite the other change', () => deTbHideNotice('Keeping your edits. Saving will overwrite the other change'));
+  deTb.theirs = theirs;
   deTb.notice.append(nText, theirs, mine);
 
   // save errors
@@ -70,6 +72,10 @@ function deTbBuild() {
 
   bar.append(main, deTb.notice, deTb.errors);
   deTb.el = bar;
+  // keep focused handles / scrollIntoView clear of the sticky bar: #home-body's scroll-padding
+  new ResizeObserver(() => {
+    if (bar.isConnected) $('home-body')?.style.setProperty('--de-tb-h', `${bar.offsetHeight}px`);
+  }).observe(bar);
 }
 
 function deTbSync() {
@@ -124,31 +130,61 @@ deOn('external-change', () => {
   deTb.notice.classList.remove('hidden');
 });
 
-// "Reload theirs": once the refetched layout renders after the exit, enter again
-dwAfterRender(() => {
-  if (!deTbReenterUntil || deState.active) return;
-  const due = Date.now() < deTbReenterUntil;
-  deTbReenterUntil = 0;
-  if (due)
-    setTimeout(() => {
-      if (deEnter()) deAnnounce('Loaded the latest dashboard');
-    });
-});
+// ── no edits and no exits while a save is in flight (wraps the core's globals) ──
+// Feature modules call these by their global names at call time, so the wrappers cover them,
+// and the core's own Esc / narrow-viewport / Done handlers go through deRequestExit.
+const deTbBusyNote = () => deAnnounce('Wait for the save to finish');
+for (const name of ['deApply', 'deUndo', 'deRedo']) {
+  const core = window[name];
+  window[name] = function (...args) {
+    if (deState.saving) {
+      deTbBusyNote();
+      return false;
+    }
+    return core.apply(this, args);
+  };
+}
+const deTbCoreRequestExit = deRequestExit;
+deRequestExit = function () {
+  if (deState.saving) return void deTbBusyNote(); // Esc / Cancel / viewport < 800px mid-save
+  return deTbCoreRequestExit();
+};
 
 function deTbHideNotice(say) {
   if (!deTb.notice) return;
   const wasShown = !deTb.notice.classList.contains('hidden');
   deTb.notice.classList.add('hidden');
+  deTb.noticeText.textContent = DE_TB_NOTICE;
+  deTb.theirs.disabled = false;
   if (say && wasShown) {
     deAnnounce(say);
     deTb.save?.focus();
   }
 }
 
-function deTbReloadTheirs() {
+// "Reload theirs": fetch the stored layout first; only then discard, show it and edit it.
+async function deTbReloadTheirs() {
+  if (!deState.active || deState.saving) return;
+  const pid = deTbPid();
+  deTb.theirs.disabled = true;
+  let layout;
+  try {
+    const res = await fetch(`/project/${encodeURIComponent(pid)}/layout`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    layout = (await res.json()).layout;
+    if (!layout) throw new Error('no layout');
+  } catch (e) {
+    if (!deState.active) return;
+    deTb.theirs.disabled = false;
+    deTb.noticeText.textContent = `${DE_TB_NOTICE} Couldn’t load it (${e.message}).`;
+    deAnnounce(`Couldn’t load the latest dashboard (${e.message})`);
+    return;
+  }
+  if (!deState.active || deTbPid() !== pid) return; // left edit mode / switched board meanwhile
   deTbHideNotice();
-  deExit(); // discards; the core refetches the stored layout (it changed elsewhere)
-  deTbReenterUntil = Date.now() + 5000;
+  deExit(); // discard (its refetch, if any, returns early: we're editing again by then)
+  dwRenderLayout(layout); // becomes dw.layout: the base deEnter copies
+  if (deEnter()) deAnnounce('Loaded the latest dashboard');
 }
 
 // ── shortcuts: ⌘/Ctrl-Z undo, ⇧⌘/Ctrl-Z and Ctrl-Y redo ──
@@ -158,7 +194,7 @@ document.addEventListener('keydown', (e) => {
   const redo = (k === 'z' && e.shiftKey) || (k === 'y' && e.ctrlKey && !e.shiftKey);
   const undo = k === 'z' && !e.shiftKey;
   if (!undo && !redo) return;
-  if (activeView !== 'home' || deDialogOpen()) return;
+  if (activeView !== 'home' || deDialogOpen() || deMenuState || document.querySelector('[role="menu"]')) return;
   if (e.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], dialog')) return;
   e.preventDefault();
   if (redo) deTbRedo();
@@ -170,6 +206,7 @@ async function deTbSave() {
   if (!deState.active || deState.saving || !deState.dirty) return;
   const pid = deTbPid();
   const draft = deState.draft;
+  const snap = JSON.stringify(draft);
   deTbClearErrors();
   deBeginSave();
   deTbSync();
@@ -185,11 +222,19 @@ async function deTbSave() {
   } catch (e) {
     failure = { status: 0, message: e.message || 'network error', errors: [] };
   }
+  if (!deState.active) return void deEndSave(false); // the board changed under us mid-save
+  if (ok && JSON.stringify(deState.draft) !== snap) {
+    // the draft moved while the PUT was in flight (edits are blocked, but never claim it's stored)
+    deEndSave(false);
+    deTbSync();
+    deTbFlash('Changes made during save were kept — save again');
+    return void deAnnounce('Changes made during save were kept — save again');
+  }
   deEndSave(ok);
-  if (!deState.active) return; // the board changed under us mid-save
   if (ok) return void deExit({ saved: true }); // announces "Dashboard saved"; the core's echo window assumes we exit
   deTbSync();
   deTbShowErrors(failure, draft);
+  if (!deWide()) deRequestExit(); // the viewport narrowed mid-save: what it would have done
 }
 
 function deTbClearErrors() {
@@ -447,20 +492,28 @@ function deTbResetDialog() {
       busy = true;
       go.disabled = back.disabled = true;
       go.textContent = 'Resetting…';
+      let stored;
+      deBeginSave(); // the DELETE's live echo is ours: no "changed elsewhere" notice
       try {
         const res = await fetch(`/project/${encodeURIComponent(pid)}/layout`, { method: 'DELETE' });
-        if (!res.ok) throw new Error(res.status === 403 ? 'only allowed from this machine' : (await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(res.status === 403 ? 'only allowed from this machine' : body.error || `HTTP ${res.status}`);
+        stored = body.layout;
       } catch (e) {
+        deEndSave(false);
         busy = false;
         go.disabled = back.disabled = false;
         go.textContent = 'Reset dashboard';
         err.textContent = `Couldn’t reset the dashboard (${e.message}).`;
         return;
       }
+      deEndSave(true);
       busy = false;
       close();
-      deExit(); // discard; then show the stored (now default) layout
-      dwLoadLayout();
+      if (!deState.active) return;
+      deExit(); // leave edit mode; then the default the DELETE returned replaces it, in the same frame
+      if (stored) dwRenderLayout(stored);
+      else dwLoadLayout();
       deAnnounce('Dashboard reset to the board default');
     };
     foot.append(node('span', 'sv-foot-note'), back, go);

@@ -4,6 +4,9 @@
 /* the toolbar replaces the core's temporary escape hatch */
 #de-hatch { display: none; }
 
+/* scrolled-to / focused targets land below the sticky bar (its height is set from JS) */
+body.de-editing #home-body { scroll-padding-top: calc(var(--de-tb-h, 52px) + 14px); }
+
 .de-tb {
   position: sticky;
   top: 0;
