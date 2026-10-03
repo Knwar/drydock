@@ -136,6 +136,13 @@ header {
 #stats .n { color: var(--text); font-weight: 700; }
 #stats .pass { color: var(--accent); }
 #stats .fail { color: #e06c75; }
+/* below 800px the header stats stay on one line, truncated, instead of wrapping */
+@media (max-width: 799px) {
+  header { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); column-gap: 10px; }
+  .head-right { min-width: 0; gap: 10px; }
+  #stats { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #settings-btn, #timer { flex: none; }
+}
 
 #timer {
   font-size: 15px;

@@ -17,13 +17,20 @@
 //                             draft never stays rendered as if saved). { saved: true }: the draft
 //                             stays, used by the toolbar after a successful PUT.
 //   deRequestExit()           Done / Esc / Cancel: dirty → "Discard unsaved changes?" dialog
-//                             (Discard / Keep editing), otherwise exits at once. The viewport
-//                             dropping below 800px mid-edit does the same.
+//                             (Discard / Keep editing), otherwise exits at once. Below 800px
+//                             (editing isn't possible there) it opens the narrow dialog instead.
+//   Viewport below 800px mid-edit → deRequestExit() → "Editing needs a wider window" (Save and
+//                             exit + Discard changes when dirty, else Exit editing; no Keep
+//                             editing). Widening again before a choice closes it, editing goes on.
+//   While dirty, leaving the page (reload / close) asks first (beforeunload).
 //   deAbandon()               exit discarding without asking (the board changed); announces
 //                             "Unsaved dashboard edits were discarded" when dirty.
 //
 // Saving (the toolbar card owns the PUT):
 //   deBeginSave(); const ok = (await fetch(PUT …)).ok; deEndSave(ok); if (ok) deExit({ saved: true });
+//   deSetSaver(fn)            register the save routine: async fn() → bool (true: stored). The
+//                             narrow dialog's "Save and exit" runs it (then exits if still editing
+//                             and clean); with none registered it clicks #de-toolbar's .de-tb-save.
 //   While saving (and 2s after a successful save) a live layout message for this board is our own
 //   echo: no 'external-change', no notice. deEndSave(true) also makes the draft the new base
 //   (dirty false, emits 'change').
@@ -47,13 +54,17 @@
 // Menus
 //   deMenu(anchorEl, items)   the one shared popup menu (role=menu, arrows / Home / End /
 //                             Enter / Space, Esc and Tab close and refocus the anchor, Right / Left
-//                             open / close submenus, hovering a parent opens its submenu without
-//                             moving focus; scrolls past max-height; closes on scroll / resize). Item: { label, onSelect?, children?,
-//                             disabled?, checked?, radio?, danger? } or { separator: true }.
+//                             open / close submenus, hovering an item moves the roving focus to it
+//                             (one highlight) and hovering a parent opens its submenu; scrolls past
+//                             max-height; closes on scroll / resize). Item: { label, onSelect?,
+//                             children?, disabled?, checked?, radio?, primary?, danger? } or
+//                             { separator: true }.
 //                             checked !== undefined → menuitemcheckbox (radio: true → menuitemradio).
 //   deMenuItems(kind, fn)     contribute items: fn(id, info) → items[]; info = { kind, id, item, el,
 //                             layout }. Modules' items concatenate in registration order with
-//                             separators between modules.
+//                             separators between modules. Ordering across all modules: items with
+//                             primary: true come first, items with danger: true come last (after a
+//                             separator), everything else keeps registration order.
 //   deMenuFor(kind, id, anchorEl)   open the registered menu for one target
 //
 // Decoration (edit mode, after every render; idempotent)
@@ -63,6 +74,7 @@
 //   tabs widgets: .de-tab-handle (the selected tab; on the frame, outside the tablist) + context
 //     menu / Shift+F10 on a tab → 'tab' items
 //   widget bodies (except tabs) are inert while editing: they still scroll, a click selects the frame
+//   a click on empty dashboard space (no frame / row / section head / control) clears the selection
 //   empty slots: .de-slot-empty "Empty slot" with a .de-slot-handle → 'slot' items
 //   Every handle carries data-de-for="<kind>:<id>" (a tab strip's: "tabs:<widget id>"). Clicking a frame / row / section / slot selects it.
 //   deDecorate(fn)  fn(root) after the core's decoration (drag listeners etc.)
@@ -80,6 +92,7 @@ const deState = { active: false, base: null, draft: null, past: [], future: [], 
 let deSavedAt = 0; // the last successful save (its live echo may land just after)
 let deLastStep = null; // { coalesce, at } of the newest history step
 let deExternal = false; // a live layout change arrived while editing
+let deExitDlg = null; // { kind: 'discard' | 'narrow', close } while one of our exit dialogs is up
 const deListeners = new Map(); // event → Set(fn)
 const deMenuRegistry = []; // { kind, fn }
 const deDecorators = [];
@@ -181,6 +194,7 @@ function deEnter() {
 
 function deExit({ saved = false } = {}) {
   if (!deState.active) return;
+  deExitDlg?.close(); // left some other way (save, another board) with our dialog still up
   const layout = saved ? deState.draft : deState.base;
   const wasDirty = deState.dirty;
   const refetch = deExternal;
@@ -202,9 +216,12 @@ function deExit({ saved = false } = {}) {
 // Done / Esc / Cancel: ask before throwing away unsaved edits.
 function deRequestExit() {
   if (!deState.active) return;
+  if (!deWide()) return void deNarrowPrompt(); // editing isn't possible here: no Keep editing
   if (!deState.dirty) return void deExit();
   if (svModal) return; // a dialog is already up
-  const { dlg, close, mount } = openModal({ labelledBy: 'de-discard-title', describedBy: 'de-discard-sub', busy: () => false, fallbackFocus: () => $('home-edit') });
+  const { dlg, close, mount } = openModal({ labelledBy: 'de-discard-title', describedBy: 'de-discard-sub', busy: () => false, onClose: () => (deExitDlg = null), fallbackFocus: () => $('home-edit') });
+  deExitDlg = { kind: 'discard', close };
+  dlg.classList.add('de-exit-dlg');
   const title = node('h2', 'sv-title', 'Discard unsaved changes?');
   title.id = 'de-discard-title';
   const sub = node('p', 'sv-sub', 'Your edits to this dashboard haven’t been saved.');
@@ -223,6 +240,60 @@ function deRequestExit() {
   dlg.append(title, sub, foot);
   mount();
   keep.focus();
+}
+
+// The save routine "Save and exit" runs (the toolbar's); see the header.
+let deSaver = null;
+function deSetSaver(fn) {
+  deSaver = typeof fn === 'function' ? fn : null;
+}
+async function deSaveNow() {
+  if (!deSaver) return void document.querySelector('#de-toolbar .de-tb-save')?.click(); // exits itself on success
+  let ok = false;
+  try {
+    ok = !!(await deSaver());
+  } catch (e) {
+    console.error('dash-editor saver', e);
+  }
+  if (ok && deState.active && !deState.dirty) deExit({ saved: true });
+}
+
+// Below 800px mid-edit: save (when dirty) or discard / exit, nothing else (Esc / backdrop don't close
+// it); widening the window again closes it (the matchMedia listener below).
+function deNarrowPrompt() {
+  if (!deState.active || deExitDlg?.kind === 'narrow') return;
+  if (deExitDlg) deExitDlg.close(); // the generic one offers Keep editing: replace it
+  // another dialog (library, templates…) owns the screen: ask once it has closed
+  if (svModal) return void setTimeout(() => deState.active && !deWide() && !deExitDlg && deRequestExit(), 500);
+  const dirty = deState.dirty;
+  const { dlg, close, mount } = openModal({ labelledBy: 'de-narrow-title', describedBy: 'de-narrow-sub', busy: () => true, onClose: () => (deExitDlg = null), fallbackFocus: () => $('home-edit') });
+  deExitDlg = { kind: 'narrow', close };
+  dlg.classList.add('de-exit-dlg');
+  const title = node('h2', 'sv-title', 'Editing needs a wider window');
+  title.id = 'de-narrow-title';
+  const sub = node('p', 'sv-sub', dirty ? 'The dashboard can only be edited at 800px or wider. Save your edits or discard them, or widen the window to keep editing.' : 'The dashboard can only be edited at 800px or wider.');
+  sub.id = 'de-narrow-sub';
+  const foot = node('div', 'sv-foot');
+  const discard = node('button', dirty ? 'home-btn pl-danger' : 'home-btn', dirty ? 'Discard changes' : 'Exit editing');
+  discard.type = 'button';
+  discard.onclick = () => {
+    close();
+    deExit();
+  };
+  foot.append(node('span', 'sv-foot-note'));
+  let save = null;
+  if (dirty) {
+    save = node('button', 'home-btn primary', 'Save and exit');
+    save.type = 'button';
+    save.onclick = () => {
+      close();
+      deSaveNow();
+    };
+    foot.append(discard, save);
+  } else foot.append(discard);
+  dlg.append(title, sub, foot);
+  mount();
+  (save ?? discard).focus();
 }
 
 // The board changed under the editor: no one to ask, so discard and say so.
@@ -334,8 +405,11 @@ function deMenuItems(kind, fn) {
   deMenuRegistry.push({ kind, fn });
 }
 
+// primary items first, then each module's rest (registration order, separated), danger items last
 function deItemsFor(kind, id, info) {
-  const out = [];
+  const primary = [];
+  const danger = [];
+  const middle = [];
   for (const r of deMenuRegistry) {
     if (r.kind !== kind) continue;
     let items = [];
@@ -344,11 +418,19 @@ function deItemsFor(kind, id, info) {
     } catch (e) {
       console.error('dash-editor menu items', kind, e);
     }
-    if (!items.length) continue;
-    if (out.length) out.push({ separator: true });
-    out.push(...items);
+    const rest = [];
+    for (const it of items) {
+      if (!it) continue;
+      if (it.primary && !it.separator) primary.push(it);
+      else if (it.danger && !it.separator) danger.push(it);
+      else rest.push(it);
+    }
+    if (rest.some((it) => !it.separator)) middle.push({ separator: true }, ...rest);
   }
-  return out.length ? out : [{ label: 'No actions yet', disabled: true }];
+  const out = [...primary, { separator: true }, ...middle, { separator: true }, ...danger];
+  // no leading / trailing / doubled separators
+  const clean = out.filter((it, i) => !it.separator || (i > 0 && out.slice(0, i).some((p) => !p.separator) && out.slice(i + 1).some((n) => !n.separator) && !out[i + 1]?.separator));
+  return clean.length ? clean : [{ label: 'No actions yet', disabled: true }];
 }
 
 function deMenuFor(kind, id, anchorEl) {
@@ -416,6 +498,7 @@ function deMenuOpenLevel(items, anchor, parentBtn, focus = true) {
       deMenuActivate(level, it, b);
     });
     b.addEventListener('pointerenter', () => {
+      b.focus({ preventScroll: true }); // the roving focus follows the pointer: one highlight
       if (deMenuState?.levels[level + 1]?.parentBtn === b) return; // its submenu is already open
       deMenuTrim(level + 1);
       if (it.children?.length && !it.disabled) deMenuOpenLevel(it.children, b, b, false);
@@ -710,6 +793,18 @@ $('dash-root')?.addEventListener('click', (e) => {
   if (hit) deSelect(hit);
 });
 
+// a click on empty dashboard space (not a frame, row, section head, handle, menu, drawer, toolbar
+// or control) clears the selection
+$('home-body')?.addEventListener('click', (e) => {
+  if (!deState.active || !deState.selected) return;
+  const t = e.target;
+  if (!(t === e.currentTarget || t.closest?.('#dash-root'))) return; // Home's header, the toolbar…
+  const controls = '.dw-widget, .de-row-bar, .dw-row, .dw-sec-head, .de-slot-empty, .de-btn, .de-menu, #dec-drawer, #de-toolbar, [role="dialog"]';
+  const editorBits = '.ds-add-section, .ds-add-end, .ds-inline, .ds-ins, .ds-div, .de-resize-grip, .de-row-resize';
+  if (t.closest(`${controls}, ${editorBits}, button, a, input, textarea, select, label, [contenteditable]`)) return;
+  deSelect(null);
+});
+
 // ── temporary escape hatch (the toolbar card replaces it) ──
 function deHatch(show) {
   let hatch = $('de-hatch');
@@ -738,9 +833,19 @@ document.addEventListener('keydown', (e) => {
   deRequestExit();
 });
 
-// narrower than 800px mid-edit: like Done
+// narrower than 800px mid-edit: like Done, but the dialog can't offer Keep editing (deNarrowPrompt);
+// wider again before a choice: that dialog closes and editing goes on
 window.matchMedia('(min-width: 800px)').addEventListener('change', (e) => {
-  if (!e.matches && deState.active) deRequestExit();
+  if (!deState.active) return;
+  if (!e.matches) return void deRequestExit();
+  if (deExitDlg?.kind === 'narrow') deExitDlg.close();
+});
+
+// unsaved edits: reloading / closing the page asks first
+window.addEventListener('beforeunload', (e) => {
+  if (!deState.active || !deState.dirty) return;
+  e.preventDefault();
+  e.returnValue = '';
 });
 
 // the Edit dashboard button (hidden below 800px and in embed: CSS), enabled once a layout rendered
