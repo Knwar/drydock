@@ -5407,6 +5407,7 @@ function openHome() {
   if (homeFiltered()) loadTeamCache(); // a filtered /home carries only the matching agents, not the roster
   renderHome(); // last good data, or the loading state
   renderHomeFilters(true);
+  if (typeof dwOpen === 'function') dwOpen(); // dashboard.js may load after an early setView('home')
   loadHome();
 }
 
@@ -5488,6 +5489,7 @@ async function loadHome() {
     home.failed = true;
     if (activeView !== 'home') return;
     renderHome();
+    if (typeof dwRefresh === 'function') dwRefresh(null, new Error('Couldn’t load Home'));
     clearTimeout(dash.refetchTimer);
     dash.refetchTimer = setTimeout(loadHome, dash.fetchRetry);
     dash.fetchRetry = Math.min(dash.fetchRetry * 2, 10000);
@@ -5507,6 +5509,7 @@ async function loadHome() {
     homeReloadMeta();
   }
   renderHome();
+  if (typeof dwRefresh === 'function') dwRefresh(data); // the dashboard's widgets reload with this /home
   loadSuggestions();
   // in a workspace, the other boards' traffic arrives on the all-projects socket
   if (data.verticals.length) {
@@ -5523,6 +5526,7 @@ function onHomeMessage(msg) {
   if (msg.type === 'status') applyHomeStatus(msg);
   if (msg.type === 'init' && home.key) loadTeamCache(); // (re)connected while filtered: the roster isn't on /home
   if (HOME_REFETCH.includes(msg.type)) scheduleDashboardRefetch();
+  if (typeof dwOnMessage === 'function') dwOnMessage(msg); // widgets' onStatus; layout → refetch it
 }
 
 // Cheap in-place update: session state (pills, Send box) + activity text.
@@ -5951,12 +5955,7 @@ function renderHome() {
   }
   renderHomeHead();
   renderHomeFilters(false);
-  renderHomeNow();
-  renderHomeVerticals();
-  renderHomeAgents();
-  renderHomeUpNext();
-  renderHomeSend();
-  renderHomeSplit();
+  renderHomeSplit(); // the panels below the header are the dashboard's (#dash-root, dashboard.js)
 }
 
 function renderHomeHead() {

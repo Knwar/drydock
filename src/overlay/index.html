@@ -5,6 +5,12 @@
   <title>KanKanBan</title>
   <link rel="stylesheet" href="xterm.css" />
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="dashboard.css" />
+  <link rel="stylesheet" href="widget-now-building.css" />
+  <link rel="stylesheet" href="widget-active-agents.css" />
+  <link rel="stylesheet" href="widget-lists.css" />
+  <link rel="stylesheet" href="widget-kpi.css" />
+  <link rel="stylesheet" href="widget-tabs.css" />
 </head>
 <body>
   <header>
@@ -101,15 +107,17 @@
           <span id="home-usage"></span>
           <div id="home-filters" class="fb-host"></div>
         </div>
-        <div id="home-top" class="home-grid">
+        <div id="dash-root"></div>
+        <!-- the pre-dashboard panels below are hidden and no longer rendered (a cleanup card removes them) -->
+        <div id="home-top" class="home-grid hidden">
           <div id="home-now" class="home-panel home-hero"></div>
           <div id="home-verticals" class="home-panel"></div>
         </div>
-        <div class="home-agents-wrap">
+        <div class="home-agents-wrap hidden">
           <div class="home-label">Agents</div>
           <div id="home-agents" class="home-agents"></div>
         </div>
-        <div id="home-bottom" class="home-grid">
+        <div id="home-bottom" class="home-grid hidden">
           <div id="home-upnext" class="home-panel home-upnext"></div>
           <div id="home-send" class="home-panel home-send">
             <div class="home-label">Send to agent</div>
@@ -317,5 +325,11 @@
   <script src="xterm.js"></script>
   <script src="addon-fit.js"></script>
   <script src="app.js"></script>
+  <script src="dashboard.js"></script>
+  <script src="widget-now-building.js"></script>
+  <script src="widget-active-agents.js"></script>
+  <script src="widget-lists.js"></script>
+  <script src="widget-kpi.js"></script>
+  <script src="widget-tabs.js"></script>
 </body>
 </html>
