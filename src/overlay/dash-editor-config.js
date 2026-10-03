@@ -252,6 +252,9 @@ function decSection(title, ...children) {
   return sec;
 }
 
+// the title the widget shows: its override if set, otherwise the default
+const decShownTitle = (w) => (typeof w.params?.title === 'string' && w.params.title) || decDefaultTitle(w) || w.type;
+
 // ── render ──
 function decRender() {
   const w = decWidget();
@@ -260,7 +263,7 @@ function decRender() {
   dec.json = decJsonOf(w);
   const def = dwDef(w.type);
   const sub = dec.el.querySelector('#dec-sub');
-  sub.textContent = decDefaultTitle(w) || w.params?.title || w.type;
+  sub.textContent = decShownTitle(w);
   dec.body.replaceChildren(decDataSection(w, def), decDisplaySection(w, def), decFilterSection(w));
   if (focused) dec.body.querySelector(`[data-dec-field="${CSS.escape(focused)}"]`)?.focus();
 }
@@ -270,7 +273,7 @@ function decRefresh() {
   const w = decWidget();
   if (!w || !dec.el) return;
   const t = decDefaultTitle(w);
-  dec.el.querySelector('#dec-sub').textContent = t || w.params?.title || w.type;
+  dec.el.querySelector('#dec-sub').textContent = decShownTitle(w);
   const title = dec.body.querySelector('[data-dec-field="title"]');
   if (title) title.placeholder = t || 'No title';
 }
@@ -531,7 +534,7 @@ function decRangeField(w) {
 }
 
 // ── entry points ──
-deMenuItems('widget', (id) => [{ label: 'Configure…', onSelect: () => decOpen(id) }]);
+deMenuItems('widget', (id) => [{ label: 'Configure…', primary: true, onSelect: () => decOpen(id) }]);
 
 // double-click a widget frame (not its handles, a tab strip or a row / section bar)
 $('dash-root')?.addEventListener('dblclick', (e) => {

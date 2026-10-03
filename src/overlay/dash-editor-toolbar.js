@@ -21,6 +21,20 @@ function deTbButton(cls, text, label, onClick) {
   return b;
 }
 
+const deTbMac = () => /mac/i.test(navigator.userAgentData?.platform || navigator.platform || '');
+
+// 16px curved-arrow icons (stroke: the button's color)
+const DE_TB_ICONS = {
+  undo: '<path d="M6 4 3 7l3 3"/><path d="M3 7h6.5a3.5 3.5 0 0 1 0 7H7"/>',
+  redo: '<path d="m10 4 3 3-3 3"/><path d="M13 7H6.5a3.5 3.5 0 0 0 0 7H9"/>',
+};
+function deTbIconButton(icon, label, tip, onClick) {
+  const b = deTbButton('de-tb-icon', '', label, onClick);
+  b.title = tip;
+  b.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${DE_TB_ICONS[icon]}</svg>`;
+  return b;
+}
+
 function deTbBuild() {
   const bar = node('div', 'de-tb');
   bar.id = 'de-toolbar';
@@ -38,10 +52,9 @@ function deTbBuild() {
   deTb.add = deTbButton('de-tb-add', '+ Add widget', 'Add widget', () => {
     if (typeof deLibraryOpen === 'function') deLibraryOpen();
   });
-  deTb.undo = deTbButton('de-tb-icon', '↶', 'Undo', () => deTbUndo());
-  deTb.redo = deTbButton('de-tb-icon', '↷', 'Redo', () => deTbRedo());
-  deTb.undo.title = 'Undo (⌘Z / Ctrl+Z)';
-  deTb.redo.title = 'Redo (⇧⌘Z / Ctrl+Y)';
+  const mac = deTbMac();
+  deTb.undo = deTbIconButton('undo', 'Undo', mac ? 'Undo (⌘Z)' : 'Undo (Ctrl+Z)', () => deTbUndo());
+  deTb.redo = deTbIconButton('redo', 'Redo', mac ? 'Redo (⇧⌘Z)' : 'Redo (Ctrl+Y)', () => deTbRedo());
   deTb.more = deTbButton('de-tb-more', 'More', 'More dashboard actions', (e) => {
     e.stopPropagation();
     const open = deMenuState?.anchor === deTb.more;

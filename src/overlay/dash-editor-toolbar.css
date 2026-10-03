@@ -15,12 +15,18 @@ body.de-editing #home-body { scroll-padding-top: calc(var(--de-tb-h, 52px) + 14p
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px 8px 8px 12px;
+  padding: 9px 9px 9px 13px;
+  font-size: 12px;
+}
+/* solid all the way to its edges (rounded corners included), so scrolled content never shows
+   around or under the bar: ::before is the page backdrop (body's translucent --bg over the white
+   canvas) with a subtle bottom shadow, ::after the bar itself */
+.de-tb::before, .de-tb::after { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.de-tb::before { background: linear-gradient(var(--bg), var(--bg)), #fff; box-shadow: 0 8px 10px -8px rgba(0, 0, 0, 0.6); }
+.de-tb::after {
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 12px;
   background: #151923;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
-  font-size: 12px;
 }
 .de-tb-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .de-tb-left { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; }
@@ -67,7 +73,8 @@ body.de-editing #home-body { scroll-padding-top: calc(var(--de-tb-h, 52px) + 14p
 .de-tb-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .de-tb-btn:disabled { opacity: 0.4; cursor: default; }
 .de-tb-btn[hidden] { display: none; }
-.de-tb-icon { width: 30px; padding: 0; font-size: 15px; font-weight: 400; color: var(--dim); }
+.de-tb-icon { width: 30px; padding: 0; color: var(--dim); }
+.de-tb-icon svg { display: block; width: 16px; height: 16px; }
 .de-tb-icon:hover:not(:disabled) { color: var(--text); }
 .de-tb-cancel { background: none; border-color: transparent; color: var(--dim); }
 .de-tb-cancel:hover:not(:disabled) { color: var(--text); }
@@ -129,8 +136,9 @@ body.de-editing #home-body { scroll-padding-top: calc(var(--de-tb-h, 52px) + 14p
   text-align: left;
   cursor: pointer;
 }
-.de-tb-tpl:nth-child(odd) { background: rgba(255, 255, 255, 0.025); }
-.de-tb-tpl:hover { background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.1); }
+.de-tb-tpl:hover { background: rgba(255, 255, 255, 0.06); }
+.sv-dialog .de-tb-tpl:focus-visible { outline-offset: -2px; background: rgba(255, 255, 255, 0.06); } /* inset: the list scrolls (clips) */
+.de-tb-tpl:active { background: rgba(255, 255, 255, 0.09); }
 .de-tb-tpl-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .de-tb-tpl-badge {
   flex: none;

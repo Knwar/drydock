@@ -343,6 +343,26 @@ function deLibraryOpen(target) {
 }
 
 // ── menus ──
+// the copy goes into a new row right below the original's (same height and spans), in the slot at
+// the original's column; loDuplicateWidget puts it beside the original, loMoveWidget takes it down
+function deLibDuplicate(L, widgetId) {
+  const w = loFind(L, widgetId);
+  if (w?.kind !== 'widget') throw new LoError(`No widget with id "${widgetId}"`);
+  const slot = w.parent;
+  const row = loFind(L, slot.id).parent;
+  const box = loFind(L, row.id).parent;
+  const ri = box.rows.indexOf(row);
+  const col = row.slots.indexOf(slot);
+  let out = loAddRow(L, box.id, ri + 1, row.slots.map((s) => s.span));
+  const copyRow = loFind(out, box.id).node.rows[ri + 1];
+  out = loSetRowHeight(out, copyRow.id, row.height);
+  out = loDuplicateWidget(out, widgetId);
+  const dup = loFind(out, slot.id).node.widgets[slot.widgets.indexOf(w.node) + 1];
+  return loMoveWidget(out, dup.id, copyRow.slots[col].id);
+}
+
+const deLibUndoKey = () => (/mac/i.test(navigator.userAgentData?.platform || navigator.platform || '') ? '⌘Z' : 'Ctrl+Z');
+
 function deLibTry(op, label) {
   try {
     return deApply(op(), label);
@@ -356,8 +376,8 @@ deMenuItems('widget', (id, info) => {
   if (!info.item) return [];
   const title = deLibTitle(info.item);
   return [
-    { label: 'Duplicate', onSelect: () => deLibTry(() => loDuplicateWidget(deState.draft, id), `Duplicated ${title}`) },
-    { label: 'Remove', danger: true, onSelect: () => deLibTry(() => loRemoveWidget(deState.draft, id), `Removed ${title}. Press Ctrl-Z to undo`) },
+    { label: 'Duplicate', onSelect: () => deLibTry(() => deLibDuplicate(deState.draft, id), `Duplicated ${title}`) },
+    { label: 'Remove', danger: true, onSelect: () => deLibTry(() => loRemoveWidget(deState.draft, id), `Removed ${title}. Press ${deLibUndoKey()} to undo`) },
   ];
 });
 
