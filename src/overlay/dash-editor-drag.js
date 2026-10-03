@@ -15,6 +15,7 @@ const DD_ROW_MAX = 12;
 
 let ddDrag = null; // pointer drag in progress
 let ddKb = null; // keyboard pick-up in progress
+let ddResize = null; // grip / row edge resize in progress
 let ddSwallowSpaceUp = false; // the Space keyup after a pick-up / drop must not click the handle
 
 // ── layout helpers (the draft) ──
@@ -80,7 +81,16 @@ function ddMove(id, slotId, index, title = ddTitleOf(id)) {
 let ddLine = null;
 let ddLit = null;
 
-function ddShow(slotEl, index, dragId) {
+// a slot's rect and the rects of the widgets it holds besides the moving one (top to bottom)
+function ddSlotGeo(slotEl, dragId) {
+  const frames = [...slotEl.querySelectorAll(':scope > .dw-widget')].filter((f) => f.dataset.widgetId !== dragId);
+  return { r: slotEl.getBoundingClientRect(), frames: frames.map((f) => f.getBoundingClientRect()) };
+}
+
+// the stack gap (one style read per gesture / key press, never per pointer move)
+const ddGap = () => parseFloat(getComputedStyle($('dash-root') ?? document.body).getPropertyValue('--dw-gap')) || 0;
+
+function ddShow(slotEl, index, geo, gap) {
   if (ddLit !== slotEl) {
     ddLit?.classList.remove('de-drop-target');
     slotEl?.classList.add('de-drop-target');
@@ -92,14 +102,12 @@ function ddShow(slotEl, index, dragId) {
     ddLine.setAttribute('aria-hidden', 'true');
   }
   if (!ddLine.isConnected) document.body.append(ddLine);
-  const r = slotEl.getBoundingClientRect();
-  const frames = [...slotEl.querySelectorAll(':scope > .dw-widget')].filter((f) => f.dataset.widgetId !== dragId);
-  const gap = parseFloat(getComputedStyle(slotEl).rowGap) || 0;
+  const { r, frames } = geo;
   let y;
   if (!frames.length) y = r.top + r.height / 2;
-  else if (index <= 0) y = frames[0].getBoundingClientRect().top - gap / 2;
-  else if (index >= frames.length) y = frames[frames.length - 1].getBoundingClientRect().bottom + gap / 2;
-  else y = (frames[index - 1].getBoundingClientRect().bottom + frames[index].getBoundingClientRect().top) / 2;
+  else if (index <= 0) y = frames[0].top - gap / 2;
+  else if (index >= frames.length) y = frames[frames.length - 1].bottom + gap / 2;
+  else y = (frames[index - 1].bottom + frames[index].top) / 2;
   y = Math.max(r.top - gap / 2, Math.min(y, r.bottom + gap / 2));
   ddLine.style.left = `${r.left + 4}px`;
   ddLine.style.width = `${Math.max(0, r.width - 8)}px`;
@@ -112,64 +120,67 @@ function ddHide() {
   ddLine?.remove();
 }
 
-// ── auto-scroll: Home's scroller, near the viewport's top / bottom ──
+// Home's scroller (auto-scroll target)
 function ddScroller() {
   return $('home-body') ?? document.scrollingElement;
 }
-function ddAutoScroll(state, onScroll) {
-  if (state.raf) return;
-  const tick = () => {
-    state.raf = 0;
-    if (!state.active) return;
-    const sc = ddScroller();
-    const r = sc.getBoundingClientRect();
-    const top = Math.max(r.top, 0);
-    const bottom = Math.min(r.bottom, window.innerHeight);
-    const y = state.y;
-    let v = 0;
-    if (y < top + DD_EDGE) v = -Math.ceil(((top + DD_EDGE - y) / DD_EDGE) * DD_MAX_SPEED);
-    else if (y > bottom - DD_EDGE) v = Math.ceil(((y - (bottom - DD_EDGE)) / DD_EDGE) * DD_MAX_SPEED);
-    v = Math.max(-DD_MAX_SPEED, Math.min(DD_MAX_SPEED, v));
-    if (!v) return;
-    const before = sc.scrollTop;
-    sc.scrollTop += v;
-    if (sc.scrollTop !== before) onScroll();
-    state.raf = requestAnimationFrame(tick);
-  };
-  state.raf = requestAnimationFrame(tick);
-}
 
-// A drag just ended: the click it would produce (menu, selection) is swallowed.
-function ddSwallowClick() {
-  const stop = (e) => {
+const ddBusy = () => !!(ddDrag || ddKb || ddResize);
+
+// A gesture just ended (dropped or cancelled): swallow the click its release produces (the
+// handle's menu, a selection). Armed until that release + 300ms; a new press disarms it.
+function ddSwallowClick(released) {
+  let timer = 0;
+  const swallow = (e) => {
     e.stopPropagation();
     e.preventDefault();
+    disarm();
   };
-  window.addEventListener('click', stop, { capture: true, once: true });
-  setTimeout(() => window.removeEventListener('click', stop, { capture: true }), 0);
-}
-
-// Esc during a pointer gesture cancels it (and nothing else hears it)
-function ddEscOnce(cancel) {
-  const onKey = (e) => {
-    if (e.key !== 'Escape') return;
-    e.preventDefault();
-    e.stopPropagation();
-    cancel();
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(disarm, 300);
   };
-  window.addEventListener('keydown', onKey, true);
-  return () => window.removeEventListener('keydown', onKey, true);
+  function disarm() {
+    clearTimeout(timer);
+    window.removeEventListener('click', swallow, true);
+    window.removeEventListener('pointerdown', disarm, true);
+    window.removeEventListener('pointerup', arm, true);
+  }
+  window.addEventListener('click', swallow, true);
+  window.addEventListener('pointerdown', disarm, true);
+  if (released) arm();
+  else window.addEventListener('pointerup', arm, true);
 }
 
 // ── pointer drag ──
+// st: { id, frame, src, pointerId, x0, y0, x, y, active, ended, raf (auto-scroll loop),
+//       moveRaf (throttled move), slots (cached hit targets), stale, edge, target, refused }
 function ddPointerDown(e, frame) {
-  if (!deState.active || e.button !== 0 || ddDrag || ddKb) return;
+  if (!deState.active || e.button !== 0 || ddBusy()) return;
   const src = e.currentTarget;
-  const id = frame.dataset.widgetId;
-  const st = { id, frame, src, pointerId: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, active: false, raf: 0, target: null, refused: false };
+  const st = {
+    id: frame.dataset.widgetId,
+    frame,
+    src,
+    pointerId: e.pointerId,
+    x0: e.clientX,
+    y0: e.clientY,
+    x: e.clientX,
+    y: e.clientY,
+    active: false,
+    ended: false,
+    raf: 0,
+    moveRaf: 0,
+    slots: [],
+    stale: true,
+    target: null,
+    refused: false,
+  };
   ddDrag = st;
-  const move = (ev) => {
-    if (ev.pointerId !== st.pointerId) return;
+  const mine = (ev) => ev.pointerId === st.pointerId;
+  const onMove = (ev) => {
+    if (!mine(ev)) return;
+    if (ev.buttons === 0) return void ddDragStop(st, false); // released where we didn't hear it
     st.x = ev.clientX;
     st.y = ev.clientY;
     if (!st.active) {
@@ -177,24 +188,44 @@ function ddPointerDown(e, frame) {
       ddDragStart(st);
     }
     ev.preventDefault();
-    ddDragMove(st);
+    if (!st.moveRaf)
+      st.moveRaf = requestAnimationFrame(() => {
+        st.moveRaf = 0;
+        ddDragUpdate(st);
+      });
   };
-  const end = (ev, drop) => {
-    if (ev && ev.pointerId !== st.pointerId) return;
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', up);
-    window.removeEventListener('pointercancel', cancel);
-    st.offEsc?.();
-    ddDrag = null;
-    if (!st.active) return;
-    ddDragEnd(st, drop);
+  const onUp = (ev) => {
+    if (!mine(ev)) return;
+    st.x = ev.clientX;
+    st.y = ev.clientY;
+    ddDragStop(st, true, true);
   };
-  const up = (ev) => end(ev, true);
-  const cancel = (ev) => end(ev, false);
-  st.cancel = () => end(null, false);
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', up);
-  window.addEventListener('pointercancel', cancel);
+  const onCancel = (ev) => mine(ev) && ddDragStop(st, false);
+  const onBlur = () => ddDragStop(st, false);
+  const onKey = (ev) => {
+    if (ev.key !== 'Escape' || !st.active) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    ddDragStop(st, false);
+    deAnnounce('Move cancelled');
+  };
+  const onScroll = () => (st.stale = true);
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onCancel);
+  window.addEventListener('blur', onBlur);
+  window.addEventListener('keydown', onKey, true);
+  document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+  src.addEventListener('lostpointercapture', onCancel);
+  st.off = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onCancel);
+    window.removeEventListener('blur', onBlur);
+    window.removeEventListener('keydown', onKey, true);
+    document.removeEventListener('scroll', onScroll, { capture: true });
+    src.removeEventListener('lostpointercapture', onCancel);
+  };
 }
 
 function ddDragStart(st) {
@@ -202,9 +233,11 @@ function ddDragStart(st) {
   deMenuClose(false);
   try {
     st.src.setPointerCapture(st.pointerId);
-  } catch {} // the pointer is already gone: window listeners still end the drag
+  } catch {} // the pointer is already gone: the window listeners still end the drag
   st.title = deWidgetTitle(st.frame);
   st.tabs = st.frame.dataset.widgetType === 'tabs';
+  st.gap = ddGap();
+  st.scroller = ddScroller();
   const r = st.frame.getBoundingClientRect();
   const w = Math.min(r.width, 260);
   const h = Math.min(r.height, 96);
@@ -219,44 +252,104 @@ function ddDragStart(st) {
   st.ghost = ghost;
   st.frame.classList.add('de-dragging');
   document.body.classList.add('de-drag-active');
-  st.offEsc = ddEscOnce(() => {
-    st.cancel();
-    deAnnounce('Move cancelled');
-  });
+  ddDragCache(st);
+  ddAutoScrollLoop(st);
 }
 
-// the slot under the pointer and the index within its stack
-function ddHit(st) {
-  const el = document.elementFromPoint(st.x, st.y);
-  const slot = el?.closest?.('#dash-root .dw-slot[data-slot-id]');
-  if (!slot) return { slot: null };
-  if (st.tabs && ddInTab(slot)) return { slot, refused: true };
-  const frames = [...slot.querySelectorAll(':scope > .dw-widget')].filter((f) => f !== st.frame);
-  let index = 0;
-  for (const f of frames) {
-    const r = f.getBoundingClientRect();
-    if (st.y > r.top + r.height / 2) index++;
+// Hit targets, measured once per drag and again after anything scrolls or re-renders.
+// A tab panel's slots are clipped to the panel (they may scroll out of it) and win over the
+// slot holding the tab group.
+function ddDragCache(st) {
+  const root = $('dash-root');
+  st.slots = [];
+  for (const el of root ? root.querySelectorAll('.dw-slot[data-slot-id]') : []) {
+    if (!el.getClientRects().length) continue; // a collapsed section
+    const panel = el.parentElement?.closest('.dw-tabs-panel');
+    const geo = ddSlotGeo(el, st.id);
+    let clip = geo.r;
+    if (panel) {
+      const p = panel.getBoundingClientRect();
+      clip = { left: Math.max(clip.left, p.left), right: Math.min(clip.right, p.right), top: Math.max(clip.top, p.top), bottom: Math.min(clip.bottom, p.bottom) };
+    }
+    st.slots.push({ el, id: el.dataset.slotId, inTab: !!panel, refused: st.tabs && !!panel, clip, ...geo });
   }
-  return { slot, index };
+  const sr = st.scroller.getBoundingClientRect();
+  st.edge = { top: Math.max(sr.top, 0), bottom: Math.min(sr.bottom, window.innerHeight) };
+  st.stale = false;
 }
 
-function ddDragMove(st) {
+function ddDragHit(st) {
+  if (st.stale) ddDragCache(st);
+  const { x, y } = st;
+  let hit = null;
+  for (const s of st.slots) {
+    const c = s.clip;
+    if (x < c.left || x > c.right || y < c.top || y > c.bottom) continue;
+    if (!hit || (s.inTab && !hit.inTab)) hit = s;
+  }
+  if (!hit) return { slot: null };
+  if (hit.refused) return { slot: hit, refused: true };
+  let index = 0;
+  for (const f of hit.frames) if (y > f.top + f.height / 2) index++;
+  return { slot: hit, index };
+}
+
+// one paint of the drag (ghost, target, indicator); never schedules anything itself
+function ddDragUpdate(st) {
+  if (ddDrag !== st || !st.active) return;
   st.ghost.style.transform = `translate(${Math.round(st.x - st.dx)}px, ${Math.round(st.y - st.dy)}px)`;
-  const hit = ddHit(st);
+  const hit = ddDragHit(st);
   st.refused = !!hit.refused;
   st.ghost.classList.toggle('refused', st.refused);
   if (!hit.slot || hit.refused) {
     st.target = null;
     ddHide();
   } else {
-    st.target = { slotId: hit.slot.dataset.slotId, index: hit.index };
-    ddShow(hit.slot, hit.index, st.id);
+    st.target = { slotId: hit.slot.id, index: hit.index };
+    ddShow(hit.slot.el, hit.index, hit.slot, st.gap);
   }
-  ddAutoScroll(st, () => ddDragMove(st));
 }
 
-function ddDragEnd(st, drop) {
+// One auto-scroll loop per drag, started once by ddDragStart: speed is bounded by
+// DD_MAX_SPEED and the loop stops as soon as the drag isn't the live one any more.
+function ddAutoScrollLoop(st) {
+  const tick = () => {
+    st.raf = 0;
+    if (ddDrag !== st || !st.active) return;
+    const { top, bottom } = st.edge;
+    let v = 0;
+    if (st.y < top + DD_EDGE) v = -Math.ceil(((top + DD_EDGE - st.y) / DD_EDGE) * DD_MAX_SPEED);
+    else if (st.y > bottom - DD_EDGE) v = Math.ceil(((st.y - (bottom - DD_EDGE)) / DD_EDGE) * DD_MAX_SPEED);
+    v = Math.max(-DD_MAX_SPEED, Math.min(DD_MAX_SPEED, v));
+    if (v) {
+      const sc = st.scroller;
+      const before = sc.scrollTop;
+      sc.scrollTop += v;
+      if (sc.scrollTop !== before) {
+        st.stale = true;
+        ddDragUpdate(st);
+      }
+    }
+    st.raf = requestAnimationFrame(tick);
+  };
+  st.raf = requestAnimationFrame(tick);
+}
+
+// Every end path: drop (pointerup) or cancel (Esc, pointercancel, lost capture, blur,
+// buttons released, re-render, exit). Idempotent.
+function ddDragStop(st, drop, released = false) {
+  if (st.ended) return;
+  st.ended = true;
+  const was = st.active;
+  st.active = false;
+  if (ddDrag === st) ddDrag = null;
+  st.off();
   cancelAnimationFrame(st.raf);
+  cancelAnimationFrame(st.moveRaf);
+  st.raf = st.moveRaf = 0;
+  if (!was) return; // a press that never became a drag: its click goes through
+  // where it ends counts, even if the last move's frame hadn't painted yet
+  const hit = drop ? ddDragHit(st) : null;
   st.ghost?.remove();
   st.frame.classList.remove('de-dragging');
   document.body.classList.remove('de-drag-active');
@@ -264,10 +357,10 @@ function ddDragEnd(st, drop) {
   try {
     st.src.releasePointerCapture(st.pointerId);
   } catch {} // already released
-  ddSwallowClick();
-  if (!drop) return;
-  if (st.refused) return void deAnnounce('A tab group cannot go inside another tab group');
-  if (st.target) ddMove(st.id, st.target.slotId, st.target.index, st.title);
+  ddSwallowClick(released);
+  if (!hit?.slot) return;
+  if (hit.refused) return void deAnnounce('A tab group cannot go inside another tab group');
+  ddMove(st.id, hit.slot.id, hit.index, st.title);
 }
 
 // ── keyboard pick-up (on .de-handle, capture phase: ahead of its menu click) ──
@@ -275,7 +368,7 @@ function ddKeyDown(e, frame) {
   if (!deState.active) return;
   const handle = e.currentTarget;
   if (!ddKb) {
-    if (e.key !== ' ' || e.repeat || ddDrag) return;
+    if (e.key !== ' ' || e.repeat || ddBusy()) return;
     e.preventDefault();
     e.stopPropagation();
     ddSwallowSpaceUp = true;
@@ -337,7 +430,7 @@ function ddKbShow() {
   const slot = deNodeFor('slot', ddKb.pos.slotId);
   if (!slot) return void ddHide();
   slot.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-  ddShow(slot, ddKb.pos.index, ddKb.id);
+  ddShow(slot, ddKb.pos.index, ddSlotGeo(slot, ddKb.id), ddGap());
 }
 
 function ddKbBlur() {
@@ -359,18 +452,92 @@ function ddKbEnd(drop) {
   document.querySelector(`[data-de-for="${CSS.escape(`widget:${k.id}`)}"]`)?.focus();
 }
 
-// a re-render or leaving edit mode ends any gesture
+// a re-render or leaving edit mode ends any gesture (cancelled, never applied)
 function ddReset() {
-  if (ddDrag) ddDrag.cancel();
+  if (ddDrag) ddDragStop(ddDrag, false);
+  ddResize?.stop(false);
   if (ddKb) ddKbEnd(false);
   ddHide();
 }
 deOn('exit', ddReset);
 deOn('render', (root) => {
+  if (ddDrag) ddDrag.stale = true; // a tab panel re-rendered: re-measure
   if (root?.id !== 'dash-root') return;
-  if (ddDrag) ddDrag.cancel();
+  if (ddDrag) ddDragStop(ddDrag, false);
+  ddResize?.stop(false);
   if (ddKb && !ddKb.frame.isConnected) ddKbEnd(false);
 });
+
+// ── resize gestures (grip, row edge) ──
+// Pointer capture on el; moves are painted once per frame via onMove(dx, dy, x, y). Ends on
+// pointerup (onEnd(true)) or, without a change, on Esc / pointercancel / lost capture / blur /
+// buttons released / re-render / exit (onEnd(false)).
+function ddResizeGesture(e, el, bodyClass, onMove, onEnd) {
+  e.preventDefault();
+  e.stopPropagation();
+  deMenuClose(false);
+  const g = { pointerId: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, raf: 0, ended: false };
+  const paint = () => onMove(g.x - g.x0, g.y - g.y0, g.x, g.y);
+  const mine = (ev) => ev.pointerId === g.pointerId;
+  const onPMove = (ev) => {
+    if (!mine(ev)) return;
+    if (ev.buttons === 0) return void stop(false);
+    g.x = ev.clientX;
+    g.y = ev.clientY;
+    if (!g.raf)
+      g.raf = requestAnimationFrame(() => {
+        g.raf = 0;
+        if (!g.ended) paint();
+      });
+  };
+  const onUp = (ev) => {
+    if (!mine(ev)) return;
+    g.x = ev.clientX;
+    g.y = ev.clientY;
+    stop(true, true);
+  };
+  const onCancel = (ev) => mine(ev) && stop(false);
+  const onBlur = () => stop(false);
+  const onKey = (ev) => {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    stop(false);
+    deAnnounce('Resize cancelled');
+  };
+  function stop(apply, released = false) {
+    if (g.ended) return;
+    g.ended = true;
+    if (ddResize === g) ddResize = null;
+    window.removeEventListener('pointermove', onPMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onCancel);
+    window.removeEventListener('blur', onBlur);
+    window.removeEventListener('keydown', onKey, true);
+    el.removeEventListener('lostpointercapture', onCancel);
+    cancelAnimationFrame(g.raf);
+    try {
+      el.releasePointerCapture(g.pointerId);
+    } catch {} // already released
+    document.body.classList.remove('de-resize-active', bodyClass);
+    ddSwallowClick(released);
+    if (apply) paint(); // the release point counts
+    onEnd(apply);
+  }
+  g.stop = stop;
+  ddResize = g;
+  try {
+    el.setPointerCapture(e.pointerId);
+  } catch {} // the window listeners still end it
+  document.body.classList.add('de-resize-active', bodyClass);
+  window.addEventListener('pointermove', onPMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onCancel);
+  window.addEventListener('blur', onBlur);
+  window.addEventListener('keydown', onKey, true);
+  el.addEventListener('lostpointercapture', onCancel);
+  paint();
+}
 
 // ── widget resize grip: snaps through the widget's registered sizes ──
 const ddSizes = (type) => {
@@ -379,64 +546,34 @@ const ddSizes = (type) => {
 };
 
 function ddGripDown(e, frame) {
-  if (!deState.active || e.button !== 0 || ddDrag || ddKb) return;
-  e.preventDefault();
-  e.stopPropagation();
-  const grip = e.currentTarget;
+  if (!deState.active || e.button !== 0 || ddBusy()) return;
   const id = frame.dataset.widgetId;
   const w = loFind(deState.draft, id)?.node;
   if (!w) return;
   const sizes = ddSizes(w.type);
   const from = w.size;
   const i0 = Math.max(0, sizes.indexOf(from));
-  deMenuClose(false);
-  try {
-    grip.setPointerCapture(e.pointerId);
-  } catch {} // window listeners still end it
   const label = node('div', 'de-size-label');
   label.setAttribute('aria-hidden', 'true');
   document.body.append(label);
   frame.classList.add('de-resizing');
-  document.body.classList.add('de-resize-active', 'de-resize-widget');
-  const x0 = e.clientX;
-  const y0 = e.clientY;
   let to = from;
-  const place = (x, y) => {
-    label.textContent = `${from} → ${to}`;
-    label.style.transform = `translate(${Math.round(x + 14)}px, ${Math.round(y + 14)}px)`;
-  };
-  place(x0, y0);
-  const move = (ev) => {
-    if (ev.pointerId !== e.pointerId) return;
-    const dx = ev.clientX - x0;
-    const dy = ev.clientY - y0;
-    const delta = Math.abs(dx) > Math.abs(dy) ? dx : dy;
-    to = sizes[Math.max(0, Math.min(sizes.length - 1, i0 + Math.round(delta / DD_SIZE_STEP)))];
-    place(ev.clientX, ev.clientY);
-  };
-  const finish = (apply) => {
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', up);
-    window.removeEventListener('pointercancel', cancel);
-    offEsc();
-    label.remove();
-    frame.classList.remove('de-resizing');
-    document.body.classList.remove('de-resize-active', 'de-resize-widget');
-    try {
-      grip.releasePointerCapture(e.pointerId);
-    } catch {} // already released
-    ddSwallowClick();
-    if (apply && to !== from) ddSetSize(id, to);
-  };
-  const up = (ev) => ev.pointerId === e.pointerId && finish(true);
-  const cancel = (ev) => ev.pointerId === e.pointerId && finish(false);
-  const offEsc = ddEscOnce(() => {
-    finish(false);
-    deAnnounce('Resize cancelled');
-  });
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', up);
-  window.addEventListener('pointercancel', cancel);
+  ddResizeGesture(
+    e,
+    e.currentTarget,
+    'de-resize-widget',
+    (dx, dy, x, y) => {
+      const delta = Math.abs(dx) > Math.abs(dy) ? dx : dy;
+      to = sizes[Math.max(0, Math.min(sizes.length - 1, i0 + Math.round(delta / DD_SIZE_STEP)))];
+      label.textContent = `${from} → ${to}`;
+      label.style.transform = `translate(${Math.round(x + 14)}px, ${Math.round(y + 14)}px)`;
+    },
+    (apply) => {
+      label.remove();
+      frame.classList.remove('de-resizing');
+      if (apply && to !== from) ddSetSize(id, to);
+    },
+  );
 }
 
 function ddSetSize(id, size) {
@@ -451,61 +588,35 @@ function ddSetSize(id, size) {
 
 // ── row bottom edge: height in whole units (one unit = 88px + the row gap) ──
 function ddRowDown(e, rowEl) {
-  if (!deState.active || e.button !== 0 || ddDrag || ddKb) return;
-  e.preventDefault();
-  e.stopPropagation();
+  if (!deState.active || e.button !== 0 || ddBusy()) return;
   const edge = e.currentTarget;
   const id = rowEl.dataset.rowId;
   const row = loFind(deState.draft, id)?.node;
   if (!row) return;
   const from = row.height;
-  const css = getComputedStyle(rowEl);
+  const css = getComputedStyle(rowEl); // once per gesture
   const unit = (parseFloat(css.getPropertyValue('--dw-row')) || DW_ROW_PX) + (parseFloat(css.rowGap) || 0);
-  deMenuClose(false);
-  try {
-    edge.setPointerCapture(e.pointerId);
-  } catch {} // window listeners still end it
   const label = node('span', 'de-row-resize-label');
   label.setAttribute('aria-hidden', 'true');
   edge.append(label);
   edge.classList.add('active');
-  document.body.classList.add('de-resize-active', 'de-resize-row');
-  const y0 = e.clientY;
   let to = from;
-  const show = () => {
-    rowEl.style.setProperty('--h', String(to));
-    label.textContent = to === from ? `Height ${from}` : `Height ${from} → ${to}`;
-  };
-  show();
-  const move = (ev) => {
-    if (ev.pointerId !== e.pointerId) return;
-    to = Math.max(1, Math.min(DD_ROW_MAX, from + Math.round((ev.clientY - y0) / unit)));
-    show();
-  };
-  const finish = (apply) => {
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', up);
-    window.removeEventListener('pointercancel', cancel);
-    offEsc();
-    label.remove();
-    edge.classList.remove('active');
-    document.body.classList.remove('de-resize-active', 'de-resize-row');
-    try {
-      edge.releasePointerCapture(e.pointerId);
-    } catch {} // already released
-    ddSwallowClick();
-    rowEl.style.setProperty('--h', String(from)); // the preview ends; deApply renders the result
-    if (apply && to !== from) ddSetHeight(id, to);
-  };
-  const up = (ev) => ev.pointerId === e.pointerId && finish(true);
-  const cancel = (ev) => ev.pointerId === e.pointerId && finish(false);
-  const offEsc = ddEscOnce(() => {
-    finish(false);
-    deAnnounce('Resize cancelled');
-  });
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', up);
-  window.addEventListener('pointercancel', cancel);
+  ddResizeGesture(
+    e,
+    edge,
+    'de-resize-row',
+    (_dx, dy) => {
+      to = Math.max(1, Math.min(DD_ROW_MAX, from + Math.round(dy / unit)));
+      rowEl.style.setProperty('--h', String(to));
+      label.textContent = to === from ? `Height ${from}` : `Height ${from} → ${to}`;
+    },
+    (apply) => {
+      label.remove();
+      edge.classList.remove('active');
+      rowEl.style.setProperty('--h', String(from)); // the preview ends; deApply renders the result
+      if (apply && to !== from) ddSetHeight(id, to);
+    },
+  );
 }
 
 function ddSetHeight(id, height) {
