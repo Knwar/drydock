@@ -75,7 +75,6 @@
 }
 .ds-add-end-btn:focus-visible, .ds-add-section-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .dw-sec-body:hover > .ds-add-end > .ds-add-end-btn, .dw-tabs-panel:hover > .ds-add-end > .ds-add-end-btn { opacity: 0.8; }
-.dw-tabs-panel > .ds-add-end-btn { height: 24px; }
 
 /* bottom of the dashboard */
 .ds-add-section { display: flex; align-items: center; gap: 8px; }
@@ -158,14 +157,6 @@
 .de-menu-item:hover .ds-dia-col, .de-menu-item:focus .ds-dia-col, .de-menu-item[aria-checked="true"] .ds-dia-col {
   background: color-mix(in srgb, var(--accent) 55%, transparent);
   box-shadow: none;
-}
-.ds-warn {
-  flex: none;
-  padding: 0 6px;
-  border-radius: 999px;
-  border: 1px solid rgba(229, 192, 123, 0.35);
-  color: #e5c07b;
-  font-size: 10.5px;
 }
 
 /* inline title inputs */
