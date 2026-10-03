@@ -1,7 +1,7 @@
 // Dashboard widget: kpi. One headline number per tile, params.metric:
 //   schedule | budget | decisions | throughput (sizes S, M, L).
-// The question is the tile's own heading: the frame's title is static per type, so it stays
-// hidden unless the layout sets params.title. Uses app.js globals read-only (node, svgEl, mx*,
+// The question is the frame's title (a function of params.metric), so it shows in the loading,
+// empty and error states too; params.title overrides it. Uses app.js globals read-only (node, svgEl, mx*,
 // homeMeta, setView). Status is always an icon + text, never colour alone.
 
 const KPI_ICONS = { ok: '✓', warn: '!', bad: '✕', none: '–' };
@@ -203,7 +203,9 @@ const KPI_WEEK_MS = 7 * 86_400_000;
 async function kpiThroughputLoad(ctx) {
   const f = kpiFilters(ctx);
   const now = Date.now();
-  const flow = await kpiGet(ctx, '/metrics/flow', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, tag: f.tag, agent: f.agent, from: now - 8 * KPI_WEEK_MS, to: now });
+  // no `to` (open-ended = up to now) and `from` floored to the minute: tiles in one cycle share the URL
+  const from = Math.floor((now - 8 * KPI_WEEK_MS) / 60_000) * 60_000;
+  const flow = await kpiGet(ctx, '/metrics/flow', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, tag: f.tag, agent: f.agent, from });
   const windows = Array(8).fill(0); // oldest → newest; [7] = the last 7 days
   for (const p of flow.points) {
     const k = Math.floor((now - p.doneAt) / KPI_WEEK_MS);
@@ -262,7 +264,7 @@ const KPI_METRICS = {
 
 dwRegister({
   type: 'kpi',
-  title: '',
+  title: (params) => KPI_METRICS[params.metric]?.q ?? '',
   sizes: ['S', 'M', 'L'],
   load(ctx) {
     const m = KPI_METRICS[ctx.params.metric];
@@ -271,10 +273,8 @@ dwRegister({
   },
   render(el, data, ctx) {
     if (data.empty) return { empty: data.empty };
-    const m = KPI_METRICS[ctx.params.metric];
     const box = node('div', 'kpi');
-    if (!ctx.params.title) box.append(node('div', 'kpi-q', m.q));
-    m.render(box, data, ctx);
+    KPI_METRICS[ctx.params.metric].render(box, data, ctx);
     el.append(box);
   },
 });
