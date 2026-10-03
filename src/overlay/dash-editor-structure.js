@@ -9,9 +9,11 @@
 //                release) or focus + Left / Right (one step per key)
 //   row menu     Split… (picker → loSetSpans), Move up / down, Duplicate, Delete
 //   sections     "Add section" at the bottom; menu: Rename (inline), Move up / down,
-//                Collapse / Expand (saved in the layout), Delete
-//   tabs         a + after the strip (outside the tablist); F2 / double-click renames a tab inline;
-//                menu: Rename, Move left / right, Delete (not the last)
+//                Collapse / Expand (saved in the layout), Delete (not the only one; asks first
+//                when it holds widgets)
+//   tabs         a + right after the last tab (on the frame, outside the tablist); F2 / double-click
+//                renames a tab inline; menu: Rename, Move left / right, Delete (not the last)
+//   deletes      a toast with Undo (besides the announcement)
 
 const DS_TITLE_MAX = 60;
 const DS_PRESETS = [
@@ -48,21 +50,59 @@ function dsWidgetCount(container) {
 
 // ── edits ──
 
-// A visible note for a refused edit (also announced).
+// A visible note (the live region speaks it; the toast's text is hidden from it). undoFor: the
+// layout a delete just produced → an Undo button, live only while that layout is still the draft.
 let dsToastTimer = 0;
-function dsRefuse(message) {
-  deAnnounce(message);
+let dsToastUndo = null;
+function dsToast(message, undoFor) {
   let t = $('ds-toast');
   if (!t) {
     t = node('div', 'ds-toast');
     t.id = 'ds-toast';
-    t.setAttribute('aria-hidden', 'true'); // the live region already speaks it
+    // kept up while the Undo button has focus
+    t.addEventListener('focusin', () => clearTimeout(dsToastTimer));
+    t.addEventListener('focusout', () => dsToastLater(4000));
     document.body.append(t);
   }
-  t.textContent = message;
+  const msg = node('span', 'ds-toast-msg', message);
+  msg.setAttribute('aria-hidden', 'true');
+  t.replaceChildren(msg);
+  dsToastUndo = undoFor ?? null;
+  t.classList.toggle('ds-toast-undo', !!undoFor);
+  if (undoFor) {
+    const b = node('button', 'ds-toast-btn', 'Undo');
+    b.type = 'button';
+    b.setAttribute('aria-label', `Undo: ${message}`);
+    b.addEventListener('click', () => {
+      const ok = dsToastUndo && deState.draft === dsToastUndo;
+      dsToastHide();
+      if (ok && deUndo()) deTb?.redo?.focus(); // the toast is going: focus stays in the editor
+    });
+    t.append(b);
+  }
   t.classList.add('show');
+  dsToastLater(undoFor ? 8000 : 4000);
+}
+function dsToastLater(ms) {
   clearTimeout(dsToastTimer);
-  dsToastTimer = setTimeout(() => t.classList.remove('show'), 4000);
+  dsToastTimer = setTimeout(dsToastHide, ms);
+}
+function dsToastHide() {
+  clearTimeout(dsToastTimer);
+  dsToastUndo = null;
+  $('ds-toast')?.classList.remove('show');
+}
+
+// A refused edit: shown as well as announced.
+function dsRefuse(message) {
+  deAnnounce(message);
+  dsToast(message);
+}
+
+// A delete: dsDo announces it; the toast shows it with Undo. → next
+function dsDeleted(next, label) {
+  if (next) dsToast(label, next);
+  return next;
 }
 
 // make(draft) → a new layout via lo* ops; a LoError is refused out loud. → the applied layout or null
@@ -102,9 +142,24 @@ function dsDiagram(spans) {
 
 // items: menu items, some with .spans. Opened with the public deMenu; its labels carry everything
 // (the split and any warning), so the picker works fully even without the diagrams.
-function dsOpenPicker(anchor, items, title) {
+// center: under the anchor (the add-row buttons), not the core's right-aligned placement
+function dsOpenPicker(anchor, items, title, center) {
   deMenu(anchor, items);
-  dsAddDiagrams(items, title);
+  const menu = dsAddDiagrams(items, title);
+  if (center && menu) dsCenterUnder(menu, anchor);
+}
+
+// centred under the anchor (above it when there's no room below), clamped to the viewport
+function dsCenterUnder(menu, anchor) {
+  const r = anchor.getBoundingClientRect();
+  const m = menu.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const x = r.left + r.width / 2 - m.width / 2;
+  let y = r.bottom + 4;
+  if (y + m.height > vh - 8) y = Math.max(8, r.top - m.height - 4);
+  menu.style.left = `${Math.max(8, Math.min(x, vw - m.width - 8))}px`;
+  menu.style.top = `${y}px`;
 }
 
 // Visual only: deMenu has no hook for item content, so the diagrams go into the menu it just
@@ -113,7 +168,7 @@ function dsOpenPicker(anchor, items, title) {
 function dsAddDiagrams(items, title) {
   const menus = document.querySelectorAll('body > .de-menu:not(.de-submenu)');
   const menu = menus[menus.length - 1];
-  if (!menu) return;
+  if (!menu) return null;
   menu.classList.add('ds-picker');
   menu.setAttribute('aria-label', title);
   const byLabel = new Map(items.filter((it) => it.spans).map((it) => [it.label, it.spans]));
@@ -124,13 +179,14 @@ function dsAddDiagrams(items, title) {
   // the diagrams widened it: keep it on screen (our own clamp, not the core's placement)
   const r = menu.getBoundingClientRect();
   if (r.right > window.innerWidth - 8) menu.style.left = `${Math.max(8, window.innerWidth - r.width - 8)}px`;
+  return menu;
 }
 
 // onPick(spans); current: the row's spans (Split) or null (Add row)
 function dsPicker(anchor, onPick, current, warn) {
   const items = DS_PRESETS.map(([spans, name]) => dsPickItem(spans, name, onPick, current, warn));
   items.push({ separator: true }, { label: 'Custom…', onSelect: () => dsCustomPicker(anchor, onPick, current, warn) });
-  dsOpenPicker(anchor, items, current ? 'Split row' : 'Add a row');
+  dsOpenPicker(anchor, items, current ? 'Split row' : 'Add a row', !current);
 }
 
 // warn(spans) → true: these spans would drop columns holding widgets (said in the label)
@@ -145,7 +201,7 @@ function dsPickItem(spans, name, onPick, current, warn) {
 
 function dsCustomPicker(anchor, onPick, current, warn) {
   const items = [1, 2, 3, 4, 5, 6].map((n) => dsPickItem(dsEqualSplit(n), `${n} column${n > 1 ? 's' : ''}`, onPick, current, warn));
-  dsOpenPicker(anchor, items, 'Number of columns');
+  dsOpenPicker(anchor, items, 'Number of columns', !current);
 }
 
 // ── rows ──
@@ -225,7 +281,8 @@ deMenuItems('row', (id) => {
       label: 'Delete row',
       danger: true,
       onSelect: () => {
-        const next = dsDo((L) => loRemoveRow(L, id), n ? `Row and its ${n} widget${n > 1 ? 's' : ''} deleted` : 'Row deleted');
+        const label = n ? `Row and its ${n} widget${n > 1 ? 's' : ''} deleted` : 'Row deleted';
+        const next = dsDeleted(dsDo((L) => loRemoveRow(L, id), label), label);
         if (!next) return;
         const after = loFind(next, p.container.id)?.node.rows?.[p.index];
         if (!(after && dsFocus(dsFor(`row:${after.id}`)))) dsFocus(`.ds-add-end[data-container-id="${CSS.escape(p.container.id)}"] > button`);
@@ -452,23 +509,60 @@ deMenuItems('section', (id) => {
   const sec = sections[index];
   const shown = !deNodeFor('section', id)?.classList.contains('collapsed');
   const n = dsWidgetCount(sec);
+  const widgets = `${n} widget${n > 1 ? 's' : ''}`;
   const del = () => {
-    const next = dsDo((L) => loRemoveSection(L, id), n ? `Section and its ${n} widget${n > 1 ? 's' : ''} deleted` : 'Section deleted');
+    const label = n ? `Section and its ${widgets} deleted` : 'Section deleted';
+    const next = dsDeleted(dsDo((L) => loRemoveSection(L, id), label), label);
     if (!next) return;
     const after = next.sections[Math.min(index, next.sections.length - 1)];
     if (!(after && dsFocus(dsFor(`section:${after.id}`)))) dsFocus('.ds-add-section-btn');
   };
+  const only = sections.length <= 1;
   return [
     { label: 'Rename', onSelect: () => dsRenameSection(id) },
     { label: 'Move section up', disabled: index === 0, onSelect: () => dsDo((L) => loMoveSection(L, id, index - 1), 'Section moved up') },
     { label: 'Move section down', disabled: index === sections.length - 1, onSelect: () => dsDo((L) => loMoveSection(L, id, index + 1), 'Section moved down') },
     { label: shown ? 'Collapse' : 'Expand', onSelect: () => dsSetCollapsed(id, shown) },
     { separator: true },
-    n
-      ? { label: `Delete section and its ${n} widget${n > 1 ? 's' : ''}`, danger: true, onSelect: del }
-      : { label: 'Delete section', danger: true, onSelect: del },
+    only
+      ? { label: 'Can’t delete the only section', disabled: true }
+      : n
+        ? { label: `Delete section and its ${widgets}…`, danger: true, onSelect: () => dsConfirmDeleteSection(sec, widgets, del) }
+        : { label: 'Delete section', danger: true, onSelect: del },
   ];
 });
+
+// "Delete “<title>” and its N widgets?" → onDelete (still one undoable edit)
+let dsConfirmClose = null;
+function dsConfirmDeleteSection(sec, widgets, onDelete) {
+  if (svModal) return;
+  const { dlg, close, mount } = openModal({
+    labelledBy: 'ds-del-title',
+    describedBy: 'ds-del-sub',
+    busy: () => false,
+    onClose: () => (dsConfirmClose = null),
+    fallbackFocus: () => $('dash-root')?.querySelector(dsFor(`section:${sec.id}`)),
+  });
+  dsConfirmClose = close;
+  const title = node('h2', 'sv-title', `Delete ${sec.title ? `“${sec.title}”` : 'this section'} and its ${widgets}?`);
+  title.id = 'ds-del-title';
+  const sub = node('p', 'sv-sub', 'The section and everything in it leave your draft. You can undo this.');
+  sub.id = 'ds-del-sub';
+  const foot = node('div', 'sv-foot');
+  const cancel = node('button', 'home-btn', 'Cancel');
+  cancel.type = 'button';
+  cancel.onclick = close;
+  const ok = node('button', 'home-btn pl-danger', 'Delete');
+  ok.type = 'button';
+  ok.onclick = () => {
+    close();
+    onDelete();
+  };
+  foot.append(node('span', 'sv-foot-note'), cancel, ok);
+  dlg.append(title, sub, foot);
+  mount();
+  cancel.focus();
+}
 
 // ── tabs ──
 
@@ -516,8 +610,11 @@ function dsAddTab(frame) {
   const sr = strip?.getBoundingClientRect();
   const x = lr ? lr.right - fr.left + 4 : (sr ? sr.left - fr.left : 16);
   const y = lr ? lr.top - fr.top : (sr ? sr.top - fr.top : 12);
+  const add = frame.querySelector(':scope > .ds-tab-add');
+  if (add) add.hidden = true; // the input takes its place
   dsTabInput(frame, x, y, lr?.height ?? 30, 140, 'New tab', 'New tab title', (title) => {
-    if (!title) return void (frame.isConnected && frame.querySelector('.ds-tab-add')?.focus());
+    if (add) add.hidden = false;
+    if (!title) return void (frame.isConnected && add?.focus());
     const next = dsDo((L) => loAddTab(L, widgetId, title), `Tab ${title} added`);
     const tabs = next && loFind(next, widgetId)?.node.params.tabs;
     const tabId = tabs?.[tabs.length - 1]?.id;
@@ -551,7 +648,8 @@ deMenuItems('tab', (id) => {
       danger: tabs.length > 1,
       disabled: tabs.length <= 1,
       onSelect: () => {
-        if (dsDo((L) => loRemoveTab(L, id), `Tab ${tabs[index].title} deleted`)) dsFocus(dsFor(`tabs:${widgetId}`));
+        const label = `Tab ${tabs[index].title} deleted`;
+        if (dsDeleted(dsDo((L) => loRemoveTab(L, id), label), label)) dsFocus(dsFor(`tabs:${widgetId}`));
       },
     },
   ];
@@ -635,10 +733,11 @@ function dsDecorate(root) {
     mo.observe(panel, { childList: true });
     dsObservers.set(panel, mo);
   }
-  // tabs widgets: + after the strip (on the frame, outside the tablist); F2 / double-click renames
+  // tabs widgets: + right after the last tab (on the frame, outside the tablist); F2 /
+  // double-click renames
   for (const frame of dsAll(root, '.dw-widget[data-widget-type="tabs"]')) {
     if (!frame.querySelector(':scope > .ds-tab-add')) {
-      const b = node('button', 'de-btn ds-tab-add');
+      const b = node('button', 'ds-tab-add');
       b.type = 'button';
       b.setAttribute('aria-label', 'Add tab');
       b.title = 'Add tab';
@@ -649,8 +748,12 @@ function dsDecorate(root) {
         e.stopPropagation();
         dsAddTab(frame);
       });
-      frame.append(b);
+      // after the body (which holds the tablist): next to the tabs in the focus order too
+      const body = frame.querySelector(':scope > .dw-body');
+      if (body) body.after(b);
+      else frame.append(b);
     }
+    dsTrackTabAdd(frame);
     for (const tab of frame.querySelectorAll('.dw-tab[data-tab-id]')) {
       if (tab.dataset.dsTab) continue;
       tab.dataset.dsTab = '1';
@@ -683,13 +786,61 @@ function dsDecorate(root) {
   }
 }
 
-// tab panel → its MutationObserver
+// The tab + sits just right of the last tab, kept clear of the frame's tab / widget handles
+// (a tab handle 22px wide at right: 36px). Re-placed whenever a tab or the strip changes size
+// or the strip scrolls.
+function dsPlaceTabAdd(frame) {
+  const b = frame.querySelector(':scope > .ds-tab-add');
+  const tabs = frame.querySelectorAll('.dw-tabs-strip > .dw-tab[data-tab-id]');
+  const last = tabs[tabs.length - 1];
+  if (!b || !last?.getClientRects().length) return;
+  const fr = frame.getBoundingClientRect();
+  const lr = last.getBoundingClientRect();
+  const bw = b.offsetWidth || 22;
+  const bh = b.offsetHeight || 22;
+  const x = Math.max(4, Math.min(lr.right - fr.left + 6, fr.width - 58 - 6 - bw));
+  b.style.left = `${x}px`;
+  b.style.top = `${lr.top - fr.top + (lr.height - bh) / 2}px`;
+}
+
+function dsTrackTabAdd(frame) {
+  const strip = frame.querySelector('.dw-tabs-strip');
+  const old = dsTabAddObs.get(frame);
+  if (old?.strip !== strip) {
+    old?.stop();
+    dsTabAddObs.delete(frame);
+    if (strip) {
+      const place = () => dsPlaceTabAdd(frame);
+      const ro = new ResizeObserver(place);
+      ro.observe(frame);
+      ro.observe(strip);
+      for (const tab of strip.querySelectorAll('.dw-tab')) ro.observe(tab);
+      strip.addEventListener('scroll', place, { passive: true });
+      dsTabAddObs.set(frame, {
+        strip,
+        stop: () => {
+          ro.disconnect();
+          strip.removeEventListener('scroll', place);
+        },
+      });
+    }
+  }
+  dsPlaceTabAdd(frame);
+}
+
+// tab panel → its MutationObserver; tabs frame → its + tracker ({ strip, stop })
 const dsObservers = new Map();
+const dsTabAddObs = new Map();
 function dsDisconnect(all) {
   for (const [panel, mo] of dsObservers) {
     if (!all && panel.isConnected) continue;
     mo.disconnect();
     dsObservers.delete(panel);
+  }
+  for (const [frame, o] of dsTabAddObs) {
+    if (!all && frame.isConnected) continue;
+    o.stop();
+    dsTabAddObs.delete(frame);
   }
 }
 
@@ -701,13 +852,14 @@ deOn('render', () => {
   dsDrag?.end(false);
   dsDisconnect(false);
 });
+// an edit after a delete (or its undo) retires that toast's Undo
+deOn('change', () => {
+  if (dsToastUndo && deState.draft !== dsToastUndo) dsToastHide();
+});
 deOn('exit', () => {
   dsDrag?.end(false);
   dsDisconnect(true);
-  clearTimeout(dsToastTimer);
-  const t = $('ds-toast');
-  if (t) {
-    t.classList.remove('show');
-    t.textContent = '';
-  }
+  dsConfirmClose?.();
+  dsToastHide();
+  $('ds-toast')?.replaceChildren();
 });
