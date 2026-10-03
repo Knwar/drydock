@@ -3,7 +3,7 @@
 // fbDrillCards, homeMeta, homeView, openCardModal, currentProject, projectId, activeView).
 //
 // Widget contract (widget-*.js files call dwRegister):
-//   dwRegister({ type, title, sizes: ['S','M','L','XL'] subset, load?(ctx) → Promise<data>,
+//   dwRegister({ type, title: string | (params) => string, sizes: ['S','M','L','XL'] subset, load?(ctx) → Promise<data>,
 //                render(el, data, ctx) → void | { empty: 'reason' }, onStatus?(msg, el, ctx) })
 //   ctx = { id, size, params, projectId, filters, shared(key, fetcher), refresh(), drillCards(opts), openCard(id, boardId?) }
 // shared() dedupes one fetch per refresh cycle; the 'home' key is pre-seeded with
@@ -261,7 +261,8 @@ function dwWidget(w) {
 
 function dwFrameTitle(inst) {
   const def = dwTypes.get(inst.w.type);
-  const t = inst.w.params?.title || (def ? def.title : inst.w.type);
+  const params = inst.w.params ?? {};
+  const t = params.title || (def ? (typeof def.title === 'function' ? def.title(params) : def.title) : inst.w.type);
   inst.title.textContent = t || '';
   inst.head.classList.toggle('hidden', !t);
   inst.ctx.size = dwSize(inst.w, def);

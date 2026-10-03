@@ -1,4 +1,4 @@
-/* Dashboard widget: kpi. A question, one prominent number, a quiet label, a status (icon + text). */
+/* Dashboard widget: kpi. One prominent number (the question is the frame title), a quiet label, a status (icon + text). */
 .kpi {
   display: flex;
   flex-direction: column;
@@ -6,14 +6,6 @@
   min-height: 100%;
   min-width: 0;
   font-variant-numeric: tabular-nums;
-}
-.kpi-q {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* headline */
