@@ -239,3 +239,16 @@ CREATE INDEX IF NOT EXISTS idx_decisions_project ON decisions(project_id, decide
 CREATE INDEX IF NOT EXISTS idx_risks_project ON risks(project_id);
 CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id, date);
 CREATE INDEX IF NOT EXISTS idx_governance_links_target ON governance_links(target_type, target_id);
+
+CREATE TABLE IF NOT EXISTS dashboard_layouts (  -- a board's saved dashboard; absent = the builtin default
+  project_id  TEXT PRIMARY KEY,
+  layout      TEXT NOT NULL,              -- JSON DashboardLayout
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dashboard_templates (  -- user-saved layouts (builtin templates are code, not rows)
+  id          TEXT PRIMARY KEY,           -- short id
+  name        TEXT NOT NULL,
+  layout      TEXT NOT NULL,              -- JSON DashboardLayout
+  created_at  INTEGER NOT NULL
+);
