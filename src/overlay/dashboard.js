@@ -12,7 +12,6 @@
 
 const DW_SIZES = ['S', 'M', 'L', 'XL'];
 const DW_ROW_PX = 88;
-const DW_NARROW = window.matchMedia('(max-width: 799px)');
 const dwTypes = new Map(); // type → registration
 const dw = {
   board: null, // the project the layout on screen belongs to
@@ -216,12 +215,8 @@ function dwRenderRows(host, rows, ctx) {
 }
 
 // ── widgets ──
-function dwSize(w, def) {
-  if (!DW_NARROW.matches || !def) return w.size;
-  // the nearest smaller tier the widget supports; none → the configured size
-  for (let i = DW_SIZES.indexOf(w.size) - 1; i >= 0; i--) if (def.sizes.includes(DW_SIZES[i])) return DW_SIZES[i];
-  return w.size;
-}
+// A widget renders at its configured size at every width: below 800px the slots stack
+// full width (CSS), so a widget has at least its desktop width there.
 
 function dwWidget(w) {
   const frame = node('div', 'dw-widget');
@@ -265,7 +260,7 @@ function dwFrameTitle(inst) {
   const t = params.title || (def ? (typeof def.title === 'function' ? def.title(params) : def.title) : inst.w.type);
   inst.title.textContent = t || '';
   inst.head.classList.toggle('hidden', !t);
-  inst.ctx.size = dwSize(inst.w, def);
+  inst.ctx.size = inst.w.size;
   inst.body.dataset.size = inst.ctx.size;
 }
 
@@ -352,12 +347,6 @@ async function dwLoad(inst, cache) {
 function dwPrune() {
   dw.instances = dw.instances.filter((i) => i.frame.isConnected);
 }
-
-// crossing 800px: slots stack (CSS) and widgets re-render one tier smaller, from their last data.
-// Off Home nothing renders: reopening Home re-fetches and re-renders the layout (dwOpen).
-DW_NARROW.addEventListener('change', () => {
-  if (dw.layout && activeView === 'home') dwRenderLayout();
-});
 
 // app.js may have opened Home before this file loaded (EARLY_VIEW): mount now, and if
 // that /home read already landed (its dwRefresh call was skipped) hand it to the widgets.
