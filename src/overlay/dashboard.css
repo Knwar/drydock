@@ -75,6 +75,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* per-widget filter overrides (params.vars): a quiet text chip */
+.dw-vars {
+  flex: none;
+  max-width: 55%;
+  padding: 1px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dw-vars:empty { display: none; }
 .dw-asof { flex: none; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .dw-asof:empty { display: none; }
 .dw-body {

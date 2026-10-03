@@ -266,6 +266,20 @@ dwRegister({
   type: 'kpi',
   title: (params) => KPI_METRICS[params.metric]?.q ?? '',
   sizes: ['S', 'M', 'L'],
+  params: [
+    {
+      key: 'metric',
+      label: 'Metric',
+      type: 'select',
+      options: [
+        { value: 'schedule', label: 'Schedule' },
+        { value: 'budget', label: 'Budget' },
+        { value: 'decisions', label: 'Decisions' },
+        { value: 'throughput', label: 'Throughput' },
+      ],
+      default: 'schedule',
+    },
+  ],
   load(ctx) {
     const m = KPI_METRICS[ctx.params.metric];
     if (!m) throw new Error(`Unknown KPI metric “${ctx.params.metric}”`);

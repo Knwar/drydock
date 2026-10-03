@@ -5415,6 +5415,7 @@ function homeReloadMeta() {
     if (hctx.lockScope) hctx.f.scope = hctx.lockScope;
     if (activeView !== 'home') return;
     renderHome();
+    if (typeof dwRetitle === 'function') dwRetitle(); // widgets' override chips name phases / boards now
   });
 }
 async function homeMeta() {
