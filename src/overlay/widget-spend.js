@@ -54,10 +54,11 @@ function spMoneyFmt(values) {
 function spSpark(values) {
   const W = 300;
   const H = 34;
-  const max = Math.max(...values, 1);
+  // the data's own min–max, so small changes show; all values equal → a flat line mid-height
+  const max = Math.max(...values);
   const min = Math.min(...values);
   const x = (i) => 4 + (i * (W - 8)) / (values.length - 1);
-  const y = (v) => H - 4 - ((v - min) * (H - 10)) / Math.max(1, max - min);
+  const y = (v) => (max === min ? H / 2 : H - 4 - ((v - min) * (H - 10)) / (max - min));
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', 'aria-hidden': 'true', class: 'sp-spark-svg' });
   const lx = x(values.length - 1).toFixed(1);
   const ly = y(values[values.length - 1]).toFixed(1);
@@ -346,13 +347,13 @@ function spMixRender(el, d, ctx) {
     const pol = t === 'none' ? -1 : 0; // less unclassified is better; the rest is a judgment call
     if (L) {
       const cell = node('td', 'sp-col-d');
-      cell.append(spPtsChip(d.spend.total && prev?.spend.total ? s : null, prev?.spend.total ? ps : null, pol, `${label} share of spend`, cmp, partial, !pw));
+      if (!prev || prev.spend.total) cell.append(spPtsChip(d.spend.total && prev?.spend.total ? s : null, prev?.spend.total ? ps : null, pol, `${label} share of spend`, cmp, partial, !pw));
       tr.append(cell);
     }
     tr.append(node('td', '', t === 'deleted' ? '' : d.done ? spPct(c) : '—'));
     if (L) {
       const cell = node('td', 'sp-col-d');
-      if (t !== 'deleted') cell.append(spPtsChip(d.done && prev?.cards.total ? c : null, prev?.cards.total ? pc : null, pol, `${label} share of cards done`, cmp, partial, !pw));
+      if (t !== 'deleted' && (!prev || prev.cards.total)) cell.append(spPtsChip(d.done && prev?.cards.total ? c : null, prev?.cards.total ? pc : null, pol, `${label} share of cards done`, cmp, partial, !pw));
       tr.append(cell);
     }
     tbody.append(tr);
@@ -365,6 +366,9 @@ function spMixRender(el, d, ctx) {
     if (cmp.title) note.title = cmp.title;
     el.append(note);
   }
+  // a previous window with nothing in it: say so once, muted, instead of a column of bare "—" chips
+  const noPrev = L && prev ? [!prev.spend.total && 'spend', !prev.cards.total && 'cards done'].filter(Boolean) : [];
+  if (noPrev.length) el.append(node('div', 'sp-note', `No previous data (${noPrev.join(', ')}) ${cmp.label || 'in the previous period'}`));
 }
 
 // ── budget-burn: "Will we finish within budget?" ──

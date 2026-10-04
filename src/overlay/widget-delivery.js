@@ -219,7 +219,7 @@ function dlTargetCell(p) {
     return cell;
   }
   cell.append(node('span', 'dl-v', p.p85 ? dlDay(p.p85) : '—'));
-  if (!p.target_date) cell.append(node('span', 'dl-sub', p.p85 ? 'no target' : `no target · ${dlNoForecast(p)}`));
+  if (!p.target_date) cell.append(node('span', 'dl-sub', 'no target')); // said once (the reason is "no target date")
   else if (!p.p85) cell.append(node('span', 'dl-sub', `target ${dlDay(p.target_date)} · no forecast: ${dlNoForecast(p)}`));
   else {
     const d = dlDiff(p.target_date, p.p85);
@@ -269,7 +269,8 @@ function dlHealthRender(el, d, ctx) {
     const name = node('span', 'dl-cell dl-c-name');
     name.append(node('span', 'dl-name', p.title));
     if (ctx.size === 'XL') {
-      const sub = [dlText(p.reason), r.blockers ? mxPlural(r.blockers, 'open blocker') : null].filter(Boolean).join(' · ');
+      // a missing target is already the target cell's "no target"
+      const sub = [p.target_date ? dlText(p.reason) : null, r.blockers ? mxPlural(r.blockers, 'open blocker') : null].filter(Boolean).join(' · ');
       if (sub) name.append(node('span', 'dl-sub dl-reason', sub));
     }
     const slip = node('span', 'dl-cell dl-c-slip');
@@ -618,11 +619,11 @@ async function dlGateLoad(ctx) {
     {
       ok: !high.length,
       warn: !high.length && mitigated.length > 0,
-      label: 'No open high risk',
+      label: `No unmitigated high risk (score ≥\u00a0${DL_HIGH_RISK})`,
       detail: high.length
         ? `${mxPlural(high.length, 'open risk')} score ${DL_HIGH_RISK}+ with no mitigation`
         : mitigated.length
-          ? `${mxPlural(mitigated.length, 'open risk')} score ${DL_HIGH_RISK}+, mitigated`
+          ? `${mitigated.length} open high risk${mitigated.length === 1 ? '' : 's'}, mitigated`
           : `${mxPlural(risks.length, 'linked risk')}, none open and high`,
       title: DL_RISK_RULE,
       list: [...high, ...mitigated].map((r) => ({ text: `${r.title} · score ${r.likelihood * r.impact}${dlHighRisk(r) === 'warn' ? ' · mitigated, still open' : ''}` })),
