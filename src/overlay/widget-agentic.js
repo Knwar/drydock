@@ -5,7 +5,7 @@
 // batch-size widget with a non-default threshold reads its own). Each title states the question; status
 // is always an icon + text with its thresholds written in the tooltip, never colour alone. Every widget
 // head carries a small "Experimental" note. Sizes: S = headline + chip; M = + trend / split; L = + breakdown.
-//   autonomy-index      % of done cards that needed no human (no blocker raised, no redirect)
+//   autonomy-index      % of done cards that needed no human (no blocker raised, no redirect, no reopen)
 //   agent-stops         agent self-stops (blockers) vs human interrupts (redirects + reopens)
 //   batch-size          % of done cards over N lines changed (param threshold, default 200) + the median
 //   spec-adherence      % of done cards with every criterion checked AND a first-pass review
@@ -41,6 +41,17 @@ const agPct = (r) => (r === null || r === undefined ? '—' : `${Math.round(r * 
 const agPts = (m) => `${Math.round(m * 100)} pts`;
 const agRound = (r) => Math.round(r * 100); // thresholds judge the shown (rounded) percent
 const agLines = (n) => `${Math.round(n).toLocaleString()} lines`;
+// an empty state's period: "in this period" for a range, "yet" for all time (no from)
+const agWhen = (ctx) => (agFilters(ctx).from ? 'in this period' : 'yet');
+
+// The period a read covers, for a drill's subtitle: "Last 4 weeks · Sep 7 – Oct 4", "All time · …", or a
+// custom range's dates. win: the response's range ({ from, to } epoch ms).
+function agPeriod(ctx, win) {
+  const r = ctx.range;
+  const name = r?.name ? `Last ${r.name}` : r?.id === 'all' ? 'All time' : '';
+  const dates = win?.from != null && win?.to != null ? dwDays(win.from, win.to) : '';
+  return [name, dates].filter(Boolean).join(' · ');
+}
 
 // "vs previous 4 weeks" chip for the read's previous period (grey for all time; "No full previous
 // period" when that period starts before the board's first activity). kind 'pts': no % (a change in
@@ -88,11 +99,27 @@ function agPreNote(pre) {
   return pre.some(Boolean) ? node('div', 'ag-axis', 'grey: before the board’s first activity') : null;
 }
 
-// Inline SVG sparkline over 0..1 rates; null weeks are gaps, pre-history weeks a grey band.
-function agRateSpark(values, pre, { tall = false } = {}) {
+// Inline SVG sparkline over 0..1 rates; null weeks are gaps, pre-history weeks a grey band. Its y axis is
+// labelled 100% / 0 at the gridlines (fill: the chart grows into an L widget's free height).
+function agRateSpark(values, pre, { tall = false, fill = false } = {}) {
+  const wrap = node('div', `ag-spark-wrap${fill ? ' ag-fill' : ''}`);
+  const axis = node('div', 'ag-yaxis');
+  axis.setAttribute('aria-hidden', 'true');
+  // each label centred on its gridline (the SVG's pad, as a share of its stretched height)
+  const at = `${((AG_SPARK_PAD / (tall ? 56 : 36)) * 100).toFixed(2)}%`;
+  const top = node('span', '', '100%');
+  top.style.top = at;
+  const bottom = node('span', '', '0');
+  bottom.style.bottom = at;
+  axis.append(top, bottom);
+  wrap.append(axis, agRateSvg(values, pre, { tall }));
+  return wrap;
+}
+const AG_SPARK_PAD = 4;
+function agRateSvg(values, pre, { tall = false } = {}) {
   const W = 240;
   const H = tall ? 56 : 36;
-  const pad = 4;
+  const pad = AG_SPARK_PAD;
   const n = values.length;
   const step = n > 1 ? (W - 2 * pad) / (n - 1) : 0;
   const x = (i) => pad + (n === 1 ? (W - 2 * pad) / 2 : i * step);
@@ -120,14 +147,15 @@ function agRateSpark(values, pre, { tall = false } = {}) {
 }
 
 // Paired weekly bars (agent | human) on one count scale; pre-history weeks are grey stubs.
-function agPairBars(weeks, pre, { tall = false } = {}) {
+// fill: the bars grow into an L widget's free height.
+function agPairBars(weeks, pre, { tall = false, fill = false } = {}) {
   const W = 240;
   const H = tall ? 64 : 36;
   const n = weeks.length;
   const max = Math.max(1, ...weeks.map((w) => Math.max(w.agent, w.human)));
   const slot = W / Math.max(1, n);
   const bw = Math.max(1, slot * 0.36);
-  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', class: tall ? 'ag-bars ag-bars-tall' : 'ag-bars', 'aria-hidden': 'true' });
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', class: `${tall ? 'ag-bars ag-bars-tall' : 'ag-bars'}${fill ? ' ag-fill' : ''}`, 'aria-hidden': 'true' });
   svg.append(svgEl('line', { x1: 0, x2: W, y1: H - 0.5, y2: H - 0.5, class: 'ag-grid' }));
   weeks.forEach((w, i) => {
     const x0 = i * slot + (slot - 2 * bw) / 2;
@@ -146,7 +174,8 @@ function agPairBars(weeks, pre, { tall = false } = {}) {
 }
 
 // Done cards ({ id, title, doneAt }) → drill rows (the card list's fields when the card is known to Home).
-async function agDrill(ctx, items, kicker, title, btn) {
+// opts: { range (the subtitle's period, agPeriod), order (the list's own order, e.g. 'Largest first': the drill's default sort) }
+async function agDrill(ctx, items, kicker, title, btn, opts = {}) {
   if (btn) btn.disabled = true;
   try {
     const meta = await homeMeta();
@@ -156,7 +185,7 @@ async function agDrill(ctx, items, kicker, title, btn) {
       // lane_since: when it was done (in the read's window), never the card list's latest move
       return { ...(c ?? {}), id: it.id, title: it.title, board: c?.board ?? project, lane: c?.lane ?? 'done', lane_since: it.doneAt };
     });
-    await ctx.drillCards({ kicker, title, cards });
+    await ctx.drillCards({ kicker, title, cards, ...(opts.range ? { range: opts.range } : {}), ...(opts.order ? { order: opts.order } : {}) });
   } catch (e) {
     console.error('agentic drill', e);
   } finally {
@@ -179,11 +208,11 @@ function agLinkBtn(text, title, onclick) {
 
 // ── autonomy-index: "How autonomous are the agents?" ──
 const AG_AUTONOMY_RULE =
-  'Thresholds: Green ≥ 70% · Amber 50–70% · Red < 50% of done cards needing no human. A card needed a human when a blocker was raised on it or it was redirected, at any point in its life.';
+  'Thresholds: Green ≥ 70% · Amber 50–70% · Red < 50% of done cards needing no human. A card needed a human when a blocker was raised on it, it was redirected, or it was reopened (moved back from review or done, not after a failed review), at any point in its life.';
 
 function agAutonomyRender(el, d, ctx) {
   const a = d.r.autonomy;
-  if (!a.done) return { empty: 'No cards done in this period: autonomy is measured on done cards' };
+  if (!a.done) return { empty: `No cards done ${agWhen(ctx)}: autonomy is measured on done cards` };
   const p = agRound(a.pct);
   el.append(agFigure(agPct(a.pct), `of ${mxPlural(a.done, 'done card')} needed no human`, agChip(d, ctx, 'Autonomy index', 1, agPts, a.pct, d.r.previous?.autonomy?.pct, 'pts')));
   const [kind, text] = p >= 70 ? ['ok', 'Green: 70% or more autonomous'] : p >= 50 ? ['warn', 'Amber: 50–70% autonomous'] : ['bad', 'Red: under 50% autonomous'];
@@ -191,12 +220,14 @@ function agAutonomyRender(el, d, ctx) {
   if (ctx.size === 'S') return;
 
   const det = agDetail();
-  const weeks = a.weekly.slice(ctx.size === 'L' ? -12 : -8);
+  const L = ctx.size === 'L';
+  if (L) det.classList.add('ag-fill');
+  const weeks = a.weekly.slice(L ? -12 : -8);
   const pre = agPre(weeks, d.since);
-  const box = node('div', 'ag-chart');
+  const box = node('div', `ag-chart${L ? ' ag-fill' : ''}`);
   box.setAttribute('role', 'img');
   box.setAttribute('aria-label', `Weekly autonomy: ${weeks.map((w, i) => `week of ${dwDay(w.start)} ${pre[i] ? 'before the board’s first activity' : w.pct === null ? 'no cards done' : agPct(w.pct)}`).join(', ')}`);
-  box.append(agWeekHead('weekly autonomy', weeks), agRateSpark(weeks.map((w) => w.pct), pre, { tall: ctx.size === 'L' }));
+  box.append(agWeekHead('weekly autonomy', weeks), agRateSpark(weeks.map((w) => w.pct), pre, { tall: L, fill: L }));
   const note = agPreNote(pre);
   if (note) box.append(note);
   det.append(box);
@@ -209,7 +240,9 @@ function agAutonomyRender(el, d, ctx) {
     const list = a.needsHuman;
     if (list.length) {
       const title = list.length < human ? `newest ${list.length} of ${human} cards` : mxPlural(list.length, 'card');
-      const open = agLinkBtn(`${human} needed a human`, 'Open the cards that needed a human (a blocker raised or a redirect)', () => agDrill(ctx, list, 'NEEDED A HUMAN', title, open));
+      const open = agLinkBtn(`${human} needed a human`, 'Open the cards that needed a human (a blocker raised, a redirect or a reopen)', () =>
+        agDrill(ctx, list, 'NEEDED A HUMAN', title, open, { range: agPeriod(ctx, d.r.range), order: 'Newest done first' }),
+      );
       row.append(open);
     } else row.append(node('span', 'ag-v', `${human} needed a human`));
     det.append(row);
@@ -223,27 +256,29 @@ const AG_STOPS_RULE =
 
 function agStopsRender(el, d, ctx) {
   const s = d.r.stops;
-  if (!s.agent && !s.human) return { empty: 'No stops in this period: no blockers raised, no redirects or reopens' };
+  if (!s.agent && !s.human) return { empty: `No stops ${agWhen(ctx)}: no blockers raised, no redirects or reopens` };
   const prev = d.r.previous?.stops;
   const value = s.ratio === null ? String(s.agent) : `${s.ratio.toFixed(1)}×`;
   const label = s.ratio === null ? `${s.agent === 1 ? 'self-stop' : 'self-stops'}, no human interrupts` : 'agent self-stops per human interrupt';
-  el.append(agFigure(value, label, agChip(d, ctx, 'Self-stops per interrupt', 1, (m) => m.toFixed(1), s.ratio, prev?.ratio ?? null, 'pts')));
+  el.append(agFigure(value, label, agChip(d, ctx, 'Self-stops per interrupt', 1, (m) => `${m.toFixed(1)}×`, s.ratio, prev?.ratio ?? null, 'pts')));
   el.append(s.agent >= s.human ? agStatus('ok', 'Healthy: self-stops ≥ interrupts', AG_STOPS_RULE) : agStatus('warn', 'Interrupts outnumber self-stops', AG_STOPS_RULE));
   if (ctx.size === 'S') return;
 
   const det = agDetail();
+  const L = ctx.size === 'L';
+  if (L) det.classList.add('ag-fill');
   const counts = node('div', 'ag-figs');
   counts.append(
     agFigure(String(s.agent), 'agent self-stops', agChip(d, ctx, 'Agent self-stops', 0, String, s.agent, prev?.agent ?? null), 'ag-fig-sm'),
     agFigure(String(s.human), 'human interrupts', agChip(d, ctx, 'Human interrupts', -1, String, s.human, prev?.human ?? null), 'ag-fig-sm'),
   );
   det.append(counts);
-  const weeks = s.weekly.slice(ctx.size === 'L' ? -12 : -8);
+  const weeks = s.weekly.slice(L ? -12 : -8);
   const pre = agPre(weeks, d.since);
-  const box = node('div', 'ag-chart');
+  const box = node('div', `ag-chart${L ? ' ag-fill' : ''}`);
   box.setAttribute('role', 'img');
   box.setAttribute('aria-label', `Weekly stops: ${weeks.map((w, i) => `week of ${dwDay(w.start)} ${pre[i] ? 'before the board’s first activity' : `${w.agent} self-stops, ${w.human} interrupts`}`).join('; ')}`);
-  box.append(agWeekHead('weekly stops', weeks), agPairBars(weeks, pre, { tall: ctx.size === 'L' }));
+  box.append(agWeekHead('weekly stops', weeks), agPairBars(weeks, pre, { tall: L, fill: L }));
   const legend = node('div', 'ag-legend');
   legend.append(node('span', 'ag-lg ag-lg-agent', 'Self-stops'), node('span', 'ag-lg ag-lg-human', 'Interrupts'));
   const note = agPreNote(pre);
@@ -267,20 +302,22 @@ const agBatchRule = (t) => `Thresholds: Green under 20% · Amber 20–40% · Red
 function agBatchRender(el, d, ctx) {
   const b = d.r.batch;
   const done = d.r.autonomy.done;
-  if (!done) return { empty: 'No cards done in this period: batch size is measured on done cards' };
-  if (!b.cards) return { empty: `No line data for the ${mxPlural(done, 'done card')} in this period` };
+  if (!done) return { empty: `No cards done ${agWhen(ctx)}: batch size is measured on done cards` };
+  if (!b.cards) return { empty: `No line data for the ${mxPlural(done, 'done card')} ${agFilters(ctx).from ? 'in this period' : 'so far'}` };
   const prev = d.r.previous?.batch;
   const figs = node('div', 'ag-figs');
   figs.append(
     agFigure(agPct(b.pctOver), `of ${mxPlural(b.cards, 'card')} over ${b.threshold} lines`, agChip(d, ctx, `Share of cards over ${b.threshold} lines`, -1, agPts, b.pctOver, prev?.pctOver ?? null, 'pts')),
-    agFigure(b.median === null ? '—' : String(Math.round(b.median)), 'median lines changed', agChip(d, ctx, 'Median lines changed', -1, (m) => String(Math.round(m)), b.median, prev?.median ?? null)),
+    // S: the median's chip is left out (a tight S has no room for a second caption line)
+    agFigure(b.median === null ? '—' : String(Math.round(b.median)), 'median lines changed', ctx.size === 'S' ? null : agChip(d, ctx, 'Median lines changed', -1, (m) => String(Math.round(m)), b.median, prev?.median ?? null)),
   );
   el.append(figs);
   const p = agRound(b.pctOver);
   const [kind, text] = p < 20 ? ['ok', 'Green: under 20% oversized'] : p <= 40 ? ['warn', 'Amber: 20–40% oversized'] : ['bad', 'Red: over 40% oversized'];
-  el.append(agStatus(kind, text, agBatchRule(b.threshold)));
-  if (b.noData) el.append(node('div', 'ag-note', `${mxPlural(b.noData, 'done card')} had no line data (left out)`));
-  if (ctx.size === 'S') return;
+  const noData = b.noData ? `${mxPlural(b.noData, 'done card')} had no line data (left out)` : '';
+  el.append(agStatus(kind, text, [agBatchRule(b.threshold), noData].filter(Boolean).join('\n')));
+  if (ctx.size === 'S') return; // the no-line-data count rides in the status tooltip
+  if (noData) el.append(node('div', 'ag-note', noData));
 
   const det = agDetail();
   const split = node('div', 'ag-chart');
@@ -300,7 +337,9 @@ function agBatchRender(el, d, ctx) {
   if (ctx.size === 'L' && b.top.length) {
     const head = node('div', 'ag-k-row');
     head.append(node('span', 'ag-k', `largest ${b.top.length === 1 ? 'card' : `${b.top.length} cards`}`));
-    const open = agLinkBtn('Open list', 'Open these cards in a list', () => agDrill(ctx, b.top, 'LARGEST CHANGES', mxPlural(b.top.length, 'card'), open));
+    const open = agLinkBtn('Open list', 'Open these cards in a list', () =>
+      agDrill(ctx, b.top, 'LARGEST CHANGES', mxPlural(b.top.length, 'card'), open, { range: agPeriod(ctx, d.r.range), order: 'Largest first' }),
+    );
     head.append(open);
     const list = node('ul', 'ag-list');
     for (const c of b.top) {
@@ -321,10 +360,18 @@ function agBatchRender(el, d, ctx) {
 // ── spec-adherence: "Do agents build to spec?" ──
 const AG_SPEC_RULE =
   'Thresholds: Green ≥ 80% · Amber 60–80% · Red < 60% of done cards built to spec: at least one acceptance criterion, all of them checked, and a first review that passed.';
+const AG_SPEC_NONE = 'None of these done cards has acceptance criteria, so there is nothing to judge them against: write criteria on the cards (the subtasks) to measure spec adherence.';
 
 function agSpecRender(el, d, ctx) {
   const s = d.r.specAdherence;
-  if (!s.done) return { empty: 'No cards done in this period: spec adherence is measured on done cards' };
+  if (!s.done) return { empty: `No cards done ${agWhen(ctx)}: spec adherence is measured on done cards` };
+  const crit = s.byPhase.reduce((t, ph) => ({ total: t.total + ph.criteria.total, checked: t.checked + ph.criteria.checked }), { total: 0, checked: 0 });
+  if (!crit.total) {
+    // no criteria anywhere: nothing to judge, a neutral state (never Red 0%)
+    el.append(agFigure('—', `${mxPlural(s.done, 'done card')}, none with acceptance criteria`, null), agStatus('none', 'No acceptance criteria written', AG_SPEC_NONE));
+    if (ctx.size !== 'S') el.append(node('p', 'ag-note', 'Write acceptance criteria on cards (their subtasks) to measure whether agents build to spec.'));
+    return;
+  }
   el.append(agFigure(agPct(s.pct), `of ${mxPlural(s.done, 'done card')} met spec`, agChip(d, ctx, 'Spec adherence', 1, agPts, s.pct, d.r.previous?.specAdherence?.pct, 'pts')));
   const p = agRound(s.pct);
   const [kind, text] = p >= 80 ? ['ok', 'Green: 80% or more to spec'] : p >= 60 ? ['warn', 'Amber: 60–80% to spec'] : ['bad', 'Red: under 60% to spec'];
@@ -332,14 +379,14 @@ function agSpecRender(el, d, ctx) {
   if (ctx.size === 'S') return;
 
   const det = agDetail();
-  const crit = s.byPhase.reduce((t, ph) => ({ total: t.total + ph.criteria.total, checked: t.checked + ph.criteria.checked }), { total: 0, checked: 0 });
   const reviewed = s.byPhase.reduce((t, ph) => t + ph.reviewed, 0);
   const passed = s.byPhase.reduce((t, ph) => t + (ph.firstPassRate === null ? 0 : Math.round(ph.firstPassRate * ph.reviewed)), 0);
   const figs = node('div', 'ag-figs');
   figs.append(
     agFigure(crit.total ? agPct(crit.checked / crit.total) : '—', crit.total ? `criteria checked · ${crit.checked} of ${crit.total}` : 'no acceptance criteria', null, 'ag-fig-sm'),
-    agFigure(reviewed ? agPct(passed / reviewed) : '—', reviewed ? `first-pass · ${mxPlural(reviewed, 'card')} reviewed` : 'no reviews', null, 'ag-fig-sm'),
+    agFigure(reviewed ? agPct(passed / reviewed) : '—', reviewed ? `first-pass on done cards · ${mxPlural(reviewed, 'card')} reviewed` : 'no reviews of the done cards', null, 'ag-fig-sm'),
   );
+  figs.lastChild.title = 'The share of this period’s reviewed done cards whose first review passed. Only done cards count, so it can differ from the Quality widget’s first-pass rate.';
   det.append(figs);
 
   if (ctx.size === 'L') {
@@ -372,7 +419,7 @@ const AG_RISKY_RULE = 'Thresholds: Green with no risky command · Red with any (
 function agGovRender(el, d, ctx) {
   const g = d.r.governance;
   const prev = d.r.previous?.governance;
-  if (!g.decisionLinked.done && !g.toolEvents.total) return { empty: 'No done cards or agent tool events in this period' };
+  if (!g.decisionLinked.done && !g.toolEvents.total) return { empty: `No done cards or agent tool events ${agWhen(ctx)}` };
   const figs = node('div', 'ag-figs');
   figs.append(
     agFigure(agPct(g.toolEvents.tiedPct), g.toolEvents.total ? `agent actions tied to a card · ${g.toolEvents.tied} of ${g.toolEvents.total}` : 'no agent actions recorded', agChip(d, ctx, 'Agent actions tied to a card', 1, agPts, g.toolEvents.tiedPct, prev?.tiedPct ?? null, 'pts')),
@@ -393,13 +440,16 @@ function agGovRender(el, d, ctx) {
 
   const det = agDetail();
   if (ctx.size === 'L' && risky.byPattern) {
+    // L: the patterns as rows under their own head (fills the L widget's height rather than one dense line)
+    const box = node('div', 'ag-patterns-box');
     const list = node('ul', 'ag-patterns');
     for (const [name, n] of Object.entries(risky.byPattern)) {
       const li = node('li', n ? 'ag-pat ag-pat-hit' : 'ag-pat');
-      li.append(node('code', '', name), node('span', '', String(n)));
+      li.append(node('code', '', name), node('span', '', n ? `${n} ran` : 'none'));
       list.append(li);
     }
-    det.append(list);
+    box.append(node('span', 'ag-k', 'risky commands by pattern'), list);
+    det.append(box);
   }
   det.append(node('p', 'ag-note', g.toolEvents.note));
   if (ctx.size === 'L' && risky.caveat) det.append(node('p', 'ag-note ag-caveat', risky.caveat)); // also in the status tooltip

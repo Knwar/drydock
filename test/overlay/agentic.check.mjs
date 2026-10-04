@@ -192,7 +192,41 @@ try {
     }
   for (const t of ['autonomy-index', 'agent-stops']) ok(!by(w4, t, 'S').spark && by(w4, t, 'M').spark && by(w4, t, 'L').spark, `${t}: weekly trend at M and L, not S`);
   ok(by(w4, 'batch-size', 'L').list > 0 && by(w4, 'batch-size', 'L').list <= 5 && by(w4, 'batch-size', 'M').list === 0, 'batch-size: L lists the top (≤ 5) largest cards, M does not', by(w4, 'batch-size', 'L').list);
-  ok(/had no line data/.test(by(w4, 'batch-size', 'S').text), 'batch-size: says how many done cards had no line data', by(w4, 'batch-size', 'S').text);
+  // S has no room for the note (a tight S drops its second caption line): the count rides in the status tooltip; M shows it
+  ok(!/had no line data/.test(by(w4, 'batch-size', 'S').text) && /had no line data/.test(by(w4, 'batch-size', 'S').status[0].title), 'batch-size S: the no-line-data count is in the status tooltip, not a body line', by(w4, 'batch-size', 'S'));
+  ok(/had no line data/.test(by(w4, 'batch-size', 'M').text), 'batch-size M: says how many done cards had no line data', by(w4, 'batch-size', 'M').text);
+  ok(by(w4, 'batch-size', 'S').chips.length === 1 && by(w4, 'batch-size', 'M').chips.length === 2, 'batch-size S: the median drops its chip (one caption line); M keeps both', [by(w4, 'batch-size', 'S').chips.length, by(w4, 'batch-size', 'M').chips.length]);
+  ok(/first-pass on done cards/.test(by(w4, 'spec-adherence', 'M').text), 'spec-adherence M: the first-pass figure is "first-pass on done cards" (not quality’s first-pass rate)', by(w4, 'spec-adherence', 'M').text);
+  ok(/reopen/.test(by(w4, 'autonomy-index', 'M').status[0].title), 'autonomy-index: the rule names reopens as needing a human', by(w4, 'autonomy-index', 'M').status[0].title);
+  const axis = await page.$$eval('.dw-widget[data-widget-id^="autonomy-index-"] .ag-yaxis', (els) => els.map((e) => e.innerText.replace(/\n+/g, ' / ')));
+  ok(axis.length === 2 && axis.every((t) => t === '100% / 0'), 'autonomy-index M / L: the sparkline axis is labelled 100% / 0', axis);
+  // L: the trend grows into the free height (no empty half of a widget), and nothing overflows
+  const fill = await page.evaluate(() => {
+    const h = (id, sel) => document.querySelector(`.dw-widget[data-widget-id="${id}"] ${sel}`)?.getBoundingClientRect().height ?? 0;
+    const over = (id) => {
+      const b = document.querySelector(`.dw-widget[data-widget-id="${id}"] .dw-body`);
+      return b.scrollHeight - b.clientHeight;
+    };
+    return { autoM: h('autonomy-index-M', '.ag-spark'), autoL: h('autonomy-index-L', '.ag-spark'), stopsM: h('agent-stops-M', '.ag-bars'), stopsL: h('agent-stops-L', '.ag-bars'), overAuto: over('autonomy-index-L'), overStops: over('agent-stops-L'), overGov: over('governance-posture-L') };
+  });
+  ok(fill.autoL > 2 * fill.autoM && fill.stopsL > 2 * fill.stopsM && fill.overAuto <= 1 && fill.overStops <= 1 && fill.overGov <= 1, 'autonomy / stops L: the trend fills the free height, nothing scrolls (governance L too)', fill);
+  const stopChip = by(w4, 'agent-stops', 'S').chips[0];
+  ok(stopChip.flat || stopChip.text.includes('×'), 'agent-stops: the ratio chip is in × (a ratio unit)', stopChip);
+  // in-page: the states this seed doesn't reach (no criteria anywhere; an all-time empty board says "yet")
+  const states = await page.evaluate(() => {
+    const el = () => document.createElement('div');
+    const ctx = (size, from) => ({ size, filters: from ? `from=${from}` : '', projectId: 'x', params: {} });
+    const spec = el();
+    agSpecRender(spec, { r: { specAdherence: { done: 3, pct: 0, byPhase: [{ phase_id: null, title: null, cards: 3, adherent: 0, criteria: { total: 0, checked: 0 }, reviewed: 2, firstPassRate: 0.5 }] }, previous: null } }, ctx('M'));
+    const st = spec.querySelector('.ag-status');
+    return {
+      spec: { text: spec.innerText, kind: st?.className, icon: st?.querySelector('.ag-ico')?.textContent },
+      yet: agAutonomyRender(el(), { r: { autonomy: { done: 0 } } }, ctx('M'))?.empty,
+      period: agAutonomyRender(el(), { r: { autonomy: { done: 0 } } }, ctx('M', 1))?.empty,
+    };
+  });
+  ok(/No acceptance criteria written/.test(states.spec.text) && /ag-none/.test(states.spec.kind) && !/Red|0%/.test(states.spec.text), 'spec-adherence (no criteria on any card): a neutral "No acceptance criteria written", not Red 0%', states.spec);
+  ok(/^No cards done yet/.test(states.yet) && /^No cards done in this period/.test(states.period), 'empty copy: "yet" for all time, "in this period" for a range', states);
   ok(by(w4, 'spec-adherence', 'L').table > 0 && by(w4, 'spec-adherence', 'M').table === 0, 'spec-adherence: L adds the per-phase table');
   ok(by(w4, 'governance-posture', 'L').patterns === 6, 'governance-posture: L breaks risky commands down by pattern');
   const risky = by(w4, 'governance-posture', 'M').status[0];
@@ -204,11 +238,20 @@ try {
 
   // ---- drill: batch-size L "Open list" opens the largest cards ----
   const n = by(w4, 'batch-size', 'L').list;
+  const listed = await page.$$eval('.dw-widget[data-widget-id="batch-size-L"] .ag-list .ag-item-title', (els) => els.map((e) => e.textContent));
   await page.click('.dw-widget[data-widget-id="batch-size-L"] .ag-link');
   await page.waitForSelector('.mx-drill', { timeout: 10000 });
-  const drill = await page.$eval('.mx-drill', (p) => ({ kicker: p.querySelector('.mx-kicker')?.textContent, rows: p.querySelectorAll('.mx-drill-row').length }));
+  const drill = await page.$eval('.mx-drill', (p) => ({
+    kicker: p.querySelector('.mx-kicker')?.textContent,
+    rows: p.querySelectorAll('.mx-drill-row').length,
+    sub: p.querySelector('.mx-drill-sub')?.textContent ?? '',
+    sort: p.querySelector('.mx-drill-tools select')?.selectedOptions[0]?.textContent ?? '',
+    titles: [...p.querySelectorAll('.mx-drill-row .mx-drill-title')].map((e) => e.textContent),
+  }));
   if (OUT) await page.screenshot({ path: `${OUT}/drill-batch.png` });
   ok(drill.kicker === 'LARGEST CHANGES' && drill.rows === n, 'batch-size drill: opens the largest cards', { drill, n });
+  ok(/^Last 4 weeks · /.test(drill.sub), 'batch-size drill: the subtitle names the period', drill.sub);
+  ok(drill.sort === 'Largest first' && JSON.stringify(drill.titles) === JSON.stringify(listed), 'batch-size drill: in the widget’s order (largest first) by default', { drill, listed });
   await page.keyboard.press('Escape');
 
   // ---- drill: autonomy-index L "N needed a human" opens those cards ----
@@ -220,6 +263,8 @@ try {
   // rows carry each card's done time (lane_since = doneAt), not one shared "done today"
   const hDays = await page.$$eval('.mx-drill .mx-drill-row .mx-drill-meta', (els) => new Set(els.map((e) => e.textContent.match(/done [A-Z][a-z]{2} \d+/)?.[0])).size);
   ok(hDays > 1, 'autonomy-index drill: rows show their own done dates', hDays);
+  const hSub = await page.$eval('.mx-drill .mx-drill-sub', (e) => e.textContent);
+  ok(/^Last 4 weeks · /.test(hSub), 'autonomy-index drill: the subtitle names the period', hSub);
   if (OUT) await page.screenshot({ path: `${OUT}/drill-autonomy.png` });
   ok(nHuman > 0 && hDrill === nHuman, 'autonomy-index L drill: "N needed a human" opens those N cards', { human, hDrill });
   await page.keyboard.press('Escape');

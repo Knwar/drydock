@@ -6,10 +6,12 @@
 //   dwRegister({ type, title: string | (params) => string, sizes: ['S','M','L','XL'] subset, load?(ctx) → Promise<data>,
 //                render(el, data, ctx) → void | { empty: 'reason' }, onStatus?(msg, el, ctx),
 //                params?: [{ key, label, type: 'select'|'text'|'number'|'toggle', options?: [{ value, label }], default?, min?, max? }],
-//                ranged?: boolean | (params) => boolean })
+//                ranged?: boolean | (params) => boolean, filters?: ('phase'|'range'|'agent'|'tag'|'workType'|'compare')[] })
 //   ranged (default true): the widget's data follows the date range. false: the editor hides its Range
 //   field, its override chip never names a range, and a stored range override is ignored (its filters
 //   carry Home's range). Live widgets registered elsewhere default to false (DW_UNRANGED).
+//   filters (default: all of them): the Home filters the widget's data uses. The config drawer offers an
+//   override field only for these (a widget that ignores Tag shows no Tag field); see dwUsesFilter.
 //   ctx = { id, size, params, projectId, filters, range, title, shared(key, fetcher), refresh(), drillCards(opts), openCard(id, boardId?) }
 //   ctx.title: the title the frame shows (params.title, else the type's).
 //   ctx.range: the widget's effective range (its override, else Home's), see dwRangeOf.
@@ -89,6 +91,12 @@ function dwRegister(def) {
 }
 
 const dwDef = (type) => dwTypes.get(type) ?? null;
+
+// Does widget type `type` use Home filter `key` (its registration's `filters`; none declared: every filter)?
+function dwUsesFilter(type, key) {
+  const f = dwTypes.get(type)?.filters;
+  return !Array.isArray(f) || f.includes(key);
+}
 
 // Does widget w's data follow the date range? (its type's `ranged`, a function of its params or a flag)
 function dwRanged(w) {
@@ -695,13 +703,16 @@ function dwEllipsisTipOn(el, body) {
 }
 
 // A widget's own filter overrides (params.vars), only the keys that are set (an unranged widget's
-// range / from / to never apply: its data doesn't follow the range).
+// range / from / to never apply: its data doesn't follow the range), and only the filters its type
+// uses (dwUsesFilter; range / from / to count as 'range'): a stale stored override for a filter the
+// type doesn't use is ignored (kept in params.vars, never applied or shown as a chip).
 function dwVars(w) {
   const v = w.params?.vars;
   if (!v || typeof v !== 'object') return null;
   const out = {};
   const keys = dwRanged(w) ? ['scope', 'phase', 'tag', 'agent', 'workType', 'range', 'from', 'to'] : ['scope', 'phase', 'tag', 'agent', 'workType'];
-  for (const k of keys) if (v[k] != null && v[k] !== '') out[k] = String(v[k]);
+  const filterOf = (k) => (k === 'from' || k === 'to' ? 'range' : k);
+  for (const k of keys) if (v[k] != null && v[k] !== '' && (k === 'scope' || dwUsesFilter(w.type, filterOf(k)))) out[k] = String(v[k]);
   return Object.keys(out).length ? out : null;
 }
 // The widget's filters as query params: Home's (hctx) with its params.vars merged over them.

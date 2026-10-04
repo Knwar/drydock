@@ -567,6 +567,8 @@ export interface ReworkCost {
   cost: number;
   tokens: number;
   runs: number;
+  /** Failed review rounds those runs fed (each card's distinct failed rounds, summed). */
+  failedRounds: number;
   /** Rework share (0..1) of all spend in the window; null with no spend. */
   pct: number | null;
   totalCost: number;
@@ -604,6 +606,7 @@ export function reworkCost(runs: CostRun[], reviewsByCard: Map<string, ReviewRec
     cost: round6(cost),
     tokens,
     runs: n,
+    failedRounds: [...cards.values()].reduce((a, c) => a + c.rounds.size, 0),
     pct: total > 0 ? cost / total : null,
     totalCost: round6(total),
     top: [...cards.entries()]

@@ -4,7 +4,8 @@
 // "Configure…" menu item or a double-click on its frame; a non-modal drawer on Home's right edge
 // (#dash-root narrows while it's open) that follows the selected widget.
 // Sections: Data (the type's params schema), Display (title override, size), Filters (per-widget
-// overrides of Home's filters in params.vars: phase, range / from / to, agent, tag, workType, compare).
+// overrides of Home's filters in params.vars: phase, range / from / to, agent, tag, workType, compare;
+// only the ones the type declares it uses, dashboard.js dwUsesFilter: by default all of them).
 // Every change applies live via deApply; text / number edits are debounced and coalesce into one
 // undo step. Invalid values show an inline error and are not applied.
 
@@ -150,7 +151,7 @@ function decCommit(next, label, coalesce) {
     dec.json = decJsonOf(w);
     decRefresh();
     // a param that decides whether the widget is ranged (a KPI's metric): show / hide its Range field
-    if (w && !!dec.body?.querySelector('[data-dec-field="v-range"]') !== dwRanged(w)) decRender();
+    if (w && !!dec.body?.querySelector('[data-dec-field="v-range"]') !== (dwRanged(w) && dwUsesFilter(w.type, 'range'))) decRender();
   }
   return ok;
 }
@@ -414,6 +415,7 @@ function decFilterSection(w) {
   const v = decVars(w);
   const m = hctx.meta;
   const fields = [];
+  const uses = (key) => dwUsesFilter(w.type, key);
 
   // phase: the board's phases (grouped by board on a workspace)
   const phaseOpts = [['', 'Inherit']];
@@ -425,33 +427,38 @@ function decFilterSection(w) {
   if (groups.length === 1) phaseOpts.push(...groups[0].options);
   else phaseOpts.push(...groups);
   if (v.phase && !groups.some((g) => g.options.some(([id]) => id === v.phase))) phaseOpts.push([v.phase, v.phase]);
-  fields.push(
-    decVarSelect(wid, 'phase', 'Phase', phaseOpts, v.phase ?? '', decHomePhase(), (val) => `Phase: ${val ? (fbPhaseById(m, val)?.title ?? val) : 'inherited'}`),
-  );
+  if (uses('phase'))
+    fields.push(
+      decVarSelect(wid, 'phase', 'Phase', phaseOpts, v.phase ?? '', decHomePhase(), (val) => `Phase: ${val ? (fbPhaseById(m, val)?.title ?? val) : 'inherited'}`),
+    );
 
   // a widget whose data doesn't follow the range (dashboard.js dwRanged) has no Range to override
-  if (dwRanged(w)) fields.push(decRangeField(w));
+  if (dwRanged(w) && uses('range')) fields.push(decRangeField(w));
 
   // agent: the team (+ agents seen on the board's cards)
   const agents = [...new Set([...(typeof teamByName !== 'undefined' ? teamByName.keys() : []), ...(m?.agents ?? [])])].sort((a, b) => a.localeCompare(b));
   if (v.agent && !agents.includes(v.agent)) agents.push(v.agent);
-  fields.push(decVarSelect(wid, 'agent', 'Agent', [['', 'Inherit'], ...agents.map((a) => [a, a])], v.agent ?? '', hctx.f.agent || 'All agents', (val) => `Agent: ${val || 'inherited'}`));
+  if (uses('agent')) fields.push(decVarSelect(wid, 'agent', 'Agent', [['', 'Inherit'], ...agents.map((a) => [a, a])], v.agent ?? '', hctx.f.agent || 'All agents', (val) => `Agent: ${val || 'inherited'}`));
 
   const tags = [...DEC_TAGS];
   if (v.tag && !tags.includes(v.tag)) tags.push(v.tag);
-  fields.push(decVarSelect(wid, 'tag', 'Tag', [['', 'Inherit'], ...tags.map((t) => [t, t])], v.tag ?? '', hctx.f.tag || 'All tags', (val) => `Tag: ${val || 'inherited'}`));
+  if (uses('tag')) fields.push(decVarSelect(wid, 'tag', 'Tag', [['', 'Inherit'], ...tags.map((t) => [t, t])], v.tag ?? '', hctx.f.tag || 'All tags', (val) => `Tag: ${val || 'inherited'}`));
 
   // work type: the 4 types, Unclassified ('none'); an unknown stored value stays selectable
   const types = WORK_TYPES.concat([['none', 'Unclassified']]);
   if (v.workType && !types.some(([id]) => id === v.workType)) types.push([v.workType, v.workType]);
-  fields.push(decVarSelect(wid, 'workType', 'Type', [['', 'Inherit'], ...types], v.workType ?? '', hctx.f.workType ? fbWorkTypeLabel(hctx.f.workType) : 'All types', (val) => `Type: ${val ? fbWorkTypeLabel(val) : 'inherited'}`));
+  if (uses('workType')) fields.push(decVarSelect(wid, 'workType', 'Type', [['', 'Inherit'], ...types], v.workType ?? '', hctx.f.workType ? fbWorkTypeLabel(hctx.f.workType) : 'All types', (val) => `Type: ${val ? fbWorkTypeLabel(val) : 'inherited'}`));
 
   const cmp = v.compare && !DEC_COMPARE.some(([id]) => id === v.compare) ? [[v.compare, v.compare]] : [];
-  fields.push(
-    decVarSelect(wid, 'compare', 'Comparison', [['', 'Inherit'], ...DEC_COMPARE, ...cmp], v.compare ?? '', 'None', (val) => `Comparison: ${DEC_COMPARE.find(([id]) => id === val)?.[1] ?? 'inherited'}`),
-  );
+  if (uses('compare'))
+    fields.push(
+      decVarSelect(wid, 'compare', 'Comparison', [['', 'Inherit'], ...DEC_COMPARE, ...cmp], v.compare ?? '', 'None', (val) => `Comparison: ${DEC_COMPARE.find(([id]) => id === val)?.[1] ?? 'inherited'}`),
+    );
 
-  return decSection('Filters', node('p', 'dec-intro', 'Override the dashboard’s filters for this widget only.'), ...fields);
+  if (!fields.length) return decSection('Filters', node('p', 'dec-none', 'This widget doesn’t use the dashboard’s filters.'));
+  const some = ['phase', 'range', 'agent', 'tag', 'workType', 'compare'].some((k) => !uses(k));
+  const intro = `Override the dashboard’s filters for this widget only.${some ? ' Only the filters this widget uses are shown.' : ''}`;
+  return decSection('Filters', node('p', 'dec-intro', intro), ...fields);
 }
 
 function decVarSelect(wid, key, label, options, value, now, said) {

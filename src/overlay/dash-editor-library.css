@@ -15,6 +15,7 @@
 .de-lib-head-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .de-lib-title { font-size: 17px; }
 .de-lib-sub { margin: 0; }
+.de-lib-sub.de-lib-warn { color: #e5c07b; }
 .de-lib-close {
   flex: none;
   width: 28px; height: 28px;
@@ -254,19 +255,61 @@
 
 .de-lib-ic-generic > span { width: 100%; height: 100%; opacity: 0.35; }
 
-/* Agentic (experimental): the generic block until each widget gets its own icon */
-.de-lib-ic-autonomy-index > span,
-.de-lib-ic-agent-stops > span,
-.de-lib-ic-batch-size > span,
-.de-lib-ic-spec-adherence > span,
-.de-lib-ic-governance-posture > span,
-.de-lib-ic-rework-cost > span,
-.de-lib-ic-decision-latency-cost > span,
-.de-lib-ic-cost-anomaly > span,
-.de-lib-ic-usage-runway > span,
-.de-lib-ic-steering-pack > span,
-.de-lib-ic-agent-hourly-rate > span,
-.de-lib-ic-perception-gap > span { width: 100%; height: 100%; opacity: 0.35; }
+/* Agentic (experimental) */
+/* autonomy-index: a gauge bar, mostly filled */
+.de-lib-ic-autonomy-index { flex-direction: column; align-items: stretch; justify-content: center; position: relative; }
+.de-lib-ic-autonomy-index > span:nth-child(1) { height: 6px; opacity: 0.3; }
+.de-lib-ic-autonomy-index > span:nth-child(2) { position: absolute; left: 5px; top: calc(50% - 3px); width: 70%; height: 6px; }
+/* agent-stops: paired bars */
+.de-lib-ic-agent-stops { align-items: flex-end; gap: 1px; }
+.de-lib-ic-agent-stops > span { width: 5px; }
+.de-lib-ic-agent-stops > span:nth-child(odd) { opacity: 0.45; }
+.de-lib-ic-agent-stops > span:nth-child(1) { height: 9px; }
+.de-lib-ic-agent-stops > span:nth-child(2) { height: 14px; margin-right: 4px; }
+.de-lib-ic-agent-stops > span:nth-child(3) { height: 16px; }
+.de-lib-ic-agent-stops > span:nth-child(4) { height: 8px; }
+/* batch-size: change sizes, one over the line */
+.de-lib-ic-batch-size { align-items: flex-end; }
+.de-lib-ic-batch-size::before { content: ''; position: absolute; left: 4px; right: 4px; top: 9px; border-top: 1px dashed var(--ic); opacity: 0.6; }
+.de-lib-ic-batch-size > span { width: 4px; opacity: 0.5; }
+.de-lib-ic-batch-size > span:nth-child(1) { height: 6px; }
+.de-lib-ic-batch-size > span:nth-child(2) { height: 10px; }
+.de-lib-ic-batch-size > span:nth-child(3) { height: 18px; opacity: 1; }
+.de-lib-ic-batch-size > span:nth-child(4) { height: 8px; }
+/* spec-adherence: a checklist */
+.de-lib-ic-spec-adherence { flex-direction: column; align-items: stretch; gap: 3px; }
+.de-lib-ic-spec-adherence > span { height: 3px; border-left: 4px solid var(--ic); background: color-mix(in srgb, var(--ic) 40%, transparent); }
+/* governance-posture: a shield */
+.de-lib-ic-governance-posture > span { width: 14px; height: 17px; border-radius: 3px 3px 8px 8px; opacity: 0.8; }
+/* rework-cost: a card done twice */
+.de-lib-ic-rework-cost { gap: 2px; }
+.de-lib-ic-rework-cost > span { width: 10px; height: 14px; }
+.de-lib-ic-rework-cost > span:nth-child(1) { opacity: 0.4; }
+/* decision-latency-cost: a clock */
+.de-lib-ic-decision-latency-cost > span:nth-child(1) { width: 17px; height: 17px; border-radius: 50%; background: none; border: 2px solid var(--ic); box-sizing: border-box; }
+.de-lib-ic-decision-latency-cost > span:nth-child(2) { position: absolute; left: calc(50% - 1px); top: 9px; width: 2px; height: 6px; }
+/* cost-anomaly: a flat run with one spike */
+.de-lib-ic-cost-anomaly { align-items: flex-end; gap: 2px; }
+.de-lib-ic-cost-anomaly > span { width: 3px; height: 6px; opacity: 0.45; }
+.de-lib-ic-cost-anomaly > span:nth-child(4) { height: 17px; opacity: 1; background: #e5c07b; }
+/* usage-runway: two limit bars */
+.de-lib-ic-usage-runway { flex-direction: column; align-items: stretch; gap: 5px; }
+.de-lib-ic-usage-runway > span { height: 4px; background: linear-gradient(to right, var(--ic) var(--w), color-mix(in srgb, var(--ic) 25%, transparent) var(--w)); }
+.de-lib-ic-usage-runway > span:nth-child(1) { --w: 40%; }
+.de-lib-ic-usage-runway > span:nth-child(2) { --w: 75%; }
+/* steering-pack: a one-page document */
+.de-lib-ic-steering-pack { flex-direction: column; align-items: flex-start; gap: 2px; }
+.de-lib-ic-steering-pack > span { height: 3px; width: 100%; opacity: 0.5; }
+.de-lib-ic-steering-pack > span:nth-child(1) { width: 60%; height: 4px; opacity: 1; }
+.de-lib-ic-steering-pack > span:nth-child(4) { width: 75%; }
+/* agent-hourly-rate: a coin and the work it buys */
+.de-lib-ic-agent-hourly-rate > span:nth-child(1) { width: 11px; height: 11px; border-radius: 50%; }
+.de-lib-ic-agent-hourly-rate > span:nth-child(2) { width: 13px; height: 4px; opacity: 0.6; }
+/* perception-gap: estimate vs actual, two bars of different length */
+.de-lib-ic-perception-gap { flex-direction: column; align-items: flex-start; gap: 4px; }
+.de-lib-ic-perception-gap > span { height: 4px; }
+.de-lib-ic-perception-gap > span:nth-child(1) { width: 100%; opacity: 0.45; }
+.de-lib-ic-perception-gap > span:nth-child(2) { width: 55%; }
 
 @media (prefers-reduced-motion: reduce) {
   .de-lib-type { transition: none; }

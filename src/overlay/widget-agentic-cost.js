@@ -1,7 +1,7 @@
 // ── Dashboard widgets: Agentic cost (rework-cost, decision-latency-cost, cost-anomaly, usage-runway) ──
 //   rework-cost (S, M, L)             "What does rework cost?"   $ + share of spend on failed review rounds
 //   decision-latency-cost (S, M, L)   "What does waiting on me cost?"   $ of idle agent time + days of slip
-//   cost-anomaly (S, M, L)            "Is any spend unusual?"   days over their phase's trailing mean + 2σ
+//   cost-anomaly (S, M, L)            "Is any spend unusual?"   days the board's total spend is over its trailing mean + 2σ (and a floor)
 //   usage-runway (S, M, L, unranged)  "Will we hit the usage limits?"   5-hour / weekly run-out vs the phase p85
 // One GET /metrics/agentic-cost (Home's filters, compare=previous) per refresh cycle, deduped by URL through
 // ctx.shared, for the three ranged widgets; usage-runway is live (no range) and reads it without range or compare.
@@ -59,8 +59,8 @@ function acFigure(value, unit, label, chip) {
   const line = node('span', 'ac-line');
   line.append(node('span', 'ac-value', value), node('span', 'ac-unit', unit));
   el.append(line);
-  // label: one quiet line, or several (the first a wrapping caption)
-  if (Array.isArray(label)) label.forEach((t, i) => el.append(node('span', i ? 'ac-label' : 'ac-label ac-caption', t)));
+  // label: one quiet line, or several (each a wrapping caption: a narrow figure wraps them, never cuts them)
+  if (Array.isArray(label)) label.forEach((t) => el.append(node('span', 'ac-label ac-caption', t)));
   else if (label) el.append(node('span', 'ac-label', label));
   if (chip) el.append(chip);
   return el;
@@ -115,14 +115,15 @@ function acReworkRender(el, d, ctx) {
   const has = !!d.r.previous && !!d.r.previousWindow;
   const cmp = acCmp(ctx, d.r, d.since);
   const S = ctx.size === 'S';
-  // the chip's change counts too: "$57" beside "+$3.27" would be two formats
-  const money = acMoneyFmt([rc.cost, rc.totalCost, prev?.cost == null ? null : Math.abs(rc.cost - prev.cost), ...(ctx.size === 'L' ? rc.top.map((c) => c.cost) : [])]);
+  // the chip's change counts too: "$57" beside "+$3.27" would be two formats; the L list's figures count at
+  // every size, so the headline reads the same at S, M and L
+  const money = acMoneyFmt([rc.cost, rc.totalCost, prev?.cost == null ? null : Math.abs(rc.cost - prev.cost), ...rc.top.map((c) => c.cost)]);
   const figs = node('div', 'ac-figs');
   figs.append(
     acFigure(
       money(rc.cost),
       'on rework',
-      S ? `${acPct(rc.pct)} of spend` : `${mxPlural(rc.runs, 'run')} before a failed review`,
+      S ? `${acPct(rc.pct)} of spend` : `${mxPlural(rc.runs, 'run')} across ${mxPlural(rc.failedRounds ?? 0, 'failed round')}`,
       dwDeltaChip({ cur: rc.cost, prev: prev?.cost ?? null, polarity: -1, fmt: money, subject: 'Rework cost', has, ...cmp }),
     ),
   );
@@ -172,43 +173,56 @@ async function acDrillQueue(ctx, queue) {
   await ctx.drillCards({ kicker: 'WHAT NEEDS A HUMAN', title: `${cards.length} waiting on you`, cards });
 }
 
+// The $/agent-hour basis, written out (the figure's tooltip)
+const AC_RATE_BASIS =
+  '$/agent-hour: the median, over the agents that ran in this period, of each agent’s AI spend ÷ its active agent-hours (the recorded run time of its runs; runs without a recorded duration are left out of both). Waiting hours: the time a session needed you or a card was blocked, overlap counted once.';
+const acDays = (n) => Math.round(n * 10) / 10;
+
 function acLatencyRender(el, d, ctx) {
   const dl = d.r.decisionLatencyCost;
+  const queue = dl.queue ?? [];
+  const slip = dl.slip;
+  // nothing waited in range, nothing waits now, no slip: a real empty state, not a row of dashes
+  if (!dl.humanWaitHours && !queue.length && !(slip?.phase && slip.days > 0))
+    return { empty: `Nothing waited on you ${acFilters(ctx).from ? 'in this period' : 'yet'}, and nothing is waiting now` };
   const prev = d.r.previous?.decisionLatencyCost ?? null;
   const has = !!d.r.previous && !!d.r.previousWindow;
   const cmp = acCmp(ctx, d.r, d.since);
   const S = ctx.size === 'S';
   const money = acMoneyFmt([dl.idleCost, dl.idleCost === null || prev?.idleCost == null ? null : Math.abs(dl.idleCost - prev.idleCost), dl.costPerAgentHour]);
-  const slip = dl.slip;
   const figs = node('div', 'ac-figs');
-  figs.append(
-    acFigure(
-      dl.idleCost === null ? '—' : money(dl.idleCost),
-      '',
-      [
-        'of idle agent time waiting on you',
-        dl.costPerAgentHour === null
-          ? 'no timed agent runs in range: no hourly rate'
-          : S
-            ? `${acHours(dl.humanWaitHours)} waiting`
-            : `${acHours(dl.humanWaitHours)} waiting × ${money(dl.costPerAgentHour)}/agent-hour`,
-      ],
-      dwDeltaChip({ cur: dl.idleCost, prev: prev?.idleCost ?? null, polarity: -1, fmt: money, subject: 'Cost of waiting on you', has, ...cmp }),
-    ),
+  const rate = dl.costPerAgentHour === null ? null : `${acHours(dl.humanWaitHours)} waiting × ${money(dl.costPerAgentHour)}/agent-hour (median)`;
+  const idle = acFigure(
+    dl.idleCost === null ? '—' : money(dl.idleCost),
+    '',
+    // S: one caption line (a tight S has no room for the second); the rate rides in the tooltip
+    ['of idle agent time waiting on you', ...(S ? [] : [rate ?? 'no timed agent runs in range: no hourly rate'])],
+    dwDeltaChip({ cur: dl.idleCost, prev: prev?.idleCost ?? null, polarity: -1, fmt: money, subject: 'Cost of waiting on you', has, ...cmp }),
   );
+  idle.title = `${S && rate ? `${rate}\n` : ''}${AC_RATE_BASIS}`;
+  figs.append(idle);
   if (slip?.phase) {
-    const days = Math.round(slip.days * 10) / 10;
-    const fig = acFigure(`${slip.approximation ? '≈' : ''}${mxNum(days)}`, '', [days === 1 ? 'day of slip' : 'days of slip', ...(S ? [] : [slip.phase.title])]);
+    const days = acDays(slip.days);
+    const multi = slip.scope === 'workspace+verticals' && (slip.phases?.length ?? 0) > 1;
+    const total = acDays(slip.blockedDaysTotal ?? slip.days);
+    const fig = acFigure(`${slip.approximation ? '≈' : ''}${mxNum(days)}`, '', [
+      days === 1 ? 'day of slip' : 'days of slip',
+      ...(S ? [] : [slip.phase.title]),
+      // the headline is the slowest phase (verticals run in parallel); the sum is context
+      ...(multi && !S ? [`${mxNum(total)} ${total === 1 ? 'day' : 'days'} blocked across ${slip.phases.length} phases`] : []),
+    ]);
+    const on = slip.basis === 'critical_path' ? `${slip.phase.title}’s critical path (the longest depends_on chain, ${mxPlural(slip.cards.length, 'card')})` : `${slip.phase.title}’s in-flight cards (queued, building or in review: ${mxPlural(slip.cards.length, 'card')})`;
+    const why = `Blocked time on ${on}.${multi ? ` The slowest of ${slip.phases.length} active phases across the workspace and its verticals (they run in parallel, so their delays don’t add up); ${mxNum(total)} days blocked in total.` : ''}`;
     if (slip.approximation) {
       const note = node('span', 'ac-approx', 'approximation');
-      note.title = `Approximation: ${slip.reason}`;
+      note.title = `Approximation: ${slip.reason || 'the phase has no depends_on chain of 2+ cards to follow, so this counts the blocked time on its in-flight cards instead.'}`;
       fig.append(note);
-    } else fig.title = `Blocked time on ${slip.phase.title}’s critical path (${mxPlural(slip.cards.length, 'card')})`;
+    }
+    fig.title = why;
     figs.append(fig);
   } else figs.append(acFigure('—', '', ['days of slip', ...(S ? [] : ['no active phase'])]));
   el.append(figs);
 
-  const queue = dl.queue ?? [];
   const now = Date.now();
   if (!queue.length) el.append(acStatus('ok', 'Nothing is waiting on you now'));
   else {
@@ -219,14 +233,24 @@ function acLatencyRender(el, d, ctx) {
   const box = node('div', 'ac-detail');
   const head = node('div', 'ac-detail-head');
   head.append(node('span', 'ac-k', 'waiting now · oldest first'));
+  const max = ctx.size === 'L' ? 5 : 2;
+  const links = node('span', 'ac-detail-links');
+  // "+N more" sits in the head (always in view, even when a narrow M body cuts the list short)
+  if (queue.length > max) {
+    const more = node('button', 'ac-link ac-more', `+${queue.length - max} more`);
+    more.type = 'button';
+    more.title = 'List everything waiting on you';
+    more.onclick = () => acDrillQueue(ctx, queue);
+    links.append(more);
+  }
   const all = node('button', 'ac-link', 'Needs you');
   all.type = 'button';
   all.title = 'List everything waiting on you';
   all.onclick = () => acDrillQueue(ctx, queue);
-  head.append(all);
+  links.append(all);
+  head.append(links);
   box.append(head);
   const list = node('ul', 'ac-list');
-  const max = ctx.size === 'L' ? 5 : 2;
   for (const q of queue.slice(0, max)) {
     const kind = q.kind === 'blocker' ? 'blocked' : 'needs you';
     const title = q.title ?? q.reason ?? 'A session is waiting on you';
@@ -236,18 +260,13 @@ function acLatencyRender(el, d, ctx) {
     list.append(li);
   }
   box.append(list);
-  if (queue.length > max) {
-    const more = node('button', 'ac-link ac-more', `+${queue.length - max} more`);
-    more.type = 'button';
-    more.onclick = () => acDrillQueue(ctx, queue);
-    box.append(more);
-  }
   el.append(box);
   if (ctx.size === 'L')
     el.append(node('div', 'ac-note', `Needs you ${acHours(dl.needsYouHours)} · blocked ${acHours(dl.blockedHours)} in range (overlap counted once in the total)`));
 }
 
 // ── cost-anomaly: "Is any spend unusual?" ──
+// Judged on the board's TOTAL daily spend (the API's basis 'board_total'); a flagged day names its top phase.
 async function acAnomalyLoad(ctx) {
   const f = acFilters(ctx);
   const [r, since] = await Promise.all([acRanged(ctx, f), dwFirstActivity(ctx).catch(() => null)]);
@@ -256,12 +275,25 @@ async function acAnomalyLoad(ctx) {
   return { r, since };
 }
 
-// The API's rule, written out: "trailing 14-day mean + 2σ", and the tooltip with its history minimum
+const AC_ANOMALY_RED = 5; // more unusual days than this in range: red (1–5: amber)
+// The API's rule, written out: "trailing 14-day mean + 2σ", its floor, and the tooltip with the history minimum
 const acAnomalyRule = (a) => `trailing ${a.trailingDays}-day mean + ${a.sigmas}σ`;
-const acAnomalyTitle = (a) => `A day is unusual when its spend is over its phase’s ${acAnomalyRule(a)} (needs ≥ ${a.minDays} days of history)`;
+const acAnomalyFloor = (a) => `max($${a.minExcess}, ${Math.round(a.minExcessPct * 100)}% of the mean)`;
+const acAnomalyTitle = (a) =>
+  `A day is unusual when the board’s total spend that day (all phases) is over its ${acAnomalyRule(a)} AND above the mean by at least ${acAnomalyFloor(a)}, so cents over a flat baseline never count. Needs ≥ ${a.minDays} days of history. Thresholds: Green with no unusual day · Amber 1–${AC_ANOMALY_RED} · Red over ${AC_ANOMALY_RED} in range.`;
 
-// The range's daily spend (all phases) as a sparkline, flagged days marked with a dot. viewBox stretched to the
-// box's width; markers are zero-length round-capped lines, so they stay round at any scale.
+// [kind, text] for n flagged days in range
+function acAnomalyKind(n) {
+  if (!n) return ['ok', 'Green: no unusual spend day'];
+  return n > AC_ANOMALY_RED ? ['bad', `Red: ${n} unusual days (over ${AC_ANOMALY_RED})`] : ['warn', `Amber: ${mxPlural(n, 'unusual day')}`];
+}
+
+// A flagged day's tooltip: the total against its baseline, then who spent it.
+const acFlagTitle = (f, money) =>
+  `Board total ${money(f.spend)}: ${money(f.excess)} over its mean ${money(f.mean)} (σ ${money(f.sigma)})\n${f.byPhase.map((p) => `${p.title ?? 'No phase'} ${money(p.spend)}`).join(' · ')}`;
+
+// The range's daily total (all phases) as a sparkline, flagged days marked with a dot on that same line. viewBox
+// stretched to the box's width; markers are zero-length round-capped lines, so they stay round at any scale.
 function acAnomalySpark(days, flagged, money) {
   const W = 300;
   const H = 40;
@@ -272,7 +304,7 @@ function acAnomalySpark(days, flagged, money) {
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', class: 'ac-spark-svg' });
   svg.setAttribute('role', 'img');
   const marks = days.filter((x) => flagged.has(x.date));
-  svg.setAttribute('aria-label', `Daily spend, ${dwDay(days[0].date)} to ${dwDay(days[days.length - 1].date)}, peak ${money(Math.max(...values))}${marks.length ? `; unusual: ${marks.map((m) => dwDay(m.date)).join(', ')}` : ''}`);
+  svg.setAttribute('aria-label', `Daily total spend, ${dwDay(days[0].date)} to ${dwDay(days[days.length - 1].date)}, peak ${money(Math.max(...values))}${marks.length ? `; unusual: ${marks.map((m) => dwDay(m.date)).join(', ')}` : ''}`);
   svg.append(svgEl('polyline', { points: values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' '), class: 'ac-spark-line', 'vector-effect': 'non-scaling-stroke' }));
   days.forEach((dd, i) => {
     if (!flagged.has(dd.date)) return;
@@ -297,40 +329,40 @@ function acAnomalyRender(el, d, ctx) {
     acFigure(
       String(n),
       n === 1 ? 'unusual spend day' : 'unusual spend days',
-      ctx.size === 'S' ? null : [`over the phase’s ${acAnomalyRule(a)}`],
+      ctx.size === 'S' ? null : [`board total over its ${acAnomalyRule(a)}`],
       dwDeltaChip({ cur: n, prev: prev?.flagged ?? null, polarity: -1, fmt: (m) => String(Math.round(m)), subject: 'Unusual spend days', has, ...acCmp(ctx, d.r, d.since) }),
     ),
   );
-  el.append(n ? acStatus('warn', `${mxPlural(n, 'day')} over mean + ${a.sigmas}σ`, title) : acStatus('ok', 'No unusual spend day', title));
+  const [kind, text] = acAnomalyKind(n);
+  el.append(acStatus(kind, text, title));
   if (ctx.size === 'S') return;
 
-  // the range's days, all phases summed
-  const byDay = new Map();
-  for (const s of a.series) for (const x of s.days) if (x.date >= a.range.from) byDay.set(x.date, (byDay.get(x.date) ?? 0) + x.spend);
-  const days = [...byDay.entries()].sort((p, q) => p[0].localeCompare(q[0])).map(([date, spend]) => ({ date, spend }));
-  const money = acMoneyFmt([...days.map((x) => x.spend), ...a.flagged.flatMap((f) => [f.spend, f.mean, f.sigma])]);
+  // the range's days: the board's total, the line the flags are judged on
+  const days = a.total.filter((x) => x.date >= a.range.from);
+  // one money format for the widget, whatever its size shows
+  const money = acMoneyFmt([...days.map((x) => x.spend), ...a.flagged.flatMap((f) => [f.spend, f.mean, f.sigma, f.excess, f.phaseSpend])]);
   const flagged = new Set(a.flagged.map((f) => f.date));
   const spark = node('div', 'ac-detail ac-spark');
-  spark.append(node('span', 'ac-k', `daily spend · ${dwDay(days[0].date)} – ${dwDay(days[days.length - 1].date)}`), acAnomalySpark(days, flagged, money));
+  if (days.length) spark.append(node('span', 'ac-k', `daily total spend · ${dwDay(days[0].date)} – ${dwDay(days[days.length - 1].date)}`), acAnomalySpark(days, flagged, money));
   el.append(spark);
   if (!n) return;
   const rows = AC_ANOMALY_ROWS[ctx.size];
   const more = () => (n > rows ? el.append(node('div', 'ac-note', `+${n - rows} more`)) : null);
   if (ctx.size === 'M') {
-    // the newest flagged days as a short text list: "Oct 3 · Checkout · $41" (the dots mark them on the line)
+    // the newest flagged days as a short text list: "Oct 3 · $41 · top Checkout" (the dots mark them on the line)
     const list = node('ul', 'ac-flags');
     for (const f of [...a.flagged].reverse().slice(0, rows)) {
-      const li = node('li', '', `${dwDay(f.date)} · ${f.title ?? 'No phase'} · ${money(f.spend)}`);
-      li.title = `mean ${money(f.mean)}, σ ${money(f.sigma)}`;
+      const li = node('li', '', `${dwDay(f.date)} · ${money(f.spend)} · top ${f.title ?? 'No phase'}`);
+      li.title = acFlagTitle(f, money);
       list.append(li);
     }
     el.append(list);
     return void more();
   }
-  // L: the flagged days, newest first: phase, spend, mean and σ
+  // L: the flagged days, newest first: the total, its mean and σ, and the top phase
   const table = node('table', 'ac-table');
   const hr = node('tr');
-  for (const [t, cls] of [['Day', ''], ['Phase', ''], ['Spend', 'ac-num'], ['Mean', 'ac-num'], ['σ', 'ac-num']]) {
+  for (const [t, cls] of [['Day', ''], ['Top phase', ''], ['Total', 'ac-num'], ['Mean', 'ac-num'], ['σ', 'ac-num']]) {
     const th = node('th', cls, t);
     th.scope = 'col';
     hr.append(th);
@@ -340,9 +372,10 @@ function acAnomalyRender(el, d, ctx) {
   const tbody = node('tbody');
   for (const f of [...a.flagged].reverse().slice(0, rows)) {
     const tr = node('tr');
+    tr.title = acFlagTitle(f, money);
     const day = node('th', '', dwDay(f.date));
     day.scope = 'row';
-    tr.append(day, node('td', 'ac-phase', f.title ?? 'No phase'), node('td', 'ac-num', money(f.spend)), node('td', 'ac-num', money(f.mean)), node('td', 'ac-num', money(f.sigma)));
+    tr.append(day, node('td', 'ac-phase', `${f.title ?? 'No phase'} · ${money(f.phaseSpend)}`), node('td', 'ac-num', money(f.spend)), node('td', 'ac-num', money(f.mean)), node('td', 'ac-num', money(f.sigma)));
     tbody.append(tr);
   }
   table.append(thead, tbody);
@@ -389,27 +422,35 @@ function acLimitText(l) {
 // [kind, text, title] for the weekly limit vs the active phase's p85
 function acRunwayKind(u) {
   const w = u.weekly;
-  const p85 = u.forecast?.status === 'ok' ? u.forecast.p85.date : null;
+  // every date in the widget as acWhen writes it (dwDay with the weekday): "Mon Oct 12"
+  const p85 = u.forecast?.status === 'ok' ? acWhen(Date.parse(`${u.forecast.p85.date}T12:00`)) : null;
   if (u.weeklyBeforeP85 === true) {
     const gap = u.gapDays ?? 0;
-    return ['bad', gap > 0 ? `Red: weekly limit runs out ${mxPlural(gap, 'day')} before p85` : 'Red: weekly limit runs out by the p85 day', `Red when the weekly limit runs out on or before the active phase’s 85% finish (${dwDay(p85)})`];
+    return ['bad', gap > 0 ? `Red: weekly limit runs out ${mxPlural(gap, 'day')} before p85` : 'Red: weekly limit runs out by the p85 day', `Red when the weekly limit runs out on or before the active phase’s 85% finish (${p85})`];
   }
-  if (u.weeklyBeforeP85 === false) return ['ok', 'Green: weekly limit lasts past p85', `Red when the weekly limit runs out on or before the active phase’s 85% finish (${dwDay(p85)})`];
+  if (u.weeklyBeforeP85 === false) return ['ok', 'Green: weekly limit lasts past p85', `Red when the weekly limit runs out on or before the active phase’s 85% finish (${p85})`];
   // null: no projection, no forecast, or the window resets first
   if (w && (w.state === 'resets_first' || w.state === 'not_burning')) return ['ok', 'Won’t run out this week', 'At this rate the weekly window resets before the limit is reached'];
   if (!w) return ['none', 'Weekly limit: unknown', 'No weekly usage sample yet'];
   if (w.state === 'no_rate') return ['none', 'Weekly limit: unknown', 'Burn rate not measurable yet: no recent samples to measure it from'];
-  if (u.forecast?.status !== 'ok') return ['none', 'Weekly vs p85: unknown', u.forecast?.reason ?? 'No phase forecast'];
+  if (u.forecast?.status !== 'ok') return ['none', 'Weekly vs p85: unknown', acReason(u.forecast) ?? 'No phase forecast'];
   return ['none', 'Weekly vs p85: unknown', w.message];
+}
+
+// The backend's readable reason (reasonText), never its raw code; capitalised.
+function acReason(x) {
+  const t = x?.reasonText ?? null;
+  return t ? `${t[0].toUpperCase()}${t.slice(1)}` : null;
 }
 
 function acRunwayRender(el, d, ctx) {
   const u = d.u;
   if (!u) return { empty: 'Usage limits unavailable' };
   if (u.status === 'unavailable') {
-    const none = u.reason.startsWith(AC_NO_USAGE);
+    const none = u.reason.startsWith(AC_NO_USAGE); // the code decides the state; the text is what shows
     el.append(acStatus('none', none ? 'No usage samples yet' : 'Usage limits unavailable'));
-    if (ctx.size !== 'S' || !none) el.append(node('div', 'ac-note', `${u.reason[0].toUpperCase()}${u.reason.slice(1)}`));
+    const why = acReason(u);
+    if (why && (ctx.size !== 'S' || !none)) el.append(node('div', 'ac-note', why));
     return;
   }
   const [kind, text, title] = acRunwayKind(u);
@@ -438,17 +479,19 @@ function acRunwayRender(el, d, ctx) {
   const f = u.forecast;
   // the forecast the weekly limit is judged against
   if (f?.status === 'ok') el.append(node('div', 'ac-note', `${f.phase.title} forecast: 50% ${acWhen(Date.parse(`${f.p50.date}T12:00`))} · 85% ${acWhen(Date.parse(`${f.p85.date}T12:00`))}`));
-  else el.append(node('div', 'ac-note', `No phase forecast: ${f?.reason ?? 'no active phase'}`));
+  else el.append(node('div', 'ac-note', `No phase forecast: ${(acReason(f) ?? 'No active phase').replace(/^./, (c) => c.toLowerCase())}`));
   if (ctx.size === 'L') for (const m of u.messages) el.append(node('div', 'ac-note', m));
 }
 
 // ── registration ──
-function acWidget(type, title, load, render, ranged = true) {
+// filters: the Home filters the widget reads (dashboard.js's contract; undefined = all of them)
+function acWidget(type, title, load, render, ranged = true, filters) {
   dwRegister({
     type,
     title,
     sizes: ['S', 'M', 'L'],
     ranged,
+    ...(filters ? { filters } : {}),
     load,
     render(el, data, ctx) {
       if (data.empty) return { empty: data.empty };
@@ -463,6 +506,6 @@ function acWidget(type, title, load, render, ranged = true) {
 acWidget('rework-cost', 'What does rework cost?', acReworkLoad, acReworkRender);
 acWidget('decision-latency-cost', 'What does waiting on me cost?', acLatencyLoad, acLatencyRender);
 acWidget('cost-anomaly', 'Is any spend unusual?', acAnomalyLoad, acAnomalyRender);
-acWidget('usage-runway', 'Will we hit the usage limits?', acRunwayLoad, acRunwayRender, false); // live: no range
+acWidget('usage-runway', 'Will we hit the usage limits?', acRunwayLoad, acRunwayRender, false, ['phase']); // live: no range; only the phase (its forecast)
 // registered after widget-agentic.js ran agExpNote: note these widgets already on screen too (it dedupes)
 agExpNote(document);
