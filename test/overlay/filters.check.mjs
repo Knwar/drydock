@@ -251,14 +251,8 @@ const H = '#home-filters';
 const W = (t) => `.dw-widget[data-widget-type="${t}"]`;
 const HT = `${W('workspace-boards')} .dash-tile`;
 const hsel = (label) => `${H} label.mx-field:has(> span:text-is("${label}")) select`;
-// /home for the current filters landed, the widgets painted (no skeletons), the reads done
-// A live refetch scheduled on open (the socket's init; debounced, ≤ REFETCH_MAX_WAIT_MS 1.5 s) lands
-// later as a /home read: wait it out before counting reads (dash.refetchFirst is cleared when it fires).
-async function refetchSettled() {
-  await page.waitForTimeout(1600);
-  await page.waitForFunction(() => dash.refetchFirst == null, null, { timeout: 5000 });
-  await settledHome();
-}
+// /home for the current filters landed, the widgets painted (no skeletons), the reads done. (Opening
+// schedules no live refetch: the board socket's first init doesn't re-read /home, see onHomeMessage.)
 async function settledHome() {
   await page.waitForFunction(
     () => typeof hctx !== 'undefined' && hctx.meta && home.data && home.key === fbParams(hctx, true, false) && document.querySelector('.dw-widget') && !document.querySelector('.dw-skel') && !document.querySelector(`${'#home-filters'} .fb-bar .mx-dim`),
@@ -303,9 +297,14 @@ const kd0 = await docKeydownListeners();
   ok(!keysIn().length, 'fresh Home: the default 4w writes no range key to the URL', page.url());
   ok((await chipText()) === 'Filterslast 4 weeks▾' && !(await page.$(`${H} .fb-clear`)), 'fresh Home: the chip names the range ("last 4 weeks"), no Clear', await chipText());
   ok(!(await page.$(`${H} .fb-chip.on`)), 'fresh Home: chip not marked filtered');
-  // the range reaches the range-aware reads: the KPI budget's /metrics/cost and (below) the agent history
-  const cost = homeReqs.filter((u) => new URL(u).pathname === '/metrics/cost').map((u) => new URL(u).searchParams.get('from'));
-  ok(cost.length > 0 && cost.every((f) => Number(f) === from4w), 'KPI read (/metrics/cost) carries the 4w from', { cost, from4w });
+  // the range reaches the range-aware reads: the KPI budget's /metrics/cost and (below) the agent history.
+  // The KPI's read is its phase's, compared with the previous period; the other cost reads on a fresh Home
+  // are unranged widgets' budget lookups (gate-readiness: ranged false, budgets phase-to-date): no from / to.
+  const costQs = homeReqs.filter((u) => new URL(u).pathname === '/metrics/cost').map((u) => new URL(u).searchParams);
+  const kpiCost = costQs.filter((q) => q.has('phase') && q.get('compare') === 'previous');
+  ok(kpiCost.length > 0 && kpiCost.every((q) => Number(q.get('from')) === from4w), 'KPI read (/metrics/cost) carries the 4w from', { kpi: kpiCost.map(String), from4w });
+  const unranged = costQs.filter((q) => !kpiCost.includes(q));
+  ok(unranged.length > 0 && unranged.every((q) => !q.has('from') && !q.has('to') && !q.has('compare')), 'unranged widgets\' /metrics/cost reads send no from / to', unranged.map(String));
   const live = homeReqs.filter((u) => ['/home', '/workspace/summary'].includes(new URL(u).pathname));
   ok(live.length > 0 && live.every((u) => !/[?&](from|to|range)=/.test(u)), 'live reads (/home, /workspace/summary) carry no range', live);
   await shot('home-1-fresh');
@@ -562,7 +561,6 @@ const dataReqs = (pg) => {
 const reqLog = dataReqs(page);
 await page.goto(`${base}/?project=${seed.ws}&view=home&tag=api`);
 await settledHome();
-await refetchSettled();
 await openBar();
 await page.waitForSelector(`${H} .fb-bar select[data-fb="agent"]`);
 await page.focus(`${H} select[data-fb="agent"]`);
@@ -580,8 +578,9 @@ await page.evaluate(() => (document.activeElement.__mark = 'agent'));
   const s = await page.evaluate(() => ({ mark: document.activeElement.__mark, fb: document.activeElement.dataset?.fb }));
   ok(s.mark === 'agent', 'Home: a refetch keeps the focused Agent select', s);
   console.log(`     Home refetch while filtered: ${reqLog.length} requests (${reqLog.join(', ')})`);
+  // (no Type filter is set here: with one, Active agents adds exactly one unfiltered /home read, by design)
   ok(reqLog.filter((u) => u === '/home').length === 1 && reqLog.filter((u) => u === '/workspace/cards').length <= 1 && reqLog.filter((u) => u === '/workspace/summary').length <= 1, 'Home: one /home (+ ≤ 1 cards, ≤ 1 board summary) per refetch while filtered', reqLog);
-  // (one /phases read is the KPI budget's active-phase lookup for this board, not a fan-out)
+  // (one /phases read is the KPI budget's active-phase lookup for this board, shared by URL with top-risks; not a fan-out)
   ok(!reqLog.some((u) => /^\/(board|task\/)/.test(u)) && reqLog.filter((u) => u === '/phases').length <= 1, 'Home: no per-board fan-out (no /board or Up-next /task reads; ≤ 1 /phases)', reqLog);
 }
 // custom range popover: a half-typed range survives a refetch
@@ -618,7 +617,7 @@ ok((await page.evaluate(() => document.activeElement.dataset.fb)) === 'tag', 'ch
 
 // ---- one load per open ----
 {
-  // a fresh tab: meta loads (one /workspace/cards read each) never outnumber /home loads
+  // a fresh tab: meta loads (one /workspace/cards read each, shared with the widgets) never outnumber /home loads
   const tab = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const reqs = [];
   tab.on('request', (r) => reqs.push(r.url()));
@@ -641,7 +640,6 @@ const slow = async (r) => {
 };
 await page.goto(`${base}/?project=${seed.ws}&view=home&tag=ui`);
 await settledHome();
-await refetchSettled();
 await page.route('**/home?*', slow);
 {
   const reqs = reqWatch();

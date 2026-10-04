@@ -223,9 +223,7 @@ function fwCycleRender(el, d, ctx) {
 // all boards' totals and each board is checked against its own limits.
 async function fwWipLoad(ctx) {
   const f = fwFilters(ctx);
-  const scope = new URLSearchParams(ctx.filters).get('scope');
-  const url = `/workspace/cards?project=${encodeURIComponent(ctx.projectId)}${scope ? `&scope=${encodeURIComponent(scope)}` : ''}`;
-  const r = await ctx.shared(url, () => mxGet(url));
+  const r = await dwCards(ctx);
   const multi = f.project === r.workspace_id && r.boards.length > 1;
   const inScope = multi ? r.boards : r.boards.filter((b) => b.id === f.project);
   if (!inScope.length) inScope.push({ id: f.project, name: '' });
@@ -324,10 +322,9 @@ function fwWipRender(el, d, ctx) {
 // ── review-queue: "Is review the bottleneck?" ──
 // Cards in review now, oldest first; past the board's stuck_hours.in_review is amber.
 async function fwReviewLoad(ctx) {
-  const params = fbNoRange(ctx.filters);
-  const url = `/workspace/cards?project=${encodeURIComponent(ctx.projectId)}${params ? `&${params}` : ''}`;
-  const r = await ctx.shared(url, () => mxGet(url));
-  const cards = r.cards.filter((c) => c.lane === 'in_review');
+  const r = await dwCards(ctx); // Home's one shared read (scope only): the card filters applied here
+  const match = fbCardFilter(ctx.filters);
+  const cards = r.cards.filter((c) => c.lane === 'in_review' && match(c));
   if (!cards.length) return { empty: 'Nothing is waiting for review right now' };
   const boards = [...new Set(cards.map((c) => c.board))];
   const settings = await Promise.all(boards.map((b) => fwSettings(ctx, b)));
@@ -381,9 +378,8 @@ function fwReviewRender(el, d, ctx) {
 // work type: flow's points joined to the cards' work_type (a point not in the card list: Unmatched).
 // The legend totals come from the same join, so bars and legend always agree.
 async function fwTrendLoad(ctx) {
-  const params = ctx.filters;
-  const url = `/workspace/cards?project=${encodeURIComponent(ctx.projectId)}${params ? `&${params}` : ''}`;
-  const [flow, cards, since] = await Promise.all([fwFlow(ctx), ctx.shared(url, () => mxGet(url)), dwFirstActivity(ctx).catch(() => null)]);
+  // the cards only give the points their work type (a join by id): Home's one shared read serves
+  const [flow, cards, since] = await Promise.all([fwFlow(ctx), dwCards(ctx), dwFirstActivity(ctx).catch(() => null)]);
   if (!flow.throughput.total) return { empty: 'No cards done in this range' };
   const typeOf = new Map(cards.cards.map((c) => [c.id, c.work_type ?? 'none']));
   const tz = MX_LOCAL_TZ;

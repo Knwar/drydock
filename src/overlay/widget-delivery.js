@@ -43,7 +43,7 @@ function dlGet(ctx, path, params) {
 const dlSchedule = (ctx, f) => dlGet(ctx, '/metrics/schedule', { project: f.project, tz: MX_LOCAL_TZ });
 const dlHistory = (ctx, f, phase) => dlGet(ctx, '/metrics/history', { project: f.project, phase });
 const dlCost = (ctx, f) => dlGet(ctx, '/metrics/cost', { project: f.project, tz: MX_LOCAL_TZ, limit: 1 });
-const dlCards = (ctx, f) => dlGet(ctx, '/workspace/cards', { project: f.project });
+const dlCards = (ctx) => dwCards(ctx); // the board in scope's cards: Home's one shared read (dashboard.js)
 
 // The phase a single-phase widget answers for: Home's phase filter, else the board's active phase.
 const dlPhase = (s, f) => (f.phase ? s.phases.find((p) => p.id === f.phase) : s.phases.find((p) => p.project_id === f.project && p.phase_status === 'active')) ?? null;
@@ -158,7 +158,7 @@ function dlAt(cls, text, pct) {
 // ── phase-health: "Which phases are on track?" ──
 async function dlHealthLoad(ctx) {
   const f = dlFilters(ctx);
-  const [s, h, c, cards] = await Promise.all([dlSchedule(ctx, f), dlHistory(ctx, f), dlCost(ctx, f), dlCards(ctx, f)]);
+  const [s, h, c, cards] = await Promise.all([dlSchedule(ctx, f), dlHistory(ctx, f), dlCost(ctx, f), dlCards(ctx)]);
   const phases = f.phase ? s.phases.filter((p) => p.id === f.phase) : s.phases;
   if (!phases.length) return { empty: f.phase ? 'The filtered phase isn’t on this board' : 'No phases yet — plan a roadmap to see phase health' };
   const snaps = dlSnapsByPhase(h.phases);
@@ -283,7 +283,7 @@ async function dlForecastLoad(ctx) {
   if (phase.phase_status === 'done' || phase.status === 'complete') return { empty: `${phase.title}: every card is done` };
   if (!phase.target_date) return { empty: `Set a target date on ${phase.title} to forecast it` };
   if (!phase.p85) return { empty: `No forecast for ${phase.title}: ${phase.reason}` };
-  const [h, cards] = await Promise.all([dlHistory(ctx, f, phase.id), dlCards(ctx, f)]);
+  const [h, cards] = await Promise.all([dlHistory(ctx, f, phase.id), dlCards(ctx)]);
   // the next milestone: the phase's own, else any on the board in scope
   const next = (list) => list.filter((m) => m.date >= s.today).sort((a, b) => a.date.localeCompare(b.date))[0] ?? null;
   return {
@@ -491,7 +491,7 @@ function dlScopeRender(el, d, ctx) {
 // capped at 100% and the cards added since are shown separately.
 async function dlPlannedLoad(ctx) {
   const f = dlFilters(ctx);
-  const [s, h, cards] = await Promise.all([dlSchedule(ctx, f), dlHistory(ctx, f), dlCards(ctx, f)]);
+  const [s, h, cards] = await Promise.all([dlSchedule(ctx, f), dlHistory(ctx, f), dlCards(ctx)]);
   if (!h.phases.length) return { empty: DL_NO_SNAP };
   const snaps = dlSnapsByPhase(h.phases);
   // the board in scope's done phases, most recently finished first (dlDoneDay: no endpoint returns
@@ -561,7 +561,7 @@ async function dlGateLoad(ctx) {
   const phase = dlPhase(s, f);
   if (!phase) return { empty: 'No active phase to check' };
   const [cards, risks, cost, wait] = await Promise.all([
-    dlCards(ctx, f),
+    dlCards(ctx),
     dlGet(ctx, '/risks', { project: f.project, phase: phase.id }),
     dlCost(ctx, f),
     dlGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: phase.id }),
@@ -644,7 +644,7 @@ function dlGateRender(el, d, ctx) {
 // ── rag-trend: "Is health getting better or worse?" ──
 async function dlTrendLoad(ctx) {
   const f = dlFilters(ctx);
-  const [s, h, cards] = await Promise.all([dlSchedule(ctx, f), dlHistory(ctx, f), dlCards(ctx, f)]);
+  const [s, h, cards] = await Promise.all([dlSchedule(ctx, f), dlHistory(ctx, f), dlCards(ctx)]);
   if (!h.phases.length) return { empty: DL_NO_SNAP };
   // Home's range (epoch ms) as local days; the history rows are filtered here so one read serves all
   const from = f.from ? mxDayKey(Number(f.from), MX_LOCAL_TZ) : '';
