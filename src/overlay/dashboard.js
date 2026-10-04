@@ -27,7 +27,7 @@
 //        .dw-widget[data-widget-id][data-widget-type], tab panels / tab buttons [data-tab-id]
 //
 // Shared helpers for widgets:
-//   dwDeltaChip({ cur, prev, polarity, fmt, label, subject, has?, labelLong?, none?, title?, since?, previousWindow?, kind? })
+//   dwDeltaChip({ cur, prev, polarity, fmt, label, subject, has?, labelLong?, none?, title?, since?, previousWindow?, kind?, short? })
 //     → the standard delta chip element ("▲ +3 · +50% vs previous 4 weeks"): arrow, signed value, %, the
 //     explicit comparison label; colour by polarity (1 = up is good, -1 = down is good, 0 = neutral);
 //     has: a previous period exists (default prev != null); widgets pass has: !!resp.previous, so a
@@ -38,12 +38,14 @@
 //     The % is left out for kind: 'pts' (a change in points is already relative: "−7 pts") and when
 //     |prev| < 1 (a tiny base makes a meaningless %): the absolute change only.
 //     since (epoch ms, e.g. dwFirstActivity) + previousWindow ({ from, to }): a previous period starting
-//     before since (before the board had any activity) is partial → grey "No full previous period", no label.
+//     before since (before the board had any activity) is partial → grey "No full previous period", no label
+//     (short: a muted "—" with that text as its tooltip, for a compact cell).
 //     label: the visible comparison ("vs previous 4 weeks", see dwVs); labelLong: the announced one
 //     (default label); title: the chip's tooltip (the exact dates); subject: what's measured ("Cards
 //     done"). role=img; its aria-label carries the better / worse verdict.
 //   dwVs(range, previousWindow, window?) → { label, labelLong, title } for a ranged chip: a rolling range is
-//     named ("vs previous 4 weeks"), a custom one counted ("vs prev 14 d"); the title holds the exact
+//     named ("vs previous 4 weeks"), a custom one by its previous period's dates ("vs Aug 31 – Sep 13",
+//     labelLong "vs the previous 14 days, Aug 31 – Sep 13"); the title holds the exact
 //     dates ("Sep 14 – 27 vs Aug 31 – Sep 13"). Empty strings for all time (no previousWindow).
 //   dwFirstActivity(ctx) → Promise<epoch ms | null>: the board's first activity (/metrics/flow's
 //     firstActivityAt, unfiltered), one read per refresh cycle.
@@ -121,8 +123,9 @@ function dwVs(range, pw, win) {
   const prevDates = dwDays(pw.from, pw.to);
   const title = win ? `${dwDays(win.from, win.to)} vs ${prevDates}` : `vs ${prevDates}`;
   if (range?.name) return { label: `vs previous ${range.name}`, labelLong: `vs the previous ${range.name}, ${prevDates}`, title };
+  // a custom range has no name: the short label names the previous period's dates ("vs Sep 1 – 14")
   const n = dwPrevDays(pw);
-  return { label: `vs prev ${n} d`, labelLong: `vs the previous ${n} days, ${prevDates}`, title };
+  return { label: `vs ${prevDates}`, labelLong: `vs the previous ${n} days, ${prevDates}`, title };
 }
 
 // The board's first activity: unfiltered (scope only) and from / to don't change it. Its URL is the
@@ -134,14 +137,15 @@ function dwFirstActivity(ctx) {
   return ctx.shared(url, () => mxGet(url)).then((r) => r.firstActivityAt ?? null);
 }
 
-function dwDeltaChip({ cur, prev, polarity = 0, fmt, label, subject, has = prev != null, labelLong = label, none, title, since, previousWindow, kind }) {
+function dwDeltaChip({ cur, prev, polarity = 0, fmt, label, subject, has = prev != null, labelLong = label, none, title, since, previousWindow, kind, short = false }) {
   const chip = node('span', 'dw-delta');
   chip.setAttribute('role', 'img'); // its aria-label (with the better / worse verdict) is what's announced
   if (title) chip.title = title;
   if (has && since != null && previousWindow && previousWindow.from < since) {
     // the previous period starts before the board's first activity: comparing against it would flatter / alarm
     chip.classList.add('dw-d-flat');
-    chip.append(node('span', 'dw-d-chg', 'No full previous period'));
+    chip.append(node('span', 'dw-d-chg', short ? '—' : 'No full previous period'));
+    if (short) chip.title = 'No full previous period';
     chip.setAttribute('aria-label', `${subject}: no full previous period ${labelLong}`);
     return chip;
   }

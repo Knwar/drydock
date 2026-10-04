@@ -4,7 +4,7 @@
 //   budget-burn (M, L, XL)      "Will we finish within budget?"   per phase actual vs budget vs projected
 // One /metrics/cost and one /metrics/flow read (Home's filters, compare=previous), deduped by URL through
 // ctx.shared, so the three widgets share them per refresh cycle. Uses app.js globals read-only (node, svgEl,
-// mx*, MX_LOCAL_TZ) and dashboard.js's dwDeltaChip / dwPrevDays. Status is always an icon + text.
+// mx*, MX_LOCAL_TZ) and dashboard.js's dwDeltaChip / dwVs / dwFirstActivity. Status is always an icon + text.
 
 const SP_ICONS = { ok: '✓', warn: '!', bad: '✕', none: '–', info: 'i' };
 const SP_TOP = 5; // ai-spend L: the most expensive cards
@@ -32,12 +32,6 @@ const spFlow = (ctx, f) => spGet(ctx, '/metrics/flow', spQuery(f, { compare: 'pr
 // A phase / tag / agent / type filter narrows the read (an empty result may be the filter's doing).
 const spFiltered = (f) => !!(f.phase || f.tag || f.agent || f.workType);
 
-// The comparison labels for a compare=previous read ("vs prev 14 d"); empty for all time (no previous).
-function spCmp(r) {
-  const days = dwPrevDays(r.previousWindow);
-  return days === null ? { label: '', labelLong: '' } : { label: `vs prev ${days} d`, labelLong: `vs previous ${days} days` };
-}
-
 function spStatus(kind, text, title) {
   const el = node('div', `sp-status sp-${kind}`);
   const ico = node('span', 'sp-ico', SP_ICONS[kind]);
@@ -53,9 +47,9 @@ const spPct = (share) => (share > 0 && share < 0.005 ? '<1%' : `${Math.round(sha
 // ── ai-spend: "Is the AI spend paying off?" ──
 async function spSpendLoad(ctx) {
   const f = spFilters(ctx);
-  const [cost, flow] = await Promise.all([spCost(ctx, f), spFlow(ctx, f)]);
+  const [cost, flow, since] = await Promise.all([spCost(ctx, f), spFlow(ctx, f), dwFirstActivity(ctx).catch(() => null)]);
   if (!cost.totals.runs) return { empty: spFiltered(f) ? 'No priced agent runs match these filters' : f.from ? 'No priced agent runs in this range' : 'No priced agent runs yet' };
-  return { cost, flow };
+  return { cost, flow, since };
 }
 
 // One headline figure: value + unit over a quiet label, then its delta chip.
@@ -72,7 +66,8 @@ function spFigure(value, unit, label, chip) {
 function spSpendRender(el, d, ctx) {
   const { cost, flow } = d;
   const S = ctx.size === 'S';
-  const cmp = spCmp(cost);
+  // "vs previous 4 weeks" (dwVs); a previous period starting before the board's first activity (since) greys out
+  const cmp = { ...dwVs(ctx.range, cost.previousWindow, cost.window), since: d.since, previousWindow: cost.previousWindow };
   const spend = cost.totals.cost;
   const figs = node('div', 'sp-figs');
   figs.append(
@@ -80,7 +75,7 @@ function spSpendRender(el, d, ctx) {
       mxMoney(spend),
       'spent',
       S ? null : `${mxPlural(cost.totals.runs, 'run')} on ${mxPlural(cost.totals.cards, 'card')}`,
-      dwDeltaChip({ cur: spend, prev: cost.previous?.totals.cost ?? null, polarity: -1, fmt: mxMoney, subject: 'AI spend', has: !!cost.previous, ...cmp }),
+      dwDeltaChip({ cur: spend, prev: cost.previous?.totals.cost ?? null, polarity: -1, fmt: mxMoney, subject: 'AI spend', has: !!cost.previous && !!cost.previousWindow, ...cmp }),
     ),
   );
   // cost per card done: the range's spend over the cards done in it (null with none done)
@@ -93,7 +88,7 @@ function spSpendRender(el, d, ctx) {
       per === null ? '—' : mxMoney(per),
       'per card done',
       S ? null : done ? `${mxMoney(spend)} ÷ ${mxPlural(done, 'card')} done` : 'no cards done in range',
-      dwDeltaChip({ cur: per, prev: prevPer, polarity: -1, fmt: mxMoney, subject: 'Cost per card done', has: !!cost.previous && !!flow.previous, ...cmp }),
+      dwDeltaChip({ cur: per, prev: prevPer, polarity: -1, fmt: mxMoney, subject: 'Cost per card done', has: !!cost.previous && !!flow.previous && !!cost.previousWindow, ...cmp }),
     ),
   );
   el.append(figs);
@@ -148,7 +143,7 @@ const SP_TYPES = [
 async function spMixLoad(ctx) {
   const f = spFilters(ctx);
   if (f.workType) return { empty: `Filtered to one work type (${fbWorkTypeLabel(f.workType)}): clear the Type filter to see the mix` };
-  const [cost, flow] = await Promise.all([spCost(ctx, f), spFlow(ctx, f)]);
+  const [cost, flow, since] = await Promise.all([spCost(ctx, f), spFlow(ctx, f), dwFirstActivity(ctx).catch(() => null)]);
   if (!cost.totals.cost && !flow.throughput.total)
     return { empty: spFiltered(f) ? 'No spend and no cards done match these filters' : f.from ? 'No spend and no cards done in this range' : 'No spend and no cards done yet' };
   // L: the previous period's mix, for the share deltas (compare=previous carries totals only)
@@ -167,6 +162,7 @@ async function spMixLoad(ctx) {
     cards: spShares(Object.entries(flow.throughputByWorkType)),
     done: flow.throughput.total,
     prev,
+    since,
   };
 }
 
@@ -205,10 +201,17 @@ function spMixBar(name, mix, types) {
 }
 
 // "▲ +5 pts": a share's change in percentage points (no relative %: a % of a share misleads).
-// pol: 1 up is good, -1 down is good, 0 neutral. Reuses dashboard.css's delta chip look.
-function spPtsChip(cur, prev, pol, subject) {
+// pol: 1 up is good, -1 down is good, 0 neutral. partial: the previous period starts before the board's
+// first activity (grey, as dwDeltaChip). Reuses dashboard.css's delta chip look.
+function spPtsChip(cur, prev, pol, subject, partial = false) {
   const chip = node('span', 'dw-delta sp-pts');
   chip.setAttribute('role', 'img');
+  if (partial) {
+    chip.classList.add('dw-d-flat');
+    chip.append(node('span', 'dw-d-chg', 'No full previous period'));
+    chip.setAttribute('aria-label', `${subject}: no full previous period`);
+    return chip;
+  }
   if (cur === null || prev === null) {
     chip.classList.add('dw-d-flat');
     chip.append(node('span', 'dw-d-chg', '—'));
@@ -260,7 +263,9 @@ function spMixRender(el, d, ctx) {
   } else el.append(spStatus('ok', 'Everything is classified'));
 
   // the legend as a table: type, share of spend, share of cards (L: each with its change in points)
-  const cmp = spCmp(d.cost);
+  const cmp = dwVs(ctx.range, d.cost.previousWindow, d.cost.window);
+  const pw = d.cost.previousWindow;
+  const partial = !!d.prev && d.since != null && pw.from < d.since; // the previous mix predates the board
   const table = node('table', 'sp-mix-table');
   const thead = node('thead');
   const hr = node('tr');
@@ -269,10 +274,19 @@ function spMixRender(el, d, ctx) {
     c.scope = 'col';
     return c;
   };
+  // the Δ columns stay narrow ("Δ"): the comparison (a custom range's dates can be long) is the tooltip
+  const thD = (what) => {
+    const c = th('Δ', 'sp-col-d');
+    if (cmp.label) {
+      c.title = cmp.title ? `Δ ${cmp.label} (${cmp.title})` : `Δ ${cmp.label}`;
+      c.setAttribute('aria-label', `Change in ${what} share ${cmp.labelLong}`);
+    }
+    return c;
+  };
   hr.append(th('Type', 'sp-col-type'), th('Spend'));
-  if (L) hr.append(th(cmp.label ? `Δ ${cmp.label}` : 'Δ', 'sp-col-d'));
+  if (L) hr.append(thD('spend'));
   hr.append(th('Cards'));
-  if (L) hr.append(th(cmp.label ? `Δ ${cmp.label}` : 'Δ', 'sp-col-d'));
+  if (L) hr.append(thD('cards done'));
   thead.append(hr);
   const tbody = node('tbody');
   const prev = d.prev;
@@ -293,13 +307,13 @@ function spMixRender(el, d, ctx) {
     const pol = t === 'none' ? -1 : 0; // less unclassified is better; the rest is a judgment call
     if (L) {
       const cell = node('td', 'sp-col-d');
-      cell.append(spPtsChip(d.spend.total && prev?.spend.total ? s : null, prev?.spend.total ? ps : null, pol, `${label} share of spend`));
+      cell.append(spPtsChip(d.spend.total && prev?.spend.total ? s : null, prev?.spend.total ? ps : null, pol, `${label} share of spend`, partial));
       tr.append(cell);
     }
     tr.append(node('td', '', t === 'deleted' ? '' : d.done ? spPct(c) : '—'));
     if (L) {
       const cell = node('td', 'sp-col-d');
-      if (t !== 'deleted') cell.append(spPtsChip(d.done && prev?.cards.total ? c : null, prev?.cards.total ? pc : null, pol, `${label} share of cards done`));
+      if (t !== 'deleted') cell.append(spPtsChip(d.done && prev?.cards.total ? c : null, prev?.cards.total ? pc : null, pol, `${label} share of cards done`, partial));
       tr.append(cell);
     }
     tbody.append(tr);
@@ -399,11 +413,12 @@ function spBurnRender(el, d, ctx) {
 }
 
 // ── registration ──
-function spWidget(type, title, sizes, load, render) {
+function spWidget(type, title, sizes, load, render, ranged = true) {
   dwRegister({
     type,
     title,
     sizes,
+    ranged,
     load,
     render(el, data, ctx) {
       if (data.empty) return { empty: data.empty };
@@ -416,4 +431,4 @@ function spWidget(type, title, sizes, load, render) {
 
 spWidget('ai-spend', 'Is the AI spend paying off?', ['S', 'M', 'L'], spSpendLoad, spSpendRender);
 spWidget('investment-mix', 'Are we investing in the right things?', ['M', 'L'], spMixLoad, spMixRender);
-spWidget('budget-burn', 'Will we finish within budget?', ['M', 'L', 'XL'], spBurnLoad, spBurnRender);
+spWidget('budget-burn', 'Will we finish within budget?', ['M', 'L', 'XL'], spBurnLoad, spBurnRender, false); // budgets are all-time per phase

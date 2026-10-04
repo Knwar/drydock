@@ -48,7 +48,7 @@ function kpiMain(value, unit, label, onClick, hint) {
 }
 
 // A period-over-period chip (dwDeltaChip) for a compare=previous read r: labelled with the range's
-// name ("vs previous 4 weeks"; a custom range "vs prev 14 d"), the exact dates as its tooltip, grey for
+// name ("vs previous 4 weeks"; a custom range its dates, "vs Aug 31 – Sep 13"), the exact dates as its tooltip, grey for
 // all time and "No full previous period" when the previous window starts before the board's first
 // activity (since).
 function kpiPrevDelta(r, ctx, since, subject, polarity, fmt, cur, prev) {
