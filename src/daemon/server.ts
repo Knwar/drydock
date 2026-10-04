@@ -15,6 +15,7 @@ import * as governance from '../core/decisions.js';
 import * as metrics from '../core/metrics.js';
 import * as waitTime from '../core/wait-time.js';
 import * as quality from '../core/quality.js';
+import * as agentic from '../core/agentic.js';
 import * as forecast from '../core/forecast.js';
 import * as milestones from '../core/milestones.js';
 import * as schedule from '../core/schedule.js';
@@ -1673,6 +1674,59 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         withCompare(q, filter, (f) => waitTime.waitMetrics(db, f, opts), (r) => ({
           needsYou: { count: r.needsYou.count, totalMs: r.needsYou.totalMs, p50: r.needsYou.duration.p50 },
           blocked: { count: r.blocked.count, totalMs: r.blocked.totalMs, p50: r.blocked.resolution.p50 },
+        }), opts),
+      );
+    } catch (err) {
+      const status = err instanceof metrics.MetricsParamError ? 400 : 500;
+      return json(res, status, { error: (err as Error).message });
+    }
+  }
+
+  // ── agentic flow metrics: aggregation lives in core/agentic.ts ──
+  if (method === 'GET' && pathname === '/metrics/agentic') {
+    const q = url.searchParams;
+    const project = q.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
+    const now = Date.now();
+    try {
+      // scope narrows to the project itself or one of its verticals; a workspace id expands to its verticals in the loader
+      const scope = q.get('scope');
+      if (scope && scope !== project && !board.listVerticals(db, project).some((v) => v.id === scope))
+        return json(res, 400, { error: 'scope is not this project or one of its verticals' });
+      const filter: metrics.MetricsFilter = { projectIds: [scope || project] };
+      for (const [key, param] of [['phaseId', 'phase'], ['tag', 'tag'], ['agent', 'agent']] as const) {
+        const v = q.get(param);
+        if (v) filter[key] = v;
+      }
+      const workType = workTypeParam(q);
+      if (workType) filter.workType = workType;
+      const from = q.get('from');
+      const to = q.get('to');
+      if (from) filter.from = metrics.parseTime(from, tz, 'from');
+      if (to) filter.to = metrics.parseTime(to, tz, 'to');
+      const rawBatch = q.get('batchLines');
+      let batchLines: number | undefined;
+      if (rawBatch) {
+        if (!/^\d+$/.test(rawBatch) || Number(rawBatch) < 1) throw new metrics.MetricsParamError(`invalid batchLines: ${rawBatch}`);
+        batchLines = Number(rawBatch);
+      }
+      const opts = { tz, now };
+      return json(
+        res,
+        200,
+        withCompare(q, filter, (f) => agentic.agenticMetrics(db, f, { ...opts, batchLines }), (r) => ({
+          autonomy: { done: r.autonomy.done, pct: r.autonomy.pct },
+          stops: { agent: r.stops.agent, human: r.stops.human, ratio: r.stops.ratio },
+          batch: { pctOver: r.batch.pctOver, median: r.batch.median },
+          specAdherence: { pct: r.specAdherence.pct },
+          governance: {
+            tiedPct: r.governance.toolEvents.tiedPct,
+            risky: r.governance.risky.count,
+            decisionLinkedPct: r.governance.decisionLinked.pct,
+          },
         }), opts),
       );
     } catch (err) {

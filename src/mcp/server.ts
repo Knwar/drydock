@@ -296,6 +296,45 @@ server.registerTool(
 );
 
 server.registerTool(
+  'get_agentic_metrics',
+  {
+    description:
+      'Agentic flow metrics over a window: autonomy (share of cards done with no blocker and no redirect, weekly trend), stops (agent self-stops = raised blockers vs human interrupts = redirects + reopens that are not review-fail rework; ratio agent:human, weekly), batch size (lines per done card: share over `batch_lines` (default 200), median, top 5; cards without line data counted apart), spec adherence (per phase: acceptance criteria checked / total and review first-pass rate on done cards; overall share of done cards with all criteria checked AND a first-pass review), governance (share of recorded tool events tied to a card, risky Bash commands from the recorded command text with a caveat, or null + reason when none is recorded, and share of done cards linked to a decision). A workspace includes its verticals; scope narrows to one of them. from/to: epoch ms, YYYY-MM-DD or a datetime (in `tz`). compare: "previous" adds the previous window\'s headline figures.',
+    inputSchema: {
+      project_id: z.string(),
+      scope: z.string().optional().describe('the project itself or one of its verticals'),
+      phase_id: z.string().optional(),
+      tag: z.enum(['ui', 'api', 'db', 'infra']).optional(),
+      agent: z.string().optional(),
+      work_type: z.union([WORK_TYPE, z.literal('none')]).optional(),
+      from: z.string().optional(),
+      to: z.string().optional(),
+      tz: z.string().optional().describe('IANA time zone, default the daemon’s'),
+      batch_lines: z.number().int().min(1).optional(),
+      compare: z.literal('previous').optional(),
+    },
+  },
+  ({ project_id, scope, phase_id, tag, agent, work_type, from, to, tz, batch_lines, compare }) => {
+    const params = new URLSearchParams({ project: project_id });
+    for (const [k, v] of [
+      ['scope', scope],
+      ['phase', phase_id],
+      ['tag', tag],
+      ['agent', agent],
+      ['workType', work_type],
+      ['from', from],
+      ['to', to],
+      ['tz', tz],
+      ['batchLines', batch_lines?.toString()],
+      ['compare', compare],
+    ] as const) {
+      if (v) params.set(k, v);
+    }
+    return api('GET', `/metrics/agentic?${params}`);
+  },
+);
+
+server.registerTool(
   'get_team',
   {
     description:
