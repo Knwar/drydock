@@ -271,6 +271,21 @@ describe('cost metrics (DB)', () => {
     assert.equal(setPhaseBudget(db, phase.id, null).budget_usd, null);
   });
 
+  it('the projection is the same with and without a phase filter (median over every done card of the scope)', () => {
+    const { db, p, phase, other } = seed();
+    setPhaseBudget(db, phase.id, 200);
+    const d = createTask(db, p.id, 'd', { phase_id: other.id });
+    moveTask(db, d.id, 'done');
+    recordActivity(db, { project_id: p.id, task_id: d.id, agent: 'Ada', tokens: M, tokens_out: 0, lines_added: 0, lines_removed: 0, ms: 1, usage: { 'claude-haiku-4-5': u(10 * M, 0, 0, 0) } }); // 10
+    const now = Date.now();
+    const all = costMetrics(db, { projectIds: [p.id] }, { tz, now });
+    const ph = costMetrics(db, { projectIds: [p.id], phaseId: phase.id }, { tz, now });
+    assert.equal(all.medianCardCost, 10); // over done cards a (136) and d (10); a's phase alone would give 136
+    assert.equal(ph.medianCardCost, all.medianCardCost);
+    assert.deepEqual(ph.budgets, all.budgets.filter((b) => b.phase_id === phase.id));
+    assert.equal(ph.budgets[0].projected, 236 + 2 * 10);
+  });
+
   it('no done card with cost: the projection is unknown', () => {
     const db = openDb();
     const p = getOrCreateProject(db, '/tmp/cost-open', 'o');

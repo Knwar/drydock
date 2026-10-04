@@ -1,6 +1,7 @@
 // ── Dashboard widgets: Quality & risk (quality, speed-stability, top-risks) ──
 // Classic script; uses app.js / dashboard.js globals read-only (node, svgEl, mxGet, mxPlural,
-// MX_LOCAL_TZ, MX_MONTHS, mxUtc, mxAddDays, setView, gvReveal, dwRegister, dwDeltaChip, dwVs, dwFirstActivity).
+// MX_LOCAL_TZ, mxDayKey, mxAddDays, setView, gvReveal, dwRegister, dwDeltaChip, dwVs, dwDay, dwDays, dwFirstActivity;
+// widget-delivery.js's dlHighRisk / DL_RISK_RULE / DL_HIGH_RISK).
 // Each title states the question; status is always an icon + text, never colour alone.
 //   quality          S M L  GET /metrics/quality?compare=previous
 //   speed-stability    M L  /metrics/flow + /metrics/quality (compare=previous) + /metrics/flow over previousWindow
@@ -37,7 +38,8 @@ function wqStatus(kind, text) {
 const wqPct = (r) => (r === null || r === undefined ? '—' : `${Math.round(r * 100)}%`);
 const wqPts = (m) => `${Math.round(m * 100)} pts`;
 const wqDec = (m) => m.toFixed(1);
-const wqDay = (day) => `${MX_MONTHS[mxUtc(day).getUTCMonth()]} ${mxUtc(day).getUTCDate()}`; // Oct 20
+const wqDay = (day) => dwDay(day); // Oct 20: the dashboard's one date format
+const wqMs = (day) => new Date(`${day}T00:00`).getTime(); // a local day key → its local midnight
 
 // "vs previous 4 weeks" (dwVs) for a compare=previous read r (no previousWindow: all time, the chip goes
 // grey; a previous period starting before the board's first activity, since: "No full previous period").
@@ -55,7 +57,7 @@ function wqFigure(value, label, chip, cls = '') {
   return el;
 }
 
-// Inline SVG sparkline over 0..1 rates; null weeks are gaps (no line through them).
+// Inline SVG sparkline over 0..1 rates, stretched to its box's width; null weeks are gaps (no line through them).
 function wqRateSpark(values, { tall = false } = {}) {
   const W = 240;
   const H = tall ? 56 : 36;
@@ -76,7 +78,10 @@ function wqRateSpark(values, { tall = false } = {}) {
   });
   flush();
   values.forEach((v, i) => {
-    if (v !== null) svg.append(svgEl('circle', { cx: x(i).toFixed(1), cy: y(v).toFixed(1), r: i === n - 1 ? 3 : 1.8, class: i === n - 1 ? 'wq-spark-last' : 'wq-spark-dot' }));
+    if (v === null) return;
+    // a zero-length round-capped line: a round dot however far the stretched SVG scales
+    const [cx, cy] = [x(i).toFixed(1), y(v).toFixed(1)];
+    svg.append(svgEl('line', { x1: cx, y1: cy, x2: cx, y2: cy, class: i === n - 1 ? 'wq-spark-last' : 'wq-spark-dot', 'vector-effect': 'non-scaling-stroke' }));
   });
   return svg;
 }
@@ -122,20 +127,28 @@ function wqQualityRender(el, d, ctx) {
   if (ctx.size === 'S') return;
 
   const det = node('div', 'wq-detail');
-  const weeks = q.weekly.slice(ctx.size === 'L' ? -12 : -8);
-  const spark = node('div', 'wq-spark-box');
-  spark.setAttribute('role', 'img');
-  spark.setAttribute('aria-label', `Weekly first-pass rate: ${weeks.map((w) => `week of ${wqDay(w.start)} ${w.firstPassRate === null ? 'no reviews' : wqPct(w.firstPassRate)}`).join(', ')}`);
-  const head = node('div', 'wq-k-row');
-  head.append(node('span', 'wq-k', `weekly first-pass · ${mxPlural(weeks.length, 'week')}`));
-  if (weeks.length) head.append(node('span', 'wq-sub', `${wqDay(weeks[0].start)} – ${wqDay(mxAddDays(weeks[weeks.length - 1].start, 6))}`));
-  spark.append(head, wqRateSpark(weeks.map((w) => w.firstPassRate), { tall: ctx.size === 'L' }));
-  if (ctx.size === 'L') {
-    const axis = node('div', 'wq-axis');
-    axis.append(node('span', '', '0–100%'), node('span', '', weeks.some((w) => w.firstPassRate === null) ? 'gaps: weeks without reviews' : ''));
-    spark.append(axis);
+  // the weekly trend only once there's enough for one (the status above says so otherwise)
+  if (falling !== null) {
+    const weeks = q.weekly.slice(ctx.size === 'L' ? -12 : -8);
+    const spark = node('div', 'wq-spark-box');
+    spark.setAttribute('role', 'img');
+    spark.setAttribute('aria-label', `Weekly first-pass rate: ${weeks.map((w) => `week of ${wqDay(w.start)} ${w.firstPassRate === null ? 'no reviews' : wqPct(w.firstPassRate)}`).join(', ')}`);
+    const head = node('div', 'wq-k-row');
+    head.append(node('span', 'wq-k', `weekly first-pass · ${mxPlural(weeks.length, 'week')}`));
+    // the dates the weeks cover, cut to the range (the last week may run past today)
+    const rFrom = mxDayKey(q.range.from, q.range.tz);
+    const rTo = mxDayKey(q.range.to, q.range.tz);
+    const a = weeks[0].start < rFrom ? rFrom : weeks[0].start;
+    const z = mxAddDays(weeks[weeks.length - 1].start, 6);
+    head.append(node('span', 'wq-sub', dwDays(wqMs(a), wqMs(z > rTo ? rTo : z))));
+    spark.append(head, wqRateSpark(weeks.map((w) => w.firstPassRate), { tall: ctx.size === 'L' }));
+    if (ctx.size === 'L') {
+      const axis = node('div', 'wq-axis');
+      axis.append(node('span', '', '0–100%'), node('span', '', weeks.some((w) => w.firstPassRate === null) ? 'gaps: weeks without reviews' : ''));
+      spark.append(axis);
+    }
+    det.append(spark);
   }
-  det.append(spark);
 
   const rw = node('div', 'wq-rework');
   const line = node('div', 'wq-k-row');
@@ -235,7 +248,9 @@ function wqSpeedRender(el, d, ctx) {
 }
 
 // ── top-risks: "What could hurt us, and is it managed?" ──
-const wqSev = (score) => (score >= 15 ? 'hi' : score >= 8 ? 'mid' : 'low');
+// High risks follow gate-readiness's rule (widget-delivery.js dlHighRisk / DL_RISK_RULE): open + high
+// with no mitigation fails, open + high with one warns.
+const wqSev = (score) => (score >= DL_HIGH_RISK ? 'hi' : score >= 8 ? 'mid' : 'low');
 const wqMitigated = (r) => !!(r.mitigation && r.mitigation.trim());
 
 async function wqRisksLoad(ctx) {
@@ -250,16 +265,19 @@ async function wqRisksLoad(ctx) {
   const phase = f.phase ? { id: f.phase, title: phases.find((p) => p.id === f.phase)?.title ?? null } : (phases.find((p) => p.status === 'active') ?? null);
   let base = null;
   let baseErr = null;
+  let phaseNow = null; // the phase's exposure at its latest snapshot
   if (phase) {
     try {
       const hist = await wqGet(ctx, '/metrics/history', { project: f.project, phase: phase.id });
       const dl = hist.deltas;
-      if (dl && dl.from !== dl.to && dl.riskScoreChange !== null) base = { change: dl.riskScoreChange, from: dl.from, title: phase.title };
+      // the phase's own exposure (its latest snapshot), so the change sits next to the figure it changes
+      phaseNow = hist.phases.at(-1)?.open_risk_score ?? null;
+      if (dl && dl.from !== dl.to && dl.riskScoreChange !== null && phaseNow !== null) base = { change: dl.riskScoreChange, from: dl.from, title: phase.title };
     } catch (e) {
       baseErr = e?.message || String(e); // the list still shows; the chip says "No baseline"
     }
   }
-  return { live, base, baseErr, phase };
+  return { live, base, baseErr, phase, phaseNow };
 }
 
 // A short-lived notice (role=status) at the bottom of the page.
@@ -291,18 +309,33 @@ function wqOpenRisk(id) {
 }
 
 function wqRisksRender(el, d, ctx) {
-  const unmitHigh = d.live.filter((r) => r.score >= 15 && !wqMitigated(r)).length;
+  const unmitHigh = d.live.filter((r) => dlHighRisk(r) === 'bad').length;
+  const mitHigh = d.live.filter((r) => dlHighRisk(r) === 'warn').length;
   const exposure = d.live.reduce((s, r) => s + r.score, 0);
   const head = node('div', 'wq-risk-head');
   const lead = node('div', 'wq-fig');
-  lead.append(node('span', 'wq-value', String(unmitHigh)), node('span', 'wq-label', 'unmitigated high risks (score ≥ 15, no mitigation)'));
+  lead.append(node('span', 'wq-value', String(unmitHigh)), node('span', 'wq-label', `unmitigated high risks on the board (score ≥\u00a0${DL_HIGH_RISK}, no mitigation)`));
   head.append(lead);
-  const [kind, text] = unmitHigh === 0 ? ['ok', 'Green: none unmitigated'] : unmitHigh <= 2 ? ['warn', 'Amber: mitigate the high risks'] : ['bad', 'Red: 3+ high risks unmitigated'];
-  head.append(wqStatus(kind, text));
+  const [kind, text] =
+    unmitHigh === 0
+      ? mitHigh
+        ? ['warn', `Amber: ${mitHigh} high risk${mitHigh === 1 ? '' : 's'} open, mitigated`]
+        : ['ok', 'Green: no open high risk']
+      : unmitHigh <= 2
+        ? ['warn', 'Amber: mitigate the high risks']
+        : ['bad', 'Red: 3+ high risks unmitigated'];
+  const status = wqStatus(kind, text);
+  status.title = DL_RISK_RULE;
+  head.append(status);
   el.append(head);
 
+  // two scopes, each labelled: the board's open exposure, and the phase's with its change since baseline
+  const board = node('div', 'wq-exposure');
+  board.append(node('span', 'wq-sub', `Board: open exposure ${exposure} across ${mxPlural(d.live.length, 'risk')}`));
+  el.append(board);
   const exp = node('div', 'wq-exposure');
-  exp.append(node('span', 'wq-sub', `open exposure ${exposure} across ${mxPlural(d.live.length, 'risk')}`));
+  const scope = d.base?.title ?? d.phase?.title ?? null;
+  exp.append(node('span', 'wq-sub', !d.phase ? 'Phase: no active phase' : d.phaseNow === null ? `Phase ${scope ?? ''}: no snapshot yet` : `Phase ${scope ?? ''}: exposure ${d.phaseNow}`));
   const chip = node('span', 'dw-delta');
   chip.setAttribute('role', 'img');
   if (d.base) {
@@ -315,9 +348,8 @@ function wqRisksRender(el, d, ctx) {
       chg.append(arrow);
     }
     chg.append(node('span', 'dw-d-val', c ? `${c > 0 ? '+' : '−'}${Math.abs(c)}` : '±0'));
-    const scope = d.base.title ? `phase ${d.base.title}` : 'phase';
-    chip.append(chg, node('span', 'dw-d-vs', `${scope} vs ${wqDay(d.base.from)} baseline`));
-    chip.setAttribute('aria-label', `Risk score of the ${scope} ${c ? `${c > 0 ? 'up' : 'down'} ${Math.abs(c)}` : 'unchanged'} since its ${wqDay(d.base.from)} baseline${c ? (c > 0 ? ', worse' : ', better') : ''}`);
+    chip.append(chg, node('span', 'dw-d-vs', `vs ${wqDay(d.base.from)} baseline`));
+    chip.setAttribute('aria-label', `Risk exposure of phase ${scope ?? ''} ${c ? `${c > 0 ? 'up' : 'down'} ${Math.abs(c)}` : 'unchanged'} since its ${wqDay(d.base.from)} baseline${c ? (c > 0 ? ', worse' : ', better') : ''}`);
   } else {
     chip.classList.add('dw-d-flat');
     chip.append(node('span', 'dw-d-chg', 'No baseline'));
@@ -345,10 +377,13 @@ function wqRisksRender(el, d, ctx) {
     if (ctx.size === 'L') meta.append(node('span', 'wq-dim', `${r.likelihood}×${r.impact} · ${r.status}`));
     main.append(meta);
     const m = wqMitigated(r);
-    const mit = node('span', `wq-mit ${m ? 'wq-ok' : r.score >= 15 ? 'wq-bad' : 'wq-warn'}`);
-    const ico = node('span', 'wq-ico', m ? WQ_ICONS.ok : WQ_ICONS.warn);
+    const hr = dlHighRisk(r); // high + open: 'bad' with no mitigation, 'warn' with one
+    const [mk, mt] = hr === 'bad' ? ['bad', 'No mitigation'] : hr === 'warn' ? ['warn', 'Mitigated, still open'] : m ? ['ok', 'Has mitigation'] : ['warn', 'No mitigation'];
+    const mit = node('span', `wq-mit wq-${mk}`);
+    if (hr) mit.title = DL_RISK_RULE;
+    const ico = node('span', 'wq-ico', WQ_ICONS[mk]);
     ico.setAttribute('aria-hidden', 'true');
-    mit.append(ico, node('span', '', m ? 'Has mitigation' : 'No mitigation'));
+    mit.append(ico, node('span', '', mt));
     btn.append(score, main, mit);
     li.append(btn);
     list.append(li);

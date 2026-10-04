@@ -368,6 +368,12 @@ export interface CostOptions {
   remainingByPhase?: Map<string, number>;
   /** Committed plans: their card ids. */
   plans?: { id: string; title: string; cardIds: string[] }[];
+  /**
+   * The scope's runs priced WITHOUT the phase filter (default: pricing.rows). Budgets (actual and the
+   * median done-card cost) come from them, so a phase's projection is the same with or without a
+   * phase filter.
+   */
+  scopeRows?: PricedRow[];
 }
 
 export interface CostPhase {
@@ -423,7 +429,8 @@ export interface CostMetrics {
   weekly: { week: string; start: string; cost: number }[];
   /**
    * Median all-time cost of the scope's done cards (the budget projection's per-card cost), null with none.
-   * Like budgets, it ignores the tag / agent / workType filter.
+   * Like budgets, it ignores the tag / agent / workType filter, and the phase filter too: it's always
+   * over every done card on the scope's boards, so a projection never depends on the phase filter.
    */
   medianCardCost: number | null;
   /** Always over ALL the phase's work: a tag / agent / workType filter never narrows a budget. */
@@ -544,9 +551,10 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
   if (est.runs) caveats.push(TOKENS_CAVEAT);
 
   // budgets: all-time actual per phase over ALL its runs (no tag/agent/workType filter),
-  // projected with the median done-card cost
+  // projected with the median done-card cost. Both come from the scope's rows priced without the
+  // phase filter (opts.scopeRows), so a phase's projection is the same with or without it.
   const allTime = new Map<string, { cost: number; phase: string | null; done: boolean }>();
-  for (const r of pricing.rows) {
+  for (const r of opts.scopeRows ?? pricing.rows) {
     const c = allTime.get(r.task_id) ?? { cost: 0, phase: r.card?.phase_id ?? null, done: r.card?.lane === 'done' };
     c.cost += r.cost;
     allTime.set(r.task_id, c);
@@ -662,6 +670,8 @@ export function costMetrics(
   if (opts.limit !== undefined && (!Number.isInteger(opts.limit) || opts.limit < 1)) throw new MetricsParamError('limit must be >= 1');
   const table = getPrices(db);
   const pricing = priceRows(loadCostRows(db, filter.projectIds, filter.phaseId), table);
+  // the budgets' basis (actual + median card cost): the whole scope, priced as the unfiltered read prices it
+  const scopeRows = filter.phaseId === undefined ? pricing.rows : priceRows(loadCostRows(db, filter.projectIds), table).rows;
   const qs = filter.projectIds.map(() => '?').join(', ');
   const boardIds = filter.projectIds.length
     ? (db
@@ -686,5 +696,5 @@ export function costMetrics(
       .all(...boardIds.map((b) => b.id)) as { phase_id: string; n: number }[];
     for (const r of rows) remainingByPhase.set(r.phase_id, r.n);
   }
-  return aggregateCost(pricing, table, filter, { ...opts, boardNames, phases, remainingByPhase });
+  return aggregateCost(pricing, table, filter, { ...opts, boardNames, phases, remainingByPhase, scopeRows });
 }
