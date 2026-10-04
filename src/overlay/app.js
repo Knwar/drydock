@@ -5515,9 +5515,16 @@ async function homeMeta() {
   return hctx.meta;
 }
 function homeSetFilter(patch) {
+  const liveKey = fbParams(hctx, true, false);
   hctx.f = { ...hctx.f, ...patch, tz: MX_LOCAL_TZ };
   if (hctx.lockScope) hctx.f.scope = hctx.lockScope;
   fbSyncUrl('home', hctx);
+  // only the range changed: /home (live state) stands, so no refetch and no "Loading…";
+  // just the widgets reading the range (agent history, KPIs) reload
+  if (home.data && home.key === liveKey && fbParams(hctx, true, false) === liveKey && typeof dwRangeRefresh === 'function') {
+    renderHomeFilters(true);
+    return dwRangeRefresh();
+  }
   renderHome(); // "Loading…" until /home for these filters lands
   renderHomeFilters(true);
   loadHome();
@@ -5527,7 +5534,8 @@ function homeSetFilter(patch) {
 function renderHomeFilters(force) {
   const host = $('home-filters');
   if (!host || EMBED) return;
-  const opts = { fields: homeFields(), onChange: homeSetFilter, barId: 'home-fb-bar' };
+  // fields read live: a deferred redraw (focus left the bar) after the meta landed shows Scope too
+  const opts = { get fields() { return homeFields(); }, onChange: homeSetFilter, barId: 'home-fb-bar' };
   if (force) filterChip(host, hctx, opts);
   else if (hctx.filtersStale) filterChipSoft(host, hctx, opts);
 }

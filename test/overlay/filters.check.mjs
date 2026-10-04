@@ -1,5 +1,5 @@
-// Headless checks of the overlay's shared filters + drill-down on the dashboard and Home
-// (card dc4c1045). Self-contained: starts its own daemon on a scratch DB + port, seeds ~8
+// Headless checks of the overlay's shared filters + drill-down on Home (its chip, Range control
+// and widgets) and the OBS dashboard embed (URL filters) (cards dc4c1045, 978c61fa). Self-contained: starts its own daemon on a scratch DB + port, seeds ~8
 // weeks of data (metrics-seed.mjs), drives Chrome, then kills the daemon and removes the DB.
 // Not part of `npm test` (needs Chrome + playwright-core). Run from the repo root:
 //
@@ -125,366 +125,421 @@ async function docKeydownListeners() {
   return listeners.filter((l) => l.type === 'keydown').length;
 }
 
-// ================= DASHBOARD =================
-const D = '.dash-filters';
-const dsel = (label) => `${D} label.mx-field:has(> span:text-is("${label}")) select`;
-const settledDash = () =>
-  page.waitForFunction(
-    () => document.querySelector('.dash-tile') && ![...document.querySelectorAll('.dt-lane-n')].some((e) => e.textContent === '…') && typeof dctx !== 'undefined' && dctx.meta && !document.querySelector('.fb-bar .mx-dim'),
-    null,
-    { timeout: 15000 },
-  );
-async function tileCounts() {
-  return page.$$eval('.dash-tile', (ts) =>
+// The overlay's data reads still on the wire: page.on('request') +1, finished / failed -1.
+let inflight = 0;
+page.on('request', () => inflight++);
+page.on('requestfinished', () => inflight--);
+page.on('requestfailed', () => inflight--);
+async function quiet() {
+  for (let i = 0, still = 0; i < 200; i++) {
+    if (inflight <= 0) {
+      if (++still >= 4) return;
+    } else still = 0;
+    await page.waitForTimeout(100);
+  }
+  throw new Error(`network never went quiet (${inflight} in flight)`);
+}
+// every request of the page (url strings) from now on, until stopped
+function reqWatch(pg = page) {
+  const list = [];
+  const on = (r) => list.push(r.url());
+  pg.on('request', on);
+  list.stop = () => pg.off('request', on);
+  return list;
+}
+const paths = (list) => list.map((u) => new URL(u).pathname);
+const LIVE_READS = ['/home', '/workspace/summary', '/workspace/cards'];
+// Monday of the week (n - 1) weeks back, local midnight: a rolling n-week range's start (mxWindow)
+function weeksFrom(n) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7) - 7 * (n - 1));
+  return d.getTime();
+}
+const from2w = weeksFrom(2);
+const from4w = weeksFrom(4);
+const allBoards = BOARDS.map((k) => seed[k]);
+const texts = (sel) => page.$$eval(sel, (es) => es.map((e) => e.textContent));
+async function tileCounts(sel) {
+  return page.$$eval(sel, (ts) =>
     Object.fromEntries(ts.map((t) => [t.dataset.id, Object.fromEntries([...t.querySelectorAll('.dt-lane')].map((l) => [l.dataset.lane, Number(l.querySelector('.dt-lane-n').textContent.split('/')[0])]))])),
   );
 }
-async function expectTiles(f, boards, msg) {
-  await settledDash();
-  await page.waitForTimeout(150);
-  const got = await tileCounts();
+async function expectTiles(sel, f, boards, msg) {
+  const got = await tileCounts(sel);
   const want = Object.fromEntries(boards.map((b) => [b, counts(f, b)]));
   ok(JSON.stringify(Object.keys(got).sort()) === JSON.stringify([...boards].sort()), `${msg}: tiles shown`, { got: Object.keys(got), want: boards });
   const bad = boards.filter((b) => JSON.stringify(got[b]) !== JSON.stringify(want[b]));
   ok(!bad.length, `${msg}: lane counts match the data`, bad.map((b) => ({ b, got: got[b], want: want[b] })));
 }
-const allBoards = BOARDS.map((k) => seed[k]);
 
-await page.goto(`${base}/?project=${seed.ws}&view=dashboard`);
-await settledDash();
+// ================= DASHBOARD (embed / OBS: filters from the URL only) =================
+// The interactive Dashboard view is gone (?view=dashboard without embed lands on Home, whose
+// workspace-boards widget carries the tiles); the embed still renders the server-filtered summary.
+const DT = '#dashboard-view .dash-tile';
+const embedUrl = (q = '') => `${base}/?project=${seed.ws}&view=dashboard&embed=1${q ? `&${q}` : ''}`;
+async function embed(q) {
+  await page.goto(embedUrl(q));
+  await page.waitForFunction(
+    () => document.querySelector('#dashboard-view .dash-tile') && dash.summary && dash.summaryKey === fbParams(dctx, true) && ![...document.querySelectorAll('.dt-lane-n')].some((e) => e.textContent === '…'),
+    null,
+    { timeout: 15000 },
+  );
+  await quiet();
+}
 {
-  const got = await tileCounts();
-  const want = Object.fromEntries(summary.boards.map((b) => [b.project.id, b.lanes]));
-  // unfiltered: the summary's counts (+1 backlog on api from the waiter card)
-  ok(allBoards.every((b) => JSON.stringify(got[b]) === JSON.stringify(counts({}, b))), 'unfiltered: tiles = the board data', { got, want });
-  ok((await page.$eval(`${D} .fb-chip`, (e) => e.textContent)) === 'Filters▾' && !(await page.$(`${D} .fb-clear`)), 'unfiltered: plain "Filters" chip, no Clear');
-  ok(!(await page.$(`${D} .fb-bar`)), 'chip collapsed by default');
+  const reqs = reqWatch();
+  await embed();
+  reqs.stop();
+  await expectTiles(DT, {}, allBoards, 'embed unfiltered');
+  ok(!(await page.$('.fb-chip')) && !(await page.$('button.dt-lane')), 'embed: no chip, no drill buttons');
+  ok(!reqs.some((u) => u.includes('/workspace/cards?') || u.includes('/board?project=')), 'embed without filters: no filter data loaded', reqs.filter((u) => u.includes('/workspace/cards?') || u.includes('/board?')));
   await shot('dash-1-unfiltered');
 }
-const kd0 = await docKeydownListeners();
-
-// expand, tag = ui
-await page.click(`${D} .fb-chip`);
-await page.waitForSelector(`${D} .fb-bar`);
-ok((await page.$$eval(`${D} .fb-bar label.mx-field > span`, (es) => es.map((e) => e.textContent))).join('|') === 'Scope|Phase|Tag|Agent', 'expanded bar: Scope, Phase, Tag, Agent (+ range), no tz');
-ok(!!(await page.$(`${D} .fb-bar .mx-seg`)) && !(await page.$(`${D} .fb-bar .mx-tz`)), 'range shown, time zone hidden');
-await page.selectOption(dsel('Tag'), 'ui');
-await expectTiles({ tag: 'ui' }, allBoards, 'tag ui');
-ok(param('view') === 'dashboard' && param('tag') === 'ui' && keysIn().join() === 'tag', 'tag ui: URL-backed (view=dashboard&tag=ui)', page.url());
-ok((await page.$eval(`${D} .fb-chip-v`, (e) => e.textContent)) === 'ui' && !!(await page.$(`${D} .fb-clear`)), 'chip names "ui", Clear shown');
+await embed('tag=ui');
+await expectTiles(DT, { tag: 'ui' }, allBoards, 'embed tag ui');
 {
-  // Needs you: attention items whose card has tag ui; no waiting sessions under a tag filter
   const want = summary.attention.filter((i) => cards.find((c) => c.id === i.card_id)?.tag === 'ui').map((i) => i.title);
-  const got = await page.$$eval('.dash-attn .att-title', (es) => es.map((e) => e.textContent));
-  ok(JSON.stringify(got) === JSON.stringify(want), 'tag ui: Needs you list filtered', { got, want });
+  const got = await texts('.dash-attn .att-title');
+  ok(JSON.stringify(got) === JSON.stringify(want), 'embed tag ui: Needs you list filtered', { got, want });
+  const inflight = (await texts(`${DT} .dt-card-title`)).sort();
+  const wantIn = cards.filter((c) => ['in_progress', 'in_review'].includes(c.lane) && c.tag === 'ui').map((c) => c.title).sort();
+  ok(JSON.stringify(inflight) === JSON.stringify(wantIn), 'embed tag ui: in-flight cards on tiles filtered', { inflight, wantIn });
+  await shot('dash-2-tag-ui');
 }
-{
-  // active cards on tiles: only ui ones
-  const got = await page.$$eval('.dash-tile .dt-card-title', (es) => es.map((e) => e.textContent).sort());
-  const want = cards.filter((c) => ['in_progress', 'in_review'].includes(c.lane) && c.tag === 'ui').map((c) => c.title).sort();
-  ok(JSON.stringify(got) === JSON.stringify(want), 'tag ui: in-flight cards on tiles filtered', { got, want });
-}
-await shot('dash-2-tag-ui');
-
-// + agent Ada
-await page.selectOption(dsel('Agent'), 'Ada');
-await expectTiles({ tag: 'ui', agent: 'Ada' }, allBoards, 'tag ui + agent Ada');
-ok((await page.$eval(`${D} .fb-chip-v`, (e) => e.textContent)) === 'ui · Ada', 'chip: "ui · Ada"');
-
-// phase Web checkout (tag / agent cleared first)
-await page.selectOption(dsel('Tag'), '');
-await page.selectOption(dsel('Agent'), '');
-await page.selectOption(dsel('Phase'), seed.phases.webCheckout);
-await expectTiles({ phase: seed.phases.webCheckout }, [seed.web], 'phase Web checkout → web tile only');
+await embed('tag=ui&agent=Ada');
+await expectTiles(DT, { tag: 'ui', agent: 'Ada' }, allBoards, 'embed tag ui + agent Ada');
+await embed(`phase=${seed.phases.webCheckout}`);
+await expectTiles(DT, { phase: seed.phases.webCheckout }, [seed.web], 'embed phase Web checkout → web tile only');
 {
   const want = summary.attention.filter((i) => i.phase_id === seed.phases.webCheckout).map((i) => i.title);
-  const got = await page.$$eval('.dash-attn .att-title', (es) => es.map((e) => e.textContent));
-  ok(JSON.stringify(got) === JSON.stringify(want), 'phase: Needs you filtered to the phase', { got, want });
+  const got = await texts('.dash-attn .att-title');
+  ok(JSON.stringify(got) === JSON.stringify(want), 'embed phase: Needs you filtered to the phase', { got, want });
   const inPhase = cards.filter((c) => c.phase_id === seed.phases.webCheckout);
-  const bar = await page.$eval(`.dash-tile[data-id="${seed.web}"] .dt-phase-n`, (e) => e.textContent);
-  ok(bar === `${inPhase.filter((c) => c.lane === 'done').length}/${inPhase.length}`, 'phase: the tile\'s phase bar is that phase', bar);
+  const bar = await page.$eval(`${DT}[data-id="${seed.web}"] .dt-phase-n`, (e) => e.textContent);
+  ok(bar === `${inPhase.filter((c) => c.lane === 'done').length}/${inPhase.length}`, "embed phase: the tile's phase bar is that phase", bar);
 }
-ok(param('phase') === seed.phases.webCheckout, 'phase in the URL');
-
-// scope api (phase dropped: not on api)
-await page.selectOption(dsel('Scope'), seed.api);
-await expectTiles({ scope: seed.api }, [seed.api], 'scope api → api tile only');
-ok(param('scope') === seed.api && !param('phase'), 'scope in the URL; the other board\'s phase dropped');
+await embed(`scope=${seed.api}`);
+await expectTiles(DT, { scope: seed.api }, [seed.api], 'embed scope api → api tile only');
 {
   const want = summary.attention.filter((i) => i.project_id === seed.api).map((i) => i.title);
-  const got = await page.$$eval('.dash-attn .att-title', (es) => es.map((e) => e.textContent));
-  ok(JSON.stringify(got) === JSON.stringify(want), 'scope api: Needs you = api items', { got, want });
-  ok((await page.$eval('.dash-attn .da-count', (e) => e.textContent)) === String(want.length), 'scope api: needs-you count', want.length);
-  ok((await page.$eval('.dash-head-stats', (e) => e.textContent)).startsWith('1 board'), 'head: 1 board');
-  ok((await page.$eval(`${D} .fb-chip-v`, (e) => e.textContent)) === 'api', 'chip: "api"');
+  const got = await texts('.dash-attn .att-title');
+  ok(JSON.stringify(got) === JSON.stringify(want), 'embed scope api: Needs you = api items', { got, want });
+  ok((await page.$eval('.dash-attn .da-count', (e) => e.textContent)) === String(want.length), 'embed scope api: needs-you count', want.length);
+  ok((await page.$eval('.dash-head-stats', (e) => e.textContent)).startsWith('1 board'), 'embed head: 1 board');
 }
-await shot('dash-3-scope-api');
-
-// range 2w: done counts only
-await page.selectOption(dsel('Scope'), seed.ws);
-await page.click(`${D} .mx-seg-btn:text-is("2w")`);
-const from2w = twoWeeksFrom();
-await expectTiles({ from: from2w }, allBoards, 'range 2w (done counts only)');
-ok(param('range') === '2w' && keysIn().join() === 'range', 'range in the URL (scope back to default: omitted)', page.url());
-ok((await page.$eval(`.dash-tile[data-id="${seed.web}"] .dt-lane[data-lane="done"] .dt-lane-l`, (e) => e.textContent)) === 'done 2w', 'done lane labelled "done 2w"');
-ok((await page.$eval(`${D} .fb-chip-v`, (e) => e.textContent)) === 'done in 2w', 'chip: "done in 2w"');
+await embed('range=2w');
+await expectTiles(DT, { from: from2w }, allBoards, 'embed range 2w (done counts only)');
+ok((await page.$eval(`${DT}[data-id="${seed.web}"] .dt-lane[data-lane="done"] .dt-lane-l`, (e) => e.textContent)) === 'done 2w', 'embed: done lane labelled "done 2w"');
 {
-  // custom range: 10 days ago … 3 days ago (inclusive local days)
   const day = (n) => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
     d.setDate(d.getDate() - n);
     return d;
   };
-  await page.click(`${D} .mx-range .mx-chip`);
-  await page.fill(`${D} .mx-pop-field:has-text("From") input`, localDay(day(10)));
-  await page.fill(`${D} .mx-pop-field:has-text("To") input`, localDay(day(3)));
-  await page.click(`${D} .mx-pop .mx-btn.primary`);
-  await expectTiles({ from: day(10).getTime(), to: day(2).getTime() }, allBoards, 'custom range (done counts)');
-  ok(param('range') === 'custom' && param('from') === localDay(day(10)) && param('to') === localDay(day(3)), 'custom range in the URL', page.url());
-  ok((await page.$eval(`.dash-tile[data-id="${seed.web}"] .dt-lane[data-lane="done"] .dt-lane-l`, (e) => e.textContent)) === `done ${shortDay(day(10))}–${shortDay(day(3))}`, 'custom: done lane names the range');
-  await shot('dash-3b-custom-range');
-  await page.click(`${D} .mx-seg-btn:text-is("2w")`);
+  await embed(`range=custom&from=${localDay(day(10))}&to=${localDay(day(3))}`);
+  await expectTiles(DT, { from: day(10).getTime(), to: day(2).getTime() }, allBoards, 'embed custom range (done counts)');
+  ok((await page.$eval(`${DT}[data-id="${seed.web}"] .dt-lane[data-lane="done"] .dt-lane-l`, (e) => e.textContent)) === `done ${shortDay(day(10))}–${shortDay(day(3))}`, 'embed custom: done lane names the range');
+  await shot('dash-3-custom-range');
 }
-
-// URL round trip: tag + range, reload
-await page.click(`${D} .fb-chip`); // collapse
-await page.click(`${D} .fb-chip`); // expand again
-await page.selectOption(dsel('Tag'), 'api');
-await settledDash();
-const before = page.url();
-await page.reload();
-await settledDash();
-ok(page.url() === before, 'reload keeps the URL', { before, after: page.url() });
-await expectTiles({ tag: 'api', from: from2w }, allBoards, 'after reload: tag api + 2w');
-ok((await page.$eval(`${D} .fb-chip-v`, (e) => e.textContent)) === 'api · done in 2w', 'after reload: chip "api · done in 2w"');
-
-// ---- drill-down: a lane count ----
-{
-  const f = { tag: 'api', from: from2w };
-  await page.click(`.dash-tile[data-id="${seed.api}"] .dt-lane[data-lane="queued"]`);
-  await page.waitForSelector('#dashboard-view .mx-drill');
-  const want = cards.filter((c) => c.board === seed.api && c.lane === 'queued' && match(f, c));
-  const rows = await page.$$eval('.mx-drill-row', (rs) => rs.map((r) => ({ t: r.querySelector('.mx-drill-title').textContent, m: r.querySelector('.mx-drill-meta').textContent, open: !!r.querySelector('.mx-btn') })));
-  ok(JSON.stringify(rows.map((r) => r.t).sort()) === JSON.stringify(want.map((c) => c.title).sort()), 'drill api queued: the matching cards', { rows, want: want.map((c) => c.title) });
-  ok(rows.every((r, i) => r.m.startsWith('api · ') && r.m.includes('Queued') && r.open), 'drill rows: board · agent · lane, with Open', rows);
-  const agentsOk = rows.every((r) => want.some((c) => r.m.includes(c.agent ?? 'unassigned')));
-  ok(agentsOk, 'drill rows name the agent');
-  ok((await page.$eval('#mx-drill-title', (e) => e.textContent)) === `${want.length} cards in Queued` || (await page.$eval('#mx-drill-title', (e) => e.textContent)) === `${want.length} card in Queued`, 'drill title: N cards in Queued');
-  ok((await page.$eval('.mx-drill-foot .mx-btn.primary', (e) => e.textContent)) === `Open all ${want.length} in Kanban`, '"Open all N in Kanban"');
-  ok((await page.$eval('.mx-drill-sub', (e) => e.textContent)).includes('tag api'), 'drill sub names the filters');
-  await shot('dash-4-drill-queued');
-  await page.keyboard.press('Escape');
-  ok(!(await page.$('.mx-drill')), 'Esc closes the drill');
-}
-{
-  // done count under the range
-  const f = { tag: 'api', from: from2w };
-  await page.click(`.dash-tile[data-id="${seed.api}"] .dt-lane[data-lane="done"]`);
-  await page.waitForSelector('#dashboard-view .mx-drill');
-  const want = cards.filter((c) => c.board === seed.api && c.lane === 'done' && match(f, c));
-  const n = await page.$$eval('.mx-drill-row', (rs) => rs.length);
-  ok(n === want.length, 'drill api done (2w, tag api): count', { n, want: want.length });
-  ok((await page.$eval('.mx-drill-sub', (e) => e.textContent)).startsWith('done in 2w'), 'done drill names the range');
-  await shot('dash-5-drill-done');
-  await page.click('.mx-drill-close');
-}
-// needs-you count
-await page.click(`${D} .fb-clear`);
-await settledDash();
-ok(keysIn().length === 0 && param('view') === 'dashboard', 'Clear: filter keys gone from the URL', page.url());
-ok((await page.$eval(`${D} .fb-chip`, (e) => e.textContent)).startsWith('Filters') && !(await page.$(`${D} .fb-chip-v`)), 'Clear: chip back to "Filters"');
-await expectTiles({}, allBoards, 'after Clear');
-{
-  await page.click('.dash-attn .da-count');
-  await page.waitForSelector('#dashboard-view .mx-drill');
-  const titles = await page.$$eval('.mx-drill-row .mx-drill-title', (es) => es.map((e) => e.textContent).sort());
-  const want = summary.attention.map((i) => i.title).sort();
-  ok(JSON.stringify(titles) === JSON.stringify(want), 'needs-you count → drill of the items', { titles, want });
-  const groups = await page.$$eval('.mx-drill-alls .mx-btn', (es) => es.map((e) => e.textContent));
-  ok(groups.length >= 2, 'several boards → one "Open N in <board>" per board', groups);
-  await shot('dash-6-drill-needs-you');
-  // Open all in Kanban (Main board = this project) → Kanban highlight
-  const mainBtn = groups.find((g) => g.endsWith('in Main'));
-  await page.click(`.mx-drill-alls .mx-btn:text-is("${mainBtn}")`);
-  await page.waitForTimeout(400);
-  const nMain = summary.attention.filter((i) => i.project_id === seed.ws).length;
-  ok((await page.$eval('#rail-kanban', (e) => e.classList.contains('active'))) && (await page.$$('.card.mx-hl')).length === nMain, 'Open all → Kanban with the cards highlighted', nMain);
-  ok(param('view') !== 'dashboard' && keysIn().length === 0, 'left the dashboard: view + keys gone from the URL', page.url());
-}
-// leave with filters on → cleared
-await page.click('#rail-dashboard');
-await settledDash();
-await page.click(`${D} .fb-chip`);
-await page.selectOption(dsel('Tag'), 'db');
-await settledDash();
-ok(param('tag') === 'db', 'tag db set');
-await page.click(`.dash-tile[data-id="${seed.ws}"] .dt-lane[data-lane="backlog"]`);
-await page.waitForSelector('#dashboard-view .mx-drill');
-await page.click('#rail-kanban');
-ok(!(await page.$('.mx-drill')), 'switching views closes an open drill');
-ok(keysIn().length === 0 && param('view') !== 'dashboard', 'leaving the dashboard clears its filters from the URL', page.url());
-await page.click('#rail-dashboard');
-await settledDash();
-ok((await page.$eval(`${D} .fb-chip`, (e) => e.textContent)).startsWith('Filters') && !(await page.$(`${D} .fb-chip-v`)), 'coming back: no filters');
-// Metrics still starts clean after the dashboard had filters
-await page.click(`${D} .fb-chip`);
-await page.selectOption(dsel('Tag'), 'ui');
-await settledDash();
-await page.click('#rail-metrics');
-await page.waitForTimeout(500);
-ok(param('view') === 'metrics' && !param('tag'), 'dashboard → Metrics: the dashboard\'s tag does not leak into Metrics', page.url());
-await page.click('#rail-dashboard');
-await settledDash();
-ok(!param('tag') && !(await page.$(`${D} .fb-chip-v`)), 'Metrics → dashboard: clean');
-const kd1 = await docKeydownListeners();
-ok(kd1 === kd0, 'no keydown listeners leaked (drills opened / closed, views switched)', { kd0, kd1 });
+await embed('tag=api&range=2w');
+await expectTiles(DT, { tag: 'api', from: from2w }, allBoards, 'embed tag api + 2w');
 
 // ================= HOME =================
 const H = '#home-filters';
+const W = (t) => `.dw-widget[data-widget-type="${t}"]`;
+const HT = `${W('workspace-boards')} .dash-tile`;
 const hsel = (label) => `${H} label.mx-field:has(> span:text-is("${label}")) select`;
-const settledHome = () =>
-  page.waitForFunction(() => typeof hctx !== 'undefined' && hctx.meta && home.data && !document.querySelector('#home-upnext .home-empty')?.textContent.startsWith('Loading') && ![...document.querySelectorAll('.home-vlane')].some((e) => e.textContent.startsWith('…')), null, { timeout: 15000 });
-const homeAll = await api(`/home?project=${seed.ws}`);
-const texts = (sel) => page.$$eval(sel, (es) => es.map((e) => e.textContent));
-async function homeNow() {
-  const hero = await page.$eval('#home-now .home-hero-title', (e) => e.textContent);
-  const rest = await texts('#home-now .home-other-title');
-  return hero === 'Nothing in flight' || hero === 'Nothing matching in flight' ? [] : [hero, ...rest];
+// /home for the current filters landed, the widgets painted (no skeletons), the reads done
+async function settledHome() {
+  await page.waitForFunction(
+    () => typeof hctx !== 'undefined' && hctx.meta && home.data && home.key === fbParams(hctx, true, false) && document.querySelector('.dw-widget') && !document.querySelector('.dw-skel') && !document.querySelector(`${'#home-filters'} .fb-bar .mx-dim`),
+    null,
+    { timeout: 15000 },
+  );
+  await quiet();
 }
-await page.click('#rail-home');
-await settledHome();
-ok(JSON.stringify(await homeNow()) === JSON.stringify(homeAll.now_building.map((x) => x.title)), 'Home unfiltered: Now building = /home');
-ok(JSON.stringify(await texts('#home-upnext .home-uptitle')) === JSON.stringify(homeAll.up_next.items.map((x) => x.title)), 'Home unfiltered: Up next = /home');
-ok((await page.$eval(`${H} .fb-chip`, (e) => e.textContent)) === 'Filters▾', 'Home: compact Filters chip');
-await shot('home-1-unfiltered');
+const homeAll = await api(`/home?project=${seed.ws}`);
+// what the live widgets show: Now building (hero + rows), Up next, the agent rows, the board tiles
+const liveSnap = async () => ({
+  now: await texts(`${W('now-building')} :is(.wnb-title, .wnb-row-title)`),
+  up: await texts(`${W('up-next')} .home-uptitle`),
+  agents: await texts(`${W('active-agents')} .aa-row .aa-name`),
+  tiles: await tileCounts(HT),
+});
+const prefixOf = (shown, all) => shown.length > 0 && JSON.stringify(shown) === JSON.stringify(all.slice(0, shown.length));
+// expand the chip's bar unless it's open already (a Clear leaves it open; the chip toggles)
+async function openBar() {
+  if (!(await page.$(`${H} .fb-bar`))) await page.click(`${H} .fb-chip`);
+  await page.waitForSelector(`${H} .fb-bar`);
+}
+const chipText = () => page.$eval(`${H} .fb-chip`, (e) => e.textContent);
+const chipV = async () => (await page.$(`${H} .fb-chip-v`)) && page.$eval(`${H} .fb-chip-v`, (e) => e.textContent);
 
-// scope api: cross-check with the server's own /home for the api vertical
-await page.click(`${H} .fb-chip`);
-ok((await page.$$eval(`${H} .fb-bar label.mx-field > span`, (es) => es.map((e) => e.textContent))).join('|') === 'Scope|Phase|Tag|Agent' && !(await page.$(`${H} .fb-bar .mx-seg`)), 'Home bar: Scope, Phase, Tag, Agent; no range');
+// ---- a fresh Home: 4 weeks, unfiltered ----
+let homeReqs = reqWatch();
+await page.goto(`${base}/?project=${seed.ws}&view=dashboard`); // the old Dashboard link lands on Home
+await settledHome();
+homeReqs.stop();
+const kd0 = await docKeydownListeners();
+{
+  ok(param('view') === 'home' || param('view') === 'dashboard', 'view=dashboard (not embedded) opens Home', page.url());
+  ok(!(await page.$('#home-view.hidden')) && (await page.$eval('#rail-home', (e) => e.classList.contains('active'))), 'Home is the active view');
+  const s = await liveSnap();
+  ok(prefixOf(s.now, homeAll.now_building.map((x) => x.title)), 'Home unfiltered: Now building = /home', { got: s.now });
+  ok(prefixOf(s.up, homeAll.up_next.items.map((x) => x.title)), 'Home unfiltered: Up next = /home', { got: s.up });
+  await expectTiles(HT, {}, allBoards, 'Home unfiltered: board tiles');
+  ok((await page.evaluate(() => hctx.f.range)) === '4w', 'fresh Home: range is 4 weeks');
+  ok(!keysIn().length, 'fresh Home: the default 4w writes no range key to the URL', page.url());
+  ok((await chipText()) === 'Filters▾' && !(await page.$(`${H} .fb-clear`)), 'fresh Home: plain "Filters" chip (no range label, no filtered badge), no Clear', await chipText());
+  ok(!(await page.$(`${H} .fb-chip.on`)), 'fresh Home: chip not marked filtered');
+  // the range reaches the range-aware reads: the KPI budget's /metrics/cost and (below) the agent history
+  const cost = homeReqs.filter((u) => new URL(u).pathname === '/metrics/cost').map((u) => new URL(u).searchParams.get('from'));
+  ok(cost.length > 0 && cost.every((f) => Number(f) === from4w), 'KPI read (/metrics/cost) carries the 4w from', { cost, from4w });
+  const live = homeReqs.filter((u) => ['/home', '/workspace/summary'].includes(new URL(u).pathname));
+  ok(live.length > 0 && live.every((u) => !/[?&](from|to|range)=/.test(u)), 'live reads (/home, /workspace/summary) carry no range', live);
+  await shot('home-1-fresh');
+}
+// expand: fields + the shared range control
+await openBar();
+await page.waitForSelector(`${H} .fb-bar`);
+ok((await texts(`${H} .fb-bar label.mx-field > span`)).join('|') === 'Scope|Phase|Tag|Agent|Type', 'Home bar: Scope, Phase, Tag, Agent, Type', await texts(`${H} .fb-bar label.mx-field > span`));
+{
+  const seg = await page.$$eval(`${H} .fb-bar .mx-seg-btn`, (bs) => bs.map((b) => b.textContent + (b.getAttribute('aria-pressed') === 'true' ? '*' : '')));
+  ok(seg.join('|') === '2w|4w*|8w|All', 'Home bar: the shared Range control, 4w pressed, All time available', seg);
+  ok(!!(await page.$(`${H} .fb-bar .mx-range .mx-chip`)) && !(await page.$(`${H} .fb-bar .mx-tz`)), 'Home bar: custom range chip, no time zone');
+}
+
+// ---- the agent panel's history carries the range ----
+{
+  const reqs = reqWatch();
+  await page.click(`${W('active-agents')} .aa-row`);
+  await page.waitForSelector('.aa-delta');
+  await quiet();
+  reqs.stop();
+  const hist = reqs.filter((u) => /\/agents\/[^/]+\/history/.test(new URL(u).pathname)).map((u) => new URL(u).searchParams);
+  ok(hist.length === 1 && Number(hist[0].get('from')) === from4w && hist[0].get('compare') === 'previous', 'agent history read carries the 4w from (compare=previous)', hist.map((q) => q.toString()));
+  ok(!!(await page.$('.aa-delta:is(.aa-d-good, .aa-d-bad)')), 'agent panel at 4w: coloured deltas');
+  ok((await texts('.aa-delta .aa-d-vs')).some((t) => /^vs prev \d+ d$/.test(t)), 'agent panel: "vs prev N d"', await texts('.aa-delta .aa-d-vs'));
+  await shot('home-2-agent-panel-4w');
+}
+
+// the agent panel is modal (its backdrop takes the clicks): the range buttons are pressed directly,
+// as if the range changed under the open panel
+const pickRange = (id) => page.$eval(`${H} .mx-seg-btn[data-fb="range-${id}"]`, (b) => b.click());
+// ---- range All: live widgets unchanged, no live refetch, range-aware reads re-read ----
+{
+  const before = await liveSnap();
+  const reqs = reqWatch();
+  await pickRange('all');
+  const skel = await page.evaluate(() => [...document.querySelectorAll('.dw-widget .dw-skel')].map((e) => e.closest('.dw-widget').dataset.widgetType).concat(document.querySelector('#home-sub').textContent === 'Loading…' ? ['home-sub'] : []));
+  await page.waitForFunction(() => [...document.querySelectorAll('.aa-delta')].every((c) => c.textContent === 'No previous period'), null, { timeout: 10000 });
+  await quiet();
+  reqs.stop();
+  ok(!skel.length, 'range change: no skeleton / "Loading…" flash', skel);
+  ok(!paths(reqs).some((p) => LIVE_READS.includes(p)), 'range change: no /home, /workspace/summary or /workspace/cards refetch', paths(reqs));
+  const hist = reqs.filter((u) => /\/history$/.test(new URL(u).pathname)).map((u) => new URL(u).searchParams);
+  ok(hist.length === 1 && !hist[0].has('from') && !hist[0].has('to'), 'All: the agent history re-read without from / to', hist.map((q) => q.toString()));
+  const cost = reqs.filter((u) => new URL(u).pathname === '/metrics/cost').map((u) => new URL(u).searchParams);
+  ok(cost.length > 0 && cost.every((q) => !q.has('from')), 'All: the KPI read re-read without from', cost.map((q) => q.toString()));
+  const after = await liveSnap();
+  ok(JSON.stringify(after) === JSON.stringify(before), 'All: now-building, up-next, agent rows and board tiles unchanged', { before, after });
+  ok((await texts('.aa-delta')).every((t) => t === 'No previous period') && !(await page.$('.aa-delta:is(.aa-d-good, .aa-d-bad)')), 'All: the agent panel deltas grey ("No previous period")');
+  ok(param('range') === 'all' && keysIn().join() === 'range', 'All: range=all in the URL', page.url());
+  ok((await chipV()) === 'all time' && !!(await page.$(`${H} .fb-chip.on`)), 'All: chip reads "all time"', await chipV());
+  await shot('home-3-all-time');
+  // 2w: the live widgets still unchanged
+  await pickRange('2w');
+  await page.waitForFunction(() => [...document.querySelectorAll('.aa-delta .aa-d-vs')].some((e) => /vs prev/.test(e.textContent)), null, { timeout: 10000 });
+  await quiet();
+  ok(JSON.stringify(await liveSnap()) === JSON.stringify(before), '2w: live widgets unchanged', await liveSnap());
+  await pickRange('all');
+  await quiet();
+  await page.click('.aa-p-close');
+}
+// range=all round-trips through the URL
+{
+  const before = page.url();
+  await page.reload();
+  await settledHome();
+  ok(page.url() === before && (await page.evaluate(() => hctx.f.range)) === 'all', 'reload: range=all comes back from the URL', page.url());
+  ok((await chipV()) === 'all time', 'reload: chip reads "all time"');
+  await openBar();
+  const pressed = await page.$$eval(`${H} .fb-bar .mx-seg-btn[aria-pressed="true"]`, (bs) => bs.map((b) => b.textContent));
+  ok(pressed.join() === 'All', 'reload: All pressed', pressed);
+  // Clear → 4w with a clean URL
+  await page.click(`${H} .fb-clear`);
+  await quiet();
+  ok((await page.evaluate(() => hctx.f.range)) === '4w' && !keysIn().length && param('view') === 'home', 'Clear: back to 4w, URL clean', page.url());
+  ok((await chipText()).startsWith('Filters') && !(await chipV()) && !(await page.$(`${H} .fb-clear`)), 'Clear: chip back to "Filters"');
+}
+// a range-only widget override shares Home's (range-free) live read; another filter doesn't
+{
+  const r = await page.evaluate(async () => {
+    const probe = async (vars) => {
+      const inst = dwWidget({ id: `probe-${Math.random()}`, type: 'now-building', size: 'M', params: { vars } });
+      inst.ctx._cache = dw.cache;
+      const got = await inst.ctx.shared('home', async () => 'fetched');
+      return got === 'fetched' ? 'own' : 'shared';
+    };
+    const out = { range: await probe({ range: 'all' }), tag: await probe({ tag: 'ui' }) };
+    dwPrune();
+    // the override still wins for range-aware reads
+    out.filters = dwFilters({ params: { vars: { range: 'all' } } });
+    out.home = fbParams(hctx);
+    return out;
+  });
+  ok(r.range === 'shared' && r.tag === 'own', "range-only override reuses Home's /home entry; a tag override reads its own", r);
+  ok(r.filters === '' && /from=/.test(r.home), "a widget's range override still wins over Home's range", r);
+}
+
+// ---- Home filters: tag / agent / phase / scope over the board tiles + live widgets ----
+await openBar();
+await page.selectOption(hsel('Tag'), 'ui');
+await settledHome();
+await expectTiles(HT, { tag: 'ui' }, allBoards, 'Home tag ui');
+ok(param('view') === 'home' && param('tag') === 'ui' && keysIn().join() === 'tag', 'tag ui: URL-backed (view=home&tag=ui)', page.url());
+ok((await chipV()) === 'ui' && !!(await page.$(`${H} .fb-clear`)), 'chip names "ui", Clear shown');
+{
+  const inflight = (await texts(`${HT} .dt-card-title`)).sort();
+  const wantIn = cards.filter((c) => ['in_progress', 'in_review'].includes(c.lane) && c.tag === 'ui').map((c) => c.title);
+  ok(inflight.every((t) => wantIn.includes(t)), 'tag ui: in-flight cards on tiles filtered', { inflight, wantIn });
+  await shot('home-4-tag-ui');
+}
+await page.selectOption(hsel('Agent'), 'Ada');
+await settledHome();
+await expectTiles(HT, { tag: 'ui', agent: 'Ada' }, allBoards, 'Home tag ui + agent Ada');
+ok((await chipV()) === 'ui · Ada', 'chip: "ui · Ada"');
+await page.selectOption(hsel('Tag'), '');
+await page.selectOption(hsel('Agent'), '');
+await page.selectOption(hsel('Phase'), seed.phases.webCheckout);
+await settledHome();
+await expectTiles(HT, { phase: seed.phases.webCheckout }, [seed.web], 'Home phase Web checkout → web tile only');
+ok(param('phase') === seed.phases.webCheckout, 'phase in the URL');
+// scope api: cross-check with the server's own /home for the api vertical (phase dropped: not on api)
 await page.selectOption(hsel('Scope'), seed.api);
 await settledHome();
 {
+  await expectTiles(HT, { scope: seed.api }, [seed.api], 'Home scope api → api tile only');
+  ok(param('scope') === seed.api && !param('phase'), "scope in the URL; the other board's phase dropped", page.url());
   const homeApi = await api(`/home?project=${seed.api}`);
-  ok(JSON.stringify(await homeNow()) === JSON.stringify(homeApi.now_building.map((x) => x.title)), 'scope api: Now building = the server\'s api Home', { got: await homeNow(), want: homeApi.now_building.map((x) => x.title) });
-  ok(JSON.stringify(await texts('#home-upnext .home-uptitle')) === JSON.stringify(homeApi.up_next.items.map((x) => x.title)), 'scope api: Up next = the server\'s api Home (same pick order)', { got: await texts('#home-upnext .home-uptitle'), want: homeApi.up_next.items.map((x) => x.title) });
-  ok((await page.$eval('#home-upnext .home-link', (e) => e.textContent)) === `View all ${homeApi.up_next.total_pending} in Kanban →`, 'scope api: total pending = the server\'s', homeApi.up_next.total_pending);
-  ok(JSON.stringify(await texts('.home-vname')) === JSON.stringify(['api']), 'scope api: verticals list = api');
-  ok(param('view') === 'home' && param('scope') === seed.api, 'Home filters URL-backed (view=home&scope=…)', page.url());
+  const s = await liveSnap();
+  ok(prefixOf(s.now, homeApi.now_building.map((x) => x.title)), "scope api: Now building = the server's api Home", { got: s.now, want: homeApi.now_building.map((x) => x.title) });
+  ok(prefixOf(s.up, homeApi.up_next.items.map((x) => x.title)), "scope api: Up next = the server's api Home (same pick order)", { got: s.up, want: homeApi.up_next.items.map((x) => x.title) });
+  ok((await page.$eval(`${W('up-next')} .home-link`, (e) => e.textContent)) === `View all ${homeApi.up_next.total_pending} in Kanban →`, "scope api: total pending = the server's", homeApi.up_next.total_pending);
+  ok((await chipV()) === 'api', 'chip: "api"');
+  await shot('home-5-scope-api');
 }
-await shot('home-2-scope-api');
-
-// tag db within api: queued db card, then the waiter (waiting on the in-progress card)
+// tag db within api: queued db cards first, then the backlog (the waiter waits on an in-progress card)
 await page.selectOption(hsel('Tag'), 'db');
 await settledHome();
 {
   const f = { scope: seed.api, tag: 'db' };
   const q = cards.filter((c) => c.board === seed.api && c.lane === 'queued' && match(f, c)).map((c) => c.title);
   const bl = cards.filter((c) => c.board === seed.api && c.lane === 'backlog' && c.phase_id === seed.phases.apiV1 && match(f, c)).map((c) => c.title);
-  const want = [...q, ...bl].slice(0, 3);
-  ok(JSON.stringify(await texts('#home-upnext .home-uptitle')) === JSON.stringify(want), 'scope api + tag db: Up next', { got: await texts('#home-upnext .home-uptitle'), want });
-  const st = await texts('#home-upnext .home-status');
-  ok(st[st.length - 1] === `Waiting on: ${blocker.title} (api)`, 'the waiter shows "Waiting on: … (api)" and no Queue it', st);
-  const nb = cards.filter((c) => ['in_progress', 'in_review'].includes(c.lane) && match(f, c)).map((c) => c.title);
-  ok(JSON.stringify((await homeNow()).sort()) === JSON.stringify(nb.sort()), 'scope api + tag db: Now building', { got: await homeNow(), nb });
-  const lanes = await page.$eval('.home-vrow .home-vlanes', (e) => e.textContent);
-  const n = counts(f, seed.api);
-  const wantLanes = [['backlog', 'backlog'], ['queued', 'queued'], ['in_progress', 'in prog'], ['in_review', 'review'], ['done', 'done']].map(([l, t]) => `${n[l]} ${t}`).join(' · ');
-  ok(lanes === wantLanes, 'vertical lane counts filtered', { lanes, wantLanes });
-  // agents: those with a matching card
-  const names = [...new Set(cards.filter((c) => c.agent && match(f, c)).map((c) => c.agent))].sort();
-  ok(JSON.stringify((await texts('.home-agent-name')).sort()) === JSON.stringify(names), 'agents strip: members with a matching card', { got: await texts('.home-agent-name'), names });
-  ok((await page.$eval(`${H} .fb-chip-v`, (e) => e.textContent)) === 'api · db', 'Home chip: "api · db"');
+  const want = [...q, ...bl];
+  const up = await texts(`${W('up-next')} .home-uptitle`);
+  ok(prefixOf(up, want), 'scope api + tag db: Up next', { up, want });
+  const homeDb = await api(`/home?project=${seed.ws}&scope=${seed.api}&tag=db`);
+  const w = homeDb.up_next.items.find((x) => x.id === (waiter.task_id ?? waiter.id));
+  ok(!!w && !w.ready && w.waiting_on.some((x) => x.title === blocker.title), "the waiter is Up next's, waiting on the in-progress card", { w, items: homeDb.up_next.items.map((x) => [x.title, x.ready]), total: homeDb.up_next.total_pending, waiter });
+  const nb = cards.filter((c) => ['in_progress', 'in_review'].includes(c.lane) && match(f, c)).map((c) => c.title).sort();
+  const s = await liveSnap();
+  ok(s.now.every((t) => nb.includes(t)) && (nb.length === 0) === (s.now.length === 0), 'scope api + tag db: Now building', { got: s.now, nb });
+  ok((await chipV()) === 'api · db', 'Home chip: "api · db"');
 }
-await shot('home-3-api-db');
-
 // agent filter: just them
 await page.selectOption(hsel('Tag'), '');
 await page.selectOption(hsel('Scope'), seed.ws);
 await page.selectOption(hsel('Agent'), 'Knwar');
 await settledHome();
 {
-  ok(JSON.stringify(await texts('.home-agent-name')) === JSON.stringify(['Knwar']), 'agent Knwar: agents strip = Knwar');
   const want = homeAll.now_building.filter((x) => x.agent === 'Knwar').map((x) => x.title);
-  ok(JSON.stringify(await homeNow()) === JSON.stringify(want), 'agent Knwar: Now building', { got: await homeNow(), want });
-  // Up next: nothing in queued/backlog is Knwar's except queued ones
-  const f = { agent: 'Knwar' };
-  const up = await texts('#home-upnext .home-uptitle');
-  ok(up.every((t) => cards.find((c) => c.title === t)?.agent === 'Knwar'), 'agent Knwar: Up next only Knwar\'s', up);
-  // reload keeps it
+  const s = await liveSnap();
+  ok(prefixOf(s.now, want), 'agent Knwar: Now building', { got: s.now, want });
+  ok(JSON.stringify(s.agents) === JSON.stringify(['Knwar']), 'agent Knwar: agent rows = Knwar', s.agents);
+  ok(s.up.every((t) => cards.find((c) => c.title === t)?.agent === 'Knwar'), "agent Knwar: Up next only Knwar's", s.up);
   const before = page.url();
   await page.reload();
   await settledHome();
-  ok(page.url() === before && JSON.stringify(await texts('.home-agent-name')) === JSON.stringify(['Knwar']), 'Home reload keeps the filters', { before, after: page.url() });
-  // drill: Now building count
-  await page.click('#home-now .home-count');
-  await page.waitForSelector('#home-view .mx-drill');
-  const rows = await texts('.mx-drill-row .mx-drill-title');
-  ok(JSON.stringify(rows.sort()) === JSON.stringify(want.sort()), 'Now building count → drill of those cards', { rows, want });
-  const metas = await texts('.mx-drill-row .mx-drill-meta');
-  ok(metas.every((m) => m.includes('Knwar') && /In Progress|In Review/.test(m)), 'rows carry board · agent · lane', metas);
-  await shot('home-4-drill-now');
-  await page.click('.mx-drill-close');
-  // drill: a vertical's lane count (agent filter applies)
-  await page.click(`.home-vrow:has(.home-vname:text-is("api")) .home-vlane:has-text("done")`);
-  await page.waitForSelector('#home-view .mx-drill');
-  const n = await page.$$eval('.mx-drill-row', (rs) => rs.length);
-  const wantN = cards.filter((c) => c.board === seed.api && c.lane === 'done' && match(f, c)).length;
-  ok(n === wantN, 'vertical done count → drill (agent Knwar)', { n, wantN });
-  ok((await page.$eval('.mx-drill-foot .mx-btn.primary', (e) => e.textContent)) === `Open all ${wantN} in Kanban`, 'Open all N in Kanban');
-  await shot('home-5-drill-lane');
-  await page.keyboard.press('Escape');
+  ok(page.url() === before && JSON.stringify(await texts(`${W('active-agents')} .aa-row .aa-name`)) === JSON.stringify(['Knwar']), 'Home reload keeps the filters', { before, after: page.url() });
+  // drill: Now building's "+N more" → the cards in flight
+  if (await page.$(`${W('now-building')} .wnb-more`)) {
+    await page.click(`${W('now-building')} .wnb-more`);
+    await page.waitForSelector('#home-view .mx-drill');
+    const rows = await texts('.mx-drill-row .mx-drill-title');
+    ok(JSON.stringify(rows.sort()) === JSON.stringify([...want].sort()), 'Now building "+N more" → drill of those cards', { rows, want });
+    const metas = await texts('.mx-drill-row .mx-drill-meta');
+    ok(metas.every((m) => m.includes('Knwar') && /In Progress|In Review/.test(m)), 'rows carry board · agent · lane', metas);
+    ok((await page.$eval('.mx-drill-foot .mx-btn.primary', (e) => e.textContent)) === `Open all ${want.length} in Kanban`, '"Open all N in Kanban"');
+    await shot('home-6-drill-now');
+    await page.keyboard.press('Escape');
+    ok(!(await page.$('.mx-drill')), 'Esc closes the drill');
+  } else ok(JSON.stringify((await liveSnap()).now) === JSON.stringify(want), 'agent Knwar: everything in flight shown (no "+N more")', want);
 }
 // Clear, leave
 await page.click(`${H} .fb-clear`);
 await settledHome();
-ok(keysIn().length === 0 && JSON.stringify(await homeNow()) === JSON.stringify(homeAll.now_building.map((x) => x.title)), 'Home Clear: URL clean, back to /home', page.url());
-await page.click(`${H} .fb-chip`);
+ok(!keysIn().length && prefixOf((await liveSnap()).now, homeAll.now_building.map((x) => x.title)), 'Home Clear: URL clean, back to /home', page.url());
+{
+  // unfiltered: Now building's "+N more" → a drill of every card in flight
+  const want = homeAll.now_building.map((x) => x.title);
+  await page.click(`${W('now-building')} .wnb-more`);
+  await page.waitForSelector('#home-view .mx-drill');
+  const rows = await texts('.mx-drill-row .mx-drill-title');
+  ok(JSON.stringify(rows.sort()) === JSON.stringify([...want].sort()), 'Now building "+N more" → drill of every card in flight', { rows, want });
+  ok(rows.length === want.length && (await page.$eval('#mx-drill-title', (e) => e.textContent)) === `${want.length} cards in flight`, 'drill title: N cards in flight');
+  await shot('home-6b-drill-now-all');
+  await page.click('.mx-drill-close');
+}
+await openBar();
 await page.selectOption(hsel('Tag'), 'ui');
 await settledHome();
+await page.click(`${W('now-building')} .wnb-more`).catch(() => {});
 await page.click('#rail-kanban');
-ok(keysIn().length === 0 && param('view') !== 'home', 'leaving Home clears its filters from the URL', page.url());
-// Home → Dashboard link keeps nothing
+ok(!(await page.$('.mx-drill')), 'switching views closes an open drill');
+ok(!keysIn().length && param('view') !== 'home', 'leaving Home clears its filters from the URL', page.url());
 await page.click('#rail-home');
 await settledHome();
-ok(!(await page.$(`${H} .fb-chip-v`)), 'back on Home: no filters');
+ok(!(await chipV()) && (await page.evaluate(() => hctx.f.range)) === '4w', 'back on Home: no filters, 4w');
+// Metrics starts clean after Home had filters
+await openBar();
+await page.selectOption(hsel('Tag'), 'ui');
+await settledHome();
+await page.click('#rail-metrics');
+await page.waitForTimeout(500);
+ok(param('view') === 'metrics' && !param('tag'), "Home → Metrics: Home's tag does not leak into Metrics", page.url());
+await page.click('#rail-home');
+await settledHome();
+ok(!param('tag') && !(await chipV()), 'Metrics → Home: clean');
+const kd1 = await docKeydownListeners();
+ok(kd1 === kd0, 'no keydown listeners leaked (panels / drills opened and closed, views switched)', { kd0, kd1 });
 
 // ---- Home on a vertical: scope locked, no Scope field ----
 await page.goto(`${base}/?project=${seed.web}&view=home`);
 await settledHome();
-await page.click(`${H} .fb-chip`);
-ok((await page.$$eval(`${H} .fb-bar label.mx-field > span`, (es) => es.map((e) => e.textContent))).join('|') === 'Phase|Tag|Agent', 'Home on a vertical: no Scope field');
+await openBar();
+ok((await texts(`${H} .fb-bar label.mx-field > span`)).join('|') === 'Phase|Tag|Agent|Type', 'Home on a vertical: no Scope field');
 await page.selectOption(hsel('Agent'), 'Inder');
 await settledHome();
 {
   const homeWeb = await api(`/home?project=${seed.web}`);
   const want = homeWeb.now_building.filter((x) => x.agent === 'Inder').map((x) => x.title);
-  ok(JSON.stringify(await homeNow()) === JSON.stringify(want), 'vertical Home + agent: Now building', { got: await homeNow(), want });
+  const now = (await liveSnap()).now;
+  ok(want.length ? prefixOf(now, want) : now.length === 0, 'vertical Home + agent: Now building', { now, want });
   ok(keysIn().join() === 'agent', 'vertical Home: the locked scope stays out of the URL', page.url());
-  ok((await page.$eval(`${H} .fb-chip-v`, (e) => e.textContent)) === 'Inder', 'chip: "Inder"');
-}
-await shot('home-6-vertical');
-
-// ---- embed dashboard: no chip, counts not buttons ----
-await page.goto(`${base}/?project=${seed.ws}&view=dashboard&embed=1&tag=ui`);
-await page.waitForFunction(() => document.querySelector('.dash-tile') && dctx.meta && ![...document.querySelectorAll('.dt-lane-n')].some((e) => e.textContent === '…'), null, { timeout: 15000 });
-ok(!(await page.$('.fb-chip')) && !(await page.$('button.dt-lane')), 'embed: no chip, no drill buttons');
-{
-  const got = await tileCounts();
-  ok(allBoards.every((b) => JSON.stringify(got[b]) === JSON.stringify(counts({ tag: 'ui' }, b))), 'embed: URL filters still apply');
+  ok((await chipV()) === 'Inder', 'chip: "Inder"');
+  await shot('home-7-vertical');
 }
 
-
-// ================= ROUND 2: live refetches never touch the filter controls =================
-// (a WS-triggered refetch used to rebuild the bar: closed selects, lost focus, wiped dates)
+// ================= live refetches never touch the filter controls =================
 const moveCard = async (board, from, to) => {
   const c = (await api(`/board?project=${board}`)).find((x) => x.lane === from);
   await post(`/task/${c.id}/move`, { lane: to });
   return c;
 };
-// The dashboard's / Home's data reads (fetch GETs), by path: the filters' per-board fan-out
-// (/board, /phases, /task/<id>) must be gone. (The current board's own live reads — /attention,
-// /git/status — ride its board socket, not the view's refetch.)
+// Home's data reads by path: the filters' per-board fan-out (/board, /phases, /task/<id>) must be gone
 const VIEW_READS = ['/workspace/summary', '/workspace/cards', '/home', '/session', '/workspace', '/board', '/phases'];
 const dataReqs = (pg) => {
   const list = [];
@@ -495,104 +550,80 @@ const dataReqs = (pg) => {
   return list;
 };
 const reqLog = dataReqs(page);
-await page.goto(`${base}/?project=${seed.ws}&view=dashboard&tag=api`);
-await settledDash();
-await page.click(`${D} .fb-chip`);
-await page.waitForSelector(`${D} .fb-bar select[data-fb="tag"]`);
-await page.focus(`${D} select[data-fb="tag"]`);
-await page.evaluate(() => (document.activeElement.__mark = 'tag'));
-{
-  // tile counts are under tag=api: check the refetch against the unfiltered queued total instead
-  const q0 = (await api(`/workspace/summary?project=${seed.ws}`)).boards[0].lanes.queued;
-  await page.evaluate(() => (window.__sum0 = dash.summary));
-  reqLog.length = 0;
-  await moveCard(seed.ws, 'backlog', 'queued'); // a live 'card' message → refetch (+ a filtered meta reload)
-  await page.waitForFunction(() => dash.summary !== window.__sum0, null, { timeout: 10000 }).catch(() => {});
-  await page.waitForTimeout(2500); // the meta reload lands too
-  ok((await page.evaluate(() => dash.summary !== window.__sum0)) && (await api(`/workspace/summary?project=${seed.ws}`)).boards[0].lanes.queued === q0 + 1, 'the refetch did happen (summary updated)');
-  const s = await page.evaluate(() => ({ mark: document.activeElement.__mark, value: document.activeElement.value }));
-  ok(s.mark === 'tag' && s.value === 'api', 'dashboard: a refetch keeps the focused Tag select (same element, same value)', s);
-  console.log(`     dashboard refetch while filtered: ${reqLog.length} requests (${reqLog.join(', ')})`);
-  ok(reqLog.length <= 2 && reqLog.filter((u) => u === '/workspace/summary').length === 1, 'dashboard: ≤ 2 requests per refetch while filtered (summary + cards)', reqLog);
-  ok(!reqLog.some((u) => /^\/(board|phases|task\/)/.test(u)), 'dashboard: no per-board fan-out', reqLog);
-}
-// custom range popover: a half-typed range survives a refetch
-await page.click(`${D} .mx-range .mx-chip`);
-await page.fill(`${D} input[data-fb="from"]`, '2026-01-05');
-await page.focus(`${D} input[data-fb="to"]`);
-await page.evaluate(() => (document.activeElement.__mark = 'to'));
-await moveCard(seed.ws, 'backlog', 'queued');
-await page.waitForTimeout(2500);
-{
-  const s = await page.evaluate(() => ({ mark: document.activeElement.__mark, from: document.querySelector('.dash-filters input[data-fb="from"]')?.value, pop: !!document.querySelector('.dash-filters .mx-pop') }));
-  ok(s.mark === 'to' && s.from === '2026-01-05' && s.pop, 'dashboard: the custom-range popover, its typed From and the focused To survive a refetch', s);
-}
-await page.keyboard.press('Escape');
-// Home: the focused Agent select survives
 await page.goto(`${base}/?project=${seed.ws}&view=home&tag=api`);
 await settledHome();
-await page.click(`${H} .fb-chip`);
+await openBar();
 await page.waitForSelector(`${H} .fb-bar select[data-fb="agent"]`);
 await page.focus(`${H} select[data-fb="agent"]`);
 await page.evaluate(() => (document.activeElement.__mark = 'agent'));
 {
-  // lane counts are under tag=api: move an api-tagged backlog card so they visibly move
-  const v0 = await page.$$eval('.home-vlanes', (es) => es.map((e) => e.textContent).join('|'));
+  // tile counts are under tag=api: move an api-tagged backlog card so they visibly move
+  const t0 = JSON.stringify(await tileCounts(HT));
   const mv = (await api(`/board?project=${seed.api}`)).find((x) => x.lane === 'backlog' && x.tag === 'api') ?? (await api(`/board?project=${seed.api}`)).find((x) => x.lane === 'backlog');
   reqLog.length = 0;
   await post(`/task/${mv.id}/move`, { lane: 'queued' });
-  await page.waitForFunction((v) => [...document.querySelectorAll('.home-vlanes')].map((e) => e.textContent).join('|') !== v, v0, { timeout: 10000 }).catch(() => {});
+  await page.waitForFunction((v) => JSON.stringify(Object.fromEntries([...document.querySelectorAll('.dw-widget[data-widget-type="workspace-boards"] .dash-tile')].map((t) => [t.dataset.id, t.querySelector('.dt-lanes').textContent]))) !== v, JSON.stringify(Object.fromEntries((await page.$$eval(HT, (ts) => ts.map((t) => [t.dataset.id, t.querySelector('.dt-lanes').textContent]))))), { timeout: 10000 }).catch(() => {});
   await page.waitForTimeout(2000);
-  const v1 = await page.$$eval('.home-vlanes', (es) => es.map((e) => e.textContent).join('|'));
-  ok(v1 !== v0, 'Home: the refetch did happen (lane counts moved)', { v0, v1, tag: mv.tag });
+  const t1 = JSON.stringify(await tileCounts(HT));
+  ok(t1 !== t0, 'Home: the refetch did happen (tile lane counts moved)', { t0, t1, tag: mv.tag });
   const s = await page.evaluate(() => ({ mark: document.activeElement.__mark, fb: document.activeElement.dataset?.fb }));
   ok(s.mark === 'agent', 'Home: a refetch keeps the focused Agent select', s);
   console.log(`     Home refetch while filtered: ${reqLog.length} requests (${reqLog.join(', ')})`);
-  ok(reqLog.length <= 2 && reqLog.filter((u) => u === '/home').length === 1, 'Home: ≤ 2 requests per refetch while filtered (/home + cards)', reqLog);
-  ok(!reqLog.some((u) => /^\/(board|phases|task\/)/.test(u)), 'Home: no per-board fan-out (no Up-next /task reads)', reqLog);
+  ok(reqLog.filter((u) => u === '/home').length === 1 && reqLog.filter((u) => u === '/workspace/cards').length <= 1 && reqLog.filter((u) => u === '/workspace/summary').length <= 1, 'Home: one /home (+ ≤ 1 cards, ≤ 1 board summary) per refetch while filtered', reqLog);
+  // (one /phases read is the KPI budget's active-phase lookup for this board, not a fan-out)
+  ok(!reqLog.some((u) => /^\/(board|task\/)/.test(u)) && reqLog.filter((u) => u === '/phases').length <= 1, 'Home: no per-board fan-out (no /board or Up-next /task reads; ≤ 1 /phases)', reqLog);
 }
+// custom range popover: a half-typed range survives a refetch
+await page.click(`${H} .mx-range .mx-chip`);
+await page.fill(`${H} input[data-fb="from"]`, '2026-01-05');
+await page.focus(`${H} input[data-fb="to"]`);
+await page.evaluate(() => (document.activeElement.__mark = 'to'));
+await moveCard(seed.ws, 'backlog', 'queued');
+await page.waitForTimeout(2500);
+{
+  const s = await page.evaluate(() => ({ mark: document.activeElement.__mark, from: document.querySelector('#home-filters input[data-fb="from"]')?.value, pop: !!document.querySelector('#home-filters .mx-pop') }));
+  ok(s.mark === 'to' && s.from === '2026-01-05' && s.pop, 'Home: the custom-range popover, its typed From and the focused To survive a refetch', s);
+}
+await page.keyboard.press('Escape');
 
 // ---- keyboard: the chip and Clear keep focus; aria ----
-await page.goto(`${base}/?project=${seed.ws}&view=dashboard&tag=ui`);
-await settledDash();
-await page.focus(`${D} .fb-chip`);
+await page.goto(`${base}/?project=${seed.ws}&view=home&tag=ui`);
+await settledHome();
+await page.focus(`${H} .fb-chip`);
 await page.keyboard.press('Enter');
-await page.waitForSelector('#dash-fb-bar');
+await page.waitForSelector('#home-fb-bar');
 ok((await page.evaluate(() => document.activeElement.dataset.fb)) === 'chip', 'Enter on the chip expands the bar, focus stays on the chip');
-ok((await page.$eval(`${D} .fb-chip`, (e) => [e.getAttribute('aria-controls'), e.getAttribute('aria-expanded'), e.querySelector('.fb-caret').getAttribute('aria-hidden')].join())) === 'dash-fb-bar,true,true', 'chip: aria-controls the bar, aria-expanded, caret aria-hidden');
+ok((await page.$eval(`${H} .fb-chip`, (e) => [e.getAttribute('aria-controls'), e.getAttribute('aria-expanded'), e.querySelector('.fb-caret').getAttribute('aria-hidden')].join())) === 'home-fb-bar,true,true', 'chip: aria-controls the bar, aria-expanded, caret aria-hidden');
 await page.keyboard.press('Enter');
-ok(!(await page.$('#dash-fb-bar')) && (await page.evaluate(() => document.activeElement.dataset.fb)) === 'chip', 'Enter again collapses it, focus stays');
-await page.focus(`${D} .fb-clear`);
+ok(!(await page.$('#home-fb-bar')) && (await page.evaluate(() => document.activeElement.dataset.fb)) === 'chip', 'Enter again collapses it, focus stays');
+await page.focus(`${H} .fb-clear`);
 await page.keyboard.press('Enter');
-await settledDash();
+await settledHome();
 ok((await page.evaluate(() => document.activeElement.dataset.fb)) === 'chip' && !param('tag'), 'Clear by keyboard: filters gone, focus on the chip');
-await page.click(`${D} .fb-chip`);
-await page.focus(dsel('Tag'));
-await page.selectOption(dsel('Tag'), 'db');
+await openBar();
+await page.focus(hsel('Tag'));
+await page.selectOption(hsel('Tag'), 'db');
 ok((await page.evaluate(() => document.activeElement.dataset.fb)) === 'tag', 'choosing a Tag keeps focus on the Tag select');
 
-// ---- one load per open; none in embed without filters ----
+// ---- one load per open ----
 {
-  // a fresh tab: meta loads (one /workspace/cards read each) never outnumber summary loads
+  // a fresh tab: meta loads (one /workspace/cards read each) never outnumber /home loads
   const tab = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const reqs = [];
   tab.on('request', (r) => reqs.push(r.url()));
-  await tab.goto(`${base}/?project=${seed.ws}&view=dashboard&tag=ui`);
-  await tab.waitForFunction(() => dctx.meta && document.querySelector('.dash-tile'), null, { timeout: 15000 });
+  await tab.goto(`${base}/?project=${seed.ws}&view=home&tag=ui`);
+  await tab.waitForFunction(() => hctx.meta && home.data && document.querySelector('.dw-widget'), null, { timeout: 15000 });
   await tab.waitForTimeout(1500);
   const metaLoads = reqs.filter((u) => u.includes('/workspace/cards?')).length;
-  const summaries = reqs.filter((u) => u.includes('/workspace/summary')).length;
-  ok(metaLoads >= 1 && metaLoads <= summaries, 'dashboard open with filters: no double load (meta loads ≤ summary loads)', { metaLoads, summaries });
-  ok(!reqs.some((u) => /\/(board|phases)\?project=/.test(u)), 'dashboard open with filters: no per-board /board or /phases reads', reqs.filter((u) => /\/(board|phases)\?/.test(u)));
-  reqs.length = 0;
-  await tab.goto(`${base}/?project=${seed.ws}&view=dashboard&embed=1`);
-  await tab.waitForSelector('.dash-tile');
-  await tab.waitForTimeout(1500);
-  ok(!reqs.some((u) => u.includes('/workspace/cards?') || u.includes('/board?project=')), 'embed without filters: no filter data loaded', reqs.filter((u) => u.includes('/workspace/cards?') || u.includes('/board?')));
+  const homes = reqs.filter((u) => new URL(u).pathname === '/home').length;
+  ok(metaLoads >= 1 && metaLoads <= homes, 'Home open with filters: no double load (meta loads ≤ /home loads)', { metaLoads, homes });
+  // /phases?project=<this board> is the KPI budget's active-phase lookup; the fan-out would hit the verticals
+  const fan = reqs.filter((u) => /\/board\?project=/.test(u) || (/\/phases\?project=/.test(u) && new URL(u).searchParams.get('project') !== seed.ws));
+  ok(!fan.length, "Home open with filters: no per-board /board or other boards' /phases reads", fan);
   await tab.close();
 }
 
-// ---- loading states while a filter change's read is on its way (never "Nothing matching…") ----
+// ---- a slow /home: a filter change re-reads it, a range change doesn't ----
 const slow = async (r) => {
   await new Promise((res) => setTimeout(res, 2500));
   await r.continue().catch(() => {});
@@ -600,19 +631,20 @@ const slow = async (r) => {
 await page.goto(`${base}/?project=${seed.ws}&view=home&tag=ui`);
 await settledHome();
 await page.route('**/home?*', slow);
-await page.click(`${H} .fb-chip`);
-await page.selectOption(hsel('Tag'), 'db');
-await page.waitForTimeout(200);
-ok((await page.$eval('#home-now .home-hero-title', (e) => e.textContent)) === 'Loading…' && (await page.$eval('#home-upnext .home-empty', (e) => e.textContent)) === 'Loading…', 'Home: "Loading…" (not the previous filters\' data, not "Nothing matching") before /home lands');
+{
+  const reqs = reqWatch();
+  await openBar();
+  await page.click(`${H} .mx-seg-btn:text-is("8w")`);
+  await page.waitForTimeout(300);
+  const s = await page.evaluate(() => ({ skel: !!document.querySelector('.dw-skel'), sub: document.querySelector('#home-sub').textContent }));
+  ok(!s.skel && s.sub !== 'Loading…' && !paths(reqs).includes('/home'), 'range change: no /home read, no "Loading…" or skeletons', { ...s, reqs: paths(reqs) });
+  await page.selectOption(hsel('Tag'), 'db');
+  await page.waitForTimeout(300);
+  ok(paths(reqs).includes('/home'), 'tag change: /home re-read', paths(reqs));
+  reqs.stop();
+}
+await quiet();
 await page.unroute('**/home?*', slow);
-await page.goto(`${base}/?project=${seed.ws}&view=dashboard&tag=ui`);
-await settledDash();
-await page.route('**/workspace/summary?*', slow);
-await page.click(`${D} .fb-chip`);
-await page.selectOption(dsel('Tag'), 'db');
-await page.waitForTimeout(200);
-ok((await page.$eval('.dash-grid', (e) => e.textContent)).startsWith('Loading') && (await page.$eval('.dash-attn', (e) => e.textContent)).includes('Loading'), 'dashboard: loading state before the summary for the new filters lands');
-await page.unroute('**/workspace/summary?*', slow);
 
 // ---- carry-over: filter options landing while the user is in the bar ("Loading boards…") ----
 // the deferred redraw runs once focus leaves the bar, so the Scope / Phase / Tag / Agent selects appear
@@ -624,56 +656,45 @@ await page.unroute('**/workspace/summary?*', slow);
     await r.continue().catch(() => {});
   };
   await page.route('**/workspace/cards?*', held);
-  await page.goto(`${base}/?project=${seed.ws}&view=dashboard`);
-  await page.waitForSelector('.dash-tile');
-  await page.click(`${D} .fb-chip`);
-  await page.waitForSelector(`${D} .fb-bar .mx-dim`);
-  await page.focus(`${D} .mx-seg-btn[data-fb="range-2w"]`);
+  await page.goto(`${base}/?project=${seed.ws}&view=home`);
+  await page.waitForSelector(`${H} .fb-chip`);
+  await openBar();
+  await page.waitForSelector(`${H} .fb-bar .mx-dim`);
+  await page.focus(`${H} .mx-seg-btn[data-fb="range-2w"]`);
   release();
-  await page.waitForFunction(() => dctx.meta, null, { timeout: 10000 });
+  await page.waitForFunction(() => hctx.meta, null, { timeout: 10000 });
   await page.waitForTimeout(200);
-  ok(!!(await page.$(`${D} .fb-bar .mx-dim`)), 'options landed while focus was in the bar: its redraw waits');
-  await page.click('.dash-head-name'); // focus leaves the bar
+  ok(!!(await page.$(`${H} .fb-bar .mx-dim`)), 'options landed while focus was in the bar: its redraw waits');
+  await page.click('#home-name'); // focus leaves the bar
   await page.waitForTimeout(200);
-  ok((await page.$$eval(`${D} .fb-bar label.mx-field > span`, (es) => es.map((e) => e.textContent))).join('|') === 'Scope|Phase|Tag|Agent', 'focus left the bar: the deferred redraw ran (selects shown)');
+  ok((await texts(`${H} .fb-bar label.mx-field > span`)).join('|') === 'Scope|Phase|Tag|Agent|Type', 'focus left the bar: the deferred redraw ran (selects shown)', { fields: await texts(`${H} .fb-bar label.mx-field > span`), bar: await page.$eval(`${H}`, (e) => e.textContent.slice(0, 120)), active: await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 80)) });
   await page.unroute('**/workspace/cards?*', held);
 }
 
-// ---- the needs-you drill counts "items" once a session waits ----
-await post('/status', { project_id: seed.web, agent: 'orchestrator', verb: 'needs you', detail: 'permission prompt' });
-await page.goto(`${base}/?project=${seed.ws}&view=dashboard`);
-await settledDash();
-await page.waitForSelector('.dash-attn .da-waiting');
-await page.click('.dash-attn .da-count');
-await page.waitForSelector('#dashboard-view .mx-drill');
-{
-  const n = await page.$$eval('.mx-drill-row', (rs) => rs.length);
-  ok((await page.$eval('.mx-drill-count', (e) => e.textContent)) === `${n} items`, 'needs-you drill with a waiting session: "N items"', n);
-  await shot('dash-8-needs-you-items');
-}
-
-// ---- a relative range crossing midnight: an idle dashboard / OBS embed never drops to "Loading…" ----
+// ---- a relative range crossing midnight: an idle OBS embed never drops to "Loading…" ----
 // (the data's key is the range as chosen, not its epoch ms: those move when the day rolls over)
-for (const [what, at, q] of [
-  ['2w across Sunday → Monday (the window moves)', (() => { const d = new Date(); d.setDate(d.getDate() + ((7 - d.getDay()) % 7)); d.setHours(23, 59, 0, 0); return d; })(), 'range=2w'],
-]) {
-  for (const embed of [false, true]) {
-    const tab = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-    await tab.clock.install({ time: at });
-    await tab.goto(`${base}/?project=${seed.ws}&view=dashboard&${q}${embed ? '&embed=1' : ''}`);
-    await tab.waitForFunction(() => document.querySelector('.dash-tile') && dctx.meta, null, { timeout: 15000 });
-    await tab.clock.fastForward('02:00'); // past midnight, no refetch
-    // a status ping redraws Needs you in place (no refetch); then a full redraw of the same data
-    await post('/status', { project_id: seed.api, agent: 'orchestrator', verb: 'Edit', detail: 'x.ts' });
-    await tab.waitForTimeout(400);
-    const attn = await tab.$eval('.dash-attn', (e) => e.textContent);
-    await tab.evaluate(() => renderDashboard());
-    const grid = await tab.$eval('.dash-grid', (e) => e.textContent);
-    const tiles = (await tab.$$('.dash-tile')).length;
-    const day = await tab.evaluate(() => new Date().getDate());
-    ok(!attn.includes('Loading') && !grid.startsWith('Loading') && tiles === 4 && day !== at.getDate(), `midnight (${what}${embed ? ', embed' : ''}): tiles + Needs you stay, no "Loading…"`, { attn: attn.slice(0, 40), grid: grid.slice(0, 40), tiles, day });
-    await tab.close();
-  }
+{
+  const at = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() + ((7 - d.getDay()) % 7));
+    d.setHours(23, 59, 0, 0);
+    return d;
+  })();
+  const tab = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  await tab.clock.install({ time: at });
+  await tab.goto(embedUrl('range=2w'));
+  await tab.waitForFunction(() => document.querySelector('.dash-tile') && dctx.meta, null, { timeout: 15000 });
+  await tab.clock.fastForward('02:00'); // past midnight, no refetch
+  // a status ping redraws Needs you in place (no refetch); then a full redraw of the same data
+  await post('/status', { project_id: seed.api, agent: 'orchestrator', verb: 'Edit', detail: 'x.ts' });
+  await tab.waitForTimeout(400);
+  const attn = await tab.$eval('.dash-attn', (e) => e.textContent);
+  await tab.evaluate(() => renderDashboard());
+  const grid = await tab.$eval('.dash-grid', (e) => e.textContent);
+  const tiles = (await tab.$$('.dash-tile')).length;
+  const day = await tab.evaluate(() => new Date().getDate());
+  ok(!attn.includes('Loading') && !grid.startsWith('Loading') && tiles === 4 && day !== at.getDate(), 'midnight (2w across Sunday → Monday, embed): tiles + Needs you stay, no "Loading…"', { attn: attn.slice(0, 40), grid: grid.slice(0, 40), tiles, day });
+  await tab.close();
 }
 
 ok(errors.length === 0, 'no page errors', errors);

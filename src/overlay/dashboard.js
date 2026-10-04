@@ -79,6 +79,8 @@ function dwNewCycle(home) {
   dw.cache = new Map();
   if (home) dw.cache.set('home', home);
 }
+// shared() keys of the live reads (/home, /workspace/summary): fetched without the range (fbNoRange)
+const DW_LIVE_KEYS = ['home', 'workspace-summary'];
 function dwShared(cache, key, fetcher) {
   if (!cache.has(key)) {
     const p = Promise.resolve().then(fetcher);
@@ -112,6 +114,13 @@ function dwRefresh(data, err) {
   if (!dw.layout || dw.board !== currentProject()) return void dwLoadLayout();
   dwPrune();
   // a tabs widget re-rendering mid-loop replaces its children: skip the detached ones
+  for (const inst of [...dw.instances]) if (inst.frame.isConnected) dwLoad(inst, dw.cache);
+}
+
+// Home's range changed, nothing else: this cycle's cache stays, so the live reads (keyed without
+// the range) are hits and only the reads carrying the range (agent history, KPIs) fetch anew.
+function dwRangeRefresh() {
+  dwPrune();
   for (const inst of [...dw.instances]) if (inst.frame.isConnected) dwLoad(inst, dw.cache);
 }
 
@@ -367,10 +376,13 @@ function dwWidget(w) {
     get filters() {
       return dwFilters(w);
     },
-    // an overriding widget's reads are keyed by its own filters (never Home's pre-seeded 'home')
+    // an overriding widget's reads are keyed by its own filters (never Home's pre-seeded 'home');
+    // the live reads ignore the range, so they're keyed without it (a range-only override shares Home's)
     shared: (key, fetcher) => {
-      const own = dwFilters(w);
-      return dwShared(inst.ctx._cache ?? dw.cache, own === fbParams(hctx) ? key : `${key}|vars:${own}`, fetcher);
+      const live = DW_LIVE_KEYS.includes(key);
+      const own = live ? fbNoRange(dwFilters(w)) : dwFilters(w);
+      const home = live ? fbNoRange(fbParams(hctx)) : fbParams(hctx);
+      return dwShared(inst.ctx._cache ?? dw.cache, own === home ? key : `${key}|vars:${own}`, fetcher);
     },
     refresh: () => dwLoad(inst, new Map()),
     drillCards: async (opts) => {
