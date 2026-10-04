@@ -59,6 +59,10 @@ export interface ModelUsage {
 /** A build run's token breakdown keyed by model id (card_activity.usage). */
 export type UsageBreakdown = Record<string, ModelUsage>;
 
+/** What kind of work a card is (tasks.work_type). null on a card = unclassified. */
+export const WORK_TYPES = ['feature', 'defect', 'debt', 'risk'] as const;
+export type WorkType = (typeof WORK_TYPES)[number];
+
 export interface Task {
   id: string;
   project_id: string;
@@ -75,6 +79,7 @@ export interface Task {
   subtasks: string | null; // JSON array of Subtask (acceptance criteria)
   blocked_at: number | null; // epoch ms a builder raised a blocker, or null (not blocked)
   blocked_reason: string | null; // the decision/question the blocker needs
+  work_type: WorkType | null; // what kind of work this is, or null (unclassified)
   review_rounds: number;
   position: number;
   created_at: number;
@@ -168,6 +173,8 @@ export const EVENT_TYPES = [
   'vertical_split',
   'vertical_merge',
   'autopilot',
+  'phase_change',
+  'reassign',
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -330,6 +337,94 @@ export interface CardFilter {
   agent?: string | null;
   from?: number | null;
   to?: number | null;
+  /** A work type, or 'none' for unclassified cards (work_type IS NULL). */
+  workType?: WorkType | 'none';
+}
+
+/** One phase's state on one day (phase_snapshots row). Dates are YYYY-MM-DD. */
+export interface PhaseSnapshot {
+  project_id: string;
+  phase_id: string;
+  date: string;
+  target_date: string | null;
+  p50: string | null; // forecast finish days, null = no forecast
+  p85: string | null;
+  p95: string | null;
+  scope: number | null; // cards in the phase
+  done: number | null; // cards done
+  budget_usd: number | null;
+  spend_usd: number | null;
+  open_risk_score: number | null;
+  rag: string | null; // red|amber|green
+  created_at: number;
+}
+
+/** A milestone's date as it stood on one day (milestone_snapshots row). Dates are YYYY-MM-DD. */
+export interface MilestoneSnapshot {
+  milestone_id: string;
+  project_id: string;
+  date: string;
+  milestone_date: string;
+}
+
+/** A from/to range (epoch ms, inclusive). */
+export interface TimeWindow {
+  from: number;
+  to: number;
+}
+
+/** Period-over-period compare, carried alongside a current result T: the same result over
+ *  the preceding window of equal length. previous is null when there is nothing to compare. */
+export interface Compare<T> {
+  previous: T | null;
+  window: TimeWindow;
+  previousWindow: TimeWindow;
+}
+
+/** One agent's headline numbers over a period. */
+export interface AgentHistoryTotals {
+  cardsDone: number;
+  firstPassRate: number | null; // share of reviewed cards that passed round 1, null = none reviewed
+  medianCycleMs: number | null; // null = no done cards
+  cost: number; // USD
+  tokens: number;
+  blockers: number;
+  hours: number;
+}
+
+/** One card an agent worked on. */
+export interface AgentHistoryCard {
+  id: string;
+  title: string;
+  project_id: string;
+  started_at: number | null; // epoch ms
+  done_at: number | null; // epoch ms, null = not done
+  outcome: string; // e.g. done | in_review | in_progress | abandoned
+  rounds: number;
+  blockers: number;
+  cost: number; // USD
+  tokens: number;
+  lines_added: number;
+  lines_removed: number;
+}
+
+/** One build run credited to the agent (a card_activity row). */
+export interface AgentHistoryRun {
+  task_id: string;
+  role: string | null;
+  at: number; // epoch ms
+  ms: number;
+  tokens: number;
+  cost: number; // USD
+}
+
+/** An agent's track record: the cards and runs, period totals, and a weekly series of the same totals. */
+export interface AgentHistory {
+  agent: string;
+  cards: AgentHistoryCard[];
+  runs: AgentHistoryRun[];
+  totals: AgentHistoryTotals;
+  weekly: (AgentHistoryTotals & { week: string })[]; // week = YYYY-MM-DD of its first day
 }
 
 /** One card on GET /workspace/cards. lane_since: when it entered its lane (backlog: its last update). */

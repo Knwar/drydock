@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   subtasks       TEXT,                    -- JSON array of {text,done} acceptance criteria
   blocked_at     INTEGER,                 -- epoch ms a builder raised a blocker, or null (not blocked)
   blocked_reason TEXT,                    -- the decision/question the blocker needs, or null
+  work_type      TEXT CHECK (work_type IN ('feature','defect','debt','risk')),  -- null = unclassified
   review_rounds  INTEGER NOT NULL DEFAULT 0,
   position       INTEGER NOT NULL DEFAULT 0,
   created_at     INTEGER NOT NULL,
@@ -239,6 +240,39 @@ CREATE INDEX IF NOT EXISTS idx_decisions_project ON decisions(project_id, decide
 CREATE INDEX IF NOT EXISTS idx_risks_project ON risks(project_id);
 CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id, date);
 CREATE INDEX IF NOT EXISTS idx_governance_links_target ON governance_links(target_type, target_id);
+
+CREATE TABLE IF NOT EXISTS phase_snapshots (  -- one row per phase per day: forecast + scope + spend, for trend/compare
+  project_id      TEXT NOT NULL,
+  phase_id        TEXT NOT NULL,
+  date            TEXT NOT NULL,          -- YYYY-MM-DD the snapshot was taken
+  target_date     TEXT,                   -- the phase's target that day (YYYY-MM-DD), or null
+  p50             TEXT,                   -- forecast finish days (YYYY-MM-DD), or null (no forecast)
+  p85             TEXT,
+  p95             TEXT,
+  scope           INTEGER,                -- cards in the phase
+  done            INTEGER,                -- cards done
+  budget_usd      REAL,                   -- the phase's budget that day, or null
+  spend_usd       REAL,                   -- spend to date
+  open_risk_score REAL,                   -- sum of open linked risk scores
+  rag             TEXT,                   -- red|amber|green
+  created_at      INTEGER NOT NULL,
+  PRIMARY KEY (phase_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_phase_snapshots_project ON phase_snapshots(project_id, date);
+
+CREATE TABLE IF NOT EXISTS milestone_snapshots (  -- a milestone's date as it stood each day (slip tracking)
+  milestone_id    TEXT NOT NULL,
+  project_id      TEXT NOT NULL,
+  date            TEXT NOT NULL,          -- YYYY-MM-DD the snapshot was taken
+  milestone_date  TEXT NOT NULL,          -- the milestone's date that day (YYYY-MM-DD)
+  PRIMARY KEY (milestone_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_milestone_snapshots_project ON milestone_snapshots(project_id, date);
+
+CREATE TABLE IF NOT EXISTS usage_samples (  -- persisted /usage pushes (the daemon's in-memory usageSamples)
+  at    INTEGER PRIMARY KEY,              -- epoch ms of the push (UsageSample.at)
+  data  TEXT NOT NULL                     -- JSON UsageSample: {at, five_hour, seven_day} (see core/usage-burn.ts)
+);
 
 CREATE TABLE IF NOT EXISTS dashboard_layouts (  -- a board's saved dashboard; absent = the builtin default
   project_id  TEXT PRIMARY KEY,

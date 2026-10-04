@@ -160,6 +160,52 @@ describe('migrate', () => {
     db.exec(LEGACY_TASKS_DDL.replace(')', ', subtasks TEXT)'));
     assert.doesNotThrow(() => migrate(db));
   });
+
+  it('adds tasks.work_type once to an old-schema db opened twice; existing rows read NULL', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-db-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, 'board.db');
+    const old = new Database(path);
+    old.exec(LEGACY_TASKS_DDL); // no work_type
+    old
+      .prepare('INSERT INTO tasks (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .run('t1', 'p1', 'Old card', 1, 1);
+    old.close();
+
+    for (let i = 0; i < 2; i++) openDb(path).close();
+
+    const db = openDb(path);
+    t.after(() => db.close());
+    const cols = (db.pragma('table_info(tasks)') as { name: string }[]).filter((c) => c.name === 'work_type');
+    assert.equal(cols.length, 1);
+    const row = db.prepare('SELECT work_type FROM tasks WHERE id = ?').get('t1') as { work_type: string | null };
+    assert.equal(row.work_type, null);
+    db.prepare("UPDATE tasks SET work_type = 'defect' WHERE id = 't1'").run();
+    assert.throws(() => db.prepare("UPDATE tasks SET work_type = 'bogus' WHERE id = 't1'").run(), /CHECK/);
+  });
+
+  it('fresh db: has tasks.work_type (CHECKed) and the snapshot/usage tables with their keys', (t) => {
+    const db = openDb();
+    t.after(() => db.close());
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(
+      (r) => r.name,
+    );
+    for (const name of ['phase_snapshots', 'milestone_snapshots', 'usage_samples']) {
+      assert.ok(tables.includes(name), `missing ${name}`);
+    }
+    const pk = (table: string) =>
+      (db.pragma(`table_info(${table})`) as { name: string; pk: number }[])
+        .filter((c) => c.pk > 0)
+        .sort((a, b) => a.pk - b.pk)
+        .map((c) => c.name);
+    assert.deepEqual(pk('phase_snapshots'), ['phase_id', 'date']);
+    assert.deepEqual(pk('milestone_snapshots'), ['milestone_id', 'date']);
+    assert.deepEqual(pk('usage_samples'), ['at']);
+    const idx = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_phase_snapshots_project'").get();
+    assert.ok(idx, 'missing idx_phase_snapshots_project');
+    const taskCols = (db.pragma('table_info(tasks)') as { name: string }[]).map((c) => c.name);
+    assert.ok(taskCols.includes('work_type'));
+  });
 });
 
 describe('backfillActivityAgents', () => {

@@ -660,6 +660,7 @@ export function createTask(
     subtasks: null,
     blocked_at: null,
     blocked_reason: null,
+    work_type: null,
     review_rounds: 0,
     position: (max.max ?? 0) + 1,
     created_at: ts,
