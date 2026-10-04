@@ -218,7 +218,7 @@ function aaHistoryUrl(name, ctx) {
   return `/agents/${encodeURIComponent(name)}/history?${q}`;
 }
 
-// "▲ +3 · +50% vs previous 2 weeks" (dwDeltaChip): the range's name (a custom range "vs prev 14 d"),
+// "▲ +3 · +50% vs previous 2 weeks" (dwDeltaChip): the range's name (a custom range its dates, "vs Aug 31 – Sep 13"),
 // the exact dates as the tooltip, grey when there's nothing (or no full period, since) to compare.
 function aaDelta(s, h, range, since) {
   return dwDeltaChip({

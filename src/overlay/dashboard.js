@@ -43,7 +43,8 @@
 //     (default label); title: the chip's tooltip (the exact dates); subject: what's measured ("Cards
 //     done"). role=img; its aria-label carries the better / worse verdict.
 //   dwVs(range, previousWindow, window?) → { label, labelLong, title } for a ranged chip: a rolling range is
-//     named ("vs previous 4 weeks"), a custom one counted ("vs prev 14 d"); the title holds the exact
+//     named ("vs previous 4 weeks"), a custom one by its previous period's dates ("vs Aug 31 – Sep 13",
+//     labelLong "vs the previous 14 days, Aug 31 – Sep 13"); the title holds the exact
 //     dates ("Sep 14 – 27 vs Aug 31 – Sep 13"). Empty strings for all time (no previousWindow).
 //   dwFirstActivity(ctx) → Promise<epoch ms | null>: the board's first activity (/metrics/flow's
 //     firstActivityAt, unfiltered), one read per refresh cycle.
@@ -121,8 +122,9 @@ function dwVs(range, pw, win) {
   const prevDates = dwDays(pw.from, pw.to);
   const title = win ? `${dwDays(win.from, win.to)} vs ${prevDates}` : `vs ${prevDates}`;
   if (range?.name) return { label: `vs previous ${range.name}`, labelLong: `vs the previous ${range.name}, ${prevDates}`, title };
+  // a custom range has no name: the short label names the previous period's dates ("vs Sep 1 – 14")
   const n = dwPrevDays(pw);
-  return { label: `vs prev ${n} d`, labelLong: `vs the previous ${n} days, ${prevDates}`, title };
+  return { label: `vs ${prevDates}`, labelLong: `vs the previous ${n} days, ${prevDates}`, title };
 }
 
 // The board's first activity: unfiltered (scope only) and from / to don't change it. Its URL is the

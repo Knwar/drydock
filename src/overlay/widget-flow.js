@@ -1,6 +1,6 @@
 // ── Dashboard widgets: Flow (cycle-breakdown, wip, review-queue, throughput-trend, escalation) ──
 // Each title states the question. Uses app.js globals read-only (node, svgEl, mx*, MX_LOCAL_TZ,
-// EMBED, openSettings) and dashboard.js's dwRegister / dwDeltaChip / dwPrevDays. Status is always an
+// EMBED, openSettings) and dashboard.js's dwRegister / dwDeltaChip / dwVs / dwFirstActivity. Status is always an
 // icon + text, never colour alone; charts are inline SVG; every user string goes in as text.
 
 const FW_ICONS = { ok: '✓', warn: '!', none: '–' };
@@ -70,21 +70,36 @@ function fwMain(value, unit, label) {
   return el;
 }
 
-// A period-over-period chip for a compare=previous read r ("vs prev 14 d"; grey for all time).
-function fwPrevChip(r, subject, polarity, fmt, cur, prev, short = false) {
-  const days = dwPrevDays(r.previousWindow);
+// A period-over-period chip for a compare=previous read r ("vs previous 4 weeks", dwVs; grey for all
+// time, and "No full previous period" when it starts before the board's first activity, since).
+function fwPrevChip(r, ctx, since, subject, polarity, fmt, cur, prev, short = false) {
+  const vs = dwVs(ctx.range, r.previousWindow, r.window);
   return dwDeltaChip({
     cur,
     prev,
     polarity,
     fmt,
     subject,
-    has: !!r.previous,
-    label: short ? '' : `vs prev ${days} d`,
-    labelLong: `vs the previous ${days} days`,
+    has: !!r.previous && !!r.previousWindow,
+    ...vs,
+    label: short ? '' : vs.label,
     none: short ? '—' : undefined,
+    since,
+    previousWindow: r.previousWindow,
   });
 }
+
+// A duration change ms in the unit ref (the current value) is shown in: "2.4d ▼ −1.2d", never "−28h".
+// dayAtH: the hours from which ref reads in days (mxSpan: 48, mxWait: 24).
+function fwUnitIn(ms, ref, dayAtH) {
+  const n = (v) => (v < 10 ? v.toFixed(1).replace(/\.0$/, '') : String(Math.round(v)));
+  const h = (ref ?? ms) / 3_600_000;
+  if (h < 1) return `${Math.round(ms / 60_000)}m`;
+  if (h < dayAtH) return `${n(ms / 3_600_000)}h`;
+  return `${n(ms / 86_400_000)}d`;
+}
+const fwSpanIn = (ms, ref) => fwUnitIn(ms, ref, 48); // mxSpan's units
+const fwWaitIn = (ms, ref) => fwUnitIn(ms, ref, 24); // mxWait's units
 
 function fwDeltaRow(chip, caption) {
   const row = node('div', 'fw-delta-row');
@@ -156,9 +171,9 @@ function fwStageBlock(pct, times, ctx) {
 }
 
 async function fwCycleLoad(ctx) {
-  const flow = await fwFlow(ctx);
+  const [flow, since] = await Promise.all([fwFlow(ctx), dwFirstActivity(ctx).catch(() => null)]);
   if (!flow.throughput.total) return { empty: 'No cards done in this range, so there is no cycle time to break down' };
-  return { flow };
+  return { flow, since };
 }
 
 function fwCycleRender(el, d, ctx) {
@@ -166,14 +181,14 @@ function fwCycleRender(el, d, ctx) {
   const sb = r.stageBreakdown;
   const n = r.throughput.total;
   el.append(fwMain(mxSpan(r.cycleTime.p50), 'p50 cycle', `${mxPlural(n, 'card')} done · queued → done`));
-  el.append(fwDeltaRow(fwPrevChip(r, 'p50 cycle time', -1, mxSpan, r.cycleTime.p50, r.previous?.cycleTime?.p50 ?? null)));
+  el.append(fwDeltaRow(fwPrevChip(r, ctx, d.since, 'p50 cycle time', -1, fwSpanIn, r.cycleTime.p50, r.previous?.cycleTime?.p50 ?? null)));
   el.append(fwStageBlock('p50', sb.p50, ctx));
   const prevSb = r.previous?.stageBreakdown?.p50 ?? null;
   // the stage legend: name + p50 (L: + p85, and per-stage deltas when the previous period has them)
   const table = node('div', `fw-legend-grid${ctx.size === 'L' ? ' fw-legend-l' : ''}`);
   if (ctx.size === 'L') {
-    const days = dwPrevDays(r.previousWindow);
-    table.append(node('span', 'fw-k', 'Stage'), node('span', 'fw-k fw-num', 'p50'), node('span', 'fw-k fw-num', 'p85'), node('span', 'fw-k', prevSb ? `vs prev ${days} d` : ''));
+    const vs = dwVs(ctx.range, r.previousWindow, r.window);
+    table.append(node('span', 'fw-k', 'Stage'), node('span', 'fw-k fw-num', 'p50'), node('span', 'fw-k fw-num', 'p85'), node('span', 'fw-k', prevSb ? vs.label : ''));
   }
   for (const st of FW_STAGES) {
     const name = node('span', 'fw-lg-name');
@@ -181,7 +196,7 @@ function fwCycleRender(el, d, ctx) {
     table.append(name, node('span', 'fw-num', mxSpan(sb.p50[st.k])));
     if (ctx.size === 'L') {
       table.append(node('span', 'fw-num fw-dim', mxSpan(sb.p85[st.k])));
-      table.append(prevSb ? fwPrevChip(r, `${st.name} p50`, -1, mxSpan, sb.p50[st.k], prevSb[st.k], true) : node('span'));
+      table.append(prevSb ? fwPrevChip(r, ctx, d.since, `${st.name} p50`, -1, fwSpanIn, sb.p50[st.k], prevSb[st.k], true) : node('span'));
     }
   }
   el.append(table);
@@ -358,7 +373,7 @@ function fwReviewRender(el, d, ctx) {
 async function fwTrendLoad(ctx) {
   const params = ctx.filters;
   const url = `/workspace/cards?project=${encodeURIComponent(ctx.projectId)}${params ? `&${params}` : ''}`;
-  const [flow, cards] = await Promise.all([fwFlow(ctx), ctx.shared(url, () => mxGet(url))]);
+  const [flow, cards, since] = await Promise.all([fwFlow(ctx), ctx.shared(url, () => mxGet(url)), dwFirstActivity(ctx).catch(() => null)]);
   if (!flow.throughput.total) return { empty: 'No cards done in this range' };
   const typeOf = new Map(cards.cards.map((c) => [c.id, c.work_type ?? 'none']));
   const tz = MX_LOCAL_TZ;
@@ -373,7 +388,7 @@ async function fwTrendLoad(ctx) {
     const w = weeks.find((x) => day >= x.start && day <= x.end);
     if (w) w.byType[typeOf.get(p.id) ?? 'unmatched']++;
   }
-  return { flow, weeks };
+  return { flow, weeks, since };
 }
 
 function fwTrendRender(el, d, ctx) {
@@ -382,7 +397,7 @@ function fwTrendRender(el, d, ctx) {
   const full = weeks.filter((w) => !w.partial);
   const avg = full.length ? full.reduce((s, w) => s + w.count, 0) / full.length : null;
   el.append(fwMain(String(r.throughput.total), 'done', avg === null ? 'no complete week in range' : `avg ${mxNum(Math.round(avg * 10) / 10)} / week over ${mxPlural(full.length, 'full week')}`));
-  el.append(fwDeltaRow(fwPrevChip(r, 'Cards done', 1, (x) => mxNum(Math.round(x * 10) / 10), r.throughput.total, r.previous?.throughput ?? null)));
+  el.append(fwDeltaRow(fwPrevChip(r, ctx, d.since, 'Cards done', 1, (x) => mxNum(Math.round(x * 10) / 10), r.throughput.total, r.previous?.throughput ?? null)));
 
   // bars: one 10-unit slot per week (the HTML label rows below use the same equal columns)
   const SLOT = 10;
@@ -451,12 +466,13 @@ const fwRatio = (x) => String(Math.round(x * 100) / 100);
 // read with those same filters (no tag / agent); with neither set it's fwFlow's URL (one fetch).
 async function fwEscalationLoad(ctx) {
   const f = fwFilters(ctx);
-  const [flow, wait] = await Promise.all([
+  const [flow, wait, since] = await Promise.all([
     fwGet(ctx, '/metrics/flow', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType, from: f.from, to: f.to, compare: 'previous' }),
     fwGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType, from: f.from, to: f.to, compare: 'previous' }),
+    dwFirstActivity(ctx).catch(() => null),
   ]);
   if (!flow.throughput.total && !wait.blocked.count) return { empty: 'No cards done and no blockers in this range' };
-  return { flow, wait, unfiltered: !!(f.tag || f.agent) };
+  return { flow, wait, unfiltered: !!(f.tag || f.agent), since };
 }
 
 function fwEscalationRender(el, d, ctx) {
@@ -468,8 +484,8 @@ function fwEscalationRender(el, d, ctx) {
   const prev = flow.previous && wait.previous ? per(wait.previous.blocked.count, flow.previous.throughput) : null;
   el.append(fwMain(cur === null ? '—' : fwRatio(cur), 'blockers / card done', `${mxPlural(nb, 'blocker')} · ${mxPlural(done, 'card')} done`));
   // both reads share the window; previous exists only when both have it
-  const r = { previous: flow.previous && wait.previous, previousWindow: flow.previousWindow };
-  el.append(fwDeltaRow(fwPrevChip(r, 'Blockers per card done', -1, fwRatio, cur, prev)));
+  const r = { previous: flow.previous && wait.previous, previousWindow: flow.previousWindow, window: flow.window };
+  el.append(fwDeltaRow(fwPrevChip(r, ctx, d.since, 'Blockers per card done', -1, fwRatio, cur, prev)));
   if (d.unfiltered) el.append(node('div', 'fw-foot', 'Ignores tag/agent filters'));
   // the current period's is blocked.resolution; previous carries the picked blocked.p50
   const p50 = wait.blocked.resolution.p50;
@@ -477,16 +493,16 @@ function fwEscalationRender(el, d, ctx) {
   res.append(node('span', 'fw-k', 'Median time to resolve'), node('span', 'fw-resolve-v', p50 === null ? 'no blocker resolved in range' : mxWait(p50)));
   el.append(res);
   if (ctx.size === 'S') return;
-  const wr = { previous: wait.previous, previousWindow: wait.previousWindow };
-  el.append(fwDeltaRow(fwPrevChip(wr, 'Median time to resolve a blocker', -1, mxWait, p50, wait.previous?.blocked?.p50 ?? null)));
+  const wr = { previous: wait.previous, previousWindow: wait.previousWindow, window: wait.window };
+  el.append(fwDeltaRow(fwPrevChip(wr, ctx, d.since, 'Median time to resolve a blocker', -1, fwWaitIn, p50, wait.previous?.blocked?.p50 ?? null)));
   el.append(node('div', 'fw-foot', nb ? `${mxWait(wait.blocked.totalMs)} spent blocked in range` : 'No blockers in range'));
 }
 
 // ── registration ──
 const FW_WIDGETS = [
   { type: 'cycle-breakdown', title: 'Where does the time go?', sizes: ['M', 'L'], load: fwCycleLoad, render: fwCycleRender },
-  { type: 'wip', title: 'Are we overloaded?', sizes: ['S', 'M'], load: fwWipLoad, render: fwWipRender },
-  { type: 'review-queue', title: 'Is review the bottleneck?', sizes: ['S', 'M', 'L'], load: fwReviewLoad, render: fwReviewRender },
+  { type: 'wip', title: 'Are we overloaded?', sizes: ['S', 'M'], ranged: false, load: fwWipLoad, render: fwWipRender },
+  { type: 'review-queue', title: 'Is review the bottleneck?', sizes: ['S', 'M', 'L'], ranged: false, load: fwReviewLoad, render: fwReviewRender },
   { type: 'throughput-trend', title: 'Is delivery speeding up?', sizes: ['M', 'L', 'XL'], load: fwTrendLoad, render: fwTrendRender },
   { type: 'escalation', title: 'How often do agents need a human?', sizes: ['S', 'M'], load: fwEscalationLoad, render: fwEscalationRender },
 ];
@@ -496,6 +512,7 @@ for (const w of FW_WIDGETS) {
     type: w.type,
     title: w.title,
     sizes: w.sizes,
+    ranged: w.ranged ?? true,
     load: w.load,
     render(el, data, ctx) {
       if (data.empty) return { empty: data.empty };

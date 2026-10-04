@@ -730,11 +730,13 @@ function dlTrendRender(el, d, ctx) {
 
 // ── registration ──
 // A load may return { empty } (nothing to show, with the reason); render passes it on.
-function dlRegister(type, title, sizes, load, render) {
+// ranged false: the load never reads the range (schedule / history / cards / budgets are all-time).
+function dlRegister(type, title, sizes, load, render, ranged = true) {
   dwRegister({
     type,
     title,
     sizes,
+    ranged,
     load,
     render(el, data, ctx) {
       if (data.empty) return { empty: data.empty };
@@ -745,10 +747,10 @@ function dlRegister(type, title, sizes, load, render) {
   });
 }
 
-dlRegister('phase-health', 'Which phases are on track?', ['S', 'M', 'L', 'XL'], dlHealthLoad, dlHealthRender);
-dlRegister('forecast', 'When will the active phase land?', ['M', 'L'], dlForecastLoad, dlForecastRender);
-dlRegister('milestones', 'Which commitments moved?', ['M', 'L'], dlMilestonesLoad, dlMilestonesRender);
-dlRegister('scope-change', 'Is the target moving?', ['S', 'M', 'L'], dlScopeLoad, dlScopeRender);
-dlRegister('planned-delivered', 'Do we deliver what we commit?', ['S', 'M'], dlPlannedLoad, dlPlannedRender);
-dlRegister('gate-readiness', 'Can this phase pass its gate?', ['M', 'L'], dlGateLoad, dlGateRender);
+dlRegister('phase-health', 'Which phases are on track?', ['S', 'M', 'L', 'XL'], dlHealthLoad, dlHealthRender, false);
+dlRegister('forecast', 'When will the active phase land?', ['M', 'L'], dlForecastLoad, dlForecastRender, false);
+dlRegister('milestones', 'Which commitments moved?', ['M', 'L'], dlMilestonesLoad, dlMilestonesRender, false);
+dlRegister('scope-change', 'Is the target moving?', ['S', 'M', 'L'], dlScopeLoad, dlScopeRender, false);
+dlRegister('planned-delivered', 'Do we deliver what we commit?', ['S', 'M'], dlPlannedLoad, dlPlannedRender, false);
+dlRegister('gate-readiness', 'Can this phase pass its gate?', ['M', 'L'], dlGateLoad, dlGateRender, false);
 dlRegister('rag-trend', 'Is health getting better or worse?', ['M', 'L'], dlTrendLoad, dlTrendRender);

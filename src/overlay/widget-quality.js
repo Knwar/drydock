@@ -1,6 +1,6 @@
 // ── Dashboard widgets: Quality & risk (quality, speed-stability, top-risks) ──
 // Classic script; uses app.js / dashboard.js globals read-only (node, svgEl, mxGet, mxPlural,
-// MX_LOCAL_TZ, MX_MONTHS, mxUtc, mxAddDays, setView, gvReveal, dwRegister, dwDeltaChip, dwPrevDays).
+// MX_LOCAL_TZ, MX_MONTHS, mxUtc, mxAddDays, setView, gvReveal, dwRegister, dwDeltaChip, dwVs, dwFirstActivity).
 // Each title states the question; status is always an icon + text, never colour alone.
 //   quality          S M L  GET /metrics/quality?compare=previous
 //   speed-stability    M L  /metrics/flow + /metrics/quality (compare=previous) + /metrics/flow over previousWindow
@@ -39,10 +39,12 @@ const wqPts = (m) => `${Math.round(m * 100)} pts`;
 const wqDec = (m) => m.toFixed(1);
 const wqDay = (day) => `${MX_MONTHS[mxUtc(day).getUTCMonth()]} ${mxUtc(day).getUTCDate()}`; // Oct 20
 
-// "vs prev 14 d" for a compare=previous read r (null days: all time, the chip goes grey).
-function wqChip(r, subject, polarity, fmt, cur, prev) {
-  const days = dwPrevDays(r.previousWindow);
-  return dwDeltaChip({ cur, prev, polarity, fmt, subject, has: !!r.previous && days !== null, label: `vs prev ${days} d`, labelLong: `vs the previous ${days} days` });
+// "vs previous 4 weeks" (dwVs) for a compare=previous read r (no previousWindow: all time, the chip goes
+// grey; a previous period starting before the board's first activity, since: "No full previous period").
+// kind 'pts': a change in points, never a %.
+function wqChip(r, ctx, since, subject, polarity, fmt, cur, prev, kind) {
+  const vs = dwVs(ctx.range, r.previousWindow, r.window);
+  return dwDeltaChip({ cur, prev, polarity, fmt, subject, ...vs, has: !!r.previous && !!r.previousWindow, since, previousWindow: r.previousWindow, kind });
 }
 
 // One figure: a big value over a quiet label, its delta chip under it.
@@ -94,9 +96,9 @@ function wqFalling(q) {
 
 async function wqQualityLoad(ctx) {
   const f = wqFilters(ctx);
-  const q = await wqGet(ctx, '/metrics/quality', { ...wqMetricParams(f), compare: 'previous' });
+  const [q, since] = await Promise.all([wqGet(ctx, '/metrics/quality', { ...wqMetricParams(f), compare: 'previous' }), dwFirstActivity(ctx).catch(() => null)]);
   if (!q.totals.reviewed) return { empty: q.totals.unreviewedDone ? `No reviews in this period: ${mxPlural(q.totals.unreviewedDone, 'card')} finished without one` : 'No reviewed cards in this period: first-pass needs a review verdict' };
-  return { q };
+  return { q, since };
 }
 
 function wqQualityRender(el, d, ctx) {
@@ -105,8 +107,8 @@ function wqQualityRender(el, d, ctx) {
   const p = q.previous;
   const figs = node('div', 'wq-figs');
   figs.append(
-    wqFigure(wqPct(t.firstPassRate), `first-pass · ${mxPlural(t.reviewed, 'card')} reviewed`, wqChip(q, 'First-pass rate', 1, wqPts, t.firstPassRate, p?.firstPassRate)),
-    wqFigure(t.avgRounds === null ? '—' : wqDec(t.avgRounds), 'avg review rounds', wqChip(q, 'Average review rounds', -1, wqDec, t.avgRounds, p?.avgRounds)),
+    wqFigure(wqPct(t.firstPassRate), `first-pass · ${mxPlural(t.reviewed, 'card')} reviewed`, wqChip(q, ctx, d.since, 'First-pass rate', 1, wqPts, t.firstPassRate, p?.firstPassRate, 'pts')),
+    wqFigure(t.avgRounds === null ? '—' : wqDec(t.avgRounds), 'avg review rounds', wqChip(q, ctx, d.since, 'Average review rounds', -1, wqDec, t.avgRounds, p?.avgRounds)),
   );
   el.append(figs);
   const { weeks: judged, falling } = wqFalling(q);
@@ -138,7 +140,7 @@ function wqQualityRender(el, d, ctx) {
   const rw = node('div', 'wq-rework');
   const line = node('div', 'wq-k-row');
   line.append(node('span', 'wq-v', mxPlural(t.rework, 'rework loop')), node('span', 'wq-sub', 'fail → back to in progress'));
-  rw.append(line, wqChip(q, 'Rework loops', -1, String, t.rework, p?.rework));
+  rw.append(line, wqChip(q, ctx, d.since, 'Rework loops', -1, String, t.rework, p?.rework));
   det.append(rw);
 
   if (ctx.size === 'L') {
@@ -158,13 +160,17 @@ function wqQualityRender(el, d, ctx) {
 async function wqSpeedLoad(ctx) {
   const f = wqFilters(ctx);
   const base = wqMetricParams(f);
-  const [flow, q] = await Promise.all([wqGet(ctx, '/metrics/flow', { ...base, compare: 'previous' }), wqGet(ctx, '/metrics/quality', { ...base, compare: 'previous' })]);
+  const [flow, q, since] = await Promise.all([
+    wqGet(ctx, '/metrics/flow', { ...base, compare: 'previous' }),
+    wqGet(ctx, '/metrics/quality', { ...base, compare: 'previous' }),
+    dwFirstActivity(ctx).catch(() => null),
+  ]);
   // the flow compare's previous carries no per-type split: read the previous window itself
   const pw = flow.previous ? flow.previousWindow : null;
   const prevFlow = pw ? await wqGet(ctx, '/metrics/flow', { ...base, from: pw.from, to: pw.to }) : null;
   const prevDone = prevFlow?.throughput.total ?? 0;
   if (!flow.throughput.total && !prevDone && !q.totals.rework && !q.previous?.rework) return { empty: 'No cards done or reworked in this period or the one before' };
-  return { flow, q, prevFlow, typed: !!f.workType };
+  return { flow, q, prevFlow, typed: !!f.workType, since };
 }
 
 function wqSpeedRender(el, d, ctx) {
@@ -179,12 +185,12 @@ function wqSpeedRender(el, d, ctx) {
 
   const tiles = node('div', 'wq-tiles');
   const speed = node('div', 'wq-tile');
-  speed.append(node('span', 'wq-k', 'Speed'), wqFigure(String(thr), 'cards done', wqChip(flow, 'Cards done', 1, String, thr, thrPrev)));
+  speed.append(node('span', 'wq-k', 'Speed'), wqFigure(String(thr), 'cards done', wqChip(flow, ctx, d.since, 'Cards done', 1, String, thr, thrPrev)));
   const stab = node('div', 'wq-tile');
   stab.append(
     node('span', 'wq-k', 'Stability'),
-    wqFigure(String(rw), rw === 1 ? 'rework loop' : 'rework loops', wqChip(q, 'Rework loops', -1, String, rw, rwPrev)),
-    wqFigure(d.typed ? '—' : wqPct(ds), d.typed ? 'defect share: Type filter is on' : `defect share of done · ${flow.throughputByWorkType.defect} of ${thr}`, d.typed ? null : wqChip(flow, 'Defect share of done cards', -1, wqPts, ds, dsPrev), 'wq-fig-sm'),
+    wqFigure(String(rw), rw === 1 ? 'rework loop' : 'rework loops', wqChip(q, ctx, d.since, 'Rework loops', -1, String, rw, rwPrev)),
+    wqFigure(d.typed ? '—' : wqPct(ds), d.typed ? 'defect share: Type filter is on' : `defect share of done · ${flow.throughputByWorkType.defect} of ${thr}`, d.typed ? null : wqChip(flow, ctx, d.since, 'Defect share of done cards', -1, wqPts, ds, dsPrev, 'pts'), 'wq-fig-sm'),
   );
   tiles.append(speed, stab);
   el.append(tiles);
@@ -357,4 +363,4 @@ const wqRender = (fn, cls) => (el, data, ctx) => {
 
 dwRegister({ type: 'quality', title: 'Is work right the first time?', sizes: ['S', 'M', 'L'], load: wqQualityLoad, render: wqRender(wqQualityRender, 'wq-quality') });
 dwRegister({ type: 'speed-stability', title: 'Are we buying speed with breakage?', sizes: ['M', 'L'], load: wqSpeedLoad, render: wqRender(wqSpeedRender, 'wq-speed') });
-dwRegister({ type: 'top-risks', title: 'What could hurt us, and is it managed?', sizes: ['M', 'L'], load: wqRisksLoad, render: wqRender(wqRisksRender, 'wq-top-risks') });
+dwRegister({ type: 'top-risks', title: 'What could hurt us, and is it managed?', sizes: ['M', 'L'], ranged: false, load: wqRisksLoad, render: wqRender(wqRisksRender, 'wq-top-risks') });
