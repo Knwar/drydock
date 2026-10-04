@@ -421,9 +421,15 @@ export interface CostMetrics {
   /** Cards with any cost in the window (byCard holds the top `limit` of them). */
   cardCount: number;
   weekly: { week: string; start: string; cost: number }[];
-  /** Median all-time cost of the scope's done cards (the budget projection's per-card cost), null with none. */
+  /**
+   * Median all-time cost of the scope's done cards (the budget projection's per-card cost), null with none.
+   * Like budgets, it ignores the tag / agent / workType filter.
+   */
   medianCardCost: number | null;
+  /** Always over ALL the phase's work: a tag / agent / workType filter never narrows a budget. */
   budgets: CostBudget[];
+  /** A tag / agent / workType filter is set, so budgets (unlike every other view) are unfiltered. */
+  budgetsUnfiltered: boolean;
 }
 
 export const DEFAULT_TOP_CARDS = 10;
@@ -451,9 +457,12 @@ const workTypeOf = (r: CostRow): WorkType | 'none' | 'deleted' => (r.card === nu
 
 /**
  * Aggregate priced, all-time rows. `filter.tag` / `filter.agent` (the run's
- * credited agent) / from-to (the run's time) select the rows every view is
- * built from, except the budgets and the median card cost, which ignore
- * from/to (a budget covers the phase's whole life).
+ * credited agent) / `filter.workType` / from-to (the run's time) select the
+ * rows every view is built from, except the budgets and the median card cost:
+ * they ignore from/to (a budget covers the phase's whole life) AND the tag /
+ * agent / workType filter (a budget is for all of the phase's work; comparing
+ * a filtered slice of spend to it would read as falsely on budget).
+ * opts.remainingByPhase must likewise count all of a phase's open cards.
  */
 export function aggregateCost(pricing: Pricing, table: PriceTable, filter: MetricsFilter, opts: CostOptions): CostMetrics {
   const to = filter.to ?? opts.now;
@@ -534,9 +543,10 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
   if (est.runs) caveats.push(`estimated cost (${est.runs} runs without a token breakdown): ${ESTIMATE_METHOD}`);
   if (est.runs) caveats.push(TOKENS_CAVEAT);
 
-  // budgets: all-time actual per phase, projected with the median done-card cost
+  // budgets: all-time actual per phase over ALL its runs (no tag/agent/workType filter),
+  // projected with the median done-card cost
   const allTime = new Map<string, { cost: number; phase: string | null; done: boolean }>();
-  for (const r of scoped) {
+  for (const r of pricing.rows) {
     const c = allTime.get(r.task_id) ?? { cost: 0, phase: r.card?.phase_id ?? null, done: r.card?.lane === 'done' };
     c.cost += r.cost;
     allTime.set(r.task_id, c);
@@ -632,6 +642,7 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
     weekly: weekly.map((w) => ({ ...w, cost: round(w.cost) })),
     medianCardCost: medianCardCost === null ? null : round(medianCardCost),
     budgets,
+    budgetsUnfiltered: filter.tag !== undefined || filter.agent !== undefined || filter.workType !== undefined,
   };
 }
 
@@ -664,17 +675,15 @@ export function costMetrics(
         .prepare(`SELECT id, project_id, title, status, budget_usd FROM phases WHERE project_id IN (${bq}) ORDER BY project_id, position`)
         .all(...boardIds.map((b) => b.id)) as CostPhase[])
     : [];
+  // every open card of the phase, whatever the filter: budgets are unfiltered (see aggregateCost)
   const remainingByPhase = new Map<string, number>();
   if (boardIds.length) {
-    const tagSql = filter.tag !== undefined ? 'AND tag = ?' : '';
-    const wtSql = filter.workType === 'none' ? 'AND work_type IS NULL' : filter.workType !== undefined ? 'AND work_type = ?' : '';
-    const extra = [...(filter.tag !== undefined ? [filter.tag] : []), ...(filter.workType && filter.workType !== 'none' ? [filter.workType] : [])];
     const rows = db
       .prepare(
         `SELECT phase_id, COUNT(*) AS n FROM tasks
-         WHERE project_id IN (${bq}) AND phase_id IS NOT NULL AND lane != 'done' ${tagSql} ${wtSql} GROUP BY phase_id`,
+         WHERE project_id IN (${bq}) AND phase_id IS NOT NULL AND lane != 'done' GROUP BY phase_id`,
       )
-      .all(...boardIds.map((b) => b.id), ...extra) as { phase_id: string; n: number }[];
+      .all(...boardIds.map((b) => b.id)) as { phase_id: string; n: number }[];
     for (const r of rows) remainingByPhase.set(r.phase_id, r.n);
   }
   return aggregateCost(pricing, table, filter, { ...opts, boardNames, phases, remainingByPhase });

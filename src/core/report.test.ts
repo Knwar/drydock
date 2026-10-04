@@ -34,7 +34,11 @@ function input(over: Partial<ReportInput> = {}): ReportInput {
     range: { from: FROM, to: NOW, tz: 'UTC' },
     today: '2026-09-26',
     generatedAt: NOW,
-    phases: [phase('a', 'on_track'), phase('b', 'at_risk', { project_id: 'web' }), phase('c', 'done', { phase_status: 'done' })],
+    phases: [
+      phase('a', 'on_track', { p50: '2026-10-01', p85: '2026-10-05', p95: '2026-10-08' }),
+      phase('b', 'at_risk', { project_id: 'web' }),
+      phase('c', 'done', { phase_status: 'done' }),
+    ],
     milestones: [
       { id: 'm1', project_id: 'ws', title: 'Beta', date: '2026-10-01', phase_id: 'a' },
       { id: 'm2', project_id: 'ws', title: 'GA', date: '2026-10-20', phase_id: null }, // > 14 days out
@@ -122,6 +126,15 @@ describe('buildReport', () => {
         ['b', 'amber', 'web'],
         ['c', 'done', 'shop'],
       ],
+    );
+    assert.deepEqual(
+      r.phases.map((p) => [p.p50, p.p85, p.p95]),
+      [
+        ['2026-10-01', '2026-10-05', '2026-10-08'],
+        [null, null, null],
+        [null, null, null],
+      ],
+      'p95 sits next to p50/p85; null without a forecast',
     );
     assert.deepEqual(r.overall, { rag: 'amber', reason: 'worst active phase: Phase b' });
     assert.deepEqual(r.phases[0].needs_you.map((n) => n.task_id), ['k6'], 'needs-you wait listed under its card’s phase');

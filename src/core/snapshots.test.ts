@@ -227,6 +227,12 @@ describe('deltasSince', () => {
     assert.equal(since.riskScoreChange, -5);
     assert.deepEqual(since.milestoneMoves.map((x) => [x.fromDate, x.days]), [['2026-11-03', 7]]);
     assert.equal(deltasSince(db, a.id, '2026-10-30'), null, 'nothing on/after since');
+    const until = deltasSince(db, a.id, undefined, '2026-09-27')!; // latest on/before 09-27 = 09-25
+    assert.deepEqual([until.from, until.to], ['2026-09-20', '2026-09-25']);
+    assert.deepEqual(until.slipDays, { p85: 5, target: 0 });
+    assert.deepEqual(until.milestoneMoves.map((x) => [x.fromDate, x.toDate]), [['2026-11-01', '2026-11-03']]);
+    assert.equal(deltasSince(db, a.id, '2026-09-26', '2026-09-27'), null, 'nothing in [since, until]');
+    assert.equal(deltasSince(db, a.id, undefined, '2026-09-01'), null, 'nothing on/before until');
     assert.equal(deltasSince(db, 'nope'), null);
   });
 

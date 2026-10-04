@@ -32,7 +32,8 @@
  *    window, full length (nearest-rank, as in metrics.ts).
  *  - waiting: what is open right now, regardless of the window.
  *  - A phase filter keeps needs_you intervals only when their card is in that
- *    phase (an interval with no known card is dropped).
+ *    phase (an interval with no known card is dropped); a workType filter
+ *    likewise keeps only those whose card has that work type.
  */
 import type { DB } from './db.js';
 import {
@@ -266,7 +267,12 @@ function boardIds(db: DB, projectIds: string[]): string[] {
   return [...new Set([...projectIds, ...rows.map((r) => r.id)])];
 }
 
-export type WaitFilter = Pick<MetricsFilter, 'projectIds' | 'phaseId' | 'from' | 'to'>;
+/**
+ * workType keeps only waits tied to a card of that work type ('none': an
+ * unclassified card that still exists); a needs_you interval with no (or a
+ * deleted) card is then dropped, as with a phase filter.
+ */
+export type WaitFilter = Pick<MetricsFilter, 'projectIds' | 'phaseId' | 'workType' | 'from' | 'to'>;
 
 /** needs_you intervals in scope (open ones always; closed ones overlapping the window). */
 export function loadNeedsYou(db: DB, filter: WaitFilter): NeedsYouInterval[] {
@@ -281,6 +287,11 @@ export function loadNeedsYou(db: DB, filter: WaitFilter): NeedsYouInterval[] {
   if (filter.phaseId !== undefined) {
     where.push('t.phase_id = ?');
     params.push(filter.phaseId);
+  }
+  if (filter.workType === 'none') where.push('t.id IS NOT NULL AND t.work_type IS NULL');
+  else if (filter.workType !== undefined) {
+    where.push('t.work_type = ?');
+    params.push(filter.workType);
   }
   if (filter.to !== undefined) {
     where.push('w.started_at <= ?');
@@ -300,7 +311,7 @@ export function loadNeedsYou(db: DB, filter: WaitFilter): NeedsYouInterval[] {
 
 /** Blocker intervals of the cards in scope, derived from their events. */
 export function loadBlockers(db: DB, filter: WaitFilter): BlockerInterval[] {
-  return loadCardHistories(db, { projectIds: filter.projectIds, phaseId: filter.phaseId }).flatMap(({ card, events }) =>
+  return loadCardHistories(db, { projectIds: filter.projectIds, phaseId: filter.phaseId, workType: filter.workType }).flatMap(({ card, events }) =>
     deriveLaneHistory(card, events).blocked.map((b) => ({
       project_id: card.project_id,
       task_id: card.id,
