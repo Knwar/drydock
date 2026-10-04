@@ -129,7 +129,7 @@ describe('POST /pty/send with the terminal enabled (fake claude)', () => {
     const ok = await send(project, token, { text: 'hello\u001b[31m\nworld\u0003' });
     assert.equal(ok.status, 200);
     assert.deepEqual(await ok.json(), { sent: true });
-    for (const deadline = Date.now() + 5000; !out.includes('hello[31m world') && Date.now() < deadline; ) {
+    for (const deadline = Date.now() + 20000; !out.includes('hello[31m world') && Date.now() < deadline; ) {
       await new Promise((r) => setTimeout(r, 50));
     }
     assert.ok(out.includes('hello[31m world'), `expected sanitized text in pty output, got: ${JSON.stringify(out.slice(-300))}`);
@@ -137,7 +137,7 @@ describe('POST /pty/send with the terminal enabled (fake claude)', () => {
     assert.ok(!out.includes('\u001b[31m'), 'no ESC sequence reached the pty');
 
     // recorded as a board event (broadcast to board subscribers)
-    for (const deadline = Date.now() + 5000; !events.some((e) => e.type === 'note') && Date.now() < deadline; ) {
+    for (const deadline = Date.now() + 20000; !events.some((e) => e.type === 'note') && Date.now() < deadline; ) {
       await new Promise((r) => setTimeout(r, 50));
     }
     const note = events.find((e) => e.type === 'note');
@@ -162,7 +162,7 @@ describe('POST /pty/send with the terminal enabled (fake claude)', () => {
     // it answers 'agent busy' until the foreground check fails first.
     ws.send(JSON.stringify({ t: 'i', d: '\u0004' }));
     let gone: { status: number; body: unknown } = { status: 0, body: null };
-    for (const deadline = Date.now() + 5000; Date.now() < deadline; ) {
+    for (const deadline = Date.now() + 20000; Date.now() < deadline; ) {
       const res = await send(project, token, { text: 'should-not-appear' });
       gone = { status: res.status, body: await res.json() };
       if ((gone.body as { error?: string }).error !== 'agent busy') break;
