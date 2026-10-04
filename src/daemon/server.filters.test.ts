@@ -219,7 +219,7 @@ describe('daemon dashboard / Home filters', () => {
     assert.deepEqual(all.tags, ['db', 'ui']);
     assert.deepEqual(all.agents, ['Ada', 'Bob']);
     const done = all.cards.find((x: any) => x.id === c.webDone);
-    assert.deepEqual(Object.keys(done).sort(), ['agent', 'blocked', 'board', 'id', 'lane', 'lane_since', 'phase_id', 'tag', 'title']);
+    assert.deepEqual(Object.keys(done).sort(), ['agent', 'blocked', 'board', 'id', 'lane', 'lane_since', 'phase_id', 'tag', 'title', 'work_type']);
     assert.ok(done.lane_since <= doneAt, 'a done card\'s lane_since: when it entered done');
     assert.equal(all.cards.find((x: any) => x.id === c.apiProg).blocked, true);
 

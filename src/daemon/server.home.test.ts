@@ -72,6 +72,7 @@ describe('daemon GET /home', () => {
           title: 'Next up',
           lane: 'backlog',
           tag: 'api',
+          work_type: null,
           board: { id, name: 'solo' },
           ready: false,
           waiting_on: [{ id: building, title: 'Building', board_name: 'solo' }],

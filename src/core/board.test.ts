@@ -31,6 +31,8 @@ import {
   findProject,
   getWorkspace,
   getWorkspaceSummary,
+  getWorkspaceCards,
+  laneCounts,
   getBoard,
   getNextCard,
   getNextPhase,
@@ -77,7 +79,7 @@ import {
   updateSubscription,
 } from './subscriptions.js';
 import { migrate, openDb } from './db.js';
-import type { TaskEvent } from './types.js';
+import type { CardFilter, TaskEvent } from './types.js';
 
 function setup() {
   const db = openDb();
@@ -458,7 +460,7 @@ describe('board reads', () => {
     const { db, project } = setup();
     createTask(db, project.id, 'First', { requirements: 'long spec text' });
     const [card] = getBoard(db, project.id);
-    assert.deepEqual(Object.keys(card).sort(), ['agent', 'blocked', 'blocked_reason', 'id', 'lane', 'lane_since', 'phase_id', 'rounds', 'skill', 'subs', 'tag', 'title', 'updated_at']);
+    assert.deepEqual(Object.keys(card).sort(), ['agent', 'blocked', 'blocked_reason', 'id', 'lane', 'lane_since', 'phase_id', 'rounds', 'skill', 'subs', 'tag', 'title', 'updated_at', 'work_type']);
   });
 
   it('active cards are the in_progress lane', () => {
@@ -925,9 +927,9 @@ describe('workspace summary', () => {
     assert.deepEqual(
       mB.active.map(({ lane_since, ...c }) => (assert.equal(typeof lane_since, 'number'), c)),
       [
-        { id: a.id, title: 'Building A', lane: 'in_progress', agent: 'Ada', blocked: false },
-        { id: b.id, title: 'Building B', lane: 'in_progress', agent: null, blocked: true },
-        { id: rev.id, title: 'Reviewing', lane: 'in_review', agent: null, blocked: false },
+        { id: a.id, title: 'Building A', lane: 'in_progress', agent: 'Ada', blocked: false, work_type: null },
+        { id: b.id, title: 'Building B', lane: 'in_progress', agent: null, blocked: true, work_type: null },
+        { id: rev.id, title: 'Reviewing', lane: 'in_review', agent: null, blocked: false, work_type: null },
       ],
     );
     assert.equal(mB.blocked, 1);
@@ -1851,6 +1853,7 @@ describe('home view reads', () => {
       title: 'Queued',
       lane: 'queued',
       tag: 'ui',
+      work_type: null,
       board: { id: ws.id, name: 'Shop' },
       ready: true,
       waiting_on: [],
@@ -1940,6 +1943,7 @@ describe('home view reads', () => {
       next_criterion: 'two',
       since: 5000,
       blocked: true,
+      work_type: null,
     });
     assert.equal(items[0].since, bUpdated);
     assert.deepEqual(items[0].subtasks, { done: 0, total: 0 });
@@ -2825,5 +2829,205 @@ describe('mergeVerticals', () => {
     assert.equal(getNextCard(db, web.id)?.id, f1.id);
     moveTask(db, f1.id, 'done');
     assert.equal(getNextCard(db, web.id)?.id, f2.id);
+  });
+});
+
+describe('work_type', () => {
+  it('round-trips on create and update; null clears it', () => {
+    const { db, project } = setup();
+    const a = createTask(db, project.id, 'A', { work_type: 'defect' });
+    assert.equal(a.work_type, 'defect');
+    assert.equal(getTask(db, a.id).work_type, 'defect');
+    assert.equal(createTask(db, project.id, 'B').work_type, null);
+    assert.equal(updateTask(db, a.id, { work_type: 'debt' }).work_type, 'debt');
+    assert.equal(updateTask(db, a.id, { work_type: null }).work_type, null);
+  });
+
+  it('rejects invalid values with a clear error and writes nothing', () => {
+    const { db, project } = setup();
+    assert.throws(
+      () => createTask(db, project.id, 'A', { work_type: 'chore' as never }),
+      /invalid work_type: chore \(expected feature, defect, debt, risk or null\)/,
+    );
+    assert.equal(getBoard(db, project.id).length, 0);
+    const b = createTask(db, project.id, 'B', { work_type: 'risk' });
+    assert.throws(() => updateTask(db, b.id, { work_type: 'bug' }), /invalid work_type: bug/);
+    assert.equal(getTask(db, b.id).work_type, 'risk');
+  });
+
+  it('is returned by board, attention, home and workspace card reads', () => {
+    const { db, project } = setup();
+    const a = createTask(db, project.id, 'A', { work_type: 'feature' });
+    assert.equal(getBoard(db, project.id)[0].work_type, 'feature');
+    assert.equal(getAttention(db, project.id)[0].work_type, 'feature'); // needs_spec
+    assert.equal(getUpNext(db, project.id).items[0].work_type, 'feature');
+    assert.equal(getWorkspaceCards(db, project.id).cards[0].work_type, 'feature');
+    moveTask(db, a.id, 'in_progress');
+    assert.equal(getActiveCards(db, project.id)[0].work_type, 'feature');
+    assert.equal(getNowBuilding(db, project.id)[0].work_type, 'feature');
+    assert.equal(getWorkspaceSummary(db, project.id).boards[0].active[0].work_type, 'feature');
+  });
+});
+
+describe('workType filter', () => {
+  it('filters cards by work type, and none = unclassified, across the shared card reads', () => {
+    const { db, project } = setup();
+    const feat = createTask(db, project.id, 'Feat', { work_type: 'feature' });
+    const bug = createTask(db, project.id, 'Bug', { work_type: 'defect' });
+    const plain = createTask(db, project.id, 'Plain');
+    const ids = (f: CardFilter) => getWorkspaceCards(db, project.id, f).cards.map((c) => c.id).sort();
+    assert.deepEqual(ids({}), [feat.id, bug.id, plain.id].sort());
+    assert.deepEqual(ids({ workType: 'defect' }), [bug.id]);
+    assert.deepEqual(ids({ workType: 'none' }), [plain.id]);
+    assert.deepEqual(ids({ workType: 'debt' }), []);
+    assert.deepEqual(getUpNext(db, project.id, 10, { workType: 'feature' }).items.map((i) => i.id), [feat.id]);
+    assert.deepEqual(laneCounts(db, [project.id], { workType: 'none' }).get(project.id)!.backlog, 1);
+    // attention (needs_spec on every card) follows the filter too
+    assert.deepEqual(getWorkspaceSummary(db, project.id, { workType: 'defect' }).attention.map((i) => i.card_id), [bug.id]);
+    assert.deepEqual(getWorkspaceSummary(db, project.id, { workType: 'none' }).attention.map((i) => i.card_id), [plain.id]);
+    moveTask(db, bug.id, 'in_progress');
+    moveTask(db, plain.id, 'in_progress');
+    assert.deepEqual(getNowBuilding(db, project.id, { workType: 'none' }).map((i) => i.id), [plain.id]);
+    assert.deepEqual(getWorkspaceSummary(db, project.id, { workType: 'defect' }).boards[0].active.map((c) => c.id), [bug.id]);
+  });
+
+  it('rejects an unknown work type filter', () => {
+    const { db, project } = setup();
+    assert.throws(() => getWorkspaceCards(db, project.id, { workType: 'chore' as never }), /invalid work_type: chore/);
+  });
+});
+
+describe('phase_change and reassign events', () => {
+  const eventsOf = (db: Database.Database, taskId: string, type: string) =>
+    (
+      db.prepare('SELECT payload FROM task_events WHERE task_id = ? AND type = ? ORDER BY id').all(taskId, type) as {
+        payload: string;
+      }[]
+    ).map((r) => JSON.parse(r.payload));
+
+  it('updateTask: phase change logs {from, to}; same phase logs nothing', () => {
+    const { db, project } = setup();
+    const p1 = createPhase(db, project.id, 'P1');
+    const p2 = createPhase(db, project.id, 'P2');
+    const a = createTask(db, project.id, 'A', { phase_id: p1.id });
+    updateTask(db, a.id, { phase_id: p2.id });
+    updateTask(db, a.id, { phase_id: p2.id }); // no-op
+    updateTask(db, a.id, { tag: 'x' }); // phase untouched
+    updateTask(db, a.id, { phase_id: null });
+    assert.deepEqual(eventsOf(db, a.id, 'phase_change'), [
+      { from: p1.id, to: p2.id },
+      { from: p2.id, to: null },
+    ]);
+    // the event is in the outbox too (appendEvent tees)
+    const n = (db.prepare(`SELECT COUNT(*) AS n FROM outbox WHERE task_id = ? AND type = 'phase_change'`).get(a.id) as { n: number }).n;
+    assert.equal(n, 2);
+  });
+
+  it('placePhaselessCards: one event per placed card, none on a rerun', () => {
+    const { db, project } = setup();
+    const ph = createPhase(db, project.id, 'P');
+    advancePhase(db, project.id);
+    const a = createTask(db, project.id, 'A');
+    const b = createTask(db, project.id, 'B');
+    const done = createTask(db, project.id, 'Done');
+    moveTask(db, done.id, 'done');
+    const inPhase = createTask(db, project.id, 'In', { phase_id: ph.id });
+    assert.equal(placePhaselessCards(db, project.id), 2);
+    assert.equal(placePhaselessCards(db, project.id), 0);
+    for (const c of [a, b]) assert.deepEqual(eventsOf(db, c.id, 'phase_change'), [{ from: null, to: ph.id }]);
+    assert.deepEqual(eventsOf(db, done.id, 'phase_change'), []);
+    assert.deepEqual(eventsOf(db, inPhase.id, 'phase_change'), []);
+  });
+
+  it('splitIntoVerticals: a moved card logs its phase → the copy, once', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-pc-split-'));
+    mkdirSync(join(dir, 'web'));
+    const db = openDb();
+    t.after(() => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const source = getOrCreateProject(db, dir, 'Shop');
+    const ph = createPhase(db, source.id, 'P');
+    advancePhase(db, source.id);
+    const a = createTask(db, source.id, 'A', { phase_id: ph.id });
+    const stay = createTask(db, source.id, 'Stay', { phase_id: ph.id });
+    const res = splitIntoVerticals(db, source.id, {
+      targets: [{ name: 'Web', root: join(dir, 'web') }],
+      assignments: { [a.id]: 0, [stay.id]: 'stay' },
+    });
+    const copy = getTask(db, a.id).phase_id;
+    assert.notEqual(copy, ph.id);
+    assert.deepEqual(eventsOf(db, a.id, 'phase_change'), [{ from: ph.id, to: copy }]);
+    const ev = db.prepare(`SELECT project_id FROM task_events WHERE task_id = ? AND type = 'phase_change'`).get(a.id) as {
+      project_id: string;
+    };
+    assert.equal(ev.project_id, res.verticals[0].id);
+    assert.deepEqual(eventsOf(db, stay.id, 'phase_change'), []);
+  });
+
+  it('mergeVerticals fold: open cards → into\'s phase, done cards → null (deleted phase), one event each', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-pc-merge-'));
+    for (const sub of ['web', 'api']) mkdirSync(join(dir, sub));
+    const db = openDb();
+    t.after(() => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const ws = getOrCreateProject(db, dir, 'Shop');
+    const web = createVertical(db, ws.id, 'Web', join(dir, 'web'));
+    const api = createVertical(db, ws.id, 'API', join(dir, 'api'));
+    const p1 = createPhase(db, web.id, 'P1'); // planned only: placement's home
+    const a1 = createPhase(db, api.id, 'A1');
+    const open = createTask(db, api.id, 'open', { phase_id: a1.id });
+    const loose = createTask(db, api.id, 'loose');
+    const done = createTask(db, api.id, 'done', { phase_id: a1.id });
+    moveTask(db, done.id, 'done');
+    const doneLoose = createTask(db, api.id, 'done loose');
+    moveTask(db, doneLoose.id, 'done');
+    mergeVerticals(db, api.id, web.id, { phases: 'fold' });
+    assert.deepEqual(eventsOf(db, open.id, 'phase_change'), [{ from: a1.id, to: p1.id }]);
+    assert.deepEqual(eventsOf(db, loose.id, 'phase_change'), [{ from: null, to: p1.id }]);
+    assert.deepEqual(eventsOf(db, done.id, 'phase_change'), [{ from: a1.id, to: null }]);
+    assert.deepEqual(eventsOf(db, doneLoose.id, 'phase_change'), []);
+    const onInto = (db.prepare(`SELECT COUNT(*) AS n FROM task_events WHERE type = 'phase_change' AND project_id = ?`).get(web.id) as { n: number }).n;
+    assert.equal(onInto, 3);
+  });
+
+  it('mergeVerticals append: phases move with their cards, no phase_change', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-pc-append-'));
+    for (const sub of ['web', 'api']) mkdirSync(join(dir, sub));
+    const db = openDb();
+    t.after(() => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const ws = getOrCreateProject(db, dir, 'Shop');
+    const web = createVertical(db, ws.id, 'Web', join(dir, 'web'));
+    const api = createVertical(db, ws.id, 'API', join(dir, 'api'));
+    const a1 = createPhase(db, api.id, 'A1');
+    const c = createTask(db, api.id, 'c', { phase_id: a1.id });
+    mergeVerticals(db, api.id, web.id, { phases: 'append' });
+    assert.deepEqual(eventsOf(db, c.id, 'phase_change'), []);
+  });
+
+  it('reassign: only when an assignee changes to another one', () => {
+    const { db, project } = setup();
+    const a = createTask(db, project.id, 'A');
+    assignCard(db, a.id, 'Ada', '.trees/a', 'card/a'); // first assignment: assign only
+    assert.deepEqual(eventsOf(db, a.id, 'reassign'), []);
+    assignCard(db, a.id, 'Ada', '.trees/a', 'card/a'); // same agent: no-op
+    assert.deepEqual(eventsOf(db, a.id, 'reassign'), []);
+    assignCard(db, a.id, 'Bob', '.trees/a', 'card/a');
+    updateTask(db, a.id, { assigned_agent: 'Cy' });
+    assert.deepEqual(eventsOf(db, a.id, 'reassign'), [
+      { from: 'Ada', to: 'Bob' },
+      { from: 'Bob', to: 'Cy' },
+    ]);
+    assert.equal(eventsOf(db, a.id, 'assign').length, 3);
+    // a redirect clears the assignee; the next assignment is a first one again
+    redirectTask(db, a.id);
+    assignCard(db, a.id, 'Dee', '.trees/a', 'card/a');
+    assert.equal(eventsOf(db, a.id, 'reassign').length, 2);
   });
 });
