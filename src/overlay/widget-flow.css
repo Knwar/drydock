@@ -1,1 +1,166 @@
-/* Dashboard widgets: Flow (cycle-breakdown, wip, review-queue, throughput-trend, escalation). Stub: styles land with the widget card for this group. */
+/* Dashboard widgets: Flow (cycle-breakdown, wip, review-queue, throughput-trend, escalation).
+   The kpi tiles' look: one prominent number, quiet labels, status as icon + text, inline SVG charts. */
+.fw {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 100%;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* headline */
+.fw-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fw-line { display: flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; }
+.fw-value {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  white-space: nowrap;
+}
+.fw-unit, .fw-label {
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.fw-label { max-width: 100%; }
+
+.fw-delta-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; min-width: 0; margin-top: -4px; }
+.fw-delta-cap { font-size: 11px; color: var(--dim); white-space: nowrap; }
+
+.fw-k { font-size: 10.5px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; }
+.fw-dim { color: var(--dim); }
+.fw-num { text-align: right; }
+.fw-foot { font-size: 11.5px; color: var(--dim); }
+
+/* status: the icon carries a distinct glyph, the text says it; colour only reinforces */
+.fw-status { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; min-width: 0; }
+.fw-ico {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+.fw-ico-sm { width: 13px; height: 13px; font-size: 8px; margin-right: 5px; }
+.fw-status-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fw-ok { color: #5dd3a8; }
+.fw-warn { color: #e5c07b; }
+.fw-none { color: var(--dim); }
+
+.fw-sw { flex: none; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 2px; }
+
+/* cycle-breakdown: the stacked stage bar, the blocked bar on the same scale below it */
+.fw-stage-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.fw-stage-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.fw-stage-sum { font-size: 11px; color: var(--dim); white-space: nowrap; }
+.fw-stage-svg { display: block; width: 100%; height: 14px; border-radius: 4px; overflow: hidden; }
+.fw-blocked { display: flex; flex-direction: column; gap: 4px; }
+.fw-blocked-svg { display: block; width: 100%; height: 5px; border-radius: 3px; overflow: hidden; }
+.fw-blocked-text { display: flex; align-items: center; flex-wrap: wrap; font-size: 11.5px; color: var(--text); }
+.fw-legend-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 14px;
+  font-size: 12px;
+}
+.fw-legend-l { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+.fw-lg-name { display: flex; align-items: center; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* wip: one row per lane: name, count / limit, (M) a bar with the limit as a marker */
+.fw-wip { display: flex; flex-direction: column; gap: 8px; }
+.fw-wip-row { display: flex; flex-direction: column; gap: 4px; }
+.fw-wip-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12.5px; }
+.fw-wip-name { color: var(--dim); }
+.fw-wip-n { font-size: 18px; font-weight: 600; color: var(--text); }
+.fw-wip-lim { font-size: 12px; color: var(--dim); }
+.fw-wip-row.fw-over .fw-wip-n, .fw-wip-row.fw-over .fw-wip-lim { color: #e5c07b; }
+.fw-wip-svg { display: block; width: 100%; height: 8px; border-radius: 4px; overflow: hidden; }
+.fw-hint { font-size: 11.5px; color: var(--dim); margin-top: -2px; }
+.fw-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.fw-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+/* review-queue list */
+.fw-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 0 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.fw-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.fw-item:hover { background: rgba(255, 255, 255, 0.05); }
+.fw-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.fw-item-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fw-item-age { flex: none; display: inline-flex; align-items: center; font-size: 12px; color: var(--dim); }
+.fw-item.fw-over .fw-item-age { color: #e5c07b; font-weight: 600; }
+
+/* throughput-trend: bars in an SVG of equal slots; the HTML rows below use the same columns */
+.fw-tt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.fw-tt-svg {
+  display: block;
+  width: 100%;
+  height: 84px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+.fw[data-size='L'] .fw-tt-svg { height: 120px; }
+.fw[data-size='XL'] .fw-tt-svg { height: 170px; }
+.fw-tt-row {
+  display: grid;
+  grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.fw-tt-row > span { text-align: center; white-space: nowrap; overflow: visible; }
+.fw-tt-x > span { text-align: left; }
+.fw-tt-vals { color: var(--text); }
+.fw-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; }
+.fw-lg { display: inline-flex; align-items: center; white-space: nowrap; }
+
+/* escalation */
+.fw-resolve { display: flex; flex-direction: column; gap: 2px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.fw-resolve-v { font-size: 15px; font-weight: 600; color: var(--text); }
