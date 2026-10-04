@@ -1,8 +1,7 @@
 // ── Dashboard widgets: Delivery (phase-health, forecast, milestones, scope-change, planned-delivered, gate-readiness, rag-trend) ──
 // Each title states the question. Data: /metrics/schedule (phases with p50/p85/p95, target, status),
-// /metrics/history (daily phase + milestone snapshots: the baseline is a phase's / milestone's first
-// snapshot), /metrics/forecast (histogram), /milestones, /metrics/cost (budgets), /workspace/cards,
-// /risks, /metrics/wait. Reads go through ctx.shared keyed by URL, so widgets (and the KPI tiles)
+// (+ its milestones), /metrics/history (daily phase + milestone snapshots: the baseline is a phase's /
+// milestone's first snapshot), /metrics/cost (budgets), /workspace/cards, /risks, /metrics/wait. Reads go through ctx.shared keyed by URL, so widgets (and the KPI tiles)
 // asking for the same read in one cycle share it. Uses app.js globals read-only (node, svgEl, mx*,
 // MX_MONTHS, MX_LOCAL_TZ). Status is always an icon + text, never colour alone; user strings go in
 // via textContent. Schedule slip bands (the research doc): green within 5%, amber 6–15%, red over 15%.
@@ -24,6 +23,7 @@ const DL_RAG = {
   grey: ['none', 'No data'],
   done: ['done', 'Done'],
 };
+// Source of truth: src/core/report.ts RAG_OF + phaseRag (the snapshots' rag column uses them too).
 const DL_RAG_OF = { on_track: 'green', at_risk: 'amber', late: 'red', complete: 'done', done: 'done', unknown: 'grey' };
 
 // Home's filters (fbParams): the board in scope, the phase, the range (epoch ms).
@@ -63,10 +63,27 @@ function dlStatus(kind, text, cls = '') {
 }
 const dlRag = (rag, cls) => dlStatus(DL_RAG[rag][0], DL_RAG[rag][1], cls);
 
-// The phase's RAG as report.ts derives it: its schedule status, green → amber on an open blocker.
+// THE phase RAG rule, used by every widget here: report.ts's phaseRag (src/core/report.ts RAG_OF /
+// phaseRag are the source of truth) — the schedule status mapped, green → amber on an open blocker.
 function dlPhaseRag(status, blockers) {
   const rag = DL_RAG_OF[status] ?? 'grey';
   return rag === 'green' && blockers > 0 ? 'amber' : rag;
+}
+
+// Open blockers per phase id, from /workspace/cards (blocked and not done).
+function dlBlockers(cards) {
+  const m = new Map();
+  for (const cd of cards) if (cd.blocked && cd.lane !== 'done' && cd.phase_id) m.set(cd.phase_id, (m.get(cd.phase_id) ?? 0) + 1);
+  return m;
+}
+
+// The day a done phase finished: no endpoint returns when a phase was marked done, so the day its
+// last card reached done (lane_since) stands in — from then on its RAG is 'done' anyway (RAG_OF
+// maps 'complete' to done). null when it has no done card.
+function dlDoneDay(cards, phaseId) {
+  let at = null;
+  for (const cd of cards) if (cd.phase_id === phaseId && cd.lane === 'done' && cd.lane_since != null && (at === null || cd.lane_since > at)) at = cd.lane_since;
+  return at === null ? null : mxDayKey(at, MX_LOCAL_TZ);
 }
 
 // Each phase's snapshots (history rows come ordered by date).
@@ -146,8 +163,7 @@ async function dlHealthLoad(ctx) {
   if (!phases.length) return { empty: f.phase ? 'The filtered phase isn’t on this board' : 'No phases yet — plan a roadmap to see phase health' };
   const snaps = dlSnapsByPhase(h.phases);
   const budgets = new Map(c.budgets.map((b) => [b.phase_id, b]));
-  const blockers = new Map();
-  for (const cd of cards.cards) if (cd.blocked && cd.lane !== 'done' && cd.phase_id) blockers.set(cd.phase_id, (blockers.get(cd.phase_id) ?? 0) + 1);
+  const blockers = dlBlockers(cards.cards);
   const rows = phases.map((p) => ({
     p,
     rag: dlPhaseRag(p.status, blockers.get(p.id) ?? 0),
@@ -230,8 +246,10 @@ function dlHealthRender(el, d, ctx) {
   table.append(head);
   for (const r of rows) {
     const p = r.p;
+    const item = node('div', 'dl-ph-li');
+    item.setAttribute('role', 'listitem');
     const row = node(r.cards.length ? 'button' : 'div', 'dl-ph-row');
-    row.setAttribute('role', 'listitem');
+    item.append(row);
     if (r.cards.length) {
       row.type = 'button';
       row.title = `List the cards in ${p.title}`;
@@ -248,7 +266,7 @@ function dlHealthRender(el, d, ctx) {
     row.append(name, dlRag(r.rag, 'dl-cell'), dlTargetCell(p), slip);
     if (wide) row.append(dlBudgetCell(r.budget));
     row.append(dlProgressCell(p));
-    table.append(row);
+    table.append(item);
   }
   el.append(table);
   const hidden = d.rows.length - rows.length;
@@ -265,19 +283,24 @@ async function dlForecastLoad(ctx) {
   if (phase.phase_status === 'done' || phase.status === 'complete') return { empty: `${phase.title}: every card is done` };
   if (!phase.target_date) return { empty: `Set a target date on ${phase.title} to forecast it` };
   if (!phase.p85) return { empty: `No forecast for ${phase.title}: ${phase.reason}` };
-  const [h, fc] = await Promise.all([
-    dlHistory(ctx, f, phase.id),
-    ctx.size === 'L' ? dlGet(ctx, '/metrics/forecast', { project: f.project, phase: phase.id, tz: MX_LOCAL_TZ }) : null,
-  ]);
-  return { phase, today: s.today, slip: dlSlip(h.phases), fc };
+  const [h, cards] = await Promise.all([dlHistory(ctx, f, phase.id), dlCards(ctx, f)]);
+  // the next milestone: the phase's own, else any on the board in scope
+  const next = (list) => list.filter((m) => m.date >= s.today).sort((a, b) => a.date.localeCompare(b.date))[0] ?? null;
+  return {
+    phase,
+    today: s.today,
+    rag: dlPhaseRag(phase.status, dlBlockers(cards.cards).get(phase.id) ?? 0),
+    slip: dlSlip(h.phases),
+    milestone: next(phase.milestones ?? []) ?? next(s.milestones),
+  };
 }
 
 // p50 → p95 as a band on a day axis (today … the later of p95 / target), p85 a bar, the target a marker.
-function dlRangeChart(p, today) {
+function dlRangeChart(p, today, large) {
   const end = [p.p95, p.target_date, p.p85].filter(Boolean).sort().pop();
   const span = Math.max(1, dlDiff(today, end) * 1.08);
   const x = (day) => (Math.max(0, dlDiff(today, day)) / span) * 100;
-  const wrap = node('div', 'dl-range');
+  const wrap = node('div', `dl-range${large ? ' dl-range-lg' : ''}`);
   const svg = svgEl('svg', { viewBox: '0 0 100 24', preserveAspectRatio: 'none', class: 'dl-range-svg', role: 'img' });
   svg.setAttribute('aria-label', `50% likely by ${dlDay(p.p50)}, 85% by ${dlDay(p.p85)}${p.p95 ? `, 95% by ${dlDay(p.p95)}` : ''}; target ${dlDay(p.target_date)}`);
   svg.append(svgEl('rect', { x: 0, y: 11, width: 100, height: 2, class: 'dl-r-track' }));
@@ -296,58 +319,12 @@ function dlRangeChart(p, today) {
   return wrap;
 }
 
-// The simulated finish days as bars (long tails lumped), p85 and the target marked.
-const DL_HIST_BARS = 60;
-function dlHistogram(fc, today, target) {
-  const hist = fc.histogram;
-  const minD = hist[0].days;
-  const lastD = Math.min(hist[hist.length - 1].days, minD + DL_HIST_BARS - 1);
-  const counts = new Map();
-  for (const b of hist) counts.set(Math.min(b.days, lastD), (counts.get(Math.min(b.days, lastD)) ?? 0) + b.count);
-  const n = lastD - minD + 1;
-  const max = Math.max(...counts.values(), 1);
-  const W = n * 10;
-  const H = 60;
-  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', class: 'dl-hist-svg', role: 'img' });
-  svg.setAttribute('aria-label', `Simulated finish days: 50% by ${dlDay(fc.p50.date)}, 85% by ${dlDay(fc.p85.date)}, 95% by ${dlDay(fc.p95.date)}`);
-  for (let d = minD; d <= lastD; d++) {
-    const v = counts.get(d) ?? 0;
-    if (!v) continue;
-    const h = (v / max) * (H - 2);
-    svg.append(svgEl('rect', { x: (d - minD) * 10 + 1, y: H - h, width: 8, height: h, class: d <= fc.p85.days ? 'dl-h-bar' : 'dl-h-bar dl-h-tail' }));
-  }
-  const xOf = (days) => ((Math.min(Math.max(days, minD), lastD) - minD + 1) / n) * 100;
-  const wrap = node('div', 'dl-hist');
-  const marks = node('div', 'dl-hist-marks');
-  marks.setAttribute('aria-hidden', 'true');
-  const p85 = node('span', 'dl-hist-mark dl-hist-p85');
-  p85.style.left = `${xOf(fc.p85.days)}%`;
-  marks.append(p85);
-  const tDays = dlDiff(today, target);
-  const inView = tDays >= minD - 1 && tDays <= lastD;
-  if (inView) {
-    const t = node('span', 'dl-hist-mark dl-hist-tgt');
-    t.style.left = `${xOf(tDays)}%`;
-    marks.append(t);
-  }
-  const axis = node('div', 'dl-hist-axis');
-  axis.setAttribute('aria-hidden', 'true');
-  axis.append(node('span', '', dlDay(mxAddDays(today, minD))), node('span', '', `${dlDay(mxAddDays(today, lastD))}${lastD < hist[hist.length - 1].days ? '+' : ''}`));
-  const legend = node('div', 'dl-legend');
-  legend.append(node('span', 'dl-lg dl-lg-p85', `p85 ${dlDay(fc.p85.date)}`), node('span', 'dl-lg dl-lg-tgt', inView ? `target ${dlDay(target)}` : `target ${dlDay(target)} (off the chart)`));
-  const box = node('div', 'dl-hist-box');
-  box.append(svg, marks);
-  wrap.append(node('div', 'dl-k', `Finish-day histogram · ${fc.runs.toLocaleString('en-US')} runs, this phase’s cards alone`), box, axis, legend);
-  return wrap;
-}
-
 function dlForecastRender(el, d, ctx) {
   const p = d.phase;
-  const rag = DL_RAG_OF[p.status] ?? 'grey';
   el.append(dlMain(dlDay(p.p85), '85% likely', `${p.title} · target ${dlDay(p.target_date)}`));
   const st = node('div', 'dl-row');
-  st.append(dlRag(rag), dlSlipChip(d.slip));
-  el.append(st, dlRangeChart(p, d.today));
+  st.append(dlRag(d.rag), dlSlipChip(d.slip));
+  el.append(st, dlRangeChart(p, d.today, ctx.size === 'L'));
   const pcts = node('div', 'dl-pcts');
   for (const [k, v] of [['p50', p.p50], ['p85', p.p85], ['p95', p.p95]]) {
     const c = node('div', 'dl-pct');
@@ -357,15 +334,26 @@ function dlForecastRender(el, d, ctx) {
   }
   el.append(pcts);
   if (ctx.size !== 'L') return;
-  if (d.fc?.status === 'ok' && d.fc.histogram.length) el.append(dlHistogram(d.fc, d.today, p.target_date));
-  else el.append(node('div', 'dl-note', 'No histogram: this phase’s cards alone have too little history to simulate'));
+  // L: why (the schedule's reason) and the next commitment
+  const det = node('div', 'dl-detail');
+  const why = node('div', 'dl-fc-item');
+  why.append(node('span', 'dl-k', 'Why'), node('span', 'dl-reason-l', p.reason));
+  const ms = node('div', 'dl-fc-item');
+  ms.append(node('span', 'dl-k', 'Next milestone'));
+  const m = d.milestone;
+  if (m) {
+    const days = dlDiff(d.today, m.date);
+    ms.append(node('span', 'dl-v', `${m.title} · ${dlDay(m.date)}`), node('span', 'dl-sub', days === 0 ? 'today' : `in ${mxPlural(days, 'day')}`));
+  } else ms.append(node('span', 'dl-sub', 'none scheduled'));
+  det.append(why, ms);
+  el.append(det);
 }
 
 // ── milestones: "Which commitments moved?" ──
 async function dlMilestonesLoad(ctx) {
   const f = dlFilters(ctx);
-  const [s, list, h] = await Promise.all([dlSchedule(ctx, f), dlGet(ctx, '/milestones', { project: f.project }), dlHistory(ctx, f)]);
-  const ms = f.phase ? list.filter((m) => m.phase_id === f.phase) : list;
+  const [s, h] = await Promise.all([dlSchedule(ctx, f), dlHistory(ctx, f)]);
+  const ms = f.phase ? s.milestones.filter((m) => m.phase_id === f.phase) : s.milestones; // the same list GET /milestones returns
   if (!ms.length) return { empty: f.phase ? 'No milestones on this phase' : 'No milestones yet — add one on the Phases view' };
   const base = new Map(h.milestones.map((m) => [m.milestone_id, m.series[0]]));
   const phases = new Map(s.phases.map((p) => [p.id, p.title]));
@@ -467,7 +455,7 @@ function dlScopeChart(points, tall) {
     svgEl('polyline', { points: line('scope'), class: 'dl-l-scope', 'vector-effect': 'non-scaling-stroke' }),
     svgEl('polyline', { points: line('done'), class: 'dl-l-done', 'vector-effect': 'non-scaling-stroke' }),
   );
-  const axis = node('div', 'dl-hist-axis');
+  const axis = node('div', 'dl-axis');
   axis.setAttribute('aria-hidden', 'true');
   axis.append(node('span', '', dlDay(first)), node('span', '', last.live ? 'today' : dlDay(last.date)));
   const legend = node('div', 'dl-legend');
@@ -498,21 +486,42 @@ function dlScopeRender(el, d, ctx) {
 }
 
 // ── planned-delivered: "Do we deliver what we commit?" ──
+// Planned: the phase's scope at its first snapshot. Done: its cards done now — which may include cards
+// added after the baseline (the snapshots don't record which cards were planned), so the ratio is
+// capped at 100% and the cards added since are shown separately.
 async function dlPlannedLoad(ctx) {
   const f = dlFilters(ctx);
-  const [s, h] = await Promise.all([dlSchedule(ctx, f), dlHistory(ctx, f)]);
+  const [s, h, cards] = await Promise.all([dlSchedule(ctx, f), dlHistory(ctx, f), dlCards(ctx, f)]);
   if (!h.phases.length) return { empty: DL_NO_SNAP };
   const snaps = dlSnapsByPhase(h.phases);
-  const doneByPos = s.phases.filter((p) => p.phase_status === 'done').sort((a, b) => b.position - a.position);
-  const phase = dlPhase(s, f) ?? (f.phase ? null : doneByPos[0] ?? null);
+  // the board in scope's done phases, most recently finished first (dlDoneDay: no endpoint returns
+  // when a phase was marked done); a phase with no done card sorts last, then by position
+  const doneDay = new Map();
+  for (const p of s.phases) if (p.phase_status === 'done' && p.project_id === f.project) doneDay.set(p.id, dlDoneDay(cards.cards, p.id) ?? '');
+  const doneRecent = s.phases
+    .filter((p) => doneDay.has(p.id))
+    .sort((a, b) => doneDay.get(b.id).localeCompare(doneDay.get(a.id)) || b.position - a.position);
+  const phase = dlPhase(s, f) ?? (f.phase ? null : doneRecent[0] ?? null);
   if (!phase) return { empty: 'No active or finished phase to compare' };
   const row = (p) => {
-    const planned = snaps.get(p.id)?.[0]?.scope ?? null;
+    const base = snaps.get(p.id)?.[0] ?? null;
+    const planned = base?.scope ?? null;
     const delivered = p.total - p.remaining;
-    return { p, planned, delivered, ratio: planned ? delivered / planned : null, since: snaps.get(p.id)?.[0]?.date ?? null };
+    return {
+      p,
+      planned,
+      delivered,
+      added: planned === null ? 0 : Math.max(0, p.total - planned),
+      ratio: planned ? Math.min(1, delivered / planned) : null,
+      since: base?.date ?? null,
+      doneOn: doneDay.get(p.id) || null,
+    };
   };
-  return { head: row(phase), recent: doneByPos.filter((p) => p.id !== phase.id).slice(0, 4).map(row) };
+  return { head: row(phase), recent: doneRecent.filter((p) => p.id !== phase.id).slice(0, 4).map(row) };
 }
+
+// "5 done of 8 planned (+2 added since)"
+const dlPlannedText = (r) => `${r.delivered} done of ${r.planned} planned${r.added ? ` (+${r.added} added since)` : ''}`;
 
 function dlPlannedStatus(r) {
   if (r.ratio === null) return dlStatus('none', r.planned === null ? 'No baseline' : 'Nothing committed');
@@ -524,7 +533,7 @@ function dlPlannedRender(el, d, ctx) {
   const r = d.head;
   if (r.planned === null) return { empty: `No snapshot of ${r.p.title} yet — history starts tomorrow` };
   el.append(
-    dlMain(`${r.delivered} / ${r.planned}`, r.ratio === null ? '' : `${Math.round(r.ratio * 100)}%`, `${r.p.title}: done vs committed at ${dlDay(r.since)}`),
+    dlMain(r.ratio === null ? '—' : `${Math.round(r.ratio * 100)}%`, 'of plan delivered', `${dlPlannedText(r)} · ${r.p.title}, baseline ${dlDay(r.since)}`),
     dlPlannedStatus(r),
   );
   if (ctx.size === 'S') return;
@@ -534,7 +543,9 @@ function dlPlannedRender(el, d, ctx) {
   const list = node('ul', 'dl-pd-list');
   for (const x of d.recent) {
     const li = node('li', 'dl-pd');
-    li.append(node('span', 'dl-name', x.p.title), node('span', 'dl-v', x.planned === null ? '—' : `${x.delivered} / ${x.planned}`), dlPlannedStatus(x));
+    const name = node('span', 'dl-pd-name');
+    name.append(node('span', 'dl-name', x.p.title), node('span', 'dl-sub', x.planned === null ? 'no baseline' : dlPlannedText(x)));
+    li.append(name, node('span', 'dl-v', x.ratio === null ? '—' : `${Math.round(x.ratio * 100)}%`), dlPlannedStatus(x));
     list.append(li);
   }
   if (d.recent.length) box.append(list);
@@ -633,7 +644,7 @@ function dlGateRender(el, d, ctx) {
 // ── rag-trend: "Is health getting better or worse?" ──
 async function dlTrendLoad(ctx) {
   const f = dlFilters(ctx);
-  const [s, h] = await Promise.all([dlSchedule(ctx, f), dlHistory(ctx, f)]);
+  const [s, h, cards] = await Promise.all([dlSchedule(ctx, f), dlHistory(ctx, f), dlCards(ctx, f)]);
   if (!h.phases.length) return { empty: DL_NO_SNAP };
   // Home's range (epoch ms) as local days; the history rows are filtered here so one read serves all
   const from = f.from ? mxDayKey(Number(f.from), MX_LOCAL_TZ) : '';
@@ -643,19 +654,25 @@ async function dlTrendLoad(ctx) {
   const by = dlSnapsByPhase(rows);
   const order = new Map(s.phases.map((p, i) => [p.id, i]));
   const titles = new Map(s.phases.map((p) => [p.id, p.title]));
+  // done phases: phase_status is the phases.status column (what GET /phases reports; the schedule's
+  // list also covers a workspace's verticals). From its done day on, a done phase reads "Done", not
+  // "On track" (snapshots store a done phase as green); no done card → only its latest day.
+  const isDone = new Set(s.phases.filter((p) => p.phase_status === 'done').map((p) => p.id));
   const phases = [...by.keys()]
     .sort((a, b) => (order.get(a) ?? 1e9) - (order.get(b) ?? 1e9))
     .map((id) => {
       const days = new Map();
       const jumps = new Set();
       let prev = null;
-      for (const r of by.get(id)) {
-        const rag = r.rag ?? 'grey';
+      const snaps = by.get(id);
+      const doneFrom = isDone.has(id) ? (dlDoneDay(cards.cards, id) ?? snaps.at(-1).date) : null;
+      for (const r of snaps) {
+        const rag = doneFrom && r.date >= doneFrom ? 'done' : (r.rag ?? 'grey');
         days.set(r.date, rag);
         if (rag === 'red' && prev === 'green') jumps.add(r.date); // green → red with no amber day between
         if (rag !== 'grey') prev = rag;
       }
-      return { id, title: titles.get(id) ?? 'Removed phase', days, jumps, now: by.get(id).at(-1).rag ?? 'grey' };
+      return { id, title: titles.get(id) ?? 'Removed phase', days, jumps, now: isDone.has(id) ? 'done' : (snaps.at(-1).rag ?? 'grey') };
     });
   const dates = rows.map((r) => r.date).sort();
   return { phases, first: dates[0], last: dates[dates.length - 1] };
@@ -675,7 +692,7 @@ function dlTrendRender(el, d, ctx) {
     name.title = p.title;
     const strip = node('span', 'dl-tr-strip');
     strip.setAttribute('role', 'img');
-    const counts = { green: 0, amber: 0, red: 0 };
+    const counts = { green: 0, amber: 0, red: 0, done: 0 };
     for (const day of days) {
       const rag = p.days.get(day);
       const jump = p.jumps.has(day);
@@ -685,7 +702,7 @@ function dlTrendRender(el, d, ctx) {
       if (jump) jumps.push(`${p.title} on ${dlDay(day)}`);
       strip.append(cell);
     }
-    strip.setAttribute('aria-label', `${p.title}, last ${mxPlural(n, 'day')}: ${counts.green} on track, ${counts.amber} at risk, ${counts.red} off track${p.jumps.size ? ', jumped straight to red' : ''}`);
+    strip.setAttribute('aria-label', `${p.title}, last ${mxPlural(n, 'day')}: ${counts.green} on track, ${counts.amber} at risk, ${counts.red} off track${counts.done ? `, ${counts.done} done` : ''}${p.jumps.size ? ', jumped straight to red' : ''}`);
     row.append(name, strip, dlRag(p.now, 'dl-tr-now'));
     grid.append(row);
   }
@@ -701,7 +718,7 @@ function dlTrendRender(el, d, ctx) {
   }
   if (ctx.size === 'L') {
     const legend = node('div', 'dl-tr-legend');
-    for (const rag of ['green', 'amber', 'red', 'grey']) legend.append(dlRag(rag));
+    for (const rag of ['green', 'amber', 'red', 'grey', 'done']) legend.append(dlRag(rag));
     const jl = node('span', 'dl-st dl-bad');
     const ico = node('span', 'dl-ico', '↓');
     ico.setAttribute('aria-hidden', 'true');

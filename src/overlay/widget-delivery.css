@@ -85,7 +85,7 @@
   font: inherit;
   text-align: left;
 }
-.dl-ph-row:last-child { border-bottom: none; }
+.dl-ph-li:last-child .dl-ph-row { border-bottom: none; }
 button.dl-ph-row { cursor: pointer; }
 button.dl-ph-row:hover { background: rgba(255, 255, 255, 0.04); }
 button.dl-ph-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
@@ -111,22 +111,17 @@ button.dl-ph-row:focus-visible { outline: 2px solid var(--accent); outline-offse
 .dl-pcts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .dl-pct { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 
-/* charts: histogram + scope lines */
-.dl-hist, .dl-chart { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.dl-hist { padding-top: 10px; border-top: 1px solid var(--line); }
-.dl-hist-box { position: relative; }
-.dl-hist-svg { display: block; width: 100%; height: 64px; }
-.dl-h-bar { fill: var(--ok); }
-.dl-h-tail { fill: rgba(93, 211, 168, 0.38); }
-.dl-hist-marks { position: absolute; inset: 0; pointer-events: none; }
-.dl-hist-mark { position: absolute; top: -2px; bottom: 0; width: 0; }
-.dl-hist-p85 { border-left: 2px solid var(--text); }
-.dl-hist-tgt { border-left: 1.5px dashed var(--warn); }
-.dl-hist-axis { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--dim); }
+/* forecast L: the bigger range, the reason, the next milestone */
+.dl-range-lg .dl-range-svg { height: 40px; }
+.dl-range-lg .dl-range-lbl { font-size: 11.5px; }
+.dl-fc-item { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.dl-reason-l { font-size: 12px; color: var(--dim); line-height: 1.45; overflow-wrap: anywhere; }
+
+/* charts: scope lines */
+.dl-chart { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dl-axis { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--dim); }
 .dl-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--dim); }
 .dl-lg::before { content: ''; display: inline-block; width: 10px; height: 0; margin-right: 6px; vertical-align: 3px; border-top: 2px solid; }
-.dl-lg-p85::before { border-color: var(--text); }
-.dl-lg-tgt::before { border-top: 2px dashed var(--warn); }
 .dl-lg-scope::before { border-color: #61afef; }
 .dl-lg-done::before { border-color: var(--ok); }
 .dl-chart-svg { display: block; width: 100%; }
@@ -148,6 +143,7 @@ button.dl-ph-row:focus-visible { outline: 2px solid var(--accent); outline-offse
 
 /* planned-delivered */
 .dl-pd-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.dl-pd-name { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .dl-pd { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; }
 
 /* gate-readiness */
@@ -202,6 +198,7 @@ button.dl-ph-row:focus-visible { outline: 2px solid var(--accent); outline-offse
 .dl-tc-amber { background: color-mix(in srgb, var(--warn) 75%, transparent); }
 .dl-tc-red { background: color-mix(in srgb, var(--bad) 80%, transparent); }
 .dl-tc-grey { background: rgba(255, 255, 255, 0.12); color: var(--dim); }
+.dl-tc-done { background: rgba(255, 255, 255, 0.07); color: var(--dim); }
 .dl-tc-missing { background: rgba(255, 255, 255, 0.03); }
 .dl-tc-jump { outline: 2px solid var(--text); outline-offset: -1px; color: var(--text); background: var(--bad); }
 .dl-tr-now { font-size: 11.5px; }
