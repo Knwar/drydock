@@ -190,6 +190,7 @@ export function schedule(db: DB, projectId: string, opts: { tz: string; now: num
     phases: inView.map((p) => {
       let forecast: ScheduleInput['forecast'] = null;
       let used: SchedulePhase['history'] = null;
+      let p95: string | null = null; // read off the same simulation as p50/p85
       const n = forecastable.has(p.id) ? queued.get(p.id)! : 0;
       if (n > 0) {
         let f = run(p.project_id, n);
@@ -200,6 +201,7 @@ export function schedule(db: DB, projectId: string, opts: { tz: string; now: num
           if (f.status === 'ok')
             forecast = { p50: f.p50.date, p85: f.p85.date, note: `forecast uses workspace history; ${p.board_name} has too little` };
         } else if (f.status === 'ok') forecast = { p50: f.p50.date, p85: f.p85.date };
+        if (forecast && f.status === 'ok') p95 = f.p95.date;
         if (!forecast) used = null;
       }
       const result = scheduleStatus({
@@ -222,6 +224,7 @@ export function schedule(db: DB, projectId: string, opts: { tz: string; now: num
         queued: n,
         history: used,
         ...result,
+        p95,
         milestones: milestones.filter((m) => m.phase_id === p.id),
       };
     }),

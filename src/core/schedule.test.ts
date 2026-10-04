@@ -172,7 +172,10 @@ describe('schedule()', () => {
     assert.ok(by.early.p50, 'a targeted open phase is forecast');
     assert.equal(by.far.status, 'on_track');
     assert.deepEqual(by.far.milestones.map((x) => x.id), [m.id]);
-    assert.deepEqual([by.none.status, by.none.p50, by.none.remaining], ['unknown', null, 3]);
+    for (const x of [by.early, by.far]) {
+      assert.ok(x.p50! <= x.p85! && x.p85! <= x.p95!, `${x.title}: p50 <= p85 <= p95`);
+    }
+    assert.deepEqual([by.none.status, by.none.p50, by.none.remaining, by.none.p95], ['unknown', null, 3, null]);
     assert.deepEqual([by.closed.status, by.closed.p50], ['done', null]);
     assert.deepEqual([by.finished.status, by.finished.p50], ['complete', null]);
     assert.deepEqual([by.empty.status, by.empty.reason, by.empty.p50], ['unknown', 'No cards yet', null]);
@@ -201,6 +204,7 @@ describe('schedule()', () => {
     assert.equal(solo.queued, 2);
     assert.ok(by.second.p85! > solo.p85!, 'the same 2 cards finish later behind 6 others');
     assert.ok(by.second.p50! >= by.first.p50!);
+    for (const x of [by.first, by.second, solo]) assert.ok(x.p50! <= x.p85! && x.p85! <= x.p95!, `${x.title}: p50 <= p85 <= p95`);
     // a done earlier phase no longer queues
     updatePhase(db, first.id, { status: 'done' });
     assert.equal(schedule(db, p.id, { tz: 'UTC', now: NOW, seed: 9 }).phases.find((x) => x.id === second.id)!.queued, 2);
@@ -256,6 +260,7 @@ describe('schedule()', () => {
     const v = schedule(db, p.id, { tz: 'UTC', now: NOW });
     const unknown = v.phases.filter((x) => x.status === 'unknown');
     assert.deepEqual(unknown.map((x) => [x.id, x.reason]), ids.slice(MAX_FORECAST_PHASES).map((id) => [id, 'too many phases']));
-    assert.ok(v.phases.slice(0, MAX_FORECAST_PHASES).every((x) => x.p50 !== null));
+    assert.ok(v.phases.slice(0, MAX_FORECAST_PHASES).every((x) => x.p50 !== null && x.p95 !== null));
+    assert.ok(unknown.every((x) => x.p95 === null), 'no forecast, no p95');
   });
 });
