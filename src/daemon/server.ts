@@ -1594,6 +1594,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
             throughput: r.throughput.total,
             cycleTime: { p50: r.cycleTime.p50, p85: r.cycleTime.p85 },
             leadTime: { p50: r.leadTime.p50, p85: r.leadTime.p85 },
+            stageBreakdown: { p50: r.stageBreakdown.p50 },
           }), opts),
         );
       }

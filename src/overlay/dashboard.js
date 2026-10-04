@@ -20,6 +20,20 @@
 //   dwDef(type) — a widget type's registration (title, sizes, params schema)
 //   DOM: [data-section-id], .dw-row[data-row-id][data-container-id], [data-slot-id],
 //        .dw-widget[data-widget-id][data-widget-type], tab panels / tab buttons [data-tab-id]
+//
+// Shared helpers for widgets:
+//   dwDeltaChip({ cur, prev, polarity, fmt, label, subject, has?, labelLong?, none? }) → the standard delta
+//     chip element ("▲ +3 · +50% vs prev 14 d"), as kpiDelta / aaDelta: arrow, signed value, %, the
+//     explicit comparison label; colour by polarity (1 = up is good, -1 = down is good, 0 = neutral);
+//     has: a previous period exists (default prev != null); widgets pass has: !!resp.previous, so a
+//     previous period whose value is null still reads as one. has false → grey "No previous period"
+//     (or none), no label; has true but cur or prev null → grey "—" + label ("<subject>: no comparison …");
+//     ±0 when the change rounds to zero at fmt's display precision. fmt(magnitude) → string (unsigned).
+//     label: the visible comparison ("vs prev 14 d"); labelLong: the announced one (default label);
+//     subject: what's measured ("Cards done"). role=img; its aria-label carries the better / worse verdict.
+//   dwPrevDays(previousWindow) → the comparison window's length in whole days, Math.round((to+1-from)/DAY)
+//     (at least 1), or null when there's no previousWindow (all time: no comparison). Use previousWindow,
+//     not window: window.to is "now" for a rolling range.
 
 const DW_SIZES = ['S', 'M', 'L', 'XL'];
 const DW_ROW_PX = 88;
@@ -56,6 +70,46 @@ function dwRendered(root) {
       console.error('dashboard afterRender', e);
     }
   }
+}
+
+// ── shared delta chip ──
+const DW_DAY = 86_400_000;
+
+const dwPrevDays = (pw) => (pw ? Math.max(1, Math.round((pw.to + 1 - pw.from) / DW_DAY)) : null);
+
+function dwDeltaChip({ cur, prev, polarity = 0, fmt, label, subject, has = prev != null, labelLong = label, none }) {
+  const chip = node('span', 'dw-delta');
+  chip.setAttribute('role', 'img'); // its aria-label (with the better / worse verdict) is what's announced
+  const noneText = none ?? 'No previous period';
+  if (!has || cur == null || prev == null) {
+    chip.classList.add('dw-d-flat');
+    chip.append(node('span', 'dw-d-chg', has ? '—' : noneText));
+    if (has) chip.append(node('span', 'dw-d-vs', label));
+    chip.setAttribute('aria-label', has ? `${subject}: no comparison ${labelLong}` : `${subject}: ${noneText.toLowerCase()}`);
+    return chip;
+  }
+  // a change that rounds to zero at the display precision ("0 m", "$0.00", "0 pts") is no change
+  const shown = fmt(Math.abs(cur - prev));
+  const d = Number(shown.replace(/[^\d.]/g, '')) === 0 ? 0 : cur - prev;
+  if (d === 0) {
+    chip.classList.add('dw-d-flat');
+    chip.append(node('span', 'dw-d-chg', '±0'), node('span', 'dw-d-vs', label));
+    chip.setAttribute('aria-label', `${subject} unchanged ${labelLong}`);
+    return chip;
+  }
+  const tone = polarity === 0 ? 'flat' : d * polarity > 0 ? 'good' : 'bad';
+  chip.classList.add(`dw-d-${tone}`);
+  const sign = d > 0 ? '+' : '−';
+  const pct = prev !== 0 ? `${sign}${Math.abs(Math.round((d / Math.abs(prev)) * 100))}%` : null;
+  const arrow = node('span', 'dw-d-arrow', d > 0 ? '▲' : '▼');
+  arrow.setAttribute('aria-hidden', 'true');
+  const val = `${sign}${shown}`;
+  const chg = node('span', 'dw-d-chg');
+  chg.append(arrow, node('span', 'dw-d-val', pct ? `${val} · ${pct}` : val));
+  chip.append(chg, node('span', 'dw-d-vs', label));
+  const verdict = tone === 'good' ? ', better' : tone === 'bad' ? ', worse' : '';
+  chip.setAttribute('aria-label', `${subject} ${d > 0 ? 'up' : 'down'} ${val}${pct ? ` (${pct})` : ''} ${labelLong}${verdict}`);
+  return chip;
 }
 
 // ── built-in types ──

@@ -15,12 +15,30 @@ const DE_LIB_TYPES = {
   'up-next': { group: 'Delivery', desc: 'The next cards queued for dispatch.' },
   'workspace-boards': { group: 'Delivery', desc: 'Every board in the workspace with its lane counts.' },
   verticals: { group: 'Delivery', desc: 'Progress across this workspace’s verticals.' },
+  'phase-health': { group: 'Delivery', desc: 'The active phase’s progress, pace and health at a glance.' },
+  forecast: { group: 'Delivery', desc: 'When the phase is likely to finish, from recent throughput.' },
+  milestones: { group: 'Delivery', desc: 'The roadmap’s phases on a line: done, active and next.' },
+  'scope-change': { group: 'Delivery', desc: 'Cards added to or cut from the phase since it started.' },
+  'planned-delivered': { group: 'Delivery', desc: 'Cards planned against cards delivered, period by period.' },
+  'gate-readiness': { group: 'Delivery', desc: 'What still stands between the phase and its gate.' },
+  'rag-trend': { group: 'Delivery', name: 'RAG trend', desc: 'The red / amber / green status over time.' },
+  'cycle-breakdown': { group: 'Flow', desc: 'Where cycle time goes: queued, building, in review, blocked.' },
+  wip: { group: 'Flow', name: 'WIP', desc: 'Work in progress per lane against its limit.' },
+  'review-queue': { group: 'Flow', desc: 'Cards waiting for review, oldest first.' },
+  'throughput-trend': { group: 'Flow', desc: 'Cards done per week, with the trend.' },
+  escalation: { group: 'Flow', desc: 'Blocked cards and decisions waiting on you.' },
+  quality: { group: 'Quality & risk', desc: 'First-pass review rate and rework.' },
+  'speed-stability': { group: 'Quality & risk', desc: 'How fast cards finish and how predictably.' },
+  'top-risks': { group: 'Quality & risk', desc: 'The cards most likely to slip, and why.' },
+  'ai-spend': { group: 'Spend', name: 'AI spend', desc: 'Model spend and tokens in the range.' },
+  'investment-mix': { group: 'Spend', desc: 'Where the spend goes: by work type, phase or tag.' },
+  'budget-burn': { group: 'Spend', desc: 'Spend against budget over time, with the burn rate.' },
   'active-agents': { group: 'People', desc: 'Who is working, reviewing or waiting on you.' },
   'send-to-agent': { group: 'Actions', desc: 'Send a prompt to an agent session from Home.' },
   tabs: { group: 'Layout', name: 'Tabs', desc: 'A tab group: each tab holds its own rows of widgets.' },
   placeholder: { group: 'Layout', name: 'Placeholder', desc: 'A note or a reserved spot for a widget to come.' },
 };
-const DE_LIB_GROUPS = ['Delivery', 'People', 'Actions', 'Layout', 'Other'];
+const DE_LIB_GROUPS = ['Delivery', 'Flow', 'Quality & risk', 'Spend', 'People', 'Actions', 'Layout', 'Other'];
 const DE_LIB_SIZE_NAMES = { S: 'Small', M: 'Medium', L: 'Large', XL: 'Extra large' };
 const DE_LIB_SIZE_ORDER = ['S', 'M', 'L', 'XL'];
 
@@ -67,7 +85,13 @@ function deLibDefaultSize(sizes) {
 function deLibIcon(type) {
   const ic = node('span', `de-lib-ic de-lib-ic-${DE_LIB_TYPES[type] ? type : 'generic'}`);
   ic.setAttribute('aria-hidden', 'true');
-  const parts = { kpi: 2, 'now-building': 3, 'up-next': 3, 'workspace-boards': 4, verticals: 3, 'active-agents': 3, 'send-to-agent': 2, tabs: 3, placeholder: 0 };
+  const parts = {
+    kpi: 2, 'now-building': 3, 'up-next': 3, 'workspace-boards': 4, verticals: 3, 'active-agents': 3, 'send-to-agent': 2, tabs: 3, placeholder: 0,
+    'phase-health': 3, forecast: 4, milestones: 3, 'scope-change': 2, 'planned-delivered': 4, 'gate-readiness': 3, 'rag-trend': 4,
+    'cycle-breakdown': 3, wip: 3, 'review-queue': 3, 'throughput-trend': 5, escalation: 1,
+    quality: 1, 'speed-stability': 4, 'top-risks': 3,
+    'ai-spend': 3, 'investment-mix': 1, 'budget-burn': 4,
+  };
   for (let i = 0; i < (parts[type] ?? 1); i++) ic.append(node('span'));
   return ic;
 }

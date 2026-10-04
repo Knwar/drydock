@@ -138,7 +138,18 @@ describe('daemon compare + workType', () => {
     assert.deepEqual(previousWindow, P);
     assert.equal(r.throughput.total, 2);
     assert.deepEqual([r.cycleTime.p50, r.cycleTime.p85, r.leadTime.p50, r.leadTime.p85], [D, 3 * D, 2 * D, 4 * D]);
-    assert.deepEqual(previous, { throughput: 1, cycleTime: { p50: D, p85: D }, leadTime: { p50: 2 * D, p85: 2 * D } });
+    // stage breakdown (cur1: in_progress 1h, in_review 23h; cur2: in_progress 3d, blocked 1h; nearest rank)
+    assert.deepEqual(r.stageBreakdown, {
+      p50: { queued: 0, in_progress: H, in_review: 0, blocked: 0 },
+      p85: { queued: 0, in_progress: 3 * D, in_review: 23 * H, blocked: H },
+    });
+    // prev1: in_progress 1h + 1h, in_review 2h + 20h, blocked 2h
+    assert.deepEqual(previous, {
+      throughput: 1,
+      cycleTime: { p50: D, p85: D },
+      leadTime: { p50: 2 * D, p85: 2 * D },
+      stageBreakdown: { p50: { queued: 0, in_progress: 2 * H, in_review: 22 * H, blocked: 2 * H } },
+    });
     // an explicit window gives the same block
     const explicit = await get(`/metrics/flow?project=${pid}&tz=UTC&${win(C)}&compare=${P.from},${P.to}`);
     assert.deepEqual(explicit.previous, previous);
