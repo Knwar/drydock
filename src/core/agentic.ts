@@ -49,6 +49,12 @@ import {
   type MetricsFilter,
 } from './metrics.js';
 import { cardQuality } from './quality.js';
+import { getActivePhase } from './board.js';
+import { getPrices, loadCostRows, matchesCostFilter, priceRows, type CostFilter } from './cost.js';
+import { forecast } from './forecast.js';
+import { longestChain } from './plan-graph.js';
+import { usageBurn, type ForecastInfo, type LimitReport, type UsageBurn, type UsageSample } from './usage-burn.js';
+import { loadBlockers, waitMetrics } from './wait-time.js';
 
 export const DEFAULT_BATCH_LINES = 200;
 
@@ -453,4 +459,420 @@ export function agenticMetrics(db: DB, filter: MetricsFilter, opts: { tz: string
     { cards, subtasks, lines, decisionLinked, toolEvents, phaseTitles },
     { ...opts, from: filter.from, to: filter.to },
   );
+}
+
+// =====================================================================================
+// Agentic cost (/metrics/agentic-cost): what rework, waiting on the human, spend spikes
+// and the usage limits cost. Built on cost.ts pricing, wait-time.ts, usage-burn.ts and
+// forecast.ts; nothing is re-priced or re-derived here.
+//
+//  - reworkCost: build runs (card_activity rows, priced by cost.ts) in [from, to] that
+//    belong to a FAILED review round. Attribution rule: a run belongs to the first review
+//    of its card recorded at or after the run's created_at (the run is recorded when it
+//    ends, so it is the work that review judged; the reviewer's own run, which ends before
+//    the orchestrator records the verdict, lands in the same round). Runs after the card's
+//    last review belong to no round yet and are never rework. Redirects don't reset this:
+//    a review is a review whichever attempt it judged.
+//  - decisionLatencyCost: human-wait hours in [from, to] (wait-time.ts: needs_you + blocker
+//    time clipped to the window; the two can overlap and are summed as is) x the median,
+//    over credited agents, of the agent's spend / its active hours (sum of card_activity.ms)
+//    in the window: "$ of idle agent time". Live (not windowed): days of slip and the queue.
+//      - slip: blocked time (all of it, open blockers up to now) on the cards of the active
+//        phase's critical path: the longest depends_on chain among the phase's cards
+//        (plan-graph longestChain). With no chain of 2+ cards there is no critical path, and
+//        it falls back to the phase's in-flight cards (queued / in_progress / in_review),
+//        flagged `approximation: true`.
+//      - queue: needs_you sessions + open blockers in scope now, oldest first.
+//  - costAnomaly: daily spend per phase over [from - 14 days, to] (local days in tz). A day
+//    in [from, to] is flagged when spend > mean + 2 sigma of its 14 trailing days, counting
+//    only trailing days on or after the phase's first spend (idle days after that are real
+//    zeros; days before it are no data), and only with >= 5 such days. sigma: population.
+//  - usageRunway (live, no range): usage-burn.ts over the persisted usage_samples and the
+//    active phase's forecast (forecast.ts, default seed). The weekly limit runs out before
+//    p85 when its projected hit day is on or before the p85 day (usage-burn's vsForecast);
+//    gapDays = p85 day - hit day (calendar days; > 0 = runs out that many days early).
+// =====================================================================================
+
+export const ANOMALY_TRAILING_DAYS = 14;
+export const ANOMALY_MIN_DAYS = 5;
+export const ANOMALY_SIGMAS = 2;
+const HOUR = 3_600_000;
+
+/** A priced build run (a cost.ts PricedRow, trimmed to what the cost figures use). */
+export interface CostRun {
+  id: number;
+  task_id: string;
+  title: string | null;
+  phase_id: string | null;
+  agent: string | null;
+  cost: number;
+  tokens: number;
+  ms: number;
+  created_at: number;
+}
+
+export interface ReviewRecord {
+  task_id: string;
+  round: number;
+  verdict: string;
+  created_at: number;
+}
+
+const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
+
+export interface ReworkCost {
+  cost: number;
+  tokens: number;
+  runs: number;
+  /** Rework share (0..1) of all spend in the window; null with no spend. */
+  pct: number | null;
+  totalCost: number;
+  top: { id: string; title: string | null; cost: number; tokens: number; failedRounds: number }[];
+}
+
+/** The review round a run belongs to: its card's first review at or after the run (see the header). */
+export function roundOfRun(run: Pick<CostRun, 'created_at'>, reviews: ReviewRecord[]): ReviewRecord | null {
+  let best: ReviewRecord | null = null;
+  for (const r of reviews) if (r.created_at >= run.created_at && (best === null || r.created_at < best.created_at)) best = r;
+  return best;
+}
+
+/** Rework over runs already narrowed to the window and filter. */
+export function reworkCost(runs: CostRun[], reviewsByCard: Map<string, ReviewRecord[]>): ReworkCost {
+  let total = 0;
+  const cards = new Map<string, { title: string | null; cost: number; tokens: number; rounds: Set<string> }>();
+  let cost = 0;
+  let tokens = 0;
+  let n = 0;
+  for (const r of runs) {
+    total += r.cost;
+    const rev = roundOfRun(r, reviewsByCard.get(r.task_id) ?? []);
+    if (rev?.verdict !== 'fail') continue;
+    cost += r.cost;
+    tokens += r.tokens;
+    n++;
+    const c = cards.get(r.task_id) ?? { title: r.title, cost: 0, tokens: 0, rounds: new Set<string>() };
+    c.cost += r.cost;
+    c.tokens += r.tokens;
+    c.rounds.add(`${rev.round}@${rev.created_at}`);
+    cards.set(r.task_id, c);
+  }
+  return {
+    cost: round6(cost),
+    tokens,
+    runs: n,
+    pct: total > 0 ? cost / total : null,
+    totalCost: round6(total),
+    top: [...cards.entries()]
+      .sort((a, b) => b[1].cost - a[1].cost || a[0].localeCompare(b[0]))
+      .slice(0, 5)
+      .map(([id, c]) => ({ id, title: c.title, cost: round6(c.cost), tokens: c.tokens, failedRounds: c.rounds.size })),
+  };
+}
+
+/** Median over credited agents of spend / active hours (agents with run time only); null with none. */
+export function costPerAgentHour(runs: CostRun[]): number | null {
+  const agents = new Map<string, { cost: number; ms: number }>();
+  for (const r of runs) {
+    const a = agents.get(r.agent ?? '') ?? { cost: 0, ms: 0 };
+    a.cost += r.cost;
+    a.ms += r.ms;
+    agents.set(r.agent ?? '', a);
+  }
+  const rates = [...agents.values()].filter((a) => a.ms > 0).map((a) => a.cost / (a.ms / HOUR)).sort((a, b) => a - b);
+  if (!rates.length) return null;
+  const mid = rates.length >> 1;
+  return rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
+}
+
+export interface SlipCard {
+  id: string;
+  title: string;
+  lane: string;
+  depends_on: string[];
+}
+
+export interface Slip {
+  phase: { id: string; title: string } | null;
+  basis: 'critical_path' | 'in_flight' | null;
+  /** True when no critical path exists and in-flight cards stand in for it. */
+  approximation: boolean;
+  cards: { id: string; title: string; blockedMs: number }[];
+  blockedMs: number;
+  days: number;
+  reason: string | null;
+}
+
+/** Days of slip from the phase's cards and their blocker intervals (open ones run to now). */
+export function slipDays(
+  phase: { id: string; title: string } | null,
+  cards: SlipCard[],
+  blockers: { task_id: string; from: number; to: number | null }[],
+  now: number,
+): Slip {
+  if (!phase) return { phase: null, basis: null, approximation: false, cards: [], blockedMs: 0, days: 0, reason: 'no active phase' };
+  const ids = new Set(cards.map((c) => c.id));
+  const edges = cards.flatMap((c) => c.depends_on.filter((d) => ids.has(d)).map((d) => ({ from: d, to: c.id })));
+  const chain = longestChain(cards, edges);
+  const critical = chain.length >= 2;
+  const onPath = critical
+    ? chain.map((id) => cards.find((c) => c.id === id)!)
+    : cards.filter((c) => c.lane === 'queued' || c.lane === 'in_progress' || c.lane === 'in_review');
+  const blockedOf = (id: string) =>
+    blockers.filter((b) => b.task_id === id).reduce((s, b) => s + Math.max(0, (b.to ?? now) - b.from), 0);
+  const list = onPath.map((c) => ({ id: c.id, title: c.title, blockedMs: blockedOf(c.id) }));
+  const blockedMs = list.reduce((s, c) => s + c.blockedMs, 0);
+  return {
+    phase,
+    basis: critical ? 'critical_path' : 'in_flight',
+    approximation: !critical,
+    cards: list,
+    blockedMs,
+    days: blockedMs / 86_400_000,
+    reason: critical ? null : "no critical path (no depends_on chain of 2+ cards in the phase): blocked time on the phase's in-flight cards instead",
+  };
+}
+
+export interface CostAnomaly {
+  range: { from: string; to: string; trailingFrom: string };
+  series: { phase_id: string | null; title: string | null; days: { date: string; spend: number }[] }[];
+  flagged: { date: string; phase_id: string | null; title: string | null; spend: number; mean: number; sigma: number }[];
+}
+
+/** Daily spend per phase and the days over mean + 2 sigma of their trailing 14 days. */
+export function costAnomaly(
+  runs: Pick<CostRun, 'phase_id' | 'cost' | 'created_at'>[],
+  opts: { from: number; to: number; tz: string; phaseTitles?: Map<string, string> },
+): CostAnomaly {
+  const fromDay = dayKey(opts.from, opts.tz);
+  const toDay = dayKey(opts.to, opts.tz);
+  const trailingFrom = addDays(fromDay, -ANOMALY_TRAILING_DAYS);
+  const days: string[] = [];
+  for (let d = trailingFrom; d <= toDay; d = addDays(d, 1)) days.push(d);
+  const byPhase = new Map<string | null, Map<string, number>>();
+  for (const r of runs) {
+    const day = dayKey(r.created_at, opts.tz);
+    if (day < trailingFrom || day > toDay) continue;
+    const m = byPhase.get(r.phase_id) ?? new Map<string, number>();
+    m.set(day, (m.get(day) ?? 0) + r.cost);
+    byPhase.set(r.phase_id, m);
+  }
+  const title = (id: string | null) => (id === null ? null : (opts.phaseTitles?.get(id) ?? null));
+  const series: CostAnomaly['series'] = [];
+  const flagged: CostAnomaly['flagged'] = [];
+  for (const [phase_id, m] of byPhase) {
+    const spend = days.map((d) => m.get(d) ?? 0);
+    const first = days.findIndex((d) => m.has(d));
+    series.push({ phase_id, title: title(phase_id), days: days.map((date, i) => ({ date, spend: round6(spend[i]) })) });
+    for (let i = ANOMALY_TRAILING_DAYS; i < days.length; i++) {
+      const trailing = spend.slice(Math.max(i - ANOMALY_TRAILING_DAYS, first), i);
+      if (trailing.length < ANOMALY_MIN_DAYS) continue;
+      const mean = trailing.reduce((s, v) => s + v, 0) / trailing.length;
+      const sigma = Math.sqrt(trailing.reduce((s, v) => s + (v - mean) ** 2, 0) / trailing.length);
+      if (spend[i] > mean + ANOMALY_SIGMAS * sigma)
+        flagged.push({ date: days[i], phase_id, title: title(phase_id), spend: round6(spend[i]), mean: round6(mean), sigma: round6(sigma) });
+    }
+  }
+  flagged.sort((a, b) => a.date.localeCompare(b.date) || String(a.phase_id).localeCompare(String(b.phase_id)));
+  return { range: { from: fromDay, to: toDay, trailingFrom }, series, flagged };
+}
+
+export type UsageRunway =
+  | {
+      status: 'ok';
+      fiveHour: LimitReport | null;
+      weekly: LimitReport | null;
+      forecast: ForecastInfo | null;
+      /** Does the weekly limit run out before the active phase's p85 finish? null = unknown (no projection / no forecast). */
+      weeklyBeforeP85: boolean | null;
+      /** p85 day - the weekly hit day, in days (> 0: runs out that many days before p85); null unless it runs out. */
+      gapDays: number | null;
+      messages: string[];
+    }
+  | { status: 'unavailable'; reason: string; forecast: ForecastInfo | null };
+
+/** The runway from a usage-burn view: when the limits run out and the weekly limit vs the p85 finish. */
+export function usageRunway(burn: UsageBurn, info: ForecastInfo | null, tz: string, now: number): UsageRunway {
+  if (burn.status !== 'ok') return { status: 'unavailable', reason: burn.reason, forecast: info };
+  const week = burn.limits.seven_day;
+  let before: boolean | null = null;
+  let gap: number | null = null;
+  if (week && info?.status === 'ok') {
+    if (week.state === 'projected' || week.state === 'at_risk' || week.state === 'reached') {
+      const hitDay = dayKey(week.hitsAt ?? now, tz);
+      before = hitDay <= info.p85.date;
+      const [a, b] = [hitDay, info.p85.date].map((d) => Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)));
+      gap = Math.round((b - a) / 86_400_000);
+    } else if (week.state === 'resets_first' || week.state === 'not_burning') before = false;
+  }
+  return {
+    status: 'ok',
+    fiveHour: burn.limits.five_hour,
+    weekly: week,
+    forecast: info,
+    weeklyBeforeP85: before,
+    gapDays: gap,
+    messages: burn.messages,
+  };
+}
+
+export interface AgenticCost {
+  range: { from: number | null; to: number; tz: string };
+  currency: 'USD';
+  prices: { placeholder: boolean };
+  reworkCost: ReworkCost;
+  decisionLatencyCost: {
+    label: '$ of idle agent time';
+    humanWaitHours: number;
+    needsYouHours: number;
+    blockedHours: number;
+    /** Median over credited agents of spend / active hours in the window; null without run time. */
+    costPerAgentHour: number | null;
+    /** humanWaitHours x costPerAgentHour; null without a rate. */
+    idleCost: number | null;
+    /** Live (now), not windowed; null in a compare's previous run. */
+    slip: Slip | null;
+    queue:
+      | { kind: 'needs_you' | 'blocker'; project_id: string; task_id: string | null; title: string | null; reason: string | null; since: number; waitingMs: number }[]
+      | null;
+  };
+  costAnomaly: CostAnomaly;
+  /** Live only; null in a compare's previous run. */
+  usageRunway: UsageRunway | null;
+}
+
+/** The active phase's forecast as usage-burn wants it (forecast.ts, default seed). */
+function phaseForecastInfo(db: DB, project: string, phase: { id: string; title: string } | null, tz: string, now: number): ForecastInfo {
+  if (!phase) return { status: 'no_phase', phase: null, reason: 'the project has no active phase' };
+  const f = forecast(db, { projectId: project }, { kind: 'phase', phaseId: phase.id }, { tz, now });
+  return f.status === 'ok'
+    ? { status: 'ok', phase, p50: f.p50, p85: f.p85 }
+    : { status: 'insufficient_history', phase, reason: f.reason };
+}
+
+/**
+ * Load + compute. `project` is the requested board (its active phase drives slip and the runway);
+ * `live: false` skips the live parts (a compare's previous window).
+ */
+export function agenticCostMetrics(
+  db: DB,
+  filter: CostFilter,
+  opts: { tz: string; now: number; project: string; live?: boolean },
+): AgenticCost {
+  const { tz, now } = opts;
+  const to = filter.to ?? now;
+  if (filter.from !== undefined) checkRange(filter.from, to);
+  const table = getPrices(db);
+  const priced = priceRows(loadCostRows(db, filter.projectIds, filter.phaseId), table).rows.filter((r) => matchesCostFilter(r, filter));
+  const msById = new Map(
+    (
+      db.prepare('SELECT id, ms FROM card_activity WHERE id IN (SELECT value FROM json_each(?))').all(JSON.stringify(priced.map((r) => r.id))) as {
+        id: number;
+        ms: number;
+      }[]
+    ).map((r) => [r.id, r.ms]),
+  );
+  const runs: CostRun[] = priced.map((r) => ({
+    id: r.id,
+    task_id: r.task_id,
+    title: r.card?.title ?? null,
+    phase_id: r.card?.phase_id ?? null,
+    agent: r.agent,
+    cost: r.cost,
+    tokens: r.tokens,
+    ms: msById.get(r.id) ?? 0,
+    created_at: r.created_at,
+  }));
+  const inWindow = runs.filter((r) => r.created_at <= to && (filter.from === undefined || r.created_at >= filter.from));
+
+  const reviewsByCard = new Map<string, ReviewRecord[]>();
+  for (const r of db
+    .prepare('SELECT task_id, round, verdict, created_at FROM reviews WHERE task_id IN (SELECT value FROM json_each(?))')
+    .all(JSON.stringify([...new Set(inWindow.map((r) => r.task_id))])) as ReviewRecord[]) {
+    if (!reviewsByCard.has(r.task_id)) reviewsByCard.set(r.task_id, []);
+    reviewsByCard.get(r.task_id)!.push(r);
+  }
+
+  const waitFilter = { projectIds: filter.projectIds, phaseId: filter.phaseId, tag: filter.tag, agent: filter.agent, workType: filter.workType, from: filter.from, to: filter.to };
+  const wait = waitMetrics(db, waitFilter, { tz, now });
+  const waitHours = (wait.needsYou.totalMs + wait.blocked.totalMs) / HOUR;
+  const rate = costPerAgentHour(inWindow);
+
+  const phaseTitles = new Map((db.prepare('SELECT id, title FROM phases').all() as { id: string; title: string }[]).map((p) => [p.id, p.title]));
+  // no from: the window starts at the first run in it (capped like every other metrics range)
+  const anomalyFrom = filter.from ?? Math.max(inWindow.reduce((m, r) => Math.min(m, r.created_at), to), to - (MAX_RANGE_DAYS - 1) * 86_400_000);
+
+  let slip: Slip | null = null;
+  let queue: AgenticCost['decisionLatencyCost']['queue'] = null;
+  let runway: UsageRunway | null = null;
+  if (opts.live !== false) {
+    const row = (
+      filter.phaseId !== undefined
+        ? db.prepare('SELECT id, title FROM phases WHERE id = ?').get(filter.phaseId)
+        : getActivePhase(db, opts.project)
+    ) as { id: string; title: string } | null | undefined;
+    const phase = row ? { id: row.id, title: row.title } : null;
+    const cards = phase
+      ? (db.prepare('SELECT id, title, lane, depends_on FROM tasks WHERE phase_id = ? ORDER BY position, id').all(phase.id) as {
+          id: string;
+          title: string;
+          lane: string;
+          depends_on: string | null;
+        }[]).map((c) => {
+          let deps: unknown;
+          try {
+            deps = JSON.parse(c.depends_on ?? '[]');
+          } catch {
+            deps = [];
+          }
+          return { ...c, depends_on: Array.isArray(deps) ? deps.filter((d): d is string => typeof d === 'string') : [] };
+        })
+      : [];
+    slip = slipDays(phase, cards, phase ? loadBlockers(db, { phaseId: phase.id }) : [], now);
+    const needTitles = new Map(
+      (db
+        .prepare('SELECT id, title FROM tasks WHERE id IN (SELECT value FROM json_each(?))')
+        .all(JSON.stringify(wait.waiting.needsYou.flatMap((n) => (n.task_id ? [n.task_id] : [])))) as { id: string; title: string }[]).map((t) => [t.id, t.title]),
+    );
+    queue = [
+      ...wait.waiting.needsYou.map((n) => ({
+        kind: 'needs_you' as const,
+        project_id: n.project_id,
+        task_id: n.task_id,
+        title: n.task_id ? (needTitles.get(n.task_id) ?? null) : null,
+        reason: n.reason,
+        since: n.since,
+        waitingMs: n.waitingMs,
+      })),
+      ...wait.waiting.blockers.map((b) => ({ kind: 'blocker' as const, project_id: b.project_id, task_id: b.task_id, title: b.title, reason: b.reason, since: b.since, waitingMs: b.waitingMs })),
+    ].sort((a, b) => a.since - b.since);
+    const samples = (db.prepare('SELECT data FROM usage_samples ORDER BY at').all() as { data: string }[]).flatMap((r) => {
+      try {
+        return [JSON.parse(r.data) as UsageSample];
+      } catch {
+        return [];
+      }
+    });
+    const info = phaseForecastInfo(db, opts.project, phase, tz, now);
+    runway = usageRunway(usageBurn(samples, info, { tz, now }), info, tz, now);
+  }
+
+  return {
+    range: { from: filter.from ?? null, to, tz },
+    currency: 'USD',
+    prices: { placeholder: table.placeholder },
+    reworkCost: reworkCost(inWindow, reviewsByCard),
+    decisionLatencyCost: {
+      label: '$ of idle agent time',
+      humanWaitHours: waitHours,
+      needsYouHours: wait.needsYou.totalMs / HOUR,
+      blockedHours: wait.blocked.totalMs / HOUR,
+      costPerAgentHour: rate === null ? null : round6(rate),
+      idleCost: rate === null ? null : round6(waitHours * rate),
+      slip,
+      queue,
+    },
+    costAnomaly: costAnomaly(runs, { from: anomalyFrom, to, tz, phaseTitles }),
+    usageRunway: runway,
+  };
 }

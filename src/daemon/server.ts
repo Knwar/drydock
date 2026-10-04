@@ -1735,6 +1735,49 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
   }
 
+  // ── agentic cost: rework, decision latency, spend anomalies, usage runway (core/agentic.ts) ──
+  if (method === 'GET' && pathname === '/metrics/agentic-cost') {
+    const q = url.searchParams;
+    const project = q.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
+    try {
+      const filter: cost.CostFilter = { projectIds: [project] };
+      for (const [key, param] of [['phaseId', 'phase'], ['tag', 'tag'], ['agent', 'agent']] as const) {
+        const v = q.get(param);
+        if (v) filter[key] = v;
+      }
+      const from = q.get('from');
+      const to = q.get('to');
+      if (from) filter.from = metrics.parseTime(from, tz, 'from');
+      if (to) filter.to = metrics.parseTime(to, tz, 'to');
+      const workType = workTypeParam(q);
+      if (workType) filter.workType = workType;
+      const now = Date.now();
+      return json(
+        res,
+        200,
+        withCompare(
+          q,
+          filter,
+          // the live parts (slip, queue, usage runway) only for the current window, not the previous one
+          (f) => agentic.agenticCostMetrics(db, f, { tz, now, project, live: f === filter }),
+          (r) => ({
+            reworkCost: { cost: r.reworkCost.cost, tokens: r.reworkCost.tokens, pct: r.reworkCost.pct },
+            decisionLatencyCost: { humanWaitHours: r.decisionLatencyCost.humanWaitHours, idleCost: r.decisionLatencyCost.idleCost },
+            costAnomaly: { flagged: r.costAnomaly.flagged.length },
+          }),
+          { tz, now },
+        ),
+      );
+    } catch (err) {
+      const status = err instanceof metrics.MetricsParamError ? 400 : 500;
+      return json(res, status, { error: (err as Error).message });
+    }
+  }
+
   // ── agent history (core/agent-history.ts): a team member's cards, runs and totals; off-roster names give an empty history ──
   const agentHistoryMatch = pathname.match(/^\/agents\/([^/]+)\/history$/);
   if (method === 'GET' && agentHistoryMatch) {

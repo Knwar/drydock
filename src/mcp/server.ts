@@ -335,6 +335,41 @@ server.registerTool(
 );
 
 server.registerTool(
+  'get_agentic_cost',
+  {
+    description:
+      'Agentic cost (USD, priced like get_metrics cost): reworkCost (spend on build runs belonging to FAILED review rounds: a run belongs to its card\'s first review recorded at or after it; $, tokens, share of spend, top 5 cards), decisionLatencyCost (human-wait hours (needs-you + blockers) x the median agent cost per active hour = "$ of idle agent time"; live: days of slip = blocked time on the active phase\'s critical path, or on its in-flight cards flagged as an approximation, and the queue of what waits on the human now, oldest first), costAnomaly (daily spend per phase; days over the trailing 14-day mean + 2 sigma, with >= 5 trailing days), usageRunway (live: when the 5-hour / weekly limits run out at the current burn, the active phase p50/p85 forecast, and whether the weekly limit runs out before p85 with the gap in days). A workspace includes its verticals. from/to: epoch ms, YYYY-MM-DD or a datetime (in `tz`). compare: "previous" adds the previous window\'s headline figures.',
+    inputSchema: {
+      project_id: z.string(),
+      phase_id: z.string().optional(),
+      tag: z.enum(['ui', 'api', 'db', 'infra']).optional(),
+      agent: z.string().optional(),
+      work_type: z.union([WORK_TYPE, z.literal('none')]).optional(),
+      from: z.string().optional(),
+      to: z.string().optional(),
+      tz: z.string().optional().describe('IANA time zone, default the daemon’s'),
+      compare: z.literal('previous').optional(),
+    },
+  },
+  ({ project_id, phase_id, tag, agent, work_type, from, to, tz, compare }) => {
+    const params = new URLSearchParams({ project: project_id });
+    for (const [k, v] of [
+      ['phase', phase_id],
+      ['tag', tag],
+      ['agent', agent],
+      ['workType', work_type],
+      ['from', from],
+      ['to', to],
+      ['tz', tz],
+      ['compare', compare],
+    ] as const) {
+      if (v) params.set(k, v);
+    }
+    return api('GET', `/metrics/agentic-cost?${params}`);
+  },
+);
+
+server.registerTool(
   'get_team',
   {
     description:

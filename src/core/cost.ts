@@ -462,6 +462,12 @@ const addTo = (b: Bucket, r: PricedRow) => {
 /** A run's card work type: 'none' when unclassified, 'deleted' when the card is gone. */
 const workTypeOf = (r: CostRow): WorkType | 'none' | 'deleted' => (r.card === null ? 'deleted' : (r.card.work_type ?? 'none'));
 
+/** A run matches the filter's tag (its card's), agent (the run's credited agent) and work type; no dates. */
+export const matchesCostFilter = (r: CostRow, filter: Pick<MetricsFilter, 'tag' | 'agent' | 'workType'>): boolean =>
+  (filter.tag === undefined || r.card?.tag === filter.tag) &&
+  (filter.agent === undefined || r.agent === filter.agent) &&
+  (filter.workType === undefined || workTypeOf(r) === filter.workType);
+
 /**
  * Aggregate priced, all-time rows. `filter.tag` / `filter.agent` (the run's
  * credited agent) / `filter.workType` / from-to (the run's time) select the
@@ -474,12 +480,7 @@ const workTypeOf = (r: CostRow): WorkType | 'none' | 'deleted' => (r.card === nu
 export function aggregateCost(pricing: Pricing, table: PriceTable, filter: MetricsFilter, opts: CostOptions): CostMetrics {
   const to = filter.to ?? opts.now;
   if (filter.from !== undefined) checkRange(filter.from, to);
-  const scoped = pricing.rows.filter(
-    (r) =>
-      (filter.tag === undefined || r.card?.tag === filter.tag) &&
-      (filter.agent === undefined || r.agent === filter.agent) &&
-      (filter.workType === undefined || workTypeOf(r) === filter.workType),
-  );
+  const scoped = pricing.rows.filter((r) => matchesCostFilter(r, filter));
   const rows = scoped.filter((r) => r.created_at <= to && (filter.from === undefined || r.created_at >= filter.from));
 
   const byType = Object.fromEntries(TOKEN_TYPES.map((t) => [t, { tokens: 0, cost: 0 }])) as CostMetrics['byType'];
