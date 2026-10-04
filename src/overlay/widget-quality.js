@@ -80,11 +80,15 @@ function wqRateSpark(values, { tall = false } = {}) {
 }
 
 // ── quality: "Is work right the first time?" ──
-// First-pass fell in each of the last 2 weeks: the last 3 calendar weeks all have a rate, each lower.
-function wqFalling(weekly) {
-  const w = weekly.slice(-3).map((x) => x.firstPassRate);
-  if (w.length < 3 || w.some((r) => r === null)) return null; // not enough weeks to judge
-  return w[2] < w[1] && w[1] < w[0];
+// First-pass fell in each of the last 2 weeks: the last 3 COMPLETE weeks with reviews (the week
+// still running at the range's end is skipped, as are weeks without reviews), each rate lower.
+// → { weeks, falling } (falling null: fewer than 3 such weeks).
+function wqFalling(q) {
+  const end = mxDayKey(q.range.to + 1, q.range.tz); // the first day after the range
+  const weeks = q.weekly.filter((w) => mxAddDays(w.start, 7) <= end && w.firstPassRate !== null).slice(-3);
+  if (weeks.length < 3) return { weeks, falling: null };
+  const [a, b, c] = weeks.map((w) => w.firstPassRate);
+  return { weeks, falling: c < b && b < a };
 }
 
 async function wqQualityLoad(ctx) {
@@ -104,10 +108,14 @@ function wqQualityRender(el, d, ctx) {
     wqFigure(t.avgRounds === null ? '—' : wqDec(t.avgRounds), 'avg review rounds', wqChip(q, 'Average review rounds', -1, wqDec, t.avgRounds, p?.avgRounds)),
   );
   el.append(figs);
-  const falling = wqFalling(q.weekly);
-  if (falling) el.append(wqStatus('warn', 'First-pass fell 2 weeks running'));
-  else if (falling === false) el.append(wqStatus('ok', 'No sustained first-pass drop'));
-  else el.append(wqStatus('none', 'Too few reviewed weeks for a trend'));
+  const { weeks: judged, falling } = wqFalling(q);
+  const trend =
+    falling === null ? wqStatus('none', 'Too few reviewed weeks for a trend') : wqStatus(falling ? 'warn' : 'ok', falling ? 'First-pass fell 2 weeks running' : 'No sustained first-pass drop');
+  trend.title =
+    falling === null
+      ? `Needs 3 complete weeks with reviews (the current week is left out); ${judged.length ? `this range has ${judged.length}` : 'this range has none'}`
+      : `Complete weeks compared: ${judged.map((w) => `week of ${wqDay(w.start)} ${wqPct(w.firstPassRate)}`).join(' → ')}`;
+  el.append(trend);
   if (ctx.size === 'S') return;
 
   const det = node('div', 'wq-detail');
@@ -183,7 +191,9 @@ function wqSpeedRender(el, d, ctx) {
   // the verdict: only when there's a previous period to compare with
   const up = (a, b) => a !== null && b !== null && a > b;
   const thrUp = up(thr, thrPrev);
-  const stabDown = up(rw, rwPrev) || up(ds, dsPrev);
+  // defect share at the chip's precision (whole points): a ±0 chip never reads as "stability down"
+  const dsUp = ds !== null && dsPrev !== null && Math.round((ds - dsPrev) * 100) > 0;
+  const stabDown = up(rw, rwPrev) || dsUp;
   if (!flow.previous || !q.previous) el.append(wqStatus('none', 'No previous period to compare'));
   else if (thrUp && stabDown) el.append(wqStatus('warn', 'Speed up, stability down'));
   else if (stabDown) el.append(wqStatus('warn', 'Stability down, speed not up'));
@@ -229,27 +239,45 @@ async function wqRisksLoad(ctx) {
   // summed across phases; with no phase or fewer than two snapshot days there is no baseline.
   const phase = f.phase ? { id: f.phase, title: phases.find((p) => p.id === f.phase)?.title ?? null } : (phases.find((p) => p.status === 'active') ?? null);
   let base = null;
+  let baseErr = null;
   if (phase) {
-    const hist = await wqGet(ctx, '/metrics/history', { project: f.project, phase: phase.id });
-    const dl = hist.deltas;
-    if (dl && dl.from !== dl.to && dl.riskScoreChange !== null) base = { change: dl.riskScoreChange, from: dl.from, title: phase.title };
+    try {
+      const hist = await wqGet(ctx, '/metrics/history', { project: f.project, phase: phase.id });
+      const dl = hist.deltas;
+      if (dl && dl.from !== dl.to && dl.riskScoreChange !== null) base = { change: dl.riskScoreChange, from: dl.from, title: phase.title };
+    } catch (e) {
+      baseErr = e?.message || String(e); // the list still shows; the chip says "No baseline"
+    }
   }
-  return { live, base, phase };
+  return { live, base, baseErr, phase };
 }
 
+// A short-lived notice (role=status) at the bottom of the page.
+function wqToast(text) {
+  const t = node('div', 'wq-toast', text);
+  t.setAttribute('role', 'status');
+  document.body.append(t);
+  setTimeout(() => t.remove(), 4000);
+}
+
+// Open the risk register (Governance, Risks tab) and reveal the risk once its list has loaded.
+const WQ_GOV_WAIT_MS = 5000;
 function wqOpenRisk(id) {
   const url = new URL(location.href);
   url.searchParams.set('tab', 'risks'); // openGovernance reads ?tab
   history.replaceState(null, '', url);
+  // openGovernance → gvLoad assigns a fresh gov.risks (or a gov.rErr) when the read lands
+  const [risks0, err0] = [gov.risks, gov.rErr];
   setView('governance');
-  // the register loads async: reveal (scroll, focus, flash) the row once it's there
-  let tries = 0;
-  const reveal = () => {
-    if (activeView !== 'governance') return;
-    if (document.querySelector(`#gv-body [data-id="${CSS.escape(id)}"]`)) return void (typeof gvReveal === 'function' && gvReveal(id));
-    if (++tries < 40) setTimeout(reveal, 100);
+  const started = Date.now();
+  const tick = () => {
+    if (activeView !== 'governance') return; // the user moved on
+    const loaded = gov.risks !== risks0 || gov.rErr !== err0;
+    if (!loaded && Date.now() - started < WQ_GOV_WAIT_MS) return void setTimeout(tick, 50);
+    gvReveal(id); // scrolls, focuses and flashes the row (clearing a search that hides it)
+    if (!document.querySelector(`#gv-body [data-id="${CSS.escape(id)}"]`)) wqToast(gov.rErr ? `Couldn’t load the risks: ${gov.rErr}` : 'Risk not found in the register');
   };
-  reveal();
+  tick();
 }
 
 function wqRisksRender(el, d, ctx) {
@@ -283,8 +311,9 @@ function wqRisksRender(el, d, ctx) {
   } else {
     chip.classList.add('dw-d-flat');
     chip.append(node('span', 'dw-d-chg', 'No baseline'));
-    chip.setAttribute('aria-label', d.phase ? 'Risk score change: no baseline yet (fewer than two phase snapshots)' : 'Risk score change: no baseline (no active phase)');
-    chip.title = d.phase ? 'Fewer than two daily snapshots of the phase so far' : 'No active phase to take a snapshot baseline from';
+    const why = d.baseErr ? `the phase history couldn’t load (${d.baseErr})` : d.phase ? 'fewer than two daily snapshots of the phase so far' : 'no active phase to take a snapshot baseline from';
+    chip.setAttribute('aria-label', `Risk score change: no baseline, ${why}`);
+    chip.title = `No baseline: ${why}`;
   }
   exp.append(chip);
   el.append(exp);
