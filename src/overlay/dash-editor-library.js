@@ -343,22 +343,28 @@ function deLibraryOpen(target) {
 }
 
 // ── menus ──
-// the copy goes into a new row right below the original's (same height and spans), in the slot at
-// the original's column; loDuplicateWidget puts it beside the original, loMoveWidget takes it down
+// the copy goes into an empty slot of the original's row (the nearest one after it, else before);
+// failing that, into a new row right below (same height): one slot of the original's span, the
+// rest of the width one empty slot. loDuplicateWidget puts it beside the original, loMoveWidget
+// takes it there; the caller applies it all as one edit.
 function deLibDuplicate(L, widgetId) {
   const w = loFind(L, widgetId);
   if (w?.kind !== 'widget') throw new LoError(`No widget with id "${widgetId}"`);
   const slot = w.parent;
   const row = loFind(L, slot.id).parent;
   const box = loFind(L, row.id).parent;
-  const ri = box.rows.indexOf(row);
   const col = row.slots.indexOf(slot);
-  let out = loAddRow(L, box.id, ri + 1, row.slots.map((s) => s.span));
+  let out = loDuplicateWidget(L, widgetId);
+  const dup = loFind(out, slot.id).node.widgets[slot.widgets.indexOf(w.node) + 1];
+  const empty = (s) => !s.widgets?.length;
+  const spot = row.slots.slice(col + 1).find(empty) ?? row.slots.slice(0, col).reverse().find(empty);
+  if (spot) return loMoveWidget(out, dup.id, spot.id);
+  const ri = box.rows.indexOf(row);
+  const rest = 12 - slot.span;
+  out = loAddRow(out, box.id, ri + 1, rest > 0 ? [slot.span, rest] : [slot.span]);
   const copyRow = loFind(out, box.id).node.rows[ri + 1];
   out = loSetRowHeight(out, copyRow.id, row.height);
-  out = loDuplicateWidget(out, widgetId);
-  const dup = loFind(out, slot.id).node.widgets[slot.widgets.indexOf(w.node) + 1];
-  return loMoveWidget(out, dup.id, copyRow.slots[col].id);
+  return loMoveWidget(out, dup.id, copyRow.slots[0].id);
 }
 
 const deLibUndoKey = () => (/mac/i.test(navigator.userAgentData?.platform || navigator.platform || '') ? '⌘Z' : 'Ctrl+Z');
@@ -376,7 +382,7 @@ deMenuItems('widget', (id, info) => {
   if (!info.item) return [];
   const title = deLibTitle(info.item);
   return [
-    { label: 'Duplicate', onSelect: () => deLibTry(() => deLibDuplicate(deState.draft, id), `Duplicated ${title}`) },
+    { label: 'Duplicate', group: 'arrange', onSelect: () => deLibTry(() => deLibDuplicate(deState.draft, id), `Duplicated ${title}`) },
     { label: 'Remove', danger: true, onSelect: () => deLibTry(() => loRemoveWidget(deState.draft, id), `Removed ${title}. Press ${deLibUndoKey()} to undo`) },
   ];
 });

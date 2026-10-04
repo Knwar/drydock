@@ -93,13 +93,14 @@ body.embed .dw-empty-edit { display: none; }
 .dw-head {
   flex: none;
   display: flex;
+  flex-wrap: wrap; /* the overrides chip drops below the title when they don't fit side by side */
   align-items: baseline;
-  gap: 10px;
+  gap: 6px 10px;
   padding: 12px 16px 0;
   min-width: 0;
 }
 .dw-title {
-  flex: 1;
+  flex: 1 1 8em;
   min-width: 0;
   font-size: 13px;
   font-weight: 600;
@@ -110,16 +111,23 @@ body.embed .dw-empty-edit { display: none; }
 }
 /* per-widget filter overrides (params.vars): a quiet text chip */
 .dw-vars {
-  flex: none;
-  max-width: 55%;
+  flex: 0 1 auto;
+  max-width: 100%;
   padding: 1px 7px;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 999px;
+  border-radius: 9px;
   font-size: 11px;
+  line-height: 1.45;
   color: var(--dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere; /* a single override longer than the chip still wraps */
+}
+.dw-var { display: inline-block; max-width: 100%; } /* a narrow head wraps between overrides, not inside one */
+.dw-vars-count { display: none; }
+/* a head too narrow for the list (a small widget beside the config drawer): just the count */
+.dw-head { container: dw-head / inline-size; }
+@container dw-head (max-width: 150px) {
+  .dw-vars-full { display: none; }
+  .dw-vars-count { display: inline; }
 }
 .dw-vars:empty { display: none; }
 .dw-asof { flex: none; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
@@ -138,6 +146,21 @@ body.embed .dw-empty-edit { display: none; }
 .dw-body.dw-clipped {
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), rgba(0, 0, 0, 0.35));
   mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), rgba(0, 0, 0, 0.35));
+}
+/* a short body (a 1-unit row) shows barely a line more: fade it out almost entirely */
+.dw-body.dw-clipped.dw-clipped-short {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), rgba(0, 0, 0, 0.04));
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), rgba(0, 0, 0, 0.04));
+}
+/* tabs running past the strip's end: the last visible tab fades out at the right edge
+   (while editing, before the strip's room for the handles) */
+.dw-tabs-strip.dw-tabs-more {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+}
+.de-editing .dw-tabs-strip.dw-tabs-more {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 104px), transparent calc(100% - 64px));
+  mask-image: linear-gradient(to right, #000 calc(100% - 104px), transparent calc(100% - 64px));
 }
 
 /* view mode: a row with no widgets takes no space; an empty slot keeps its space, unseen */

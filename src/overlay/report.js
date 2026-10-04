@@ -264,8 +264,9 @@
           '',
         )
       : null;
+    const budgetNote = budgets && m.cost.budgets_unfiltered ? node('p', 'rp-meta', 'Budget status covers all work in the phase.') : null;
     const caveats = m.cost.notes.length ? kids(node('div', 'rp-caveats'), node('div', '', 'Cost notes:'), list(m.cost.notes, (c) => node('li', '', c), '')) : null;
-    return section('rp-metrics', 'Metrics', tiles, budgets, caveats);
+    return section('rp-metrics', 'Metrics', tiles, budgets, budgetNote, caveats);
   }
 
   function risks(r) {

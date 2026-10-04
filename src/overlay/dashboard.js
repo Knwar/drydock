@@ -9,7 +9,7 @@
 //   ctx = { id, size, params, projectId, filters, shared(key, fetcher), refresh(), drillCards(opts), openCard(id, boardId?) }
 // shared() dedupes one fetch per refresh cycle; the 'home' key is pre-seeded with
 // Home's own GET /home read (same filters), so widgets reading it cost no extra request.
-// A widget's params.vars ({ phase?, tag?, agent?, scope?, from?, to?, range? }) override Home's
+// A widget's params.vars ({ phase?, tag?, agent?, workType?, scope?, from?, to?, range? }) override Home's
 // filters for that widget alone: its ctx.filters differ, so its shared() keys do too.
 // The renderer owns every widget's loading / error / empty / stale states.
 //
@@ -399,7 +399,7 @@ function dwVars(w) {
   const v = w.params?.vars;
   if (!v || typeof v !== 'object') return null;
   const out = {};
-  for (const k of ['scope', 'phase', 'tag', 'agent', 'range', 'from', 'to']) if (v[k] != null && v[k] !== '') out[k] = String(v[k]);
+  for (const k of ['scope', 'phase', 'tag', 'agent', 'workType', 'range', 'from', 'to']) if (v[k] != null && v[k] !== '') out[k] = String(v[k]);
   return Object.keys(out).length ? out : null;
 }
 // The widget's filters as query params: Home's (hctx) with its params.vars merged over them.
@@ -410,37 +410,43 @@ function dwFilters(w) {
   if ((v.from || v.to) && !v.range) f.range = 'custom';
   return fbParams({ ...hctx, f });
 }
-// "Phase: Launch · Range: 2w": the overrides in words (quiet, text only).
-function dwVarsLabel(w) {
+// "Phase: Launch · Range: 4 wks": the overrides in words, one part per key (quiet, text only).
+function dwVarsParts(w) {
   const v = dwVars(w);
-  if (!v) return '';
+  if (!v) return [];
   const m = hctx.meta;
   const parts = [];
   if (v.scope) parts.push(`Board: ${m?.boardById?.get(v.scope)?.label ?? v.scope}`);
   if (v.phase) parts.push(`Phase: ${fbPhaseById(m, v.phase)?.title ?? v.phase}`);
   if (v.tag) parts.push(`Tag: ${v.tag}`);
   if (v.agent) parts.push(`Agent: ${v.agent}`);
+  if (v.workType) parts.push(`Type: ${fbWorkTypeLabel(v.workType)}`);
   if (v.from || v.to || v.range === 'custom') parts.push(`Range: ${v.from || '…'} – ${v.to || 'today'}`);
   else if (v.range) parts.push(`Range: ${dwRangeLabel(v.range)}`);
-  return parts.join(' · ');
+  return parts;
 }
 
-// A rolling range in words, from MX_RANGES' week counts: "Last 4 weeks", "All time".
+// A rolling range, short, from MX_RANGES' week counts: "4 wks", "All time".
 function dwRangeLabel(range) {
   const r = MX_RANGES.find(([id]) => id === range);
   if (!r) return range;
-  return r[2] == null ? 'All time' : `Last ${r[2]} weeks`;
+  return r[2] == null ? 'All time' : `${r[2]} wk${r[2] === 1 ? '' : 's'}`;
 }
 
 function dwFrameTitle(inst) {
   const def = dwTypes.get(inst.w.type);
   const params = inst.w.params ?? {};
   const t = params.title || (def ? (typeof def.title === 'function' ? def.title(params) : def.title) : inst.w.type);
-  const vars = dwVarsLabel(inst.w);
+  const parts = dwVarsParts(inst.w);
   inst.title.textContent = t || '';
-  inst.vars.textContent = vars;
-  inst.vars.title = vars ? 'This widget overrides Home’s filters' : '';
-  inst.head.classList.toggle('hidden', !t && !vars);
+  // one span per override (the separator leads the next): a narrow chip wraps between them; a
+  // very narrow head shows the count instead (CSS), the full list stays in the tooltip
+  const full = node('span', 'dw-vars-full');
+  full.append(...parts.flatMap((p, i) => (i ? [' ', node('span', 'dw-var', `· ${p}`)] : [node('span', 'dw-var', p)])));
+  const count = node('span', 'dw-vars-count', parts.length === 1 ? '1 filter' : `${parts.length} filters`);
+  inst.vars.replaceChildren(...(parts.length ? [full, count] : []));
+  inst.vars.title = parts.length ? `This widget overrides Home’s filters: ${parts.join(' · ')}` : '';
+  inst.head.classList.toggle('hidden', !t && !parts.length);
   inst.ctx.size = inst.w.size;
   inst.body.dataset.size = inst.ctx.size;
 }
@@ -485,9 +491,21 @@ function dwPaint(inst, data) {
 }
 
 // A body whose content overflows (and isn't scrolled to its end) gets a subtle bottom fade.
+const DW_FADE_SHORT_PX = 96; // a body this short (a 1-unit row) gets the stronger fade
 function dwFadeCheck(body) {
   const more = body.scrollHeight - body.clientHeight - body.scrollTop > 1;
   body.classList.toggle('dw-clipped', more);
+  body.classList.toggle('dw-clipped-short', more && body.clientHeight < DW_FADE_SHORT_PX);
+  // a tab group's strip: a right-edge fade while tabs run past its end
+  const strip = body.querySelector(':scope > .dw-tabs-strip');
+  if (strip) dwTabsFadeCheck(strip);
+}
+function dwTabsFadeCheck(strip) {
+  if (!strip._dwFade) {
+    strip._dwFade = true;
+    strip.addEventListener('scroll', () => dwTabsFadeCheck(strip), { passive: true });
+  }
+  strip.classList.toggle('dw-tabs-more', strip.scrollWidth - strip.clientWidth - strip.scrollLeft > 1);
 }
 function dwFadeSoon(body) {
   if (body._dwFadeQueued) return;

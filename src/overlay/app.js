@@ -1240,7 +1240,7 @@ const mxScopeBoards = () => fbScopeBoards(mx);
 const MX_ENDPOINTS = {
   flow: (f, w) => ['/metrics/flow', { phase: f.phase, tag: f.tag, agent: f.agent, workType: f.workType, from: w.from, to: w.to }],
   quality: (f, w) => ['/metrics/quality', { phase: f.phase, tag: f.tag, agent: f.agent, workType: f.workType, from: w.from, to: w.to }],
-  wait: (f, w) => ['/metrics/wait', { phase: f.phase, from: w.from, to: w.to }],
+  wait: (f, w) => ['/metrics/wait', { phase: f.phase, workType: f.workType, from: w.from, to: w.to }],
   cost: (f, w) => ['/metrics/cost', { phase: f.phase, tag: f.tag, agent: f.agent, workType: f.workType, from: w.from, to: w.to, limit: MX_COST_LIMIT }],
   forecast: (f) => {
     const p = mxFocusPhase();

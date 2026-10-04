@@ -699,6 +699,7 @@ deMenuItems('widget', (id, info) => {
   return [
     {
       label: 'Move',
+      group: 'arrange',
       children: [
         { label: 'Up', disabled: at.index <= 0, onSelect: () => ddMove(id, at.slotId, at.index - 1, title) },
         { label: 'Down', disabled: at.index >= n, onSelect: () => ddMove(id, at.slotId, at.index + 1, title) },
@@ -709,6 +710,7 @@ deMenuItems('widget', (id, info) => {
     },
     {
       label: 'Size',
+      group: 'arrange',
       children: sizes.map((s) => ({ label: s, checked: w.size === s, radio: true, onSelect: () => ddSetSize(id, s) })),
     },
   ];

@@ -4,7 +4,7 @@
 // "Configure…" menu item or a double-click on its frame; a non-modal drawer on Home's right edge
 // (#dash-root narrows while it's open) that follows the selected widget.
 // Sections: Data (the type's params schema), Display (title override, size), Filters (per-widget
-// overrides of Home's filters in params.vars: phase, range / from / to, agent, tag, compare).
+// overrides of Home's filters in params.vars: phase, range / from / to, agent, tag, workType, compare).
 // Every change applies live via deApply; text / number edits are debounced and coalesce into one
 // undo step. Invalid values show an inline error and are not applied.
 
@@ -436,6 +436,11 @@ function decFilterSection(w) {
   const tags = [...DEC_TAGS];
   if (v.tag && !tags.includes(v.tag)) tags.push(v.tag);
   fields.push(decVarSelect(wid, 'tag', 'Tag', [['', 'Inherit'], ...tags.map((t) => [t, t])], v.tag ?? '', hctx.f.tag || 'All tags', (val) => `Tag: ${val || 'inherited'}`));
+
+  // work type: the 4 types, Unclassified ('none'); an unknown stored value stays selectable
+  const types = WORK_TYPES.concat([['none', 'Unclassified']]);
+  if (v.workType && !types.some(([id]) => id === v.workType)) types.push([v.workType, v.workType]);
+  fields.push(decVarSelect(wid, 'workType', 'Type', [['', 'Inherit'], ...types], v.workType ?? '', hctx.f.workType ? fbWorkTypeLabel(hctx.f.workType) : 'All types', (val) => `Type: ${val ? fbWorkTypeLabel(val) : 'inherited'}`));
 
   const cmp = v.compare && !DEC_COMPARE.some(([id]) => id === v.compare) ? [[v.compare, v.compare]] : [];
   fields.push(

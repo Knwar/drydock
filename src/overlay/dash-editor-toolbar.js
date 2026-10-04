@@ -101,7 +101,10 @@ function deTbSync() {
   deTb.save.disabled = hold || !deState.dirty;
   deTb.cancel.disabled = hold;
   deTb.more.disabled = hold;
-  deTb.add.disabled = hold;
+  // nowhere to put a widget without a section: say so on the (disabled) button
+  const noSections = !deState.draft?.sections?.length;
+  deTb.add.disabled = hold || noSections;
+  deTb.add.title = noSections ? 'Add a section first' : 'Add widget';
   deTb.add.hidden = typeof deLibraryOpen !== 'function';
   deTb.save.textContent = busy ? 'Saving…' : 'Save';
   deTb.save.setAttribute('aria-busy', String(busy));
