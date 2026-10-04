@@ -416,7 +416,7 @@ describe('agentHistory', () => {
     const ada = agentHistory(db, { projectIds: ['p'], agent: 'Ada', from: W24, to: W24 + DAY, tz, now: NOW });
     const k = ada.cards.find((c) => c.id === 'K')!;
     assert.equal(k.first_worked_at, W24); // clamped from MON+1h
-    assert.equal(k.last_worked_at, W24 + 5 * H);
+    assert.equal(k.last_worked_at, W24 + DAY); // still held: the open tenure runs to min(now, to)
     assert.equal(k.blockers, 1);
     assert.equal(k.blocked_ms, 3 * H); // 5h blocked, 3h of it inside the window
     const l = ada.cards.find((c) => c.id === 'L')!;
@@ -425,5 +425,75 @@ describe('agentHistory', () => {
     assert.equal(ada.totals.blockers, 2);
     const bob = agentHistory(db, { projectIds: ['p'], agent: 'Bob', from: W24, to: W24 + DAY, tz, now: NOW });
     assert.equal(bob.totals.blockers, 0);
+  });
+
+  it('assign and reassign at the same ms hand over once, in either order', () => {
+    for (const order of ['assign first', 'reassign first'] as const) {
+      const { db, e, run, card } = base();
+      const T = MON + 3 * H;
+      card('G', 'in_progress', 'Bob', MON);
+      e('G', 'assign', MON + H, null, 'Ada');
+      run('G', 'builder', 'builder', MON + 2 * H, M);
+      const assign = () => e('G', 'assign', T, null, 'Bob');
+      const reassign = () => e('G', 'reassign', T, { from: 'Ada', to: 'Bob' }, null);
+      if (order === 'assign first') {
+        assign();
+        reassign();
+      } else {
+        reassign();
+        assign();
+      }
+      run('G', 'builder', 'builder', T, M);
+
+      const ada = agentHistory(db, { projectIds: ['p'], agent: 'Ada', tz, now: NOW });
+      const bob = agentHistory(db, { projectIds: ['p'], agent: 'Bob', tz, now: NOW });
+      const a = ada.cards[0];
+      assert.deepEqual([a.id, a.outcome, a.first_worked_at, a.last_worked_at], ['G', 'reassigned', MON + H, T], order);
+      assert.deepEqual(
+        ada.runs.map((r) => r.at),
+        [MON + 2 * H],
+        order,
+      );
+      const b = bob.cards[0];
+      // Bob keeps it: one tenure from T, still open (runs to now)
+      assert.deepEqual([b.id, b.outcome, b.first_worked_at, b.last_worked_at], ['G', 'in_progress', T, NOW], order);
+      assert.deepEqual(
+        bob.runs.map((r) => r.at),
+        [T],
+        order,
+      );
+    }
+  });
+
+  it('a reassign to an old (renamed) name falls back to the event agent', () => {
+    const { db, e, run, card } = base();
+    card('O', 'in_progress', 'Bob', MON);
+    e('O', 'assign', MON + H, null, 'Ada');
+    e('O', 'reassign', MON + 2 * H, { from: 'Ada', to: 'Robert' }, 'Bob'); // Bob was 'Robert' before a rename
+    run('O', 'builder', 'builder', MON + 3 * H, M);
+    const bob = agentHistory(db, { projectIds: ['p'], agent: 'Bob', tz, now: NOW });
+    assert.deepEqual(
+      bob.cards.map((c) => [c.id, c.first_worked_at]),
+      [['O', MON + 2 * H]],
+    );
+    assert.equal(bob.runs.length, 1);
+    const ada = agentHistory(db, { projectIds: ['p'], agent: 'Ada', tz, now: NOW });
+    assert.equal(ada.cards[0].outcome, 'reassigned');
+    assert.deepEqual(ada.runs, []);
+  });
+
+  it('a card held through the window gets first/last worked from the window', () => {
+    const { db, e, card } = base();
+    card('H', 'in_progress', 'Ada', MON);
+    e('H', 'assign', MON + H, null, 'Ada');
+    const from = MON + 7 * DAY;
+    const to = MON + 8 * DAY;
+    const ada = agentHistory(db, { projectIds: ['p'], agent: 'Ada', from, to, tz, now: NOW });
+    assert.deepEqual(
+      ada.cards.map((c) => [c.id, c.first_worked_at, c.last_worked_at]),
+      [['H', from, to]],
+    );
+    const open = agentHistory(db, { projectIds: ['p'], agent: 'Ada', tz, now: NOW });
+    assert.deepEqual([open.cards[0].first_worked_at, open.cards[0].last_worked_at], [MON + H, NOW]);
   });
 });

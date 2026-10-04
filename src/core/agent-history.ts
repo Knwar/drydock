@@ -6,8 +6,9 @@
  *
  * Attribution. `agent` is a team member name (a member id is accepted too).
  * Each card has a holder timeline from its events: an assign hands the card to
- * its event agent's member; a reassign ({from, to}) to payload.to's member
- * (else its event agent); a redirect clears it. A label that is not a member
+ * its event agent's member; a reassign ({from, to}) to the first of payload.to,
+ * then its event agent, that resolves to a member (else the raw label, to
+ * first); a redirect clears it. A label that is not a member
  * is held as-is; an assign without any label leaves nobody holding the card.
  * A card with no assign events is held by its assigned_agent for its whole
  * life. Events at the same ms as a run apply before it (an assign + run at
@@ -23,8 +24,9 @@
  *    it, or raised a blocker on it.
  *  - Member renames: updateTeamMember (board.ts) rewrites the agent label in
  *    card_activity, tasks and task_events, so history already carries the new
- *    name; no old-name table exists to resolve against. (A reassign payload's
- *    `to` is not rewritten; nothing writes reassign events today.)
+ *    name; no old-name table exists to resolve against. A reassign payload's
+ *    `to` is not rewritten (an old name no longer resolves), hence the
+ *    event-agent fallback above; nothing writes reassign events today.
  *
  * Per-card fields are the agent's part:
  *  - rounds: review events while the agent held the card (any time; legacy
@@ -37,7 +39,8 @@
  *
  * Window [from, to] (inclusive, epoch ms; both optional), applied uniformly:
  *  - runs (and so cost, tokens, hours, lines) by their time;
- *  - first/last worked: the agent's tenures and runs clamped to the window;
+ *  - first/last worked: the agent's tenures and runs clamped to the window
+ *    (a tenure still open runs to min(now, to));
  *  - done: done_at is always the card's done time, but the card counts as done
  *    (cardsDone, cycle time) only when done_at is inside the window;
  *  - first pass by final review time;
@@ -171,10 +174,12 @@ export function agentHistory(db: DB, opts: AgentHistoryOptions): AgentHistoryDet
       const at = Math.max(e.created_at, prev); // the same clamping as deriveLaneHistory
       prev = at;
       if (e.type === 'assign' || e.type === 'reassign') {
-        // a reassign names the new agent in payload.to; the event's agent may be whoever did it
-        const to = e.type === 'reassign' ? payloadField(e.payload, 'to') : null;
-        const label = typeof to === 'string' && to ? to : (e.agent ?? null);
-        steps.push({ at, holder: resolve(label) ?? label, type: 'assign' });
+        // a reassign names the new agent in payload.to; a label that resolves to a member wins
+        // (payload.to is not rewritten on a member rename, the agent column is)
+        const raw = e.type === 'reassign' ? payloadField(e.payload, 'to') : null;
+        const to = typeof raw === 'string' && raw ? raw : null;
+        const agentLabel = e.agent ?? null;
+        steps.push({ at, holder: resolve(to) ?? resolve(agentLabel) ?? to ?? agentLabel, type: 'assign' });
       }
       else if (e.type === 'redirect') steps.push({ at, holder: null, type: 'redirect' });
     }
@@ -262,10 +267,9 @@ export function agentHistory(db: DB, opts: AgentHistoryOptions): AgentHistoryDet
     const windowRuns = cardRuns.filter((r) => inWindow(r.created_at, from, to));
     const lo = from ?? -Infinity;
     const hi = to ?? Infinity;
-    // the agent's tenures, open ones closed at the card's last event (else now), clamped to the window
-    const eventTimes = x.h.events.map((e) => e.created_at);
+    // the agent's tenures clamped to the window; one still open (not reassigned, redirected or done) runs to min(now, to)
     const spans = tenures
-      .map((t) => ({ from: Math.max(t.from, lo), to: Math.min(t.to ?? eventTimes.reduce((m, e) => (e >= t.from ? Math.max(m, e) : m), t.from), hi) }))
+      .map((t) => ({ from: Math.max(t.from, lo), to: Math.min(t.to ?? now, hi) }))
       .filter((t) => t.from <= t.to);
     const held = tenures.some((t) => t.from <= hi && (t.to ?? now) >= lo);
 
