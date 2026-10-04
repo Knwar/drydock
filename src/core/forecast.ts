@@ -19,6 +19,7 @@
  *    MIN_RUNS) to keep runs x that under WORK_BUDGET.
  */
 import type { DB } from './db.js';
+import type { ForecastInfo } from './usage-burn.js';
 import { addDays, dayKey, deriveCards, loadCardHistories, MetricsParamError, startOfDay, type MetricsFilter } from './metrics.js';
 
 export const DEFAULT_WEEKS = 6;
@@ -258,6 +259,19 @@ export function forecast(
   const doneAts = cards.flatMap((c) => (c.doneAt === null ? [] : [c.doneAt]));
   const firstAt = cards.reduce<number | null>((m, c) => (m === null || c.createdAt < m ? c.createdAt : m), null);
   return computeForecast(doneAts, firstAt, remaining, opts);
+}
+
+/** A phase's forecast in the shape usage-burn compares limits against (no phase → 'no_phase'). */
+export function phaseForecastInfo(
+  db: DB,
+  projectId: string,
+  phase: { id: string; title: string } | null,
+  opts: { tz: string; now: number; seed?: number },
+): ForecastInfo {
+  if (!phase) return { status: 'no_phase', phase: null, reason: 'the project has no active phase' };
+  const f = forecast(db, { projectId }, { kind: 'phase', phaseId: phase.id }, opts);
+  const p = { id: phase.id, title: phase.title };
+  return f.status === 'ok' ? { status: 'ok', phase: p, p50: f.p50, p85: f.p85 } : { status: 'insufficient_history', phase: p, reason: f.reason };
 }
 
 /** An optional integer query param in [min, max]; bad → MetricsParamError (400). */
