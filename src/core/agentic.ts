@@ -4,7 +4,8 @@
  * on what is already recorded (no new capture):
  *
  *  - autonomy:  cards done in [from, to]; autonomous = no `block` and no `redirect`
- *               event anywhere in the card's history. Weekly by the done week.
+ *               event anywhere in the card's history. Weekly by the done week. needsHuman
+ *               lists the others (newest done first, capped at NEEDS_HUMAN_CAP) for a drill.
  *  - stops:     events in [from, to]. Agent self-stops = `block` (raise_blocker).
  *               Human interrupts = `redirect` (redirect_task) + reopens: a move back
  *               into in_progress from in_review / done that does NOT follow a fail
@@ -120,6 +121,8 @@ export interface AgenticMetrics {
     autonomous: number;
     pct: number | null;
     weekly: (Week & { done: number; autonomous: number; pct: number | null })[];
+    /** Done cards in the window that had a block or redirect, newest done first, at most NEEDS_HUMAN_CAP. */
+    needsHuman: { id: string; title: string; doneAt: number }[];
   };
   stops: {
     agent: number;
@@ -137,7 +140,7 @@ export interface AgenticMetrics {
     over: number;
     pctOver: number | null;
     median: number | null;
-    top: { id: string; title: string; lines: number }[];
+    top: { id: string; title: string; lines: number; doneAt: number }[];
     /** Done cards without line data (excluded above). */
     noData: number;
   };
@@ -203,6 +206,9 @@ export function cardStops(x: DerivedCard): { at: number; kind: 'agent' | 'redire
   return out;
 }
 
+/** The most cards autonomy.needsHuman lists. */
+export const NEEDS_HUMAN_CAP = 200;
+
 const isAutonomous = (x: DerivedCard) => !x.h.events.some((e) => e.type === 'block' || e.type === 'redirect');
 
 /** The command a risky pattern matches, else null. */
@@ -241,9 +247,11 @@ export function agenticFromInput(input: AgenticInput, opts: AgenticOptions): Age
   const done = input.cards.filter((x) => x.m.doneAt !== null && inWin(x.m.doneAt));
   const autoWeeks = new Map(weeks.map((w) => [w.week, { done: 0, autonomous: 0 }]));
   let autonomous = 0;
+  const needsHuman: DerivedCard[] = [];
   for (const x of done) {
     const a = isAutonomous(x);
     if (a) autonomous++;
+    else needsHuman.push(x);
     const w = autoWeeks.get(weekOf(x.m.doneAt!));
     if (w) {
       w.done++;
@@ -267,7 +275,7 @@ export function agenticFromInput(input: AgenticInput, opts: AgenticOptions): Age
   // batch
   const sized = done.flatMap((x) => {
     const lines = input.lines.get(x.m.id);
-    return lines === undefined ? [] : [{ id: x.m.id, title: x.m.title, lines }];
+    return lines === undefined ? [] : [{ id: x.m.id, title: x.m.title, lines, doneAt: x.m.doneAt! }];
   });
   const sortedLines = sized.map((s) => s.lines).sort((a, b) => a - b);
   const over = sized.filter((s) => s.lines > threshold).length;
@@ -321,6 +329,10 @@ export function agenticFromInput(input: AgenticInput, opts: AgenticOptions): Age
         const a = autoWeeks.get(w.week)!;
         return { ...w, ...a, pct: ratio(a.autonomous, a.done) };
       }),
+      needsHuman: needsHuman
+        .sort((a, b) => b.m.doneAt! - a.m.doneAt! || a.m.id.localeCompare(b.m.id))
+        .slice(0, NEEDS_HUMAN_CAP)
+        .map((x) => ({ id: x.m.id, title: x.m.title, doneAt: x.m.doneAt! })),
     },
     stops: {
       agent: counts.agent,
