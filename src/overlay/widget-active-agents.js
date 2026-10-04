@@ -2,7 +2,8 @@
 // (agents[] + now_building to join agent → current card). Live status messages
 // (onStatus) update activity and session state in place, without a refetch.
 // Uses app.js globals read-only: node, avatarEl, teamByName, openAgentEditor,
-// openModal, svModal, fmtElapsed, LANE_NAME, home, tick.
+// openModal, svModal, fmtElapsed, LANE_NAME, home, tick, hctx, cards, projectId,
+// mxSparkline, mxMoney, mxPlural, MX_MONTHS, fmtTokens, setView, setKanbanHighlight.
 
 const AA_STATES = {
   blocked: { icon: '⚠', text: 'Blocked', rank: 0 },
@@ -175,6 +176,80 @@ function aaPaint(el, data, ctx) {
 }
 
 // ── side panel ──
+// Now (live, repainted on every status ping) over the agent's history for the dashboard's
+// range (GET /agents/:name/history, compare=previous; fetched once per range, not per ping).
+const AA_HIST_PAGE = 20;
+const AA_DAY = 86_400_000;
+const AA_OUTCOME = { done: 'Done', reassigned: 'Reassigned', redirected: 'Redirected' };
+
+// Durations in human units: 45 m, 5.5 h, 3.2 d.
+function aaDur(ms) {
+  if (ms === null || ms === undefined) return '—';
+  const v = Math.abs(ms);
+  const n = (x) => (x < 10 ? x.toFixed(1).replace(/\.0$/, '') : String(Math.round(x)));
+  if (v < 3_600_000) return `${Math.round(v / 60_000)} m`;
+  if (v < 48 * 3_600_000) return `${n(v / 3_600_000)} h`;
+  return `${n(v / AA_DAY)} d`;
+}
+
+// pol: 1 = up is good, -1 = down is good, 0 = neutral. diff: the change's magnitude in the stat's units.
+const AA_STATS = [
+  { key: 'cardsDone', label: 'Cards done', pol: 1, fmt: (v) => String(v), diff: (d) => String(d) },
+  { key: 'firstPassRate', label: 'First pass', pol: 1, fmt: (v) => (v === null ? '—' : `${Math.round(v * 100)}%`), diff: (d) => `${Math.round(d * 100)} pts` },
+  { key: 'medianCycleMs', label: 'Median cycle', pol: -1, fmt: aaDur, diff: aaDur },
+  { key: 'cost', label: 'Cost', pol: -1, fmt: mxMoney, diff: mxMoney },
+  { key: 'tokens', label: 'Tokens', pol: 0, fmt: fmtTokens, diff: fmtTokens },
+];
+
+// The history read for the widget's range: Home's filters (ctx.filters), only what the endpoint takes.
+function aaHistoryUrl(name, ctx) {
+  const f = new URLSearchParams(ctx.filters);
+  const q = new URLSearchParams({ project: f.get('scope') || ctx.projectId });
+  for (const k of ['from', 'to']) if (f.get(k)) q.set(k, f.get(k));
+  const tz = typeof hctx !== 'undefined' ? hctx.f?.tz : null;
+  if (tz) q.set('tz', tz);
+  q.set('compare', 'previous');
+  return `/agents/${encodeURIComponent(name)}/history?${q}`;
+}
+
+// Window length in days (null = all time: no comparison).
+const aaDays = (w) => (w ? Math.max(1, Math.round((w.to - w.from) / AA_DAY)) : null);
+
+// "▲ +3 · +50% vs prev 14 d": colour by polarity, grey when there's nothing to compare.
+function aaDelta(s, cur, prev, days) {
+  const chip = node('span', 'aa-delta');
+  const a = cur?.[s.key];
+  const b = prev?.[s.key];
+  if (!prev || a === null || a === undefined || b === null || b === undefined) {
+    chip.classList.add('aa-d-flat');
+    chip.append(node('span', 'aa-d-chg', prev ? '—' : 'No previous period'));
+    if (prev) chip.append(node('span', 'aa-d-vs', `vs prev ${days} d`));
+    chip.setAttribute('aria-label', prev ? `${s.label}: no comparison vs previous ${days} days` : `${s.label}: no previous period`);
+    return chip;
+  }
+  const d = a - b;
+  const tone = d === 0 || s.pol === 0 ? 'flat' : d * s.pol > 0 ? 'good' : 'bad';
+  chip.classList.add(`aa-d-${tone}`);
+  const sign = d > 0 ? '+' : d < 0 ? '−' : '±';
+  const pct = b !== 0 ? `${sign}${Math.abs(Math.round((d / Math.abs(b)) * 100))}%` : null;
+  const arrow = node('span', 'aa-d-arrow', d > 0 ? '▲' : d < 0 ? '▼' : '–');
+  arrow.setAttribute('aria-hidden', 'true');
+  const val = `${sign}${s.diff(Math.abs(d))}`;
+  const chg = node('span', 'aa-d-chg');
+  chg.append(arrow, node('span', 'aa-d-val', pct ? `${val} · ${pct}` : val));
+  chip.append(chg, node('span', 'aa-d-vs', `vs prev ${days} d`));
+  const dir = d > 0 ? 'up' : d < 0 ? 'down' : 'unchanged';
+  const verdict = tone === 'good' ? ', better' : tone === 'bad' ? ', worse' : '';
+  chip.setAttribute('aria-label', `${s.label} ${dir} ${val}${pct ? ` (${pct})` : ''} vs previous ${days} days${verdict}`);
+  return chip;
+}
+
+function aaDay(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return `${MX_MONTHS[d.getMonth()]} ${d.getDate()}`;
+}
+
 function aaOpenPanel(agentId, data, ctx, el) {
   if (svModal || aaPanel.close) return;
   const { backdrop, dlg, close, mount } = openModal({
@@ -187,18 +262,191 @@ function aaOpenPanel(agentId, data, ctx, el) {
   });
   backdrop.classList.add('aa-backdrop');
   dlg.classList.add('aa-panel');
-  let reasonFor = null; // card id whose blocker reason is loaded / loading
-  let reason = null;
+  const top = node('div', 'aa-p-part'); // identity + Now: repainted live
+  const hist = node('div', 'aa-p-part'); // stats, trend, history: repainted only when the history loads
+  hist.setAttribute('aria-live', 'polite');
+  hist.setAttribute('aria-busy', 'true');
+  dlg.append(top, hist);
+  let taskFor = null; // `${card id}:${blocked}` whose task (branch, blocker reason) is loaded / loading
+  let task = null;
+  let agentName = null;
+  const hs = { url: null, seq: 0, status: 'loading', data: null, error: '', shown: AA_HIST_PAGE };
+  const isOpen = () => aaPanel.close === close;
+  const focusClose = () => dlg.querySelector('[data-k="close"]')?.focus();
+
+  function loadHistory(url) {
+    const seq = ++hs.seq;
+    Object.assign(hs, { url, status: 'loading', data: null, error: '', shown: AA_HIST_PAGE });
+    renderHist();
+    fetch(url)
+      .then(async (res) => {
+        const body = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+        return body;
+      })
+      .then((d) => {
+        if (!isOpen() || seq !== hs.seq) return;
+        Object.assign(hs, { status: 'ok', data: d });
+        renderHist();
+      })
+      .catch((err) => {
+        if (!isOpen() || seq !== hs.seq) return;
+        Object.assign(hs, { status: 'error', error: err.message });
+        renderHist();
+      });
+  }
+
+  function statsSection(h) {
+    const days = aaDays(h.window);
+    const sec = node('section', 'aa-p-sec');
+    const label = node('h3', 'aa-p-label', 'Stats');
+    label.append(node('span', 'aa-p-range', days ? ` · last ${days} d` : ' · all time'));
+    const grid = node('dl', 'aa-p-stats');
+    for (const s of AA_STATS) {
+      const box = node('div', 'aa-p-stat');
+      const dd = node('dd');
+      dd.append(node('span', 'aa-p-val', s.fmt(h.totals[s.key])), aaDelta(s, h.totals, h.previous, days));
+      box.append(node('dt', null, s.label), dd);
+      grid.append(box);
+    }
+    const added = h.cards.reduce((n, c) => n + (c.lines_added ?? 0), 0);
+    const removed = h.cards.reduce((n, c) => n + (c.lines_removed ?? 0), 0);
+    sec.append(label, grid, node('p', 'aa-p-note', `+${added.toLocaleString('en-US')} / −${removed.toLocaleString('en-US')} lines changed in range`));
+    return sec;
+  }
+
+  function trendSection(h) {
+    const sec = node('section', 'aa-p-sec');
+    sec.append(node('h3', 'aa-p-label', 'Cards done per week'));
+    const vals = (h.weekly ?? []).map((w) => w.cardsDone);
+    if (vals.length < 2) {
+      sec.append(node('div', 'aa-p-muted', 'Not enough weeks for a trend yet'));
+      return sec;
+    }
+    const fig = node('div', 'aa-p-spark');
+    fig.setAttribute('role', 'img');
+    fig.setAttribute('aria-label', `Cards done per week, oldest first: ${vals.join(', ')}`);
+    const cap = node('div', 'aa-p-spark-cap');
+    cap.append(node('span', null, mxPlural(vals.length, 'week')), node('span', null, `peak ${Math.max(...vals)} · this week ${vals[vals.length - 1]}`));
+    fig.append(mxSparkline(vals), cap);
+    sec.append(fig);
+    return sec;
+  }
+
+  function historyRow(c) {
+    const li = node('li', 'aa-h-row');
+    const t = node('button', 'aa-h-title', c.title);
+    t.type = 'button';
+    t.dataset.k = `card:${c.id}`;
+    t.title = c.title;
+    t.onclick = () => {
+      close();
+      ctx.openCard(c.id, c.board.id);
+    };
+    const meta = node('div', 'aa-h-meta');
+    const outcome = AA_OUTCOME[c.outcome] ?? LANE_NAME(c.lane);
+    meta.append(node('span', `aa-h-out aa-h-out-${c.outcome in AA_OUTCOME ? c.outcome : 'open'}`, outcome));
+    meta.append(node('span', null, mxPlural(c.rounds, 'round')));
+    const fp = c.first_pass === true ? ['✓', 'yes', 'aa-h-pass'] : c.first_pass === false ? ['✗', 'no', 'aa-h-fail'] : ['–', 'not reviewed', ''];
+    const fpEl = node('span', `aa-h-fp ${fp[2]}`);
+    const fpMark = node('span', null, fp[0]);
+    fpMark.setAttribute('aria-hidden', 'true');
+    fpEl.append('First pass ', fpMark, node('span', 'aa-sr', fp[1]));
+    meta.append(fpEl);
+    meta.append(node('span', c.blockers ? 'aa-h-blk' : null, c.blockers ? `${mxPlural(c.blockers, 'blocker')} · ${aaDur(c.blocked_ms)}` : 'No blockers'));
+    const when = node('span', 'aa-h-when', aaDay(c.last_worked_at));
+    const head = node('div', 'aa-h-head');
+    head.append(t, when);
+    li.append(head, meta);
+    return li;
+  }
+
+  function historySection(h) {
+    const sec = node('section', 'aa-p-sec');
+    const headRow = node('div', 'aa-p-sec-head');
+    headRow.append(node('h3', 'aa-p-label', `History · ${mxPlural(h.cards.length, 'card')}`));
+    const kb = node('button', 'home-btn aa-p-kanban', 'Open in Kanban');
+    kb.type = 'button';
+    kb.dataset.k = 'kanban';
+    kb.disabled = !h.cards.length;
+    kb.onclick = () => {
+      const ids = h.cards.map((c) => c.id);
+      const boards = new Set(h.cards.map((c) => c.board.id));
+      close();
+      // every card on one other board (a vertical): that board's Kanban, like Metrics' "Open all"
+      if (!ids.some((id) => cards.has(id)) && boards.size === 1 && !boards.has(projectId)) {
+        location.search = `?project=${encodeURIComponent([...boards][0])}&cards=${encodeURIComponent(ids.join(','))}&view=kanban`;
+        return;
+      }
+      setView('kanban');
+      setKanbanHighlight(ids);
+    };
+    headRow.append(kb);
+    sec.append(headRow);
+    if (!h.cards.length) {
+      sec.append(node('div', 'aa-p-muted', `${agentName} worked no cards in this range.`));
+      return sec;
+    }
+    const list = node('ul', 'aa-h-list');
+    for (const c of h.cards.slice(0, hs.shown)) list.append(historyRow(c));
+    sec.append(list);
+    const rest = h.cards.length - hs.shown;
+    if (rest > 0) {
+      const n = Math.min(AA_HIST_PAGE, rest);
+      const more = node('button', 'home-link aa-h-more', `Show ${n} more`);
+      more.type = 'button';
+      more.dataset.k = 'more';
+      more.onclick = () => {
+        const first = h.cards[hs.shown];
+        hs.shown += n;
+        renderHist();
+        dlg.querySelector(`[data-k="card:${CSS.escape(first.id)}"]`)?.focus();
+      };
+      sec.append(more);
+    }
+    return sec;
+  }
+
+  function renderHist() {
+    const hadFocus = hist.contains(document.activeElement) ? document.activeElement.dataset.k : null;
+    hist.setAttribute('aria-busy', String(hs.status === 'loading'));
+    if (hs.status === 'loading') {
+      const sk = node('section', 'aa-p-sec');
+      sk.setAttribute('aria-label', 'Loading history');
+      const grid = node('div', 'aa-p-skel-grid');
+      for (let i = 0; i < 4; i++) grid.append(node('div', 'dw-skel-bar aa-p-skel-stat'));
+      const lines = node('div', 'dw-skel');
+      for (const w of ['w90', 'w75', 'w90', 'w60']) lines.append(node('div', `dw-skel-bar ${w}`));
+      sk.append(node('h3', 'aa-p-label', 'Stats'), grid, node('div', 'dw-skel-bar aa-p-skel-spark'), lines);
+      hist.replaceChildren(sk);
+    } else if (hs.status === 'error') {
+      const sec = node('section', 'aa-p-sec');
+      const box = node('div', 'aa-p-error');
+      box.setAttribute('role', 'alert');
+      const retry = node('button', 'home-btn', 'Retry');
+      retry.type = 'button';
+      retry.dataset.k = 'retry';
+      retry.onclick = () => loadHistory(hs.url);
+      box.append(node('span', null, `Couldn’t load the history: ${hs.error}`), retry);
+      sec.append(box);
+      hist.replaceChildren(sec);
+    } else {
+      const h = hs.data;
+      hist.replaceChildren(statsSection(h), trendSection(h), historySection(h));
+    }
+    // keep focus on the same control; if it's gone (retry → loading), the close button
+    if (!hadFocus) return;
+    const same = hist.querySelector(`[data-k="${CSS.escape(hadFocus)}"]`);
+    if (same) same.focus();
+    else focusClose();
+  }
 
   const paint = (d) => {
     const a = (d.agents ?? []).find((x) => x.id === agentId);
     if (!a) return close();
+    agentName = a.name;
     const r = aaInfo(d, a);
     const card = r.card;
-    if (!card?.blocked) {
-      reasonFor = null; // unblocked: a later blocker fetches its own reason
-      reason = null;
-    }
 
     const head = node('div', 'aa-p-head');
     const id = node('div', 'aa-p-id');
@@ -227,31 +475,39 @@ function aaOpenPanel(agentId, data, ctx, el) {
     const now = node('section', 'aa-p-sec');
     now.append(node('h3', 'aa-p-label', 'Now'));
     if (card) {
+      // the card's task (branch, blocker reason): once per card, again when it becomes blocked
+      const key = `${card.id}:${card.blocked}`;
+      if (taskFor !== key) {
+        taskFor = key;
+        task = null;
+        fetch(`/task/${encodeURIComponent(card.id)}`)
+          .then((res) => (res.ok ? res.json() : Promise.reject(new Error())))
+          .then((t) => {
+            if (taskFor !== key) return;
+            task = t ?? {};
+            if (aaPanel.paint === paint) paint(aaPanel.data);
+          })
+          .catch(() => {
+            if (taskFor !== key) return;
+            task = { failed: true };
+            if (aaPanel.paint === paint) paint(aaPanel.data);
+          });
+      }
       now.append(node('div', 'aa-p-card', card.title));
       const meta = node('div', 'aa-p-meta');
       meta.append(node('span', 'aa-lane', LANE_NAME(card.lane)), node('span', 'aa-sum-sep', '·'), 'in this state for ', aaSince(card.since, 'aa-elapsed'));
       now.append(meta);
+      if (task?.branch) {
+        const br = node('div', 'aa-p-branch');
+        br.append(node('span', 'aa-p-branch-k', 'Branch'), node('code', 'aa-p-branch-v', task.branch));
+        now.append(br);
+      }
       if (a.now) now.append(node('div', 'aa-p-activity', a.now));
       if (card.blocked) {
         const why = node('div', 'aa-p-reason');
         why.append(node('span', 'aa-p-reason-k', 'Blocker'));
-        if (reasonFor !== card.id) {
-          reasonFor = card.id;
-          reason = null;
-          fetch(`/task/${encodeURIComponent(card.id)}`)
-            .then((res) => (res.ok ? res.json() : null))
-            .then((t) => {
-              if (reasonFor !== card.id) return;
-              reason = t?.blocked_reason || 'No reason given';
-              if (aaPanel.paint === paint) paint(aaPanel.data);
-            })
-            .catch(() => {
-              if (reasonFor !== card.id) return;
-              reason = 'Couldn’t load the reason';
-              if (aaPanel.paint === paint) paint(aaPanel.data);
-            });
-        }
-        why.append(node('span', 'aa-p-reason-v', reason ?? 'Loading…'));
+        const reason = !task ? 'Loading…' : task.failed ? 'Couldn’t load the reason' : task.blocked_reason || 'No reason given';
+        why.append(node('span', 'aa-p-reason-v', reason));
         now.append(why);
       } else if (r.needsYou) {
         now.append(node('div', 'aa-p-reason', 'The session is waiting for a decision from you.'));
@@ -265,26 +521,18 @@ function aaOpenPanel(agentId, data, ctx, el) {
       };
       now.append(open);
     } else {
+      taskFor = null;
+      task = null;
       now.append(node('div', 'aa-p-muted', a.now ?? 'No current card'));
     }
 
-    const stats = node('section', 'aa-p-sec');
-    stats.append(node('h3', 'aa-p-label', 'All-time'));
-    const grid = node('dl', 'aa-p-stats');
-    const stat = (k, v) => {
-      const d1 = node('div', 'aa-p-stat');
-      d1.append(node('dt', null, k), node('dd', null, v));
-      grid.append(d1);
-    };
-    stat('Cards', String(a.cards));
-    stat('Hours', String(a.hours));
-    stat('Lines', `+${a.lines_added} / −${a.lines_removed}`);
-    stats.append(grid, node('p', 'aa-p-note', 'Stats for the selected range and full history arrive in a later update'));
-
-    const hadFocus = dlg.contains(document.activeElement) ? document.activeElement.dataset.k : null;
-    dlg.replaceChildren(head, ident, now, stats);
+    const hadFocus = top.contains(document.activeElement) ? document.activeElement.dataset.k : null;
+    top.replaceChildren(head, ident, now);
     // a live repaint keeps focus on the same control (else the close button)
-    if (hadFocus) (dlg.querySelector(`[data-k="${hadFocus}"]`) ?? x).focus();
+    if (hadFocus) (top.querySelector(`[data-k="${hadFocus}"]`) ?? x).focus();
+    // the history follows the range: a new range refetches, a status ping doesn't
+    const url = aaHistoryUrl(a.name, ctx);
+    if (url !== hs.url) loadHistory(url);
     return x;
   };
 
