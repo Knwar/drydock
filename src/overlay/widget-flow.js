@@ -19,6 +19,7 @@ const FW_TYPES = [
   { k: 'debt', name: 'Debt', color: '#d6b878' },
   { k: 'risk', name: 'Risk', color: '#c7a2e3' },
   { k: 'none', name: 'Unclassified', color: '#5b6275' },
+  { k: 'deleted', name: 'Deleted', color: '#a0a7b8' }, // done in range, the card since deleted (no work type left)
 ];
 const FW_WIP_LANES = [
   { k: 'in_progress', name: 'Building' },
@@ -137,12 +138,13 @@ function fwStageLabel(pct, times) {
   return `${pct} time per stage: ${FW_STAGES.map((st) => `${st.name} ${mxSpan(times[st.k])}`).join(', ')}; of which blocked ${mxSpan(times.blocked)} (overlapping those stages)`;
 }
 
-// One labelled bar block: "p50" bar, then the blocked bar on the same scale.
+// One labelled bar block: "p50" bar, then the blocked bar on the same scale. The bar's length is
+// the sum of the stage percentiles, which is NOT a cycle-time percentile: the head names it so.
 function fwStageBlock(pct, times, ctx) {
   const box = node('div', 'fw-stage-block');
   const { svg, total } = fwStageBar(times, fwStageLabel(pct, times));
   const head = node('div', 'fw-stage-head');
-  head.append(node('span', 'fw-k', `${pct} per stage`), node('span', 'fw-stage-sum', `${mxSpan(total)} in stages`));
+  head.append(node('span', 'fw-k', `${pct} per stage`), node('span', 'fw-stage-sum', `sum of stage ${pct}s ${mxSpan(total)} (not a cycle-time ${pct})`));
   box.append(head, svg);
   const b = node('div', 'fw-blocked');
   const txt = node('span', 'fw-blocked-text');
@@ -163,7 +165,9 @@ function fwCycleRender(el, d, ctx) {
   const r = d.flow;
   const sb = r.stageBreakdown;
   const n = r.throughput.total;
-  el.append(fwMain(mxSpan(r.cycleTime.p50), 'p50 cycle', `${mxPlural(n, 'card')} done · queued → done`));
+  // L: the real cycle p85 (flow.cycleTime.p85) beside the p50 headline
+  const p85 = ctx.size === 'L' ? `p85 ${mxSpan(r.cycleTime.p85)} · ` : '';
+  el.append(fwMain(mxSpan(r.cycleTime.p50), 'p50 cycle', `${p85}${mxPlural(n, 'card')} done · queued → done`));
   el.append(fwDeltaRow(fwPrevChip(r, 'p50 cycle time', -1, mxSpan, r.cycleTime.p50, r.previous?.cycleTime?.p50 ?? null)));
   el.append(fwStageBlock('p50', sb.p50, ctx));
   const prevSb = r.previous?.stageBreakdown?.p50 ?? null;
@@ -183,66 +187,112 @@ function fwCycleRender(el, d, ctx) {
     }
   }
   el.append(table);
-  if (ctx.size === 'L') el.append(fwStageBlock('p85', sb.p85, ctx));
+  if (ctx.size === 'L') {
+    const head = node('div', 'fw-cycle-p85');
+    head.append(node('span', 'fw-k', 'Cycle time p85'), node('span', 'fw-resolve-v', mxSpan(r.cycleTime.p85)));
+    el.append(head, fwStageBlock('p85', sb.p85, ctx));
+  }
 }
 
 // ── wip: "Are we overloaded?" ──
-// Now (no range, board-wide: a WIP limit is the board's) vs the board's WIP limits.
+// Now (no range, no card filters: a WIP limit is a board's, over all its cards), each board's lane
+// counts against that board's own limits. A workspace scope covers several boards: the rows show
+// all boards' totals and each board is checked against its own limits.
 async function fwWipLoad(ctx) {
   const f = fwFilters(ctx);
-  const [sum, settings] = await Promise.all([fwGet(ctx, '/metrics/summary', { project: f.project, tz: MX_LOCAL_TZ }), fwSettings(ctx, f.project)]);
-  const wip = sum.wip;
-  if (!sum.cards && !Object.values(wip).some(Boolean)) return { empty: 'No cards on this board yet' };
-  return { wip, limits: settings.wip };
+  const scope = new URLSearchParams(ctx.filters).get('scope');
+  const url = `/workspace/cards?project=${encodeURIComponent(ctx.projectId)}${scope ? `&scope=${encodeURIComponent(scope)}` : ''}`;
+  const r = await ctx.shared(url, () => mxGet(url));
+  const multi = f.project === r.workspace_id && r.boards.length > 1;
+  const inScope = multi ? r.boards : r.boards.filter((b) => b.id === f.project);
+  if (!inScope.length) inScope.push({ id: f.project, name: '' });
+  if (!r.cards.length) return { empty: multi ? 'No cards on these boards yet' : 'No cards on this board yet' };
+  const settings = await Promise.all(inScope.map((b) => fwSettings(ctx, b.id)));
+  const boards = inScope.map((b, i) => {
+    const lanes = FW_WIP_LANES.map((l) => {
+      const n = r.cards.filter((c) => c.board === b.id && c.lane === l.k).length;
+      const limit = settings[i].wip?.[l.k] ?? null;
+      return { ...l, n, limit, over: limit !== null && n > limit };
+    });
+    return { id: b.id, name: b.name, lanes };
+  });
+  return { multi, boards };
 }
 
-function fwSettingsHint(text) {
+// "Set WIP limits …": Settings → Board for the board whose limits are shown. The Settings modal edits
+// the board this page is open on, so another board's limits mean opening that board first.
+function fwSettingsHint(text, board) {
   const hint = node('div', 'fw-hint');
-  if (!EMBED && typeof openSettings === 'function') {
-    const btn = node('button', 'fw-link', text);
-    btn.type = 'button';
-    btn.title = 'Open Settings → Board';
-    btn.onclick = () => openSettings('board');
-    hint.append(btn);
-  } else hint.append(node('span', '', text));
+  if (EMBED || typeof openSettings !== 'function') {
+    hint.append(node('span', '', text));
+    return hint;
+  }
+  const here = !board || board.id === projectId;
+  const btn = node('button', 'fw-link', here ? text : `Open the ${board.name} board to set its WIP limits`);
+  btn.type = 'button';
+  btn.title = here ? 'Open Settings → Board' : `Go to the ${board.name} board (its Settings → Board holds its limits)`;
+  btn.onclick = () => (here ? openSettings('board') : (location.search = `?project=${encodeURIComponent(board.id)}`));
+  hint.append(btn);
   return hint;
 }
 
+function fwWipBar(l) {
+  const scale = Math.max(l.n, l.limit ?? 0, 1) * 1.1;
+  const label = `${l.name}: ${l.n} card${l.n === 1 ? '' : 's'}${l.limit === null ? ', no limit' : `, limit ${l.limit}${l.over ? ', over the limit' : ''}`}`;
+  const svg = fwSvg(100, 10, 'fw-wip-svg', label);
+  svg.append(svgEl('rect', { x: 0, y: 0, width: 100, height: 10, fill: 'rgba(255,255,255,0.06)' }));
+  if (l.n) svg.append(svgEl('rect', { x: 0, y: 0, width: ((l.n / scale) * 100).toFixed(2), height: 10, fill: l.over ? '#e5c07b' : l.limit === null ? '#8b93a7' : '#5dd3a8' }));
+  if (l.limit !== null) svg.append(svgEl('rect', { x: ((l.limit / scale) * 100 - 0.4).toFixed(2), y: 0, width: 0.8, height: 10, fill: '#e8eaf0' }));
+  return svg;
+}
+
 function fwWipRender(el, d, ctx) {
-  const lanes = FW_WIP_LANES.map((l) => {
-    const n = d.wip[l.k] ?? 0;
-    const limit = d.limits?.[l.k] ?? null;
-    return { ...l, n, limit, over: limit !== null && n > limit };
-  });
-  const anyLimit = lanes.some((l) => l.limit !== null);
-  const over = lanes.filter((l) => l.over);
+  const all = d.boards.flatMap((b) => b.lanes.map((l) => ({ ...l, board: b })));
+  const anyLimit = all.some((l) => l.limit !== null);
+  const over = all.filter((l) => l.over);
+  // the rows: one board → its counts / limits; several → all boards' totals (each board's own limits below)
+  const lanes = d.multi
+    ? FW_WIP_LANES.map((l) => {
+        const of = all.filter((x) => x.k === l.k);
+        return { ...l, n: of.reduce((s, x) => s + x.n, 0), limit: null, over: of.some((x) => x.over), total: true };
+      })
+    : d.boards[0].lanes;
   const rows = node('div', 'fw-wip');
   for (const l of lanes) {
     const row = node('div', `fw-wip-row${l.over ? ' fw-over' : ''}`);
     const head = node('div', 'fw-wip-head');
     const val = node('span', 'fw-wip-val');
-    val.append(node('span', 'fw-wip-n', String(l.n)), node('span', 'fw-wip-lim', l.limit === null ? ' · no limit' : ` / ${l.limit}`));
+    val.append(node('span', 'fw-wip-n', String(l.n)), node('span', 'fw-wip-lim', l.total ? ' · all boards' : l.limit === null ? ' · no limit' : ` / ${l.limit}`));
     head.append(node('span', 'fw-wip-name', l.name), val);
     row.append(head);
-    if (ctx.size === 'M') {
-      const scale = Math.max(l.n, l.limit ?? 0, 1) * 1.1;
-      const label = `${l.name}: ${l.n} card${l.n === 1 ? '' : 's'}${l.limit === null ? ', no limit' : `, limit ${l.limit}${l.over ? ', over the limit' : ''}`}`;
-      const svg = fwSvg(100, 10, 'fw-wip-svg', label);
-      svg.append(svgEl('rect', { x: 0, y: 0, width: 100, height: 10, fill: 'rgba(255,255,255,0.06)' }));
-      if (l.n) svg.append(svgEl('rect', { x: 0, y: 0, width: ((l.n / scale) * 100).toFixed(2), height: 10, fill: l.over ? '#e5c07b' : l.limit === null ? '#8b93a7' : '#5dd3a8' }));
-      if (l.limit !== null) svg.append(svgEl('rect', { x: ((l.limit / scale) * 100 - 0.4).toFixed(2), y: 0, width: 0.8, height: 10, fill: '#e8eaf0' }));
-      row.append(svg);
-    }
+    if (ctx.size === 'M' && !l.total) row.append(fwWipBar(l));
     rows.append(row);
   }
   el.append(rows);
-  if (over.length) el.append(fwStatus('warn', `Over limit: ${over.map((l) => l.name).join(', ')}`));
-  else if (anyLimit) el.append(fwStatus('ok', 'Within limits'));
-  else {
-    el.append(fwStatus('none', 'No limit set'));
-    el.append(fwSettingsHint(ctx.size === 'S' ? 'Set limits in Settings' : 'Set WIP limits in Settings → Board'));
+  // several boards, M: the boards with a limit set, each against its own
+  if (d.multi && ctx.size === 'M') {
+    const list = node('ul', 'fw-wip-boards');
+    for (const b of d.boards) {
+      if (!b.lanes.some((l) => l.limit !== null)) continue;
+      const li = node('li', b.lanes.some((l) => l.over) ? 'fw-over' : '');
+      li.append(node('span', 'fw-wip-bname', b.name), node('span', 'fw-wip-blanes', b.lanes.map((l) => `${l.name} ${l.n}${l.limit === null ? '' : ` / ${l.limit}`}`).join(' · ')));
+      list.append(li);
+    }
+    if (list.children.length) el.append(list);
   }
-  if (ctx.size === 'M') el.append(node('div', 'fw-foot', 'Cards in each lane now, board-wide'));
+  const where = (l) => (d.multi ? `${l.board.name} (${l.name})` : l.name);
+  const scopeNote = 'All boards now · each board against its own limits';
+  let status;
+  if (over.length) status = fwStatus('warn', `Over limit: ${over.map(where).join(', ')}`);
+  else if (anyLimit) status = fwStatus('ok', 'Within limits');
+  else status = fwStatus('none', 'No limit set');
+  if (d.multi) status.title = scopeNote;
+  el.append(status);
+  if (!anyLimit) {
+    const board = d.multi ? (d.boards.find((b) => b.id === projectId) ?? d.boards[0]) : d.boards[0];
+    el.append(fwSettingsHint(ctx.size === 'S' ? 'Set limits in Settings' : 'Set WIP limits in Settings → Board', board));
+  }
+  if (ctx.size === 'M') el.append(node('div', 'fw-foot', d.multi ? scopeNote : 'Cards in each lane now, board-wide'));
 }
 
 // ── review-queue: "Is review the bottleneck?" ──
@@ -302,7 +352,8 @@ function fwReviewRender(el, d, ctx) {
 
 // ── throughput-trend: "Is delivery speeding up?" ──
 // Weekly done bars over the range (ISO weeks, the window's cut weeks marked partial), stacked by
-// work type: flow's points joined to the cards' work_type (a point with no card left: unclassified).
+// work type: flow's points joined to the cards' work_type (a point with no card left: Deleted).
+// The legend totals come from the same join, so bars and legend always agree.
 async function fwTrendLoad(ctx) {
   const params = ctx.filters;
   const url = `/workspace/cards?project=${encodeURIComponent(ctx.projectId)}${params ? `&${params}` : ''}`;
@@ -319,7 +370,7 @@ async function fwTrendLoad(ctx) {
   for (const p of flow.points) {
     const day = mxDayKey(p.doneAt, tz);
     const w = weeks.find((x) => day >= x.start && day <= x.end);
-    if (w) w.byType[typeOf.get(p.id) ?? 'none']++;
+    if (w) w.byType[typeOf.get(p.id) ?? 'deleted']++;
   }
   return { flow, weeks };
 }
@@ -379,7 +430,7 @@ function fwTrendRender(el, d, ctx) {
 
   const legend = node('div', 'fw-legend');
   for (const ty of FW_TYPES) {
-    const n = r.throughputByWorkType[ty.k] ?? 0;
+    const n = weeks.reduce((sum, w) => sum + w.byType[ty.k], 0);
     if (!n) continue;
     const it = node('span', 'fw-lg');
     it.append(fwSwatch(ty.color), node('span', '', `${ty.name} ${n}`));
@@ -394,14 +445,16 @@ function fwTrendRender(el, d, ctx) {
 // Blockers (raised or open in range) per card done in range, and the median time to resolve one.
 const fwRatio = (x) => String(Math.round(x * 100) / 100);
 
+// The wait read honours only phase + workType, so the cards-done count for the ratio uses a flow
+// read with those same filters (no tag / agent); with neither set it's fwFlow's URL (one fetch).
 async function fwEscalationLoad(ctx) {
   const f = fwFilters(ctx);
   const [flow, wait] = await Promise.all([
-    fwFlow(ctx),
+    fwGet(ctx, '/metrics/flow', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType, from: f.from, to: f.to, compare: 'previous' }),
     fwGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType, from: f.from, to: f.to, compare: 'previous' }),
   ]);
   if (!flow.throughput.total && !wait.blocked.count) return { empty: 'No cards done and no blockers in this range' };
-  return { flow, wait };
+  return { flow, wait, unfiltered: !!(f.tag || f.agent) };
 }
 
 function fwEscalationRender(el, d, ctx) {
@@ -415,6 +468,7 @@ function fwEscalationRender(el, d, ctx) {
   // both reads share the window; previous exists only when both have it
   const r = { previous: flow.previous && wait.previous, previousWindow: flow.previousWindow };
   el.append(fwDeltaRow(fwPrevChip(r, 'Blockers per card done', -1, fwRatio, cur, prev)));
+  if (d.unfiltered) el.append(node('div', 'fw-foot', 'Blockers ignore tag/agent filters'));
   // the current period's is blocked.resolution; previous carries the picked blocked.p50
   const p50 = wait.blocked.resolution.p50;
   const res = node('div', 'fw-resolve');

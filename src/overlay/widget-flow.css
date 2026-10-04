@@ -164,3 +164,13 @@
 /* escalation */
 .fw-resolve { display: flex; flex-direction: column; gap: 2px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
 .fw-resolve-v { font-size: 15px; font-weight: 600; color: var(--text); }
+
+/* wip across several boards (M): the boards with limits, each against its own */
+.fw-wip-boards { list-style: none; margin: 0; padding: 6px 0 0; border-top: 1px solid rgba(255, 255, 255, 0.06); display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; }
+.fw-wip-boards li { display: flex; justify-content: space-between; gap: 10px; min-width: 0; }
+.fw-wip-bname { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.fw-wip-blanes { flex: none; color: var(--dim); }
+.fw-wip-boards li.fw-over .fw-wip-blanes { color: #e5c07b; font-weight: 600; }
+
+/* cycle-breakdown L: the real cycle p85 above the p85 stage bar */
+.fw-cycle-p85 { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
