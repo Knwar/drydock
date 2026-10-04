@@ -89,6 +89,11 @@ describe('cardQuality', () => {
     assert.equal(c.done, false);
   });
 
+  it('a fail then a move elsewhere (done) clears the fail: a later reopen is not rework', () => {
+    const h = history('a', 'in_progress', [review('fail', MON + 10), move('in_review', 'done', MON + 11), move('done', 'in_progress', MON + 12)]);
+    assert.equal(cardQuality(deriveCards([h], opts.now)[0]).rework, 0);
+  });
+
   it('a redirect resets rounds and rework (a fresh start)', () => {
     const h = history('a', 'done', [
       review('fail', MON + 10),
