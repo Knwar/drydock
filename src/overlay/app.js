@@ -4046,6 +4046,8 @@ async function refreshCardModal() {
   // a live update while the estimate is being typed keeps the draft and the caret
   const estInput = metaEl.querySelector('.cm-est-in');
   const estDraft = estInput && document.activeElement === estInput ? estInput.value : null;
+  // removing the focused input blurs it, and Chrome then fires `change`: that must not save the draft
+  if (estDraft !== null) estInput.onchange = null;
   metaEl.replaceChildren(
     ...meta.map((m) => {
       if (typeof m === 'string') return node('span', '', m);
@@ -4152,18 +4154,21 @@ function cardWorkTypeEl(id, value) {
 }
 
 // The meta line's "Est. human hours": a number input (empty = no estimate) that PATCHes
-// estimate_hours on change; a bad value or a failed save shows inline next to it.
-async function cardEstimateSave(id, input, err, prev) {
+// estimate_hours on Enter or on change (blur); a bad value or a failed save shows inline next to
+// it. `state.saved` is the last value sent, so Enter + the change that follows save once.
+async function cardEstimateSave(id, input, err, state) {
   const raw = input.value.trim();
   const next = raw === '' ? null : Number(raw);
   if (next !== null && !(Number.isFinite(next) && next > 0 && next <= 1000)) {
     err.textContent = 'Enter hours > 0 and ≤ 1000, or leave it empty';
     return;
   }
-  if (next === prev) {
+  if (next === state.saved) {
     err.textContent = '';
     return;
   }
+  const prev = state.saved;
+  state.saved = next;
   input.disabled = true;
   let msg = null;
   try {
@@ -4177,6 +4182,7 @@ async function cardEstimateSave(id, input, err, prev) {
     msg = 'Daemon unreachable';
   }
   input.disabled = false;
+  if (msg) state.saved = prev;
   err.textContent = msg ? `Couldn't save the estimate: ${msg}` : '';
   if (msg) input.focus();
 }
@@ -4189,9 +4195,10 @@ function cardEstimateEl(id, value) {
   input.setAttribute('aria-label', 'Estimated human hours');
   const err = node('span', 'cm-wt-err');
   err.setAttribute('role', 'alert');
-  input.onchange = () => cardEstimateSave(id, input, err, value);
+  const state = { saved: value };
+  input.onchange = () => cardEstimateSave(id, input, err, state);
   input.onkeydown = (e) => {
-    if (e.key === 'Enter') input.blur(); // commits through onchange
+    if (e.key === 'Enter') cardEstimateSave(id, input, err, state); // also a draft kept across a re-render (no change event)
   };
   field.append(input);
   wrap.append(field, err);
