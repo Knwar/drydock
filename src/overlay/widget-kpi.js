@@ -6,11 +6,11 @@
 
 const KPI_ICONS = { ok: '✓', warn: '!', bad: '✕', none: '–' };
 
-// Home's filters (fbParams: scope / phase / tag / agent / from / to as epoch ms).
+// Home's filters (fbParams: scope / phase / tag / agent / workType / from / to as epoch ms).
 function kpiFilters(ctx) {
   const q = new URLSearchParams(ctx.filters);
   const get = (k) => q.get(k) || '';
-  return { project: get('scope') || ctx.projectId, phase: get('phase'), tag: get('tag'), agent: get('agent'), from: get('from'), to: get('to') };
+  return { project: get('scope') || ctx.projectId, phase: get('phase'), tag: get('tag'), agent: get('agent'), workType: get('workType'), from: get('from'), to: get('to') };
 }
 
 // GET path?params, deduped per refresh cycle by its URL; errors throw (the renderer's error state).
@@ -199,19 +199,26 @@ function kpiDecisionsRender(el, d, ctx) {
 
 // ── throughput: "Is delivery speeding up?" (a trend, not a target: neutral) ──
 // One /metrics/flow read over the last 8 rolling 7-day windows ending now (no partial ISO week).
+// Windows ending before the board's first activity (flow.firstActivityAt) are pre-history: left
+// out of the sparkline, and the prior average counts only full windows (starting at or after it).
 const KPI_WEEK_MS = 7 * 86_400_000;
 async function kpiThroughputLoad(ctx) {
   const f = kpiFilters(ctx);
   const now = Date.now();
   // no `to` (open-ended = up to now) and `from` floored to the minute: tiles in one cycle share the URL
   const from = Math.floor((now - 8 * KPI_WEEK_MS) / 60_000) * 60_000;
-  const flow = await kpiGet(ctx, '/metrics/flow', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, tag: f.tag, agent: f.agent, from });
-  const windows = Array(8).fill(0); // oldest → newest; [7] = the last 7 days
+  const flow = await kpiGet(ctx, '/metrics/flow', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, tag: f.tag, agent: f.agent, workType: f.workType, from });
+  const counts = Array(8).fill(0); // oldest → newest; [7] = the last 7 days
   for (const p of flow.points) {
     const k = Math.floor((now - p.doneAt) / KPI_WEEK_MS);
-    if (k >= 0 && k < 8) windows[7 - k]++;
+    if (k >= 0 && k < 8) counts[7 - k]++;
   }
-  return { windows, recent: flow.points.filter((p) => now - p.doneAt < KPI_WEEK_MS), project: f.project, now };
+  // window i spans (now − (8−i)·7d, now − (7−i)·7d]; no activity at all → only the current one
+  const first = flow.firstActivityAt ?? now;
+  const end = (i) => now - (7 - i) * KPI_WEEK_MS;
+  const windows = counts.filter((_, i) => i === 7 || end(i) >= first); // the sparkline's
+  const prior = counts.slice(3, 7).filter((_, j) => end(3 + j) - KPI_WEEK_MS >= first); // full windows of the 4 before
+  return { windows, prior, recent: flow.points.filter((p) => now - p.doneAt < KPI_WEEK_MS), project: f.project, now };
 }
 
 async function kpiDrillRecent(ctx, d, btn) {
@@ -231,13 +238,14 @@ async function kpiDrillRecent(ctx, d, btn) {
 }
 
 function kpiThroughputRender(el, d, ctx) {
-  const last = d.windows[7];
-  const prior = d.windows.slice(3, 7); // the 4 windows before: now−35d … now−7d
-  const avg = prior.reduce((s, x) => s + x, 0) / prior.length;
-  const main = kpiMain(String(last), 'done · last 7 days', `vs prior 4-wk avg ${mxNum(Math.round(avg * 10) / 10)}`, () => kpiDrillRecent(ctx, d, main), 'List the cards done in the last 7 days');
+  const last = d.windows[d.windows.length - 1];
+  const prior = d.prior; // the full windows among the 4 before: now−35d … now−7d
+  const avg = prior.length ? prior.reduce((s, x) => s + x, 0) / prior.length : 0;
+  const vs = prior.length ? `vs prior ${prior.length}-wk avg ${mxNum(Math.round(avg * 10) / 10)}` : 'no full prior week yet';
+  const main = kpiMain(String(last), 'done · last 7 days', vs, () => kpiDrillRecent(ctx, d, main), 'List the cards done in the last 7 days');
   el.append(main);
   const trend = node('div', 'kpi-status kpi-trend');
-  if (avg === 0) {
+  if (!prior.length || avg === 0) {
     const ico = node('span', 'kpi-ico', '–');
     ico.setAttribute('aria-hidden', 'true');
     trend.append(ico, node('span', 'kpi-status-text', 'no prior data'));
@@ -249,9 +257,9 @@ function kpiThroughputRender(el, d, ctx) {
     trend.append(ico, node('span', 'kpi-status-text', dir === 'flat' ? 'Level with average' : `${pct}% ${dir === 'up' ? 'above' : 'below'} average`));
   }
   el.append(trend);
-  if (ctx.size === 'S') return;
+  if (ctx.size === 'S' || d.windows.length < 2) return;
   const spark = node('div', 'kpi-detail kpi-spark');
-  spark.append(node('span', 'kpi-k', 'cards done per 7 days · last 8 windows'), mxSparkline(d.windows));
+  spark.append(node('span', 'kpi-k', `cards done per 7 days · last ${d.windows.length} windows`), mxSparkline(d.windows));
   el.append(spark);
 }
 
