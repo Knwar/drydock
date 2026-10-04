@@ -709,7 +709,11 @@ export function computeBurn(phase: BurnPhase, histories: CardHistory[], opts: Om
     return r.spans;
   });
   const from = spans.flat().reduce((min, s) => Math.min(min, s.from), phase.created_at);
-  const lastDone = ds.reduce((max, x) => Math.max(max, x.m.doneAt ?? 0), 0);
+  // only a done that happened while the card was in the phase (one finished elsewhere doesn't stretch the range)
+  const lastDone = ds.reduce((max, x, i) => {
+    const t = x.m.doneAt;
+    return t !== null && spans[i].some((s) => s.from <= t && (s.to === null || s.to > t)) ? Math.max(max, t) : max;
+  }, 0);
   const to = Math.max(from, phase.status === 'done' ? Math.min(now, Math.max(phase.updated_at, lastDone)) : now);
   checkRange(from, to);
   const days = daysBetween(from, to, tz);
@@ -840,8 +844,9 @@ function filterWhere(filter: LoadFilter): { sql: string; params: (string | numbe
     params.push(filter.phaseId);
   }
   if (filter.leftPhaseId !== undefined) {
+    // driven from the phase_change rows (evaluated once), then tasks looked up by id: no per-task scan
     where.push(
-      `EXISTS (SELECT 1 FROM task_events pe WHERE pe.task_id = t.id AND pe.type = 'phase_change'
+      `t.id IN (SELECT pe.task_id FROM task_events pe WHERE pe.type = 'phase_change'
         AND json_valid(pe.payload) AND json_extract(pe.payload, '$.from') = ?)`,
     );
     params.push(filter.leftPhaseId);

@@ -2923,6 +2923,22 @@ describe('phase_change and reassign events', () => {
     assert.equal(n, 2);
   });
 
+  it('updateTask phase_id: only a phase on the card\'s own board, or null', () => {
+    const { db, project } = setup();
+    const other = getOrCreateProject(db, '/tmp/other-board', 'Other');
+    const mine = createPhase(db, project.id, 'Mine');
+    const theirs = createPhase(db, other.id, 'Theirs');
+    const a = createTask(db, project.id, 'A', { phase_id: mine.id });
+    assert.throws(() => updateTask(db, a.id, { phase_id: theirs.id }), /invalid phase_id: phase .* belongs to another board/);
+    assert.throws(() => updateTask(db, a.id, { phase_id: 'nope' }), /invalid phase_id: no such phase: nope/);
+    assert.throws(() => updateTask(db, a.id, { phase_id: 42 as never }), /invalid phase_id: expected a phase id string or null/);
+    assert.throws(() => updateTask(db, a.id, { phase_id: [mine.id] }), /invalid phase_id: expected/);
+    assert.equal(getTask(db, a.id).phase_id, mine.id);
+    assert.deepEqual(eventsOf(db, a.id, 'phase_change'), []);
+    assert.equal(updateTask(db, a.id, { phase_id: null }).phase_id, null);
+    assert.deepEqual(eventsOf(db, a.id, 'phase_change'), [{ from: mine.id, to: null }]);
+  });
+
   it('placePhaselessCards: one event per placed card, none on a rerun', () => {
     const { db, project } = setup();
     const ph = createPhase(db, project.id, 'P');

@@ -316,6 +316,37 @@ describe('diffDraft / commitDraft', () => {
     assert.deepEqual(evProjects.map((e) => e.project_id), [ws.id], 'history follows the card');
   });
 
+  it('plan commits log phase_change once per card whose phase changed (phase edit and board move)', (t) => {
+    const { db, ws, web, cleanup } = setup();
+    t.after(cleanup);
+    const d = seed(db, ws, web);
+    const committed = commitDraft(db, d.id, 1).draft.data.committed;
+    const pcs = () =>
+      (db.prepare(`SELECT task_id, payload FROM task_events WHERE type = 'phase_change' ORDER BY id`).all() as {
+        task_id: string;
+        payload: string;
+      }[]).map((r) => [r.task_id, JSON.parse(r.payload)]);
+    assert.deepEqual(pcs(), [], 'cards are created in their phase: no change logged');
+    const before = { b: getTask(db, committed.b).phase_id, c: getTask(db, committed.c).phase_id };
+    edit(db, d.id, [
+      { op: 'update_node', id: 'b', patch: { phase: 'Build' } },
+      { op: 'update_node', id: 'c', patch: { board_id: ws.id, phase: 'Later' } },
+    ]);
+    commitDraft(db, d.id, 2);
+    const later = phasesOf(db, ws.id).find((p) => p.title === 'Later')!.id;
+    assert.deepEqual(pcs(), [
+      [committed.b, { from: before.b, to: before.c }],
+      [committed.c, { from: before.c, to: later }],
+    ]);
+    const cEv = db.prepare(`SELECT project_id FROM task_events WHERE task_id = ? AND type = 'phase_change'`).get(committed.c) as {
+      project_id: string;
+    };
+    assert.equal(cEv.project_id, ws.id, 'logged on the board the card moved to');
+    // an unchanged re-commit adds nothing
+    commitDraft(db, d.id, 2);
+    assert.equal(pcs().length, 2);
+  });
+
   it('a mapped card deleted elsewhere is created again', (t) => {
     const { db, ws, web, cleanup } = setup();
     t.after(cleanup);

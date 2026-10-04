@@ -702,6 +702,22 @@ describe('aggregations', () => {
       ],
     );
     assert.equal(burn.scope, 3);
+    // a card that left and was finished elsewhere doesn't stretch a done phase's range
+    const doneElsewhere = hist({ id: 'gone', lane: 'done', phase_id: 'other' }, [
+      ev('create', T0 + 1, { phase_id: 'ph' }),
+      pc('ph', 'other', T0 + DAY + 1),
+      move('backlog', 'done', T0 + 5 * DAY),
+    ]);
+    const finished = hist({ id: 'fin', lane: 'done', phase_id: 'ph' }, [
+      ev('create', T0 + 2, { phase_id: 'ph' }),
+      move('backlog', 'done', T0 + DAY + 2),
+    ]);
+    const closed = computeBurn({ ...phase, status: 'done', updated_at: T0 + DAY + 3 }, [doneElsewhere, finished], {
+      tz: 'UTC',
+      now: T0 + 30 * DAY,
+    });
+    assert.equal(closed.range.to, T0 + DAY + 3);
+    assert.deepEqual(closed.series.map((s) => [s.scope, s.done]), [[2, 0], [1, 1]]);
     // a change whose `from` disagrees with the derived phase (an unlogged earlier move): approximated
     const legacy = hist({ id: 'legacy', phase_id: 'x' }, [ev('create', T0 - DAY, { phase_id: null }), pc('ph', 'x', T0 + DAY + 5)]);
     const b2 = computeBurn(phase, [legacy], { tz: 'UTC', now: T0 + 2 * DAY });

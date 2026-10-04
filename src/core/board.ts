@@ -66,8 +66,9 @@ function assertWorkType(v: unknown): asserts v is WorkType | null | undefined {
     throw new Error(`invalid work_type: ${String(v)} (expected ${WORK_TYPES.join(', ')} or null)`);
 }
 
-/** Log a card's phase change as a phase_change {from, to} event; a no-op logs nothing. */
-function logPhaseChange(db: DB, projectId: string, taskId: string, from: string | null, to: string | null): void {
+/** Log a card's phase change as a phase_change {from, to} event; a no-op logs nothing.
+ *  Callers that write tasks.phase_id themselves (e.g. plan commits) log through this. */
+export function logPhaseChange(db: DB, projectId: string, taskId: string, from: string | null, to: string | null): void {
   if (from === to) return;
   appendEvent(db, { project_id: projectId, task_id: taskId, type: 'phase_change', payload: { from, to } });
 }
@@ -752,6 +753,14 @@ export function updateTask(
 ): Task {
   if ('work_type' in patch) assertWorkType(patch.work_type);
   const before = getTask(db, taskId); // existence check
+  if ('phase_id' in patch && patch.phase_id != null) {
+    const ph = patch.phase_id;
+    if (typeof ph !== 'string') throw new Error('invalid phase_id: expected a phase id string or null');
+    const owner = db.prepare('SELECT project_id FROM phases WHERE id = ?').get(ph) as { project_id: string } | undefined;
+    if (!owner) throw new Error(`invalid phase_id: no such phase: ${ph}`);
+    if (owner.project_id !== before.project_id)
+      throw new Error(`invalid phase_id: phase ${ph} belongs to another board`);
+  }
   const sets: string[] = [];
   const values: (string | null)[] = [];
   for (const field of UPDATABLE) {
