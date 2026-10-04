@@ -49,7 +49,7 @@
 //     dates ("Sep 14 – 27 vs Aug 31 – Sep 13"). Empty strings for all time (no previousWindow).
 //   dwFirstActivity(ctx) → Promise<epoch ms | null>: the board's first activity (/metrics/flow's
 //     firstActivityAt, unfiltered), one read per refresh cycle.
-//   dwDay(ms) → "Oct 24"; dwDays(from, to) → "Sep 14 – 27" / "Aug 30 – Sep 12" (local dates).
+//   dwDay(ms or 'YYYY-MM-DD') → "Oct 24"; dwDays(from, to) → "Sep 14 – 27" / "Aug 30 – Sep 12" (local dates).
 //   dwPrevDays(previousWindow) → the comparison window's length in whole days, Math.round((to+1-from)/DAY)
 //     (at least 1), or null when there's no previousWindow (all time: no comparison). Use previousWindow,
 //     not window: window.to is "now" for a rolling range.
@@ -113,8 +113,9 @@ const DW_DAY = 86_400_000;
 
 const dwPrevDays = (pw) => (pw ? Math.max(1, Math.round((pw.to + 1 - pw.from) / DW_DAY)) : null);
 
-const dwDay = (ms) => {
-  const d = new Date(ms);
+// ms, or a local day key 'YYYY-MM-DD' (that local day)
+const dwDay = (t) => {
+  const d = typeof t === 'string' ? new Date(`${t}T00:00`) : new Date(t);
   return `${MX_MONTHS[d.getMonth()]} ${d.getDate()}`;
 };
 function dwDays(from, to) {

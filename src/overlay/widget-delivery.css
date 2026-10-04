@@ -59,19 +59,70 @@
 .dl-count-n { min-width: 22px; font-size: 18px; font-weight: 600; color: var(--text); text-align: right; }
 .dl-zero { opacity: 0.45; }
 
-/* phase-health: table */
+/* phase-health: table. It follows the BODY's width (container dl-ph), not the size alone:
+   wide → every column; narrower → Budget merged under Status; below 560px → each phase stacks
+   (its cells labelled). No hidden horizontal scroll. */
+.dl-phase-health { container: dl-ph / inline-size; }
 .dl-ph { display: flex; flex-direction: column; min-width: 0; }
 .dl-ph-head, .dl-ph-row {
   display: grid;
-  grid-template-columns: minmax(90px, 1.6fr) minmax(86px, 1fr) minmax(96px, 1.1fr) minmax(100px, 1.1fr) minmax(56px, 0.7fr);
+  grid-template-columns: minmax(90px, 1.6fr) minmax(86px, 1fr) minmax(96px, 1.1fr) minmax(90px, 1fr) minmax(56px, 0.7fr);
+  grid-template-areas: 'name status target slip prog';
   align-items: center;
-  gap: 10px;
+  gap: 4px 10px;
   padding: 6px 6px;
   min-width: 0;
 }
+.dl-c-name { grid-area: name; }
+.dl-c-status { grid-area: status; }
+.dl-c-target { grid-area: target; }
+.dl-c-slip { grid-area: slip; }
+.dl-c-budget { grid-area: budget; }
+.dl-c-prog { grid-area: prog; }
 .dl-ph-L .dl-ph-head, .dl-ph-L .dl-ph-row,
 .dl-ph-XL .dl-ph-head, .dl-ph-XL .dl-ph-row {
-  grid-template-columns: minmax(110px, 1.8fr) minmax(86px, 1fr) minmax(110px, 1.2fr) minmax(110px, 1.2fr) minmax(110px, 1.1fr) minmax(64px, 0.7fr);
+  grid-template-columns: minmax(110px, 1.8fr) minmax(86px, 1fr) minmax(110px, 1.2fr) minmax(96px, 1fr) minmax(120px, 1.1fr) minmax(64px, 0.7fr);
+  grid-template-areas: 'name status target slip budget prog';
+}
+@container dl-ph (max-width: 759px) {
+  .dl-ph-L .dl-ph-row, .dl-ph-XL .dl-ph-row {
+    grid-template-columns: minmax(90px, 1.4fr) minmax(110px, 1.1fr) minmax(96px, 1.1fr) minmax(80px, 0.9fr) minmax(52px, 0.6fr);
+    grid-template-areas: 'name status target slip prog' 'name budget target slip prog';
+  }
+  .dl-ph-L .dl-ph-head, .dl-ph-XL .dl-ph-head {
+    grid-template-columns: minmax(90px, 1.4fr) minmax(110px, 1.1fr) minmax(96px, 1.1fr) minmax(80px, 0.9fr) minmax(52px, 0.6fr);
+    grid-template-areas: 'name status target slip prog';
+  }
+  .dl-ph-head .dl-c-budget { display: none; }
+  .dl-ph-head .dl-ph-h { white-space: normal; line-height: 1.3; }
+  .dl-ph-L .dl-ph-head .dl-c-status::after, .dl-ph-XL .dl-ph-head .dl-c-status::after { content: ' · budget'; }
+  .dl-c-budget .dl-st-text { white-space: normal; }
+  /* status over budget, kept together however tall the row */
+  .dl-ph-L .dl-ph-row .dl-c-status, .dl-ph-XL .dl-ph-row .dl-c-status { align-self: end; }
+  .dl-ph-L .dl-ph-row .dl-c-budget, .dl-ph-XL .dl-ph-row .dl-c-budget { align-self: start; }
+}
+@container dl-ph (max-width: 559px) {
+  .dl-ph .dl-ph-head { display: none; }
+  .dl-ph .dl-ph-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    grid-template-areas: 'name status' 'target slip' 'budget prog';
+    align-items: start;
+    gap: 6px 12px;
+    padding: 8px 4px;
+  }
+  .dl-ph-M .dl-ph-row { grid-template-areas: 'name status' 'target slip' 'prog prog'; }
+  .dl-ph .dl-name { white-space: normal; }
+  .dl-ph .dl-c-slip, .dl-ph .dl-c-status { justify-self: end; text-align: right; }
+  .dl-ph .dl-c-prog { min-width: 64px; }
+  .dl-ph .dl-c-budget .dl-st-text { white-space: normal; }
+  .dl-ph .dl-cell[data-k]::before {
+    content: attr(data-k);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+  }
 }
 .dl-ph-head { padding-top: 0; border-bottom: 1px solid var(--line); }
 .dl-ph-h { font-size: 10.5px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.07em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -91,6 +142,7 @@ button.dl-ph-row:hover { background: rgba(255, 255, 255, 0.04); }
 button.dl-ph-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
 .dl-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow: hidden; }
 .dl-cell > .dl-slip, .dl-cell > .dl-dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-cell > .dl-slip.dl-none { white-space: normal; } /* "Baseline today" wraps rather than truncates */
 .dl-st.dl-cell { flex-direction: row; }
 .dl-reason { white-space: normal; line-height: 1.35; }
 .dl-prog { display: block; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
@@ -138,6 +190,7 @@ button.dl-ph-row:focus-visible { outline: 2px solid var(--accent); outline-offse
 .dl-moved.dl-dim { font-weight: 400; }
 .dl-moved-ico { font-size: 11px; }
 .dl-past { opacity: 0.5; }
+.dl-ms-missed { color: var(--bad); font-weight: 600; }
 .dl-past .dl-moved.dl-ok, .dl-past .dl-moved.dl-bad { color: var(--dim); }
 .dl-ms-sep { padding: 8px 2px 2px; font-size: 10.5px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; }
 
