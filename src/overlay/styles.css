@@ -320,6 +320,13 @@ main {
 .card { cursor: pointer; }
 .card .meta .subs { color: #61afef; }
 
+/* work type (task.work_type): a quiet labelled chip, each type its own subtle hue; none when unclassified */
+.card .meta .wt { border-width: 1px; border-style: solid; border-radius: 3px; padding: 0 4px; }
+.wt-feature, [data-wt="feature"] { color: #8bb8e8; border-color: rgba(139, 184, 232, 0.45); background: rgba(139, 184, 232, 0.08); }
+.wt-defect, [data-wt="defect"] { color: #e89297; border-color: rgba(232, 146, 151, 0.45); background: rgba(232, 146, 151, 0.08); }
+.wt-debt, [data-wt="debt"] { color: #d6b878; border-color: rgba(214, 184, 120, 0.45); background: rgba(214, 184, 120, 0.08); }
+.wt-risk, [data-wt="risk"] { color: #c7a2e3; border-color: rgba(199, 162, 227, 0.45); background: rgba(199, 162, 227, 0.08); }
+
 .card .bar {
   height: 3px;
   border-radius: 2px;
@@ -1762,6 +1769,17 @@ body.reduce-motion .home-dot { animation: none !important; }
 .avatar { flex: none; border-radius: 50%; overflow: hidden; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; line-height: 1; color: #0d0f14; background: var(--card-bg); }
 .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 #card-meta > .cm-agent { display: inline-flex; align-items: center; gap: 5px; padding-left: 3px; }
+/* the card modal's work type: a select in the meta line (hue from [data-wt]) + an inline error */
+#card-meta > .cm-wt-wrap { display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; padding: 0; }
+.cm-wt { display: inline-flex; align-items: center; gap: 6px; border-width: 1px; border-style: solid; border-radius: 5px; padding: 0 2px 0 8px; }
+.cm-wt:not([data-wt]) { border-color: rgba(255, 255, 255, 0.12); background: rgba(255, 255, 255, 0.03); } /* unclassified; a type's hue comes from [data-wt] */
+.cm-wt-k { opacity: 0.75; }
+.cm-wt-sel { font: inherit; color: inherit; background: transparent; border: 0; padding: 2px 2px; cursor: pointer; }
+.cm-wt-sel option { color: var(--text); background: #1b1f2a; }
+.cm-wt-sel:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
+.cm-wt-sel:disabled { opacity: 0.6; cursor: progress; }
+.cm-wt-err { color: #e06c75; }
+.cm-wt-err:empty { display: none; }
 
 /* ── agent editor dialog ── */
 .ae-backdrop { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, 0.6); }

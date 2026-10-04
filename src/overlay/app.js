@@ -622,8 +622,14 @@ function fmtDur(ms) {
 // values, meta the boards, phases and cards — the options, plus (dashboard / Home:
 // fbLoadCards, filtered server-side) the cards their drill-downs list. filterBar draws
 // the full bar (Metrics); filterChip the compact "Filters · …" chip + Clear that expands to it.
-const FB_KEYS = ['scope', 'phase', 'tag', 'agent', 'range', 'from', 'to', 'tz'];
-const FB_FIELDS = ['scope', 'phase', 'tag', 'agent', 'range', 'tz'];
+const FB_KEYS = ['scope', 'phase', 'tag', 'agent', 'workType', 'range', 'from', 'to', 'tz'];
+const FB_FIELDS = ['scope', 'phase', 'tag', 'agent', 'workType', 'range', 'tz'];
+// Card work types (task.work_type; null = unclassified), in display order. The filter's
+// workType also takes 'none' (unclassified cards only).
+const WORK_TYPES = [['feature', 'Feature'], ['defect', 'Defect'], ['debt', 'Debt'], ['risk', 'Risk']];
+const WORK_TYPE_LABEL = Object.fromEntries(WORK_TYPES);
+const FB_WORK_TYPES = [['', 'Any'], ...WORK_TYPES, ['none', 'Unclassified']];
+const fbWorkTypeLabel = (v) => FB_WORK_TYPES.find(([id]) => id === v)?.[1] ?? v;
 
 function fbReadUrl(q, rangeDefault) {
   const range = q.get('range') || rangeDefault;
@@ -633,6 +639,7 @@ function fbReadUrl(q, rangeDefault) {
     phase: q.get('phase') || '',
     tag: q.get('tag') || '',
     agent: q.get('agent') || '',
+    workType: FB_WORK_TYPES.some(([id]) => id && id === q.get('workType')) ? q.get('workType') : '',
     range: range === 'custom' || MX_RANGES.some(([id]) => id === range) ? range : rangeDefault,
     from: q.get('from') || '',
     to: q.get('to') || '',
@@ -644,6 +651,7 @@ const fbDefaults = (ctx) => ({
   phase: '',
   tag: '',
   agent: '',
+  workType: '',
   range: ctx.rangeDefault,
   from: '',
   to: '',
@@ -720,7 +728,7 @@ function fbParams(ctx, relative = false) {
   const workspaceId = ctx.workspaceId ?? ctx.meta?.workspaceId;
   const q = new URLSearchParams();
   if (f.scope && f.scope !== workspaceId && f.scope !== ctx.lockScope) q.set('scope', f.scope);
-  for (const k of ['phase', 'tag', 'agent']) if (f[k]) q.set(k, f[k]);
+  for (const k of ['phase', 'tag', 'agent', 'workType']) if (f[k]) q.set(k, f[k]);
   if (f.range !== 'all' && relative) {
     q.set('range', f.range);
     if (f.range === 'custom') for (const k of ['from', 'to']) if (f[k]) q.set(k, f[k]);
@@ -808,7 +816,7 @@ function fbScopeBoards(ctx) {
   return !ctx.f.scope || ctx.f.scope === m.workspaceId ? m.boards : m.boards.filter((b) => b.id === ctx.f.scope);
 }
 // Card-level filters: the counts are the filtered ones (no WIP limits).
-const fbCardFiltered = (ctx) => !!(ctx.f.phase || ctx.f.tag || ctx.f.agent || ctx.f.range !== 'all');
+const fbCardFiltered = (ctx) => !!(ctx.f.phase || ctx.f.tag || ctx.f.agent || ctx.f.workType || ctx.f.range !== 'all');
 // The date window as epoch ms (local days; from inclusive, to exclusive).
 function fbWindowMs(f) {
   const w = mxWindow(f);
@@ -834,7 +842,7 @@ function fbScopeLabel(ctx) {
   const f = ctx.f;
   const scope = !m || !f.scope || f.scope === m.workspaceId ? (m && m.boards.length > 1 ? 'all boards' : (m?.boards[0]?.name ?? '')) : m.boardById.get(f.scope)?.label;
   const phase = f.phase ? (fbPhaseById(m, f.phase)?.title ?? 'one phase') : 'all phases';
-  return [scope, phase, f.tag && `tag ${f.tag}`, f.agent && f.agent].filter(Boolean).join(' · ');
+  return [scope, phase, f.tag && `tag ${f.tag}`, f.agent && f.agent, f.workType && fbWorkTypeLabel(f.workType)].filter(Boolean).join(' · ');
 }
 // The active (non-default) filters, as the chip names them: "web · Checkout · ui".
 function fbActiveLabels(ctx, fields) {
@@ -845,6 +853,7 @@ function fbActiveLabels(ctx, fields) {
   if (f.phase) out.push(m ? (fbPhaseById(m, f.phase)?.title ?? 'one phase') : '…');
   if (f.tag) out.push(f.tag);
   if (f.agent) out.push(f.agent);
+  if (f.workType) out.push(fbWorkTypeLabel(f.workType));
   if (fields.includes('range') && f.range !== ctx.rangeDefault) out.push(f.range === 'custom' ? fbWindowLabel(ctx) : `done in ${f.range}`);
   return out;
 }
@@ -890,6 +899,7 @@ function drawFilterBar(host, ctx, opts) {
     if (has('phase')) items.push(fbKey(mxSelect('Phase', f.phase, [['', 'All phases'], ...phaseOpts], (v) => onChange({ phase: v })), 'phase'));
     if (has('tag')) items.push(fbKey(mxSelect('Tag', f.tag, [['', 'Any'], ...m.tags.map((t) => [t, t])], (v) => onChange({ tag: v })), 'tag'));
     if (has('agent')) items.push(fbKey(mxSelect('Agent', f.agent, [['', 'Anyone'], ...m.agents.map((a) => [a, a])], (v) => onChange({ agent: v })), 'agent'));
+    if (has('workType')) items.push(fbKey(mxSelect('Type', f.workType, FB_WORK_TYPES, (v) => onChange({ workType: v })), 'workType'));
   } else items.push(node('span', 'mx-dim', 'Loading boards…'));
   items.push(node('div', 'mx-grow'));
 
@@ -1083,7 +1093,7 @@ const MX_RANGES = [
 ];
 const MX_DEFAULT_RANGE = '8w';
 const MX_LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
-const MX_URL_KEYS = ['tab', 'scope', 'phase', 'tag', 'agent', 'range', 'from', 'to', 'tz', 'target'];
+const MX_URL_KEYS = ['tab', 'scope', 'phase', 'tag', 'agent', 'workType', 'range', 'from', 'to', 'tz', 'target'];
 const MX_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const MX_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MX_COST_LIMIT = 100;
@@ -1228,33 +1238,33 @@ const mxScopeBoards = () => fbScopeBoards(mx);
 
 // Query string per endpoint. `from` may be a local day or epoch ms (the All range, once flow resolved it).
 const MX_ENDPOINTS = {
-  flow: (f, w) => ['/metrics/flow', { phase: f.phase, tag: f.tag, agent: f.agent, from: w.from, to: w.to }],
-  quality: (f, w) => ['/metrics/quality', { phase: f.phase, tag: f.tag, agent: f.agent, from: w.from, to: w.to }],
+  flow: (f, w) => ['/metrics/flow', { phase: f.phase, tag: f.tag, agent: f.agent, workType: f.workType, from: w.from, to: w.to }],
+  quality: (f, w) => ['/metrics/quality', { phase: f.phase, tag: f.tag, agent: f.agent, workType: f.workType, from: w.from, to: w.to }],
   wait: (f, w) => ['/metrics/wait', { phase: f.phase, from: w.from, to: w.to }],
-  cost: (f, w) => ['/metrics/cost', { phase: f.phase, tag: f.tag, agent: f.agent, from: w.from, to: w.to, limit: MX_COST_LIMIT }],
+  cost: (f, w) => ['/metrics/cost', { phase: f.phase, tag: f.tag, agent: f.agent, workType: f.workType, from: w.from, to: w.to, limit: MX_COST_LIMIT }],
   forecast: (f) => {
     const p = mxFocusPhase();
-    return p ? ['/metrics/forecast', { phase: p.id, tag: f.tag }] : null;
+    return p ? ['/metrics/forecast', { phase: p.id, tag: f.tag, workType: f.workType }] : null;
   },
   usageBurn: () => ['/metrics/usage-burn', { phase: mxFocusPhase()?.id }],
-  burn: () => {
+  burn: (f) => {
     const p = mxFocusPhase();
-    return p ? ['/metrics/burn', { phase: p.id }] : null;
+    return p ? ['/metrics/burn', { phase: p.id, workType: f.workType }] : null;
   },
-  // the burn-up's cone: the whole phase, like /metrics/burn (which takes no tag / agent)
-  burnForecast: () => {
+  // the burn-up's cone: the whole phase, like /metrics/burn (which takes no tag / agent; a work type, yes)
+  burnForecast: (f) => {
     const p = mxFocusPhase();
-    return p ? ['/metrics/forecast', { phase: p.id }] : null;
+    return p ? ['/metrics/forecast', { phase: p.id, workType: f.workType }] : null;
   },
   // the Forecast tab: its target (a plan is workspace-wide, so it is asked of the workspace)
   forecastTarget: (f) => {
     const t = mxForecastTarget();
-    if (t.kind === 'phase') return ['/metrics/forecast', { phase: t.id, tag: f.tag }];
-    if (t.kind === 'plan') return ['/metrics/forecast', { plan: t.id, tag: f.tag, project: mx.meta.workspaceId }];
-    return ['/metrics/forecast', { tag: f.tag }];
+    if (t.kind === 'phase') return ['/metrics/forecast', { phase: t.id, tag: f.tag, workType: f.workType }];
+    if (t.kind === 'plan') return ['/metrics/forecast', { plan: t.id, tag: f.tag, workType: f.workType, project: mx.meta.workspaceId }];
+    return ['/metrics/forecast', { tag: f.tag, workType: f.workType }];
   },
   // the fallback when one board lacks history: the whole workspace (more boards, more history)
-  forecastAll: (f) => (mx.meta && f.scope !== mx.meta.workspaceId ? ['/metrics/forecast', { tag: f.tag, project: mx.meta.workspaceId }] : null),
+  forecastAll: (f) => (mx.meta && f.scope !== mx.meta.workspaceId ? ['/metrics/forecast', { tag: f.tag, workType: f.workType, project: mx.meta.workspaceId }] : null),
 };
 function mxUrl([path, params]) {
   const q = new URLSearchParams({ project: mx.f.scope, tz: mx.f.tz });
@@ -2851,7 +2861,7 @@ function mxRenderForecast(host) {
   // "of N in <phase>": the phase's cards as the board lists them (tag-filtered like the forecast)
   let of = '';
   if (t.kind === 'phase' && m) {
-    const total = [...m.cards.values()].filter((c) => c.phase_id === t.id && (!mx.f.tag || c.tag === mx.f.tag)).length;
+    const total = [...m.cards.values()].filter((c) => c.phase_id === t.id && (!mx.f.tag || c.tag === mx.f.tag) && (!mx.f.workType || (c.work_type ?? 'none') === mx.f.workType)).length;
     of = total >= fc.remaining ? `of ${total} in ${name}` : `in ${name}`;
   } else of = t.kind === 'plan' ? `in plan ${name}` : `not done in ${name}`;
   tiles.append(
@@ -3690,6 +3700,7 @@ function cardEl(card) {
   const meta = [
     card.blocked && `<span class="blocked-pill" title="${esc(card.blocked_reason ?? '')}">✋ blocked</span>`,
     card.tag && `<span class="tag">${esc(team(card.tag).name)}</span>`,
+    Object.hasOwn(WORK_TYPE_LABEL, card.work_type ?? '') && `<span class="wt wt-${card.work_type}">${WORK_TYPE_LABEL[card.work_type]}</span>`,
     card.agent && `<span class="agent">${esc(card.agent)}</span>`,
     card.skill && `<span class="skill">✦ ${esc(card.skill)}</span>`,
     card.rounds > 0 && `<span class="rounds${card.rounds >= 2 ? ' cap' : ''}">R${card.rounds}</span>`,
@@ -3805,6 +3816,8 @@ function renderMarkdown(src) {
 
 // ── card detail modal ───────────────────────────────────────────────
 let openCardId = null;
+let cardWtError = null; // { id, msg }: the last failed work-type change, shown inline until the next try
+const cardWtPending = new Map(); // card id → the work type a PATCH in flight is saving ('' = unclassified)
 
 const LANE_NAME = (l) => ({ backlog: 'Backlog', queued: 'Queued', in_progress: 'In Progress', in_review: 'In Review', done: 'Done' })[l] ?? l;
 
@@ -3823,6 +3836,7 @@ function openCardFromUrl() {
 
 async function openCardModal(cardId) {
   openCardId = cardId;
+  cardWtError = null;
   document.getElementById('card-modal').classList.remove('hidden');
   await refreshCardModal();
 }
@@ -3842,6 +3856,7 @@ async function refreshCardModal() {
   document.getElementById('card-title').textContent = task.title;
   const meta = [
     task.tag && `${team(task.tag).name} team`,
+    { workType: task.work_type ?? '' },
     LANE_NAME(task.lane),
     task.assigned_agent && { agent: task.assigned_agent },
     task.skill && `✦ ${task.skill}`,
@@ -3854,9 +3869,12 @@ async function refreshCardModal() {
     meta.push(`+${act.lines_added} −${act.lines_removed} lines`);
     if (act.ms) meta.push(fmtDur(act.ms));
   }
-  document.getElementById('card-meta').replaceChildren(
+  const metaEl = document.getElementById('card-meta');
+  const wtFocused = document.activeElement?.closest?.('.cm-wt') && metaEl.contains(document.activeElement);
+  metaEl.replaceChildren(
     ...meta.map((m) => {
       if (typeof m === 'string') return node('span', '', m);
+      if ('workType' in m) return cardWorkTypeEl(task.id, m.workType);
       const member = teamByName.get(m.agent);
       if (!member) return node('span', '', `● ${m.agent}`);
       const chip = node('span', 'cm-agent');
@@ -3864,6 +3882,7 @@ async function refreshCardModal() {
       return chip;
     }),
   );
+  if (wtFocused) metaEl.querySelector('.cm-wt select')?.focus(); // a live update mid-choice keeps focus
   const blockedBox = document.getElementById('card-blocked');
   blockedBox.classList.toggle('hidden', !task.blocked_at);
   if (task.blocked_at) {
@@ -3887,6 +3906,66 @@ async function refreshCardModal() {
         )
         .join('')
     : '<li class="empty">No acceptance criteria yet</li>';
+}
+
+// The meta line's work type: a select ("Unclassified" + the 4 types) that PATCHes the card;
+// a failure shows inline next to it (the live card update re-renders on success). The PATCH in
+// flight lives in cardWtPending, so a select redrawn meanwhile shows its value, disabled, and
+// the outcome lands on whichever select is on screen for the card when it completes.
+const cardWtCurrent = (id) => (openCardId === id ? document.querySelector('#card-meta .cm-wt-wrap') : null);
+function cardWtPaint(wrap, value, pending, error) {
+  const field = wrap.querySelector('.cm-wt');
+  const sel = wrap.querySelector('select');
+  if (value) field.dataset.wt = value;
+  else delete field.dataset.wt;
+  sel.value = value;
+  sel.disabled = pending;
+  wrap.querySelector('.cm-wt-err').textContent = error;
+}
+async function cardWtSave(id, prev, next) {
+  if (cardWtPending.has(id)) return; // one PATCH at a time per card
+  cardWtPending.set(id, next);
+  cardWtError = null;
+  const now = cardWtCurrent(id);
+  if (now) cardWtPaint(now, next, true, '');
+  let msg = null;
+  try {
+    const res = await fetch(`/task/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ work_type: next || null }),
+    });
+    if (!res.ok) msg = (await res.json().catch(() => null))?.error ?? `HTTP ${res.status}`;
+  } catch {
+    msg = 'Daemon unreachable';
+  }
+  cardWtPending.delete(id);
+  if (msg) cardWtError = { id, msg: `Couldn't change type: ${msg}` };
+  const wrap = cardWtCurrent(id); // the select on screen now (a live update may have redrawn it)
+  if (!wrap) return;
+  // failure: back to what the card still has; success: the saved value (the live update follows)
+  cardWtPaint(wrap, msg ? prev : next, false, msg ? cardWtError.msg : '');
+  if (msg) wrap.querySelector('select').focus();
+}
+function cardWorkTypeEl(id, value) {
+  const wrap = node('span', 'cm-wt-wrap');
+  const field = node('label', 'cm-wt');
+  field.append(node('span', 'cm-wt-k', 'Type'));
+  const sel = node('select', 'cm-wt-sel');
+  for (const [v, text] of [['', 'Unclassified'], ...WORK_TYPES]) {
+    const o = node('option', '', text);
+    o.value = v;
+    sel.append(o);
+  }
+  sel.setAttribute('aria-label', 'Work type');
+  sel.onchange = () => cardWtSave(id, value, sel.value);
+  field.append(sel);
+  const err = node('span', 'cm-wt-err');
+  err.setAttribute('role', 'alert');
+  wrap.append(field, err);
+  const pending = cardWtPending.has(id);
+  cardWtPaint(wrap, pending ? cardWtPending.get(id) : value, pending, cardWtError?.id === id ? cardWtError.msg : '');
+  return wrap;
 }
 
 document.getElementById('card-unblock').onclick = async () => {
@@ -4829,7 +4908,7 @@ const DASH_STATE = { working: 'working', idle: 'idle', needs_you: '⚠ needs you
 const DASH_MAX_CARDS = 5;
 // the dashboard's filters (shared filter bar): the range counts done cards only
 const dctx = { f: fbReadUrl(new URLSearchParams(), 'all'), meta: null, metaSeq: 0, metaDirty: true, metaReady: null, customOpen: false, window: null, open: false, rangeDefault: 'all', workspaceId: null };
-const DASH_FILTER_FIELDS = ['scope', 'phase', 'tag', 'agent', 'range'];
+const DASH_FILTER_FIELDS = ['scope', 'phase', 'tag', 'agent', 'workType', 'range'];
 const DASH_NUDGE_PULSE_MS = 2400;
 
 if (EMBED) document.body.classList.add('embed');
@@ -4954,11 +5033,11 @@ async function dashDrillLane(b, lane, isMain) {
   });
 }
 // The "Needs you" list under the filters: sessions are board-level (the shown boards; no card
-// to tag or assign, so a tag / agent filter hides them); attention items are cards (the server
+// to tag, assign or type, so a tag / agent / type filter hides them); attention items are cards (the server
 // filters them).
 function dashNeedsYou() {
   const f = dctx.f;
-  const waiting = dashShown().filter((b) => b.session?.state === 'needs_you' && !f.tag && !f.agent);
+  const waiting = dashShown().filter((b) => b.session?.state === 'needs_you' && !f.tag && !f.agent && !f.workType);
   return { waiting, items: dash.summary.attention ?? [] };
 }
 async function dashDrillNeedsYou() {
@@ -5377,9 +5456,9 @@ const home = { data: null, key: '', loadSeq: 0, failed: false, sessions: new Map
 const HOME_REFETCH = ['init', 'card', 'card_removed', 'phases', 'event', 'verticals', 'autopilot'];
 // Home's filters (shared filter bar; no date range). lockScope: Home on a vertical covers that board only.
 const hctx = { f: fbReadUrl(new URLSearchParams(), 'all'), meta: null, metaSeq: 0, metaDirty: true, metaReady: null, customOpen: false, window: null, open: false, rangeDefault: 'all', lockScope: null, workspaceId: null };
-const homeFields = () => (hctx.meta && hctx.meta.boards.length > 1 && !hctx.lockScope ? ['scope', 'phase', 'tag', 'agent'] : ['phase', 'tag', 'agent']);
+const homeFields = () => (hctx.meta && hctx.meta.boards.length > 1 && !hctx.lockScope ? ['scope', 'phase', 'tag', 'agent', 'workType'] : ['phase', 'tag', 'agent', 'workType']);
 const homeScoped = () => !!hctx.f.scope && hctx.f.scope !== fbDefaults(hctx).scope;
-const homeFiltered = () => !!(hctx.f.phase || hctx.f.tag || hctx.f.agent || homeScoped());
+const homeFiltered = () => !!(hctx.f.phase || hctx.f.tag || hctx.f.agent || hctx.f.workType || homeScoped());
 
 function fmtElapsed(since) {
   const m = Math.max(0, Math.floor((Date.now() - since) / 60000));
