@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
-import { builtinTemplates, validateLayout } from '../src/core/dashboard.js';
+import { builtinTemplates, validateLayout, WIDGET_SIZES, WIDGET_TYPES } from '../src/core/dashboard.js';
 
 // src/overlay/layout-ops.js is a classic browser script; run it in this realm and pick up its globals.
 
@@ -430,6 +430,14 @@ const fixtures: [string, unknown][] = [
   ['spans sum 13 in tab', mutate((l) => tabsIn(l).params.tabs[1].rows[0].slots.push({ id: 'zz', span: 7, widgets: [] }))],
   ['widgets not array', mutate((l) => (l.sections[0].rows[1].slots[0].widgets = {}))],
   ['widget not object', mutate((l) => l.sections[0].rows[1].slots[0].widgets.push('w'))],
+  [
+    'agentic types',
+    mutate((l) =>
+      l.sections[1].rows[0].slots[0].widgets.push(
+        ...['autonomy-index', 'agent-stops', 'batch-size', 'spec-adherence', 'governance-posture', 'rework-cost', 'decision-latency-cost', 'cost-anomaly', 'usage-runway', 'steering-pack', 'agent-hourly-rate', 'perception-gap'].map((t, i) => w(`ag${i}`, t)),
+      ),
+    ),
+  ],
   ['unknown type', mutate((l) => (l.sections[1].rows[0].slots[0].widgets[0].type = 'chart'))],
   ['bad size', mutate((l) => (l.sections[1].rows[0].slots[0].widgets[0].size = 'XXL'))],
   ['params missing', mutate((l) => delete l.sections[1].rows[0].slots[0].widgets[0].params)],
@@ -457,6 +465,12 @@ describe('layout-ops: loValidate parity with validateLayout', () => {
     assert.equal(fixtures.filter(([n]) => n.startsWith('builtin')).length, builtinTemplates(false).length * 2);
     assert.ok(fixtures.some(([, l]) => validateLayout(l).length === 0));
     assert.ok(fixtures.some(([, l]) => validateLayout(l).length > 0));
+  });
+
+  it('LO_SCHEMA types and sizes match WIDGET_TYPES / WIDGET_SIZES', () => {
+    const schema = vm.runInThisContext('LO_SCHEMA') as { types: string[]; sizes: string[] };
+    assert.deepEqual(schema.types, [...WIDGET_TYPES]);
+    assert.deepEqual(schema.sizes, [...WIDGET_SIZES]);
   });
 
   for (const [name, layout] of fixtures) {

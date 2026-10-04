@@ -254,6 +254,20 @@
 
 .de-lib-ic-generic > span { width: 100%; height: 100%; opacity: 0.35; }
 
+/* Agentic (experimental): the generic block until each widget gets its own icon */
+.de-lib-ic-autonomy-index > span,
+.de-lib-ic-agent-stops > span,
+.de-lib-ic-batch-size > span,
+.de-lib-ic-spec-adherence > span,
+.de-lib-ic-governance-posture > span,
+.de-lib-ic-rework-cost > span,
+.de-lib-ic-decision-latency-cost > span,
+.de-lib-ic-cost-anomaly > span,
+.de-lib-ic-usage-runway > span,
+.de-lib-ic-steering-pack > span,
+.de-lib-ic-agent-hourly-rate > span,
+.de-lib-ic-perception-gap > span { width: 100%; height: 100%; opacity: 0.35; }
+
 @media (prefers-reduced-motion: reduce) {
   .de-lib-type { transition: none; }
 }
