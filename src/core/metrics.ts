@@ -38,7 +38,7 @@
  *    in_review (a card sitting in its first review has 0); else the task column.
  */
 import type { DB } from './db.js';
-import { LANES, type Lane, type Task } from './types.js';
+import { LANES, WORK_TYPES, type Lane, type Task, type WorkType } from './types.js';
 
 // ---------- types ----------
 
@@ -57,7 +57,8 @@ export type MetricsCard = Pick<
   | 'review_rounds'
   | 'created_at'
   | 'updated_at'
->;
+> &
+  Partial<Pick<Task, 'work_type'>>;
 
 /** A task_events row (payload may be the raw JSON string or already parsed). */
 export interface MetricsEvent {
@@ -128,6 +129,8 @@ export interface MetricsFilter {
   tag?: string;
   /** Card's assigned agent, or any agent recorded on its events / card_activity. */
   agent?: string;
+  /** A work type, or 'none' for unclassified cards (work_type IS NULL). */
+  workType?: WorkType | 'none';
   /** Epoch ms window: keeps cards whose life (created -> done/deleted/open) overlaps it. */
   from?: number;
   to?: number;
@@ -449,6 +452,24 @@ export function daysBetween(from: number, to: number, tz: string): string[] {
 
 /** Longest range the series are built for (a guard against from=0). */
 export const MAX_RANGE_DAYS = 3660;
+
+/**
+ * The comparison window before [from, to] (to missing = now). When `from` starts a local day in
+ * `tz` and `to` ends one (or is missing: "through today"), it is the same number of calendar
+ * days immediately before, on day boundaries (DST-safe). Otherwise the equal-length ms window.
+ */
+export function previousPeriod(from: number, to: number | undefined, tz: string, now: number): { from: number; to: number } {
+  const end = to ?? now;
+  const fromDay = dayKey(from, tz);
+  const startsDay = startOfDay(fromDay, tz) === from;
+  const endsDay = to === undefined || startOfDay(addDays(dayKey(end, tz), 1), tz) - 1 === end;
+  if (startsDay && endsDay && from <= end) {
+    // calendar days spanned; rounding absorbs a DST hour (no day enumeration: from may be far back)
+    const n = Math.round((startOfDay(addDays(dayKey(end, tz), 1), tz) - from) / 86_400_000);
+    return { from: startOfDay(addDays(fromDay, -n), tz), to: from - 1 };
+  }
+  return { from: from - 1 - (end - from), to: from - 1 };
+}
 
 /** Validate a range cheaply (no day enumeration), before any loading. */
 export function checkRange(from: number, to: number): void {
@@ -855,6 +876,11 @@ function filterWhere(filter: LoadFilter): { sql: string; params: (string | numbe
     where.push('t.tag = ?');
     params.push(filter.tag);
   }
+  if (filter.workType === 'none') where.push('t.work_type IS NULL');
+  else if (filter.workType !== undefined) {
+    where.push('t.work_type = ?');
+    params.push(filter.workType);
+  }
   if (filter.agent !== undefined) {
     where.push(
       `(t.assigned_agent = ?
@@ -882,7 +908,7 @@ function loadRaw(db: DB, filter: LoadFilter): CardHistory[] {
   const cards = db
     .prepare(
       `SELECT t.id, t.project_id, t.phase_id, t.title, t.lane, t.tag, t.assigned_agent, t.blocked_at,
-              t.blocked_reason, t.review_rounds, t.created_at, t.updated_at
+              t.blocked_reason, t.review_rounds, t.created_at, t.updated_at, t.work_type
        FROM tasks t ${sql} ORDER BY t.created_at, t.id`,
     )
     .all(...params) as MetricsCard[];
@@ -924,8 +950,30 @@ function loadDerived(db: DB, filter: MetricsFilter, now: number): DerivedCard[] 
   return deriveCards(loadRaw(db, { ...filter, from: undefined }), now);
 }
 
-export function flowMetrics(db: DB, filter: MetricsFilter, opts: { tz: string; now: number }): FlowMetrics {
-  return flowFromDerived(loadDerived(db, filter, opts.now), { ...opts, from: filter.from, to: filter.to });
+/** /metrics/flow: the flow view plus its per-work-type throughput and the scope's first activity. */
+export interface FlowView extends FlowMetrics {
+  /** Cards done in the range per work type ('none' = unclassified); sums to throughput.total. */
+  throughputByWorkType: Record<WorkType | 'none', number>;
+  /** Earliest card create or done event in the filtered scope (from / to ignored); null with no cards. */
+  firstActivityAt: number | null;
+}
+
+export function flowMetrics(db: DB, filter: MetricsFilter, opts: { tz: string; now: number }): FlowView {
+  const ds = loadDerived(db, filter, opts.now);
+  const flow = flowFromDerived(ds, { ...opts, from: filter.from, to: filter.to });
+  const { from, to } = flow.range;
+  const byType = Object.fromEntries([...WORK_TYPES, 'none'].map((t) => [t, 0])) as FlowView['throughputByWorkType'];
+  for (const x of ds) if (x.m.doneAt !== null && x.m.doneAt >= from && x.m.doneAt <= to) byType[x.h.card.work_type ?? 'none']++;
+  return { ...flow, throughputByWorkType: byType, firstActivityAt: firstActivityAt(db, filter) };
+}
+
+/**
+ * Earliest activity of the cards matching `filter`'s non-date parts: their earliest created_at
+ * (the create event is logged at the same instant, and a card's done move always comes later).
+ */
+function firstActivityAt(db: DB, filter: MetricsFilter): number | null {
+  const { sql, params } = filterWhere({ ...filter, from: undefined, to: undefined });
+  return (db.prepare(`SELECT MIN(t.created_at) AS at FROM tasks t ${sql}`).get(...params) as { at: number | null }).at;
 }
 
 export function summaryMetrics(db: DB, filter: MetricsFilter, opts: { tz: string; now: number }): MetricsSummary {
@@ -935,9 +983,15 @@ export function summaryMetrics(db: DB, filter: MetricsFilter, opts: { tz: string
 }
 
 /** The phase's current cards (on the given boards) plus every card that left it (a phase_change from it, any board). */
-export function burnMetrics(db: DB, phase: BurnPhase, projectIds: string[], opts: { tz: string; now: number }): BurnMetrics {
-  const current = loadRaw(db, { projectIds, phaseId: phase.id });
+export function burnMetrics(
+  db: DB,
+  phase: BurnPhase,
+  projectIds: string[],
+  opts: { tz: string; now: number; workType?: MetricsFilter['workType'] },
+): BurnMetrics {
+  const { workType, ...rest } = opts;
+  const current = loadRaw(db, { projectIds, phaseId: phase.id, workType });
   const seen = new Set(current.map((h) => h.card.id));
-  const left = loadRaw(db, { leftPhaseId: phase.id }).filter((h) => !seen.has(h.card.id));
-  return computeBurn(phase, [...current, ...left], opts);
+  const left = loadRaw(db, { leftPhaseId: phase.id, workType }).filter((h) => !seen.has(h.card.id));
+  return computeBurn(phase, [...current, ...left], rest);
 }
