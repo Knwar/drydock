@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { delta, parseCompare, previousWindow, withPrevious } from './compare.js';
+import { addDays, dayKey, previousPeriod, startOfDay } from './metrics.js';
 import type { CardFilter } from './types.js';
 
 const DAY = 86_400_000;
@@ -131,4 +132,24 @@ describe('delta', () => {
     assert.deepEqual(delta(5, undefined), { abs: 5, pct: null });
     assert.deepEqual(delta(0, 0), { abs: 0, pct: null });
   });
+});
+
+// The overlay's rolling ranges ("last N weeks", mxWindow) are 7×N whole local days ending today, sent as
+// `from` (that day's local midnight) with no `to`. compare=previous (metrics.previousPeriod) must then be
+// the 7×N days before, whatever the weekday (no Monday alignment) and across the March and November DST changes.
+describe('previousPeriod for a rolling 7×N-day range', () => {
+  const tz = 'America/New_York';
+  for (const today of ['2026-10-05', '2026-10-07', '2026-10-11', '2026-03-12', '2026-11-03', '2026-11-20']) {
+    for (const weeks of [2, 4, 8]) {
+      it(`${weeks}w ending ${today}`, () => {
+        const fromDay = addDays(today, 1 - 7 * weeks);
+        const from = startOfDay(fromDay, tz);
+        const now = startOfDay(today, tz) + 15 * 3_600_000; // 3pm local
+        const pw = previousPeriod(from, undefined, tz, now);
+        assert.equal(pw.to, from - 1);
+        assert.equal(pw.from, startOfDay(addDays(fromDay, -7 * weeks), tz));
+        assert.equal(dayKey(pw.from, tz), addDays(today, 1 - 14 * weeks));
+      });
+    }
+  }
 });

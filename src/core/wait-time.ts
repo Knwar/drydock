@@ -270,9 +270,10 @@ function boardIds(db: DB, projectIds: string[]): string[] {
 /**
  * workType keeps only waits tied to a card of that work type ('none': an
  * unclassified card that still exists); a needs_you interval with no (or a
- * deleted) card is then dropped, as with a phase filter.
+ * deleted) card is then dropped, as with a phase filter. tag / agent likewise
+ * (agent: as MetricsFilter's, the card's assignee or any agent on its history).
  */
-export type WaitFilter = Pick<MetricsFilter, 'projectIds' | 'phaseId' | 'workType' | 'from' | 'to'>;
+export type WaitFilter = Pick<MetricsFilter, 'projectIds' | 'phaseId' | 'tag' | 'agent' | 'workType' | 'from' | 'to'>;
 
 /** needs_you intervals in scope (open ones always; closed ones overlapping the window). */
 export function loadNeedsYou(db: DB, filter: WaitFilter): NeedsYouInterval[] {
@@ -293,6 +294,18 @@ export function loadNeedsYou(db: DB, filter: WaitFilter): NeedsYouInterval[] {
     where.push('t.work_type = ?');
     params.push(filter.workType);
   }
+  if (filter.tag !== undefined) {
+    where.push('t.tag = ?');
+    params.push(filter.tag);
+  }
+  if (filter.agent !== undefined) {
+    where.push(
+      `(t.assigned_agent = ?
+        OR EXISTS (SELECT 1 FROM task_events a WHERE a.task_id = t.id AND a.agent = ?)
+        OR EXISTS (SELECT 1 FROM card_activity c WHERE c.task_id = t.id AND c.agent = ?))`,
+    );
+    params.push(filter.agent, filter.agent, filter.agent);
+  }
   if (filter.to !== undefined) {
     where.push('w.started_at <= ?');
     params.push(filter.to);
@@ -311,7 +324,7 @@ export function loadNeedsYou(db: DB, filter: WaitFilter): NeedsYouInterval[] {
 
 /** Blocker intervals of the cards in scope, derived from their events. */
 export function loadBlockers(db: DB, filter: WaitFilter): BlockerInterval[] {
-  return loadCardHistories(db, { projectIds: filter.projectIds, phaseId: filter.phaseId, workType: filter.workType }).flatMap(({ card, events }) =>
+  return loadCardHistories(db, { projectIds: filter.projectIds, phaseId: filter.phaseId, tag: filter.tag, agent: filter.agent, workType: filter.workType }).flatMap(({ card, events }) =>
     deriveLaneHistory(card, events).blocked.map((b) => ({
       project_id: card.project_id,
       task_id: card.id,

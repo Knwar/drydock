@@ -123,7 +123,7 @@ describe('builtin tab groups', () => {
       assert.deepEqual(shape(ex.layout), {
         Delivery: ['4: forecast M/6 + milestones M/6', '4: scope-change M/6 + planned-delivered M/6'],
         Spend: ['4: ai-spend M/6 + investment-mix M/6', '5: budget-burn L/12'],
-        'Quality and risk': ['5: top-risks L/8 + quality M/4'],
+        'Quality and risk': ['5: top-risks L/8 + quality M/4', '4: speed-stability M/12'],
       });
       const types = [...topWidgets(ex.layout), ...tabWidgets(ex.layout)].map((w) => w.type);
       for (const t of ['review-queue', 'wip', 'cycle-breakdown']) assert.equal(types.includes(t), false, t);
@@ -133,9 +133,9 @@ describe('builtin tab groups', () => {
 
     it(`Agent ops (${v}): flow and quality tabs before send-to-agent, up-next not repeated`, () => {
       assert.deepEqual(shape(ao.layout), {
-        'Needs you': ['4: review-queue M/6 + escalation M/6'],
+        'Needs you': ['4: review-queue M/6 + escalation M/6', '4: gate-readiness M/6 + top-risks M/6'],
         Flow: ['5: throughput-trend L/8 + wip M/4', '5: cycle-breakdown L/12'],
-        Quality: ['5: quality L/12'],
+        Quality: ['5: quality L/12', '4: speed-stability M/12'],
       });
       assert.deepEqual(
         ao.layout.sections[0].rows.map((r) => r.slots[0].widgets[0].type),
@@ -166,6 +166,14 @@ describe('builtin tab groups', () => {
           const h = tab.rows.reduce((sum, r) => sum + r.height, 0);
           assert.ok(h <= 10, `${t.name} / ${tab.title}: ${h}`);
         }
+    });
+
+    it(`no tab holds less than 60% of the tallest tab's units: no frame left mostly empty (${v})`, () => {
+      for (const t of [dl, ex, ao]) {
+        const units = tabsOf(t.layout).map((tab) => tab.rows.reduce((h, r) => h + r.height, 0));
+        const tallest = Math.max(...units);
+        for (const [i, h] of units.entries()) assert.ok(h >= 0.6 * tallest, `${t.name} / ${tabsOf(t.layout)[i].title}: ${h} of ${tallest}`);
+      }
     });
 
     it(`the tabs row fits its tallest tab, capped at 12 (${v})`, () => {

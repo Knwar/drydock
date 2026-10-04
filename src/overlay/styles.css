@@ -136,13 +136,45 @@ header {
 #stats .n { color: var(--text); font-weight: 700; }
 #stats .pass { color: var(--accent); }
 #stats .fail { color: #e06c75; }
-/* below 800px the header stats stay on one line, truncated, instead of wrapping */
-@media (max-width: 799px) {
+/* below 1200px the header stats stay on one line, truncated, instead of wrapping */
+@media (max-width: 1199px) {
   header { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); column-gap: 10px; }
   .head-right { min-width: 0; gap: 10px; }
   #stats { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #settings-btn, #timer { flex: none; }
 }
+@media (max-width: 799px) {
+  /* the board name truncates (never wraps into LIVE / the pill); the pill drops its "Limits" word */
+  .head-left { min-width: 0; gap: 10px; }
+  #project-switcher, #project-btn { min-width: 0; max-width: 100%; }
+  #project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #conn { flex: none; }
+  .head-center { gap: 10px; padding: 4px 12px; }
+  .head-center .cu-label { display: none; }
+  .usage .ubar { width: 40px; }
+}
+/* below 500px: the limits pill collapses to its ✳ (a button: tap / Enter opens the bars under the
+   header, the tooltip carries the numbers), the board name truncates and the stats give way, so
+   name, LIVE, the pill, settings and the timer never overlap */
+@media (max-width: 499px) {
+  header { position: relative; grid-template-columns: minmax(0, 1fr) 36px auto; column-gap: 8px; }
+  .head-left { gap: 8px; }
+  #stats { display: none; }
+  .head-center { justify-self: center; cursor: pointer; }
+  .head-center:not(.open) { justify-content: center; min-width: 32px; min-height: 32px; padding: 0 8px; } /* a ≥ 32px tap target */
+  .head-center:not(.open) > :not(.spark) { display: none; }
+  .head-center:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .head-center.open .cu-label { display: inline; }
+  .head-center.open {
+    position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 30;
+    flex-wrap: wrap; justify-content: center; row-gap: 6px;
+    background: #1a1f2b; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  }
+  .head-center.cu-warn .spark { color: #e5c07b; }
+  .head-center.cu-hot .spark { color: #e06c75; }
+}
+/* the header's counts are the current board's: on a workspace Home they're labelled */
+#stats .stats-scope { color: var(--text); }
 
 #timer {
   font-size: 15px;
@@ -228,6 +260,23 @@ main {
   background: rgba(93, 211, 168, 0.07);
   border: 1px solid rgba(93, 211, 168, 0.18);
 }
+
+/* the lane's cards outside the active phase: "2 cards in planned phases hidden · Show" */
+.lane-hidden {
+  align-self: flex-start;
+  padding: 4px 8px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.lane-hidden:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.28); }
+.lane-hidden:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.lane-hidden-act { color: var(--accent); font-weight: 600; }
 
 /* desktop: collapse a lane to a narrow vertical strip */
 .lane.collapsed {

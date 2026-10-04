@@ -218,13 +218,17 @@ function kpiBudgetRender(el, d, ctx) {
 }
 
 // ── decisions: "What needs a human?" ──
+// Every card filter applies (Phase, Tag, Agent, Type): /metrics/wait filters them all server-side;
+// /attention takes tag / agent (matched as the metrics do), phase and type are applied here.
+const KPI_DECISIONS_HINT = 'List what needs a human (Home’s Phase, Tag, Agent and Type filters apply)';
 async function kpiDecisionsLoad(ctx) {
   const f = kpiFilters(ctx);
+  const card = { phase: f.phase, tag: f.tag, agent: f.agent, workType: f.workType };
   // live (range-free) reads for the list + count; a separate ranged compare read only for the chip
   const [att, wait, ranged, since] = await Promise.all([
-    kpiGet(ctx, '/attention', { project: f.project }),
-    kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType }),
-    kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType, from: f.from, to: f.to, compare: 'previous' }),
+    kpiGet(ctx, '/attention', { project: f.project, tag: f.tag, agent: f.agent }),
+    kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, ...card }),
+    kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, ...card, from: f.from, to: f.to, compare: 'previous' }),
     dwFirstActivity(ctx).catch(() => null),
   ]);
   const seen = new Set();
@@ -247,14 +251,31 @@ async function kpiDecisionsLoad(ctx) {
   return { items, stuck, ranged, since };
 }
 
+async function kpiDrillDecisions(ctx, d, btn) {
+  btn.disabled = true;
+  try {
+    const meta = await homeMeta();
+    const cards = d.items.map((it) => {
+      const c = it.id ? meta?.cards.get(it.id) : null;
+      return { ...(c ?? {}), id: it.id ?? undefined, title: it.title, board: c?.board ?? it.board, lane: c?.lane ?? '', lane_since: it.since, blocked: c?.blocked };
+    });
+    await ctx.drillCards({ kicker: 'WHAT NEEDS A HUMAN', title: `${cards.length} waiting on you`, cards });
+  } catch (e) {
+    console.error('kpi decisions drill', e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function kpiDecisionsRender(el, d, ctx) {
   const now = Date.now();
   const n = d.items.length;
   // needs-you waits + blocker waits overlapping the range vs the previous period; down is good
   const w = d.ranged;
   const waits = (r) => (r ? r.needsYou.count + r.blocked.count : null);
+  const main = kpiMain(String(n), 'waiting on you', n ? `oldest ${mxWait(now - d.items[0].since)}` : 'no blockers, no sessions waiting', () => kpiDrillDecisions(ctx, d, main), KPI_DECISIONS_HINT);
   el.append(
-    kpiMain(String(n), 'waiting on you', n ? `oldest ${mxWait(now - d.items[0].since)}` : 'no blockers, no sessions waiting'),
+    main,
     kpiDeltaRow(kpiPrevDelta(w, ctx, d.since, `Waits this period ${waits(w)}`, -1, String, waits(w), waits(w.previous)), 'waits this period'),
     n ? kpiStatus('warn', 'Needs you') : kpiStatus('ok', 'All clear'),
   );
@@ -280,7 +301,7 @@ function kpiDecisionsRender(el, d, ctx) {
   el.append(list);
 }
 
-// ── throughput: "Is delivery speeding up?" (a trend: up is good) ──
+// ── throughput: "Last 7 days vs 4-wk average" (a trend: up is good; not throughput-trend's weekly chart) ──
 // One /metrics/flow read over the last 8 rolling 7-day windows ending now (no partial ISO week).
 // Windows ending before the board's first activity (flow.firstActivityAt) are pre-history: left
 // out of the sparkline, and the prior average counts only full windows (starting at or after it).
@@ -349,7 +370,7 @@ const KPI_METRICS = {
   schedule: { q: 'Will the active phase hit its date?', load: kpiScheduleLoad, render: kpiScheduleRender },
   budget: { q: 'Is spend within budget?', load: kpiBudgetLoad, render: kpiBudgetRender },
   decisions: { q: 'What needs a human?', load: kpiDecisionsLoad, render: kpiDecisionsRender },
-  throughput: { q: 'Is delivery speeding up?', load: kpiThroughputLoad, render: kpiThroughputRender },
+  throughput: { q: 'Last 7 days vs 4-wk average', load: kpiThroughputLoad, render: kpiThroughputRender },
 };
 
 dwRegister({

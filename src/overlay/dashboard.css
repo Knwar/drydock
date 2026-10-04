@@ -256,12 +256,26 @@ body.reduce-motion .dw-skel-bar { animation: none; }
 .dw-d-val { font-weight: 600; }
 .dw-d-vs { color: var(--dim); opacity: 0.85; white-space: nowrap; }
 
+/* Send to agent with nothing to send to (the terminal is off: its empty state) collapses to its
+   message in view mode instead of holding its row's height empty */
+body:not(.de-editing) .dw-row:has(> .dw-slot:only-child > .dw-widget[data-type="send-to-agent"].is-empty:only-child) { height: auto; }
+body:not(.de-editing) .dw-slot:only-child:has(> .dw-widget[data-type="send-to-agent"].is-empty:only-child) { height: auto; }
+body:not(.de-editing) .dw-widget[data-type="send-to-agent"].is-empty { flex: none; }
+body:not(.de-editing) .dw-widget[data-type="send-to-agent"].is-empty > .dw-body { flex: none; }
+body:not(.de-editing) .dw-widget[data-type="send-to-agent"].is-empty .dw-empty { height: auto; justify-content: flex-start; padding: 0; }
+
 /* below 800px: slots stack in order, each keeping its row's height */
 @media (max-width: 799px) {
   .dw-row { grid-template-columns: minmax(0, 1fr); height: auto; }
   .dw-slot { grid-column: auto; height: var(--dw-row-h); }
   body:not(.de-editing) .dw-slot.dw-slot-vacant { display: none; } /* stacked: no blank hole */
   .dw-empty-edit { display: none; }
+  /* a tab group alone in its slot grows to its active tab's stacked rows: no fixed height, no scroll
+     inside the panel (view mode; a slot it shares keeps its height, so its neighbours keep theirs) */
+  body:not(.de-editing) .dw-slot:has(> .dw-widget[data-type="tabs"]:only-child) { height: auto; }
+  body:not(.de-editing) .dw-slot > .dw-widget[data-type="tabs"]:only-child { flex: none; }
+  body:not(.de-editing) .dw-slot > .dw-widget[data-type="tabs"]:only-child > .dw-body,
+  body:not(.de-editing) .dw-slot > .dw-widget[data-type="tabs"]:only-child .dw-tabs-panel { flex: none; overflow: visible; }
 }
 /* an agent's session waiting on the human (dwAgentState attention): like the header's "needs you" */
 /* doubled: wins over the widget sheets (loaded later) colouring the same element (.aa-card, .aa-p-muted) */

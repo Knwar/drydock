@@ -640,7 +640,8 @@ function dwWidget(w) {
     drillCards: async (opts) => {
       await homeMeta();
       if (activeView !== 'home') return;
-      fbDrillCards(hctx, homeView, opts);
+      // the "Open all" banner names this widget: "from Home · <its title>"
+      fbDrillCards(hctx, homeView, { source: inst.title.textContent ? `Home · ${inst.title.textContent}` : 'Home', ...opts });
     },
     openCard: (id, boardId) => {
       if (!boardId || boardId === projectId) openCardModal(id);

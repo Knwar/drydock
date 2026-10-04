@@ -50,9 +50,14 @@ function renderStats() {
   const all = [...cards.values()];
   const done = all.filter((c) => c.lane === 'done').length;
   const flight = all.filter((c) => c.lane === 'in_progress' || c.lane === 'in_review').length;
+  // the counts are this board's: on a workspace's Home (which covers every board) they say so
+  const mainOnly = activeView === 'home' && home.data?.verticals?.length > 0 && hctx.workspaceId === projectId;
   statsEl.innerHTML =
+    (mainOnly ? '<span class="stats-scope">Main board</span> · ' : '') +
     `<span class="n">${done}</span> done · <span class="n">${flight}</span> in flight` +
     ` · reviews <span class="pass">${reviews.pass}✓</span>/<span class="fail">${reviews.fail}✗</span>`;
+  // the full line as its tooltip (it truncates in a narrow header)
+  statsEl.title = statsEl.textContent + (mainOnly ? ' (Main board only: Home covers every board in the workspace)' : '');
 }
 
 // ── websocket ───────────────────────────────────────────────────────
@@ -264,6 +269,46 @@ function applyEvent(msg) {
 }
 
 // ── subscription usage bars (fed by the statusline script) ─────────
+// Below 500px the pill collapses to its ✳ (coloured by the hotter window): a tap / Enter opens the
+// full bars under the header, a tap elsewhere / Esc closes them; the tooltip carries the numbers.
+const cuEl = document.getElementById('claude-usage');
+const cuCompact = matchMedia('(max-width: 499px)');
+let cuLabel = 'Usage limits'; // the compact button's name: "Usage limits: 5h 38%, week 64%"
+function cuSetOpen(open) {
+  cuEl.classList.toggle('open', open);
+  if (cuCompact.matches) cuEl.setAttribute('aria-expanded', String(open));
+}
+function cuSync() {
+  const on = cuCompact.matches;
+  if (on) {
+    cuEl.tabIndex = 0;
+    cuEl.setAttribute('role', 'button');
+    cuEl.setAttribute('aria-expanded', String(cuEl.classList.contains('open')));
+    cuEl.setAttribute('aria-label', cuLabel);
+  } else {
+    cuEl.removeAttribute('tabindex');
+    cuEl.removeAttribute('role');
+    cuEl.removeAttribute('aria-label');
+    cuEl.removeAttribute('aria-expanded');
+    cuEl.classList.remove('open');
+  }
+}
+cuCompact.addEventListener('change', cuSync);
+cuSync();
+cuEl.addEventListener('click', () => cuCompact.matches && cuSetOpen(!cuEl.classList.contains('open')));
+cuEl.addEventListener('keydown', (e) => {
+  if (!cuCompact.matches) return;
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    cuSetOpen(!cuEl.classList.contains('open'));
+  } else if (e.key === 'Escape' && cuEl.classList.contains('open')) {
+    e.preventDefault();
+    cuSetOpen(false);
+  }
+});
+document.addEventListener('click', (e) => {
+  if (cuEl.classList.contains('open') && !cuEl.contains(e.target)) cuSetOpen(false);
+});
 let lastUsage = null;
 function renderUsage(usage) {
   lastUsage = usage ?? null;
@@ -272,6 +317,14 @@ function renderUsage(usage) {
     ['usage-5h', usage?.five_hour],
     ['usage-wk', usage?.seven_day],
   ];
+  const pcts = windows.map(([, w]) => w?.used_percentage).filter((x) => typeof x === 'number');
+  const hot = pcts.length ? Math.max(...pcts) : null;
+  cuEl.classList.toggle('cu-hot', hot !== null && hot >= 85);
+  cuEl.classList.toggle('cu-warn', hot !== null && hot >= 60 && hot < 85);
+  const pctText = (w) => (typeof w?.used_percentage === 'number' ? `${Math.round(w.used_percentage)}%` : '—');
+  cuEl.title = `Claude subscription usage limits · 5h ${pctText(usage?.five_hour)} · week ${pctText(usage?.seven_day)}`;
+  cuLabel = `Usage limits: 5h ${pctText(usage?.five_hour)}, week ${pctText(usage?.seven_day)}`;
+  cuSync();
   for (const [id, win] of windows) {
     const el = document.getElementById(id);
     const pct = win?.used_percentage;
@@ -373,6 +426,8 @@ function renderBoard() {
       const cardsEl = document.createElement('div');
       cardsEl.className = 'cards';
       cardsEl.append(...inLane.map(cardEl));
+      const hiddenNote = laneHiddenNote(lane);
+      if (hiddenNote) cardsEl.append(hiddenNote);
       laneEl.append(cardsEl);
       return laneEl;
     }),
@@ -454,13 +509,36 @@ const activePhaseId = () => phases.find((p) => p.status === 'active')?.id ?? nul
 
 // The board shows the active phase (plus every done card) — but only once phases exist. Flat /
 // legacy projects (no phases) keep showing every card.
+// kanbanShowAll: the user asked to see the cards outside the active phase too (the lanes' "Show" note).
+let kanbanShowAll = false;
+const inActiveScope = (c, apid) => c.phase_id === apid || c.lane === 'done' || kanbanHighlight.has(c.id);
 function visibleCards() {
   const apid = activePhaseId();
   const all = [...cards.values()];
   // done cards (every phase's history) and cards highlighted from Metrics' "Open all" stay visible whatever their phase
-  return phases.length && apid
-    ? all.filter((c) => c.phase_id === apid || c.lane === 'done' || kanbanHighlight.has(c.id))
-    : all;
+  return phases.length && apid && !kanbanShowAll ? all.filter((c) => inActiveScope(c, apid)) : all;
+}
+// A lane's cards outside the active phase (hidden unless kanbanShowAll), and the toggle naming them:
+// "2 cards in planned phases hidden · Show" / "2 cards outside the active phase shown · Hide".
+function laneHiddenNote(lane) {
+  const apid = activePhaseId();
+  if (!phases.length || !apid) return null;
+  const out = [...cards.values()].filter((c) => c.lane === lane && !inActiveScope(c, apid));
+  if (!out.length) return null;
+  const planned = out.every((c) => phases.find((p) => p.id === c.phase_id)?.status === 'planned');
+  const where = planned ? `in planned ${out.length === 1 ? 'phase' : 'phases'}` : 'outside the active phase';
+  const b = node('button', 'lane-hidden');
+  b.type = 'button';
+  b.setAttribute('aria-pressed', String(kanbanShowAll));
+  if (kanbanShowAll) b.append(node('span', '', `${mxPlural(out.length, 'card')} ${where} shown · `), node('span', 'lane-hidden-act', 'Hide'));
+  else b.append(node('span', '', `${mxPlural(out.length, 'card')} ${where} hidden · `), node('span', 'lane-hidden-act', 'Show'));
+  b.onclick = (e) => {
+    e.stopPropagation();
+    kanbanShowAll = !kanbanShowAll;
+    renderBoard();
+    boardEl.querySelector(`.lane[data-lane="${lane}"] .lane-hidden`)?.focus();
+  };
+  return b;
 }
 
 // ── lane health: age in lane, stuck flags, WIP limits ───────────────
@@ -583,6 +661,7 @@ function setView(name) {
   homeView.classList.toggle('hidden', name !== 'home');
   plannerView.classList.toggle('hidden', name !== 'planner');
   governanceView.classList.toggle('hidden', name !== 'governance');
+  renderStats(); // the header names its scope on a workspace's Home
   if (name !== 'governance' && prev === 'governance') closeGovernance(); // drops ?tab before Metrics reads it
   if (name === 'scm') refreshFiles();
   if (name === 'phases') {
@@ -858,13 +937,22 @@ function fbWindowLabel(ctx) {
   const w = mxWindow(f);
   const from = w.from ?? (ctx.window ? mxDayKey(ctx.window.from, f.tz) : null);
   const to = w.to ?? (ctx.window ? mxDayKey(ctx.window.to, f.tz) : today);
-  return from ? `${mxShortDay(from)} – ${mxShortDay(to)}` : 'all time';
+  return from ? fbDays(from, to) : 'all time';
 }
-function fbScopeLabel(ctx) {
+// Two local days (YYYY-MM-DD) as the delta chips write a range (dashboard.js' dwDays): "Sep 7 – Oct 3",
+// "Sep 7 – 21" within a month, "Sep 7" for one day.
+function fbDays(from, to) {
+  const md = (day) => `${MX_MONTHS[mxUtc(day).getUTCMonth()]} ${mxUtc(day).getUTCDate()}`;
+  if (from === to) return md(from);
+  return from.slice(0, 7) === to.slice(0, 7) ? `${md(from)} – ${mxUtc(to).getUTCDate()}` : `${md(from)} – ${md(to)}`;
+}
+// phaseId: the phase to name when the filters have none (a drill-down of one phase's cards).
+function fbScopeLabel(ctx, phaseId = null) {
   const m = ctx.meta;
   const f = ctx.f;
   const scope = !m || !f.scope || f.scope === m.workspaceId ? (m && m.boards.length > 1 ? 'all boards' : (m?.boards[0]?.name ?? '')) : m.boardById.get(f.scope)?.label;
-  const phase = f.phase ? (fbPhaseById(m, f.phase)?.title ?? 'one phase') : 'all phases';
+  const ph = f.phase || phaseId;
+  const phase = ph ? (fbPhaseById(m, ph)?.title ?? 'one phase') : 'all phases';
   return [scope, phase, f.tag && `tag ${f.tag}`, f.agent && f.agent, f.workType && fbWorkTypeLabel(f.workType)].filter(Boolean).join(' · ');
 }
 // The active (non-default) filters, as the chip names them: "web · Checkout · ui".
@@ -880,7 +968,7 @@ function fbActiveLabels(ctx, fields) {
   if (fields.includes('range') && f.range !== ctx.rangeDefault) out.push(fbRangeLabel(ctx));
   return out;
 }
-// The date range in words: "last 4 weeks", "all time", "7 Sep – 3 Oct".
+// The date range in words: "last 4 weeks", "all time", "Sep 7 – Oct 3".
 function fbRangeLabel(ctx) {
   const r = ctx.f.range;
   if (r === 'custom') return fbWindowLabel(ctx);
@@ -1012,7 +1100,24 @@ function drawFilterBar(host, ctx, opts) {
 function filterChip(host, ctx, opts) {
   fbKeepFocus(host, 'chip', () => drawFilterChip(host, ctx, opts));
   ctx.filtersStale = false;
+  fbChipHost = { host, ctx, opts }; // the chip Esc collapses
 }
+// Esc closes the expanded bar (its custom-range popover first), unless a dialog has it; while the
+// dashboard is being edited, only from inside the bar (the editor's Esc is its own).
+let fbChipHost = null;
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || e.defaultPrevented || !fbChipHost) return;
+  const { host, ctx, opts } = fbChipHost;
+  if (!ctx.open || !host.isConnected || host.closest('.hidden') || anyDialogOpen()) return;
+  const inside = host.contains(document.activeElement);
+  if (document.body.classList.contains('de-editing') && !inside) return;
+  e.preventDefault();
+  const pop = ctx.customOpen;
+  if (pop) ctx.customOpen = false;
+  else ctx.open = false;
+  filterChip(host, ctx, opts);
+  if (inside) host.querySelector(`[data-fb="${pop ? 'range-custom' : 'chip'}"]`)?.focus();
+});
 // A redraw that's not the user's doing (fresh options / labels after a load): never while they're
 // in the bar (an open select, a half-typed custom range) — it waits for the next chance instead.
 function filterChipSoft(host, ctx, opts) {
@@ -1077,7 +1182,9 @@ function drawFilterChip(host, ctx, opts) {
 const fbAnyActive = (ctx, fields) => fbActiveLabels(ctx, fields).length > 0;
 
 // A drill-down of cards (dashboard / Home counts): title, board, lane, agent; Open / Open all in Kanban.
-function fbDrillCards(ctx, host, { kicker, title, cards, range }) {
+// phase: the drill's own phase (a phase's cards), named in the subtitle when the filters have none.
+// source: what "Open all" says the highlight came from ("Home · Now building"; Home's default: Home).
+function fbDrillCards(ctx, host, { kicker, title, cards, range, phase = null, source }) {
   const now = Date.now();
   const rows = cards.map((c) => {
     const since = c.lane_since ?? c.updated_at ?? now;
@@ -1099,7 +1206,8 @@ function fbDrillCards(ctx, host, { kicker, title, cards, range }) {
     host,
     kicker,
     title,
-    sub: [range, fbScopeLabel(ctx)].filter(Boolean).join(' · '),
+    sub: [range, fbScopeLabel(ctx, phase)].filter(Boolean).join(' · '),
+    source: source ?? (ctx === hctx ? 'Home' : undefined),
     stat: allDone ? '' : 'time in lane',
     rows,
     sorts: allDone
@@ -1165,7 +1273,6 @@ const mxUtc = (day) => {
   return new Date(Date.UTC(y, m - 1, d));
 };
 const mxAddDays = (day, n) => new Date(mxUtc(day).getTime() + n * 86_400_000).toISOString().slice(0, 10);
-const mxMonday = (day) => mxAddDays(day, -((mxUtc(day).getUTCDay() + 6) % 7));
 const mxShortDay = (day) => `${mxUtc(day).getUTCDate()} ${MX_MONTHS[mxUtc(day).getUTCMonth()]}`; // 3 Aug
 const mxLongDay = (day) => `${MX_WEEKDAYS[mxUtc(day).getUTCDay()]} ${mxShortDay(day)}`; // Sat 3 Oct
 const mxWeekdayDay = (day) => `${MX_WEEKDAYS[mxUtc(day).getUTCDay()]} ${mxUtc(day).getUTCDate()}`; // Tue 15
@@ -1227,13 +1334,15 @@ function mxSetFilter(patch) {
   mxLoad();
 }
 
-// The date window as local days in tz (from null = all history; to null = now).
+// The date window as local days in tz (from null = all history; to null = now). A rolling range is
+// exactly 7×N days ending today (today included); the server's previous period (metrics.previousPeriod:
+// whole local days before `from`) is then the 7×N days before it. Weekly charts mark the cut ISO weeks partial.
 function mxWindow(f) {
   const today = mxDayKey(Date.now(), f.tz);
   if (f.range === 'custom') return { from: f.from || null, to: f.to || null };
   const weeks = MX_RANGES.find(([id]) => id === f.range)?.[2] ?? null;
   if (weeks === null) return { from: null, to: null };
-  return { from: mxAddDays(mxMonday(today), -7 * (weeks - 1)), to: null };
+  return { from: mxAddDays(today, 1 - 7 * weeks), to: null };
 }
 const mxWindowLabel = () => fbWindowLabel(mx);
 
@@ -3192,17 +3301,18 @@ function mxOpenCard(id, board) {
     openCardModal(id);
   } else location.search = `?project=${encodeURIComponent(board)}&card=${encodeURIComponent(id)}&view=kanban`;
 }
-// Open a board's Kanban with these cards highlighted.
-function mxOpenAll(ids, board) {
+// Open a board's Kanban with these cards highlighted. source: the banner's "from <source>" (default Metrics).
+function mxOpenAll(ids, board, source = 'Metrics') {
   mx.drill?.close();
   if (board === projectId) {
     setView('kanban');
-    setKanbanHighlight(ids);
-  } else location.search = `?project=${encodeURIComponent(board)}&cards=${encodeURIComponent(ids.join(','))}&view=kanban`;
+    setKanbanHighlight(ids, source);
+  } else location.search = `?project=${encodeURIComponent(board)}&cards=${encodeURIComponent(ids.join(','))}&view=kanban${source === 'Metrics' ? '' : `&from=${encodeURIComponent(source)}`}`;
 }
 
 // ctx: whose meta names the boards (Metrics' mx, the dashboard's, Home's); host: the view it covers.
-function mxOpenDrill({ kicker, title, sub, stat, rows, sorts, total, unit = 'card', ctx = mx, host = metricsView }) {
+// source: where "Open all" says the highlight came from (default Metrics).
+function mxOpenDrill({ kicker, title, sub, stat, rows, sorts, total, unit = 'card', ctx = mx, host = metricsView, source }) {
   mx.drill?.close();
   const opener = document.activeElement;
   const backdrop = node('div', 'mx-drill-backdrop');
@@ -3268,7 +3378,7 @@ function mxOpenDrill({ kicker, title, sub, stat, rows, sorts, total, unit = 'car
     const [board, ids] = groups[0];
     const all = node('button', 'mx-btn primary', `Open all ${ids.length} in Kanban`);
     all.type = 'button';
-    all.onclick = () => mxOpenAll(ids, board);
+    all.onclick = () => mxOpenAll(ids, board, source);
     foot.append(all);
   } else if (groups.length > 1) {
     // Kanban shows one board at a time: one button per board
@@ -3277,7 +3387,7 @@ function mxOpenDrill({ kicker, title, sub, stat, rows, sorts, total, unit = 'car
       const label = ctx.meta?.boardById.get(board)?.label ?? 'board';
       const all = node('button', 'mx-btn', `Open ${ids.length} in ${label}`);
       all.type = 'button';
-      all.onclick = () => mxOpenAll(ids, board);
+      all.onclick = () => mxOpenAll(ids, board, source);
       wrap.append(all);
     }
     foot.append(wrap);
@@ -4059,7 +4169,7 @@ async function gitApi(path, opts) {
 async function refreshScmBadge() {
   if (!projectId) return void (railScm.dataset.count = '');
   try {
-    const { files } = await (await gitApi(`/git/status?project=${projectId}`)).json();
+    const { files } = await (await gitApi(`/git/status?project=${projectId}&quiet=1`)).json();
     railScm.dataset.count = files.length ? String(files.length) : '';
   } catch {
     railScm.dataset.count = ''; // not a git repo / daemon hiccup
@@ -5079,7 +5189,7 @@ function renderDashFilters(force) {
   else if (dctx.filtersStale) filterChipSoft(host, dctx, opts);
 }
 const dashRangeLabel = () => (dctx.f.range === 'all' ? '' : `done ${dctx.f.range === 'custom' ? fbWindowLabel(dctx) : `in ${dctx.f.range}`}`);
-// The tiny done-lane label: "done 2w", "done 3 Aug–26 Sep".
+// The tiny done-lane label: "done 2w", "done Aug 3–Sep 26" (fbWindowLabel's dates, the spaces dropped).
 const dashDoneLabel = () => `done ${dctx.f.range === 'custom' ? fbWindowLabel(dctx).replace(' – ', '–') : dctx.f.range}`;
 async function dashDrillLane(b, lane, isMain) {
   const meta = await dashMeta();
@@ -5633,6 +5743,7 @@ async function homeDrillLane(project, lane) {
     kicker: `${homeBoardName(project)} · ${LANE_LABELS[lane]}`.toUpperCase(),
     title: lane === 'done' ? `${mxPlural(list.length, 'card')} done` : `${mxPlural(list.length, 'card')} in ${LANE_LABELS[lane]}`,
     cards: list,
+    source: 'Home · Verticals', // its one caller: the Verticals widget's lane counts
   });
 }
 async function homeDrillNow() {
@@ -5640,7 +5751,7 @@ async function homeDrillNow() {
   if (activeView !== 'home' || !home.data) return;
   const items = homeNowItems();
   const list = items.map((it) => ({ ...(hctx.meta?.cards.get(it.id) ?? {}), id: it.id, title: it.title, board: it.board.id, lane: it.lane, agent: it.agent, lane_since: it.since, blocked: it.blocked }));
-  fbDrillCards(hctx, homeView, { kicker: 'NOW BUILDING', title: `${mxPlural(list.length, 'card')} in flight`, cards: list });
+  fbDrillCards(hctx, homeView, { kicker: 'NOW BUILDING', title: `${mxPlural(list.length, 'card')} in flight`, cards: list, source: 'Home · Now building' });
 }
 
 // /home under Home's filters, without the range (live state); key: the filters it was read with.
@@ -5680,6 +5791,7 @@ async function loadHome() {
   home.data = data;
   home.key = key;
   hctx.workspaceId = data.workspace?.workspace.id ?? data.project.id;
+  renderStats();
   if (!key) setTeamCache(data.agents); // unfiltered /home carries the roster: keeps chips fresh after outside edits
   if (activeView !== 'home') return;
   hctx.metaDirty = true; // the cards may have moved: reload now while filtered (fresh options + drill lists)
