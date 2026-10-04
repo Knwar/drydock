@@ -1,10 +1,12 @@
 // Headless checks of the agentic cost widgets (rework-cost, decision-latency-cost, cost-anomaly, usage-runway;
 // card 9089abb9): each renders at S / M / L with no NaN / undefined / null and the "Experimental" head note;
 // rework's status follows its written thresholds and L lists the top cards; decision latency names an
-// approximation when the API flags one and its queue opens the Needs-you drill; cost-anomaly's count, flagged
-// sparkline dots, text list and L table match the API, and a board with < 5 days of spend says "Needs ≥ 5 days
-// of history"; usage-runway shows "No usage samples yet" (with the reason) before any push and red with the
-// gap in days when the weekly limit runs out before the p85 finish. Money uses one format per widget.
+// approximation when the API flags one, its queue rows run oldest first and open the Needs-you drill; rework's
+// thresholds agree with the shown percent at the boundaries and its points chip reads the real change;
+// cost-anomaly's count, flagged sparkline dots, M list and L table match the API, "Needs ≥ 5 days of history" only
+// when the API judged no day (a young board; not a board that restarted after old history); usage-runway shows
+// "No usage samples yet" (with the reason) before any push, red with the gap in days when the weekly limit runs out
+// before the p85 finish, and its null branches (no forecast, resets first, no rate). Money: one format per widget.
 // Self-contained: starts its own daemon on a scratch DB + port, seeds ~8 weeks of data (metrics-seed.mjs)
 // plus a steady daily spend with a spike yesterday and two days of spend on the young board, drives Chrome,
 // then kills the daemon and removes the DB.
@@ -129,12 +131,13 @@ try {
           list: body.querySelectorAll('.ac-list li').length,
           flags: body.querySelectorAll('.ac-spark-flag').length,
           spark: !!body.querySelector('.ac-spark-svg'),
-          sr: [...body.querySelectorAll('.ac-sr li')].map((li) => li.textContent),
+          flagRows: [...body.querySelectorAll('.ac-flags li')].map((li) => li.textContent),
+          rows: [...body.querySelectorAll('.ac-list .ac-item-title')].map((e) => e.textContent),
           table: body.querySelectorAll('.ac-table tbody tr').length,
           approx: !!body.querySelector('.ac-approx'),
           limits: body.querySelectorAll('.ac-limit').length,
           notes: [...body.querySelectorAll('.ac-note')].map((n) => n.textContent),
-          money: (body.innerText.match(/\$[\d,]+(?:\.\d+)?/g) ?? []).concat([...body.querySelectorAll('.ac-sr li')].flatMap((li) => li.textContent.match(/\$[\d,]+(?:\.\d+)?/g) ?? [])),
+          money: body.innerText.match(/\$[\d,]+(?:\.\d+)?/g) ?? [],
         };
       }),
     );
@@ -166,6 +169,9 @@ try {
   const now = Date.now();
   const H = 3_600_000;
   const D = 24 * H;
+  // a board whose spend stopped long ago and restarted on the window's last 3 days (judged: real zero history)
+  mkdirSync(join(S, 'restarted'));
+  const restarted = (await (await fetch(`${base}/project?root=${encodeURIComponent(join(S, 'restarted'))}&name=restarted`)).json()).project_id;
   const act = db.prepare(`INSERT INTO card_activity (project_id, task_id, agent, role, tokens, tokens_out, ms, usage, cost_estimated, created_at) VALUES (?, ?, ?, 'builder', ?, ?, ?, ?, 0, ?)`);
   const run = (board, id, k, at) => {
     const u = { input: Math.round(2e4 * k), output: Math.round(1.5e4 * k), cache_read: Math.round(4e5 * k), cache_creation: Math.round(3e4 * k) };
@@ -180,6 +186,10 @@ try {
     const m = db.prepare('SELECT id FROM tasks WHERE project_id = ? LIMIT 1').get(seed.mobile);
     run(seed.mobile, m.id, 0.5, now - 2 * D);
     run(seed.mobile, m.id, 0.6, now - D);
+    db.prepare(`INSERT INTO tasks (id, project_id, phase_id, title, lane, tag, assigned_agent, review_rounds, position, created_at, updated_at, subtasks) VALUES ('rs1', ?, NULL, 'Restarted work', 'in_progress', 'api', 'Ada', 0, 0, ?, ?, '[]')`).run(restarted, now - 70 * D, now - H);
+    run(restarted, 'rs1', 1, now - 60 * D);
+    for (const k of [2, 1]) run(restarted, 'rs1', 1, now - k * D);
+    run(restarted, 'rs1', 1, now - H);
   })();
   db.close();
 
@@ -212,16 +222,28 @@ try {
   const rs = by(w4, 'rework-cost', 'M').status[0];
   ok(rs.kind === want[0] && rs.text.endsWith(want[1]) && /green under 10%, amber 10–25%, red over 25%/.test(rs.title), `rework-cost: ${Math.round(pct * 100)}% of spend → ${want[1]}, thresholds in the tooltip`, rs);
   ok(by(w4, 'rework-cost', 'L').list === Math.min(5, R.reworkCost.top.length) && R.reworkCost.top.length > 0 && by(w4, 'rework-cost', 'M').list === 0, 'rework-cost: L lists the top (≤ 5) cards by rework $, M does not', by(w4, 'rework-cost', 'L').list);
-  ok(by(w4, 'rework-cost', 'M').chips.some((c) => /pts/.test(c.text) || c.flat), 'rework-cost M: the share chip moves in points');
+  // the share chip: the real change in points, signed, "vs previous 4 weeks"
+  const prevPct = R.previous?.reworkCost.pct;
+  ok(prevPct != null, 'seed: a previous rework share to compare', R.previous?.reworkCost);
+  const dPts = Math.round(Math.abs(pct * 100 - prevPct * 100));
+  const ptsChip = by(w4, 'rework-cost', 'M').chips[1];
+  const wantPts = dPts === 0 ? '±0' : `${pct > prevPct ? '+' : '−'}${dPts} pts`;
+  ok(ptsChip?.text.includes(wantPts) && !ptsChip.text.includes('%') && ptsChip.vs === 'vs previous 4 weeks', `rework-cost M: the share chip reads ${wantPts}`, { ptsChip, pct, prevPct });
+  // the thresholds judge the shown whole percent: label and colour agree at the boundaries
+  const bounds = await page.evaluate(() => [0.254, 0.255, 0.26, 0.25, 0.1, 0.096, 0.094, 0].map((p) => acReworkKind(p)[0]));
+  ok(JSON.stringify(bounds) === JSON.stringify(['warn', 'bad', 'bad', 'warn', 'warn', 'warn', 'ok', 'ok']), 'rework-cost: 25.4% (shows 25%) amber, 25.5% red, 9.6% (shows 10%) amber, 9.4% green', bounds);
 
   // decision-latency-cost: $ of idle agent time, slip (approximation named), the queue oldest first
   const dl = R.decisionLatencyCost;
   ok(/of idle agent time waiting on you/.test(by(w4, 'decision-latency-cost', 'M').text), 'decision-latency-cost: "$ of idle agent time waiting on you"');
   ok(by(w4, 'decision-latency-cost', 'M').approx === !!dl.slip?.approximation, 'decision-latency-cost: labelled an approximation exactly when the API says so', { approx: by(w4, 'decision-latency-cost', 'M').approx, api: dl.slip?.approximation });
   ok(by(w4, 'decision-latency-cost', 'S').list === 0 && by(w4, 'decision-latency-cost', 'M').list === Math.min(2, dl.queue.length) && by(w4, 'decision-latency-cost', 'L').list === Math.min(5, dl.queue.length), 'decision-latency-cost: the waiting queue at M and up, not S', dl.queue.length);
-  const firstRow = await page.$eval('.dw-widget[data-widget-id="decision-latency-cost-L"] .ac-list .ac-item-title', (e) => e.textContent);
-  const oldest = dl.queue[0];
-  ok(firstRow === (oldest.title ?? oldest.reason), 'decision-latency-cost: the queue is oldest first', { firstRow, oldest });
+  // every row in the API's order, which is oldest first
+  const qRows = by(w4, 'decision-latency-cost', 'L').rows;
+  const wantRows = dl.queue.slice(0, 5).map((q) => q.title ?? q.reason);
+  ok(dl.queue.length >= 2 && dl.queue.every((q, i) => i === 0 || dl.queue[i - 1].since <= q.since), 'seed: the queue has 2+ items, oldest first', dl.queue.map((q) => q.since));
+  ok(JSON.stringify(qRows) === JSON.stringify(wantRows), 'decision-latency-cost L: every queue row oldest first', { qRows, wantRows });
+  ok(JSON.stringify(by(w4, 'decision-latency-cost', 'M').rows) === JSON.stringify(wantRows.slice(0, 2)), 'decision-latency-cost M: the two oldest');
   // a needs-you row with no card opens the Needs-you drill
   const idx = dl.queue.findIndex((q) => !q.task_id);
   ok(idx >= 0 && idx < 5, 'seed: a waiting session with no card is in the L queue', idx);
@@ -240,9 +262,13 @@ try {
   ok(fl.length > 0, 'seed: the spike day is flagged', fl);
   ok(by(w4, 'cost-anomaly', 'S').text.startsWith(String(fl.length)) && !by(w4, 'cost-anomaly', 'S').spark, 'cost-anomaly S: the count of unusual days, no sparkline', by(w4, 'cost-anomaly', 'S').text.slice(0, 40));
   ok(by(w4, 'cost-anomaly', 'M').spark && by(w4, 'cost-anomaly', 'M').flags === flagDates.size, 'cost-anomaly M: daily sparkline with one dot per flagged day', { flags: by(w4, 'cost-anomaly', 'M').flags, days: flagDates.size });
-  ok(by(w4, 'cost-anomaly', 'M').sr.length === fl.length, 'cost-anomaly M: the flagged days as a text list (screen readers)', by(w4, 'cost-anomaly', 'M').sr);
+  const am = by(w4, 'cost-anomaly', 'M');
+  const newest = fl[fl.length - 1];
+  ok(am.flagRows.length === Math.min(3, fl.length) && am.flagRows[0].includes(newest.title ?? 'No phase') && /^[A-Z][a-z]{2} \d{1,2} · .+ · \$[\d,.]+$/.test(am.flagRows[0]), 'cost-anomaly M: a visible list of the newest (≤ 3) flagged days, "Oct 3 · Checkout · $41"', am.flagRows);
+  ok(fl.length <= 3 || am.notes.includes(`+${fl.length - 3} more`), 'cost-anomaly M: "+N more" past 3', am.notes);
   ok(by(w4, 'cost-anomaly', 'L').table === Math.min(6, fl.length), 'cost-anomaly L: the flagged days with phase, spend, mean and σ', by(w4, 'cost-anomaly', 'L').table);
-  ok(/mean \+ 2σ/.test(by(w4, 'cost-anomaly', 'M').status[0].title), 'cost-anomaly: the rule is written in the status tooltip');
+  const rule = `trailing ${R.costAnomaly.trailingDays}-day mean + ${R.costAnomaly.sigmas}σ`;
+  ok(by(w4, 'cost-anomaly', 'M').status[0].title.includes(rule) && by(w4, 'cost-anomaly', 'M').text.includes(rule), `cost-anomaly: the API's rule is written out ("${rule}")`, by(w4, 'cost-anomaly', 'M').status[0]);
 
   // usage-runway: weekly vs the p85 finish
   const u = L.usageRunway;
@@ -266,12 +292,53 @@ try {
   await settle(3);
   await shot('young', ['cost-anomaly']);
   const young = await widgets();
-  ok(SIZES.every((s) => by(young, 'cost-anomaly', s).status[0]?.kind === 'none' && by(young, 'cost-anomaly', s).status[0].text.endsWith('Needs ≥ 5 days of history')), 'cost-anomaly (young board): grey "Needs ≥ 5 days of history"', young.map((w) => w.status));
+  ok(reads.ranged?.costAnomaly.judgedDays === 0, 'young board: the API judged no day', reads.ranged?.costAnomaly.judgedDays);
+  ok(SIZES.every((s) => by(young, 'cost-anomaly', s).status[0]?.kind === 'none' && by(young, 'cost-anomaly', s).status[0].text.endsWith(`Needs ≥ ${reads.ranged.costAnomaly.minDays} days of history`)), 'cost-anomaly (young board): grey "Needs ≥ 5 days of history"', young.map((w) => w.status));
+  // a phase with old history that restarted 3 days before the window end: judged, not "needs history"
+  reads.ranged = null;
+  await putLayout(restarted, ['cost-anomaly']);
+  await page.goto(`${base}/?project=${restarted}&view=home&range=4w`);
+  await settle(3);
+  await shot('restarted', ['cost-anomaly']);
+  const rst = await widgets();
+  const ra = reads.ranged?.costAnomaly;
+  ok(ra?.judgedDays > 0, 'restarted board: the API judged its in-range days', ra && { judged: ra.judgedDays, flagged: ra.flagged.length });
+  ok(SIZES.every((s) => !/Needs ≥/.test(by(rst, 'cost-anomaly', s).text) && by(rst, 'cost-anomaly', s).text.startsWith(String(ra.flagged.length))), 'cost-anomaly (restarted after old history): its count, never "Needs ≥ N days of history"', rst.map((w) => w.text.slice(0, 60)));
   await putLayout(seed.empty, ['rework-cost']);
   await page.goto(`${base}/?project=${seed.empty}&view=home&range=4w`);
   await settle(3);
   const empty = await widgets();
   ok(empty.every((w) => w.state === 'empty' && /No priced agent runs/.test(w.text)), 'rework-cost (no runs): empty state with its reason', empty.map((w) => w.text));
+
+  // ---- usage-runway's unknown / null weeklyBeforeP85 branches (usage samples are account-wide: pushed last) ----
+  const push = async (body) => {
+    const r = await fetch(`${base}/usage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(`usage POST ${r.status}`);
+  };
+  const runway = async (project, name) => {
+    reads.live = null;
+    await putLayout(project, ['usage-runway']);
+    await page.goto(`${base}/?project=${project}&view=home&range=4w`);
+    await settle(3);
+    await shot(name, ['usage-runway']);
+    return { w: await widgets(), u: reads.live?.usageRunway };
+  };
+  // no phase forecast (a board without phases), the seed's projected weekly sample
+  let rw = await runway(bare, 'runway-noforecast');
+  ok(rw.u?.weeklyBeforeP85 === null && rw.u.forecast?.status !== 'ok', 'runway (no forecast): weeklyBeforeP85 null', rw.u && { b: rw.u.weeklyBeforeP85, f: rw.u.forecast });
+  ok(SIZES.every((s) => by(rw.w, 'usage-runway', s).status[0]?.kind === 'none' && by(rw.w, 'usage-runway', s).status[0].text.endsWith('Weekly vs p85: unknown')), 'usage-runway (no forecast): grey "Weekly vs p85: unknown"', rw.w.map((w) => w.status));
+  ok(by(rw.w, 'usage-runway', 'M').notes.some((t) => /^No phase forecast: /.test(t)), 'usage-runway (no forecast): says why', by(rw.w, 'usage-runway', 'M').notes);
+  // the weekly window resets before it is reached: won't run out this week
+  await push({ seven_day: { used_percentage: 5, resets_at: Math.round((Date.now() + D) / 1000) } });
+  rw = await runway(seed.ws, 'runway-resets');
+  ok(rw.u?.weeklyBeforeP85 === null && rw.u.weekly?.state === 'resets_first', 'runway (resets first): weeklyBeforeP85 null', rw.u?.weekly?.state);
+  ok(SIZES.every((s) => by(rw.w, 'usage-runway', s).status[0]?.kind === 'ok' && by(rw.w, 'usage-runway', s).status[0].text.endsWith('Won’t run out this week')), 'usage-runway (resets first): "Won’t run out this week"', rw.w.map((w) => w.status));
+  // no way to measure a rate (no reset time, one fresh sample): unknown, "burn rate not measurable yet"
+  await push({ seven_day: { used_percentage: 40, resets_at: null } });
+  rw = await runway(seed.ws, 'runway-norate');
+  ok(rw.u?.weeklyBeforeP85 === null && rw.u.weekly?.state === 'no_rate', 'runway (no rate): weeklyBeforeP85 null', rw.u?.weekly?.state);
+  ok(SIZES.every((s) => by(rw.w, 'usage-runway', s).status[0]?.kind === 'none' && by(rw.w, 'usage-runway', s).status[0].text.endsWith('Weekly limit: unknown')), 'usage-runway (no rate): grey "Weekly limit: unknown"', rw.w.map((w) => w.status));
+  ok(/burn rate not measurable yet/.test(by(rw.w, 'usage-runway', 'M').text) && /Burn rate not measurable yet/.test(by(rw.w, 'usage-runway', 'M').status[0].title), 'usage-runway (no rate): "burn rate not measurable yet" on the bar and in the tooltip', by(rw.w, 'usage-runway', 'M').text);
 
   ok(errors.length === 0, 'no page errors', errors);
   console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');

@@ -11,8 +11,7 @@
 
 const AC_ICONS = { ok: '✓', warn: '!', bad: '✕', none: '–' };
 const AC_REWORK_RULE = 'Rework share of spend: green under 10%, amber 10–25%, red over 25%';
-const AC_ANOMALY_RULE = 'A day is unusual when its spend is over its phase’s trailing 14-day mean + 2σ (needs ≥ 5 days of history)';
-const AC_ANOMALY_ROWS = 6; // cost-anomaly L: the newest unusual days in the table
+const AC_ANOMALY_ROWS = { M: 3, L: 6 }; // cost-anomaly: the newest unusual days listed (M) / in the table (L)
 const AC_NO_USAGE = 'no usage-limit data'; // the start of usage-burn's NO_USAGE_REASON
 
 // Home's filters (fbParams: scope / phase / tag / agent / workType / from / to as epoch ms).
@@ -102,9 +101,13 @@ async function acReworkLoad(ctx) {
   return { r, since };
 }
 
-// [kind, text] for a rework share (the written thresholds)
-const acReworkKind = (pct) =>
-  pct === null ? ['none', 'No spend to compare'] : pct > 0.25 ? ['bad', 'Red: over 25% of spend'] : pct >= 0.1 ? ['warn', 'Amber: 10–25% of spend'] : ['ok', 'Green: under 10% of spend'];
+// [kind, text] for a rework share (the written thresholds), judged on the shown whole percent so the label and
+// colour agree with the figure (25.4% shows 25%: amber; 9.6% shows 10%: amber)
+function acReworkKind(pct) {
+  if (pct === null) return ['none', 'No spend to compare'];
+  const shown = Math.round(pct * 100);
+  return shown > 25 ? ['bad', 'Red: over 25% of spend'] : shown >= 10 ? ['warn', 'Amber: 10–25% of spend'] : ['ok', 'Green: under 10% of spend'];
+}
 
 function acReworkRender(el, d, ctx) {
   const rc = d.r.reworkCost;
@@ -253,16 +256,9 @@ async function acAnomalyLoad(ctx) {
   return { r, since };
 }
 
-// Can any in-range day be judged? A day needs ≥ 5 trailing days on or after its phase's first spend.
-function acAnomalyJudgeable(a) {
-  const start = a.series[0]?.days.findIndex((x) => x.date >= a.range.from) ?? -1;
-  return a.series.some((s) => {
-    const first = s.days.findIndex((x) => x.spend > 0);
-    if (first < 0) return false;
-    for (let i = Math.max(start, 0); i < s.days.length; i++) if (i - Math.max(i - 14, first) >= 5) return true;
-    return false;
-  });
-}
+// The API's rule, written out: "trailing 14-day mean + 2σ", and the tooltip with its history minimum
+const acAnomalyRule = (a) => `trailing ${a.trailingDays}-day mean + ${a.sigmas}σ`;
+const acAnomalyTitle = (a) => `A day is unusual when its spend is over its phase’s ${acAnomalyRule(a)} (needs ≥ ${a.minDays} days of history)`;
 
 // The range's daily spend (all phases) as a sparkline, flagged days marked with a dot. viewBox stretched to the
 // box's width; markers are zero-length round-capped lines, so they stay round at any scale.
@@ -291,20 +287,21 @@ function acAnomalyRender(el, d, ctx) {
   const n = a.flagged.length;
   const prev = d.r.previous?.costAnomaly ?? null;
   const has = !!d.r.previous && !!d.r.previousWindow;
-  const judgeable = acAnomalyJudgeable(a);
-  if (!judgeable && !n) {
-    el.append(acFigure('—', 'unusual days', null), acStatus('none', 'Needs ≥ 5 days of history', AC_ANOMALY_RULE));
+  const title = acAnomalyTitle(a);
+  // no in-range day had enough trailing history to judge (the API counts them)
+  if (a.judgedDays === 0) {
+    el.append(acFigure('—', 'unusual days', null), acStatus('none', `Needs ≥ ${a.minDays} days of history`, title));
     return;
   }
   el.append(
     acFigure(
       String(n),
       n === 1 ? 'unusual spend day' : 'unusual spend days',
-      ctx.size === 'S' ? null : ['over the phase’s trailing 14-day mean + 2σ'],
+      ctx.size === 'S' ? null : [`over the phase’s ${acAnomalyRule(a)}`],
       dwDeltaChip({ cur: n, prev: prev?.flagged ?? null, polarity: -1, fmt: (m) => String(Math.round(m)), subject: 'Unusual spend days', has, ...acCmp(ctx, d.r, d.since) }),
     ),
   );
-  el.append(n ? acStatus('warn', `${mxPlural(n, 'day')} over mean + 2σ`, AC_ANOMALY_RULE) : acStatus('ok', 'No unusual spend day', AC_ANOMALY_RULE));
+  el.append(n ? acStatus('warn', `${mxPlural(n, 'day')} over mean + ${a.sigmas}σ`, title) : acStatus('ok', 'No unusual spend day', title));
   if (ctx.size === 'S') return;
 
   // the range's days, all phases summed
@@ -316,14 +313,20 @@ function acAnomalyRender(el, d, ctx) {
   const spark = node('div', 'ac-detail ac-spark');
   spark.append(node('span', 'ac-k', `daily spend · ${dwDay(days[0].date)} – ${dwDay(days[days.length - 1].date)}`), acAnomalySpark(days, flagged, money));
   el.append(spark);
-  if (ctx.size === 'M') {
-    // the flagged days as text (screen readers; the dots are the visual)
-    const list = node('ul', 'ac-sr');
-    for (const f of a.flagged) list.append(node('li', '', `${dwDay(f.date)}: ${f.title ?? 'No phase'} spent ${money(f.spend)} (mean ${money(f.mean)}, σ ${money(f.sigma)})`));
-    if (n) el.append(list);
-    return;
-  }
   if (!n) return;
+  const rows = AC_ANOMALY_ROWS[ctx.size];
+  const more = () => (n > rows ? el.append(node('div', 'ac-note', `+${n - rows} more`)) : null);
+  if (ctx.size === 'M') {
+    // the newest flagged days as a short text list: "Oct 3 · Checkout · $41" (the dots mark them on the line)
+    const list = node('ul', 'ac-flags');
+    for (const f of [...a.flagged].reverse().slice(0, rows)) {
+      const li = node('li', '', `${dwDay(f.date)} · ${f.title ?? 'No phase'} · ${money(f.spend)}`);
+      li.title = `mean ${money(f.mean)}, σ ${money(f.sigma)}`;
+      list.append(li);
+    }
+    el.append(list);
+    return void more();
+  }
   // L: the flagged days, newest first: phase, spend, mean and σ
   const table = node('table', 'ac-table');
   const hr = node('tr');
@@ -335,7 +338,7 @@ function acAnomalyRender(el, d, ctx) {
   const thead = node('thead');
   thead.append(hr);
   const tbody = node('tbody');
-  for (const f of [...a.flagged].reverse().slice(0, AC_ANOMALY_ROWS)) {
+  for (const f of [...a.flagged].reverse().slice(0, rows)) {
     const tr = node('tr');
     const day = node('th', '', dwDay(f.date));
     day.scope = 'row';
@@ -344,7 +347,7 @@ function acAnomalyRender(el, d, ctx) {
   }
   table.append(thead, tbody);
   el.append(table);
-  if (n > AC_ANOMALY_ROWS) el.append(node('div', 'ac-note', `+${n - AC_ANOMALY_ROWS} earlier unusual ${n - AC_ANOMALY_ROWS === 1 ? 'day' : 'days'}`));
+  more();
 }
 
 // ── usage-runway: "Will we hit the usage limits?" (live: no range) ──
@@ -375,8 +378,9 @@ function acLimitText(l) {
     case 'resets_first':
       return `resets first (${acWhen(l.resetsAt, five)})`;
     case 'not_burning':
-    case 'no_rate':
       return 'not burning measurably';
+    case 'no_rate':
+      return 'burn rate not measurable yet';
     default:
       return l.staleReason === 'reset' ? 'window reset since the last update' : 'last update too old';
   }
@@ -394,6 +398,7 @@ function acRunwayKind(u) {
   // null: no projection, no forecast, or the window resets first
   if (w && (w.state === 'resets_first' || w.state === 'not_burning')) return ['ok', 'Won’t run out this week', 'At this rate the weekly window resets before the limit is reached'];
   if (!w) return ['none', 'Weekly limit: unknown', 'No weekly usage sample yet'];
+  if (w.state === 'no_rate') return ['none', 'Weekly limit: unknown', 'Burn rate not measurable yet: no recent samples to measure it from'];
   if (u.forecast?.status !== 'ok') return ['none', 'Weekly vs p85: unknown', u.forecast?.reason ?? 'No phase forecast'];
   return ['none', 'Weekly vs p85: unknown', w.message];
 }

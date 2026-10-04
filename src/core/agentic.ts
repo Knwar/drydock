@@ -507,6 +507,8 @@ export function agenticMetrics(db: DB, filter: MetricsFilter, opts: { tz: string
 //    only trailing days on or after the phase's first spend ever (idle days after that are
 //    real zeros; days before it are no data), only with >= 5 such days, and only when the
 //    trailing days are not all zero (so a flat-zero baseline never flags). sigma: population.
+//    judgedDays: the in-range days some phase could judge (>= 5 such trailing days; a flat-zero
+//    baseline still counts as judged); 0 = not enough history to flag anything.
 //  - usageRunway (live, no range): usage-burn.ts over the daemon's usage samples (persisted
 //    in usage_samples) and the active phase's forecast (forecast.ts phaseForecastInfo).
 //    weeklyBeforeP85 is usage-burn's vsForecast (hit day on or before the p85 day), true when
@@ -696,6 +698,12 @@ export interface CostAnomaly {
   range: { from: string; to: string; trailingFrom: string };
   series: { phase_id: string | null; title: string | null; days: { date: string; spend: number }[] }[];
   flagged: { date: string; phase_id: string | null; title: string | null; spend: number; mean: number; sigma: number }[];
+  /** In-range days that at least one phase had >= minDays trailing days of data for (0 = not enough history). */
+  judgedDays: number;
+  /** The rule: trailing window length, the minimum trailing days of data, and the sigmas over the mean. */
+  trailingDays: number;
+  minDays: number;
+  sigmas: number;
 }
 
 /** Daily spend per phase and the days over mean + 2 sigma of their trailing 14 days. */
@@ -722,6 +730,7 @@ export function costAnomaly(
   const title = (id: string | null) => (id === null ? null : (opts.phaseTitles?.get(id) ?? null));
   const series: CostAnomaly['series'] = [];
   const flagged: CostAnomaly['flagged'] = [];
+  const judged = new Set<string>();
   for (const [phase_id, m] of byPhase) {
     const spend = days.map((d) => m.get(d) ?? 0);
     const firstDay = firstSpend.get(phase_id)!;
@@ -730,6 +739,7 @@ export function costAnomaly(
     for (let i = ANOMALY_TRAILING_DAYS; i < days.length; i++) {
       const trailing = spend.slice(Math.max(i - ANOMALY_TRAILING_DAYS, first), i);
       if (trailing.length < ANOMALY_MIN_DAYS) continue;
+      judged.add(days[i]);
       const mean = trailing.reduce((s, v) => s + v, 0) / trailing.length;
       const sigma = Math.sqrt(trailing.reduce((s, v) => s + (v - mean) ** 2, 0) / trailing.length);
       // a flat-zero baseline (sigma 0, no spend) would flag any spend at all: not an anomaly signal
@@ -739,7 +749,15 @@ export function costAnomaly(
     }
   }
   flagged.sort((a, b) => a.date.localeCompare(b.date) || String(a.phase_id).localeCompare(String(b.phase_id)));
-  return { range: { from: fromDay, to: toDay, trailingFrom }, series, flagged };
+  return {
+    range: { from: fromDay, to: toDay, trailingFrom },
+    series,
+    flagged,
+    judgedDays: judged.size,
+    trailingDays: ANOMALY_TRAILING_DAYS,
+    minDays: ANOMALY_MIN_DAYS,
+    sigmas: ANOMALY_SIGMAS,
+  };
 }
 
 export type UsageRunway =
