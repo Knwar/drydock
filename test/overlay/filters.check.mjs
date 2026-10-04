@@ -276,6 +276,8 @@ async function openBar() {
 }
 const chipText = () => page.$eval(`${H} .fb-chip`, (e) => e.textContent);
 const chipV = async () => (await page.$(`${H} .fb-chip-v`)) && page.$eval(`${H} .fb-chip-v`, (e) => e.textContent);
+// the chip names the range and counts the other filters; its tooltip names them all
+const chipTitle = () => page.$eval(`${H} .fb-chip`, (e) => e.title);
 
 // ---- a fresh Home: 4 weeks, unfiltered ----
 let homeReqs = reqWatch();
@@ -292,7 +294,7 @@ const kd0 = await docKeydownListeners();
   await expectTiles(HT, {}, allBoards, 'Home unfiltered: board tiles');
   ok((await page.evaluate(() => hctx.f.range)) === '4w', 'fresh Home: range is 4 weeks');
   ok(!keysIn().length, 'fresh Home: the default 4w writes no range key to the URL', page.url());
-  ok((await chipText()) === 'Filters▾' && !(await page.$(`${H} .fb-clear`)), 'fresh Home: plain "Filters" chip (no range label, no filtered badge), no Clear', await chipText());
+  ok((await chipText()) === 'Filterslast 4 weeks▾' && !(await page.$(`${H} .fb-clear`)), 'fresh Home: the chip names the range ("last 4 weeks"), no Clear', await chipText());
   ok(!(await page.$(`${H} .fb-chip.on`)), 'fresh Home: chip not marked filtered');
   // the range reaches the range-aware reads: the KPI budget's /metrics/cost and (below) the agent history
   const cost = homeReqs.filter((u) => new URL(u).pathname === '/metrics/cost').map((u) => new URL(u).searchParams.get('from'));
@@ -372,7 +374,7 @@ const pickRange = (id) => page.$eval(`${H} .mx-seg-btn[data-fb="range-${id}"]`, 
   await page.click(`${H} .fb-clear`);
   await quiet();
   ok((await page.evaluate(() => hctx.f.range)) === '4w' && !keysIn().length && param('view') === 'home', 'Clear: back to 4w, URL clean', page.url());
-  ok((await chipText()).startsWith('Filters') && !(await chipV()) && !(await page.$(`${H} .fb-clear`)), 'Clear: chip back to "Filters"');
+  ok((await chipText()).startsWith('Filters') && (await chipV()) === 'last 4 weeks' && !(await page.$(`${H} .fb-clear`)), 'Clear: chip back to "Filters · last 4 weeks"', await chipV());
 }
 // a range-only widget override shares Home's (range-free) live read; another filter doesn't
 {
@@ -400,7 +402,7 @@ await page.selectOption(hsel('Tag'), 'ui');
 await settledHome();
 await expectTiles(HT, { tag: 'ui' }, allBoards, 'Home tag ui');
 ok(param('view') === 'home' && param('tag') === 'ui' && keysIn().join() === 'tag', 'tag ui: URL-backed (view=home&tag=ui)', page.url());
-ok((await chipV()) === 'ui' && !!(await page.$(`${H} .fb-clear`)), 'chip names "ui", Clear shown');
+ok((await chipV()) === 'last 4 weeks · 1 filter' && (await chipTitle()) === 'last 4 weeks · ui' && !!(await page.$(`${H} .fb-clear`)), 'chip: "last 4 weeks · 1 filter" (tooltip names "ui"), Clear shown', [await chipV(), await chipTitle()]);
 {
   const inflight = (await texts(`${HT} .dt-card-title`)).sort();
   const wantIn = cards.filter((c) => ['in_progress', 'in_review'].includes(c.lane) && c.tag === 'ui').map((c) => c.title);
@@ -410,7 +412,7 @@ ok((await chipV()) === 'ui' && !!(await page.$(`${H} .fb-clear`)), 'chip names "
 await page.selectOption(hsel('Agent'), 'Ada');
 await settledHome();
 await expectTiles(HT, { tag: 'ui', agent: 'Ada' }, allBoards, 'Home tag ui + agent Ada');
-ok((await chipV()) === 'ui · Ada', 'chip: "ui · Ada"');
+ok((await chipV()) === 'last 4 weeks · 2 filters' && (await chipTitle()) === 'last 4 weeks · ui · Ada', 'chip: "last 4 weeks · 2 filters" (tooltip: ui · Ada)', [await chipV(), await chipTitle()]);
 await page.selectOption(hsel('Tag'), '');
 await page.selectOption(hsel('Agent'), '');
 await page.selectOption(hsel('Phase'), seed.phases.webCheckout);
@@ -428,7 +430,7 @@ await settledHome();
   ok(prefixOf(s.now, homeApi.now_building.map((x) => x.title)), "scope api: Now building = the server's api Home", { got: s.now, want: homeApi.now_building.map((x) => x.title) });
   ok(prefixOf(s.up, homeApi.up_next.items.map((x) => x.title)), "scope api: Up next = the server's api Home (same pick order)", { got: s.up, want: homeApi.up_next.items.map((x) => x.title) });
   ok((await page.$eval(`${W('up-next')} .home-link`, (e) => e.textContent)) === `View all ${homeApi.up_next.total_pending} in Kanban →`, "scope api: total pending = the server's", homeApi.up_next.total_pending);
-  ok((await chipV()) === 'api', 'chip: "api"');
+  ok((await chipV()) === 'last 4 weeks · 1 filter' && (await chipTitle()) === 'last 4 weeks · api', 'chip: 1 filter (tooltip: api)', [await chipV(), await chipTitle()]);
   await shot('home-5-scope-api');
 }
 // tag db within api: queued db cards first, then the backlog (the waiter waits on an in-progress card)
@@ -447,7 +449,7 @@ await settledHome();
   const nb = cards.filter((c) => ['in_progress', 'in_review'].includes(c.lane) && match(f, c)).map((c) => c.title).sort();
   const s = await liveSnap();
   ok(s.now.every((t) => nb.includes(t)) && (nb.length === 0) === (s.now.length === 0), 'scope api + tag db: Now building', { got: s.now, nb });
-  ok((await chipV()) === 'api · db', 'Home chip: "api · db"');
+  ok((await chipV()) === 'last 4 weeks · 2 filters' && (await chipTitle()) === 'last 4 weeks · api · db', 'Home chip: 2 filters (tooltip: api · db)', [await chipV(), await chipTitle()]);
 }
 // agent filter: just them
 await page.selectOption(hsel('Tag'), '');
@@ -502,7 +504,7 @@ ok(!(await page.$('.mx-drill')), 'switching views closes an open drill');
 ok(!keysIn().length && param('view') !== 'home', 'leaving Home clears its filters from the URL', page.url());
 await page.click('#rail-home');
 await settledHome();
-ok(!(await chipV()) && (await page.evaluate(() => hctx.f.range)) === '4w', 'back on Home: no filters, 4w');
+ok((await chipV()) === 'last 4 weeks' && (await page.evaluate(() => hctx.f.range)) === '4w', 'back on Home: no filters, 4w', await chipV());
 // Metrics starts clean after Home had filters
 await openBar();
 await page.selectOption(hsel('Tag'), 'ui');
@@ -512,7 +514,7 @@ await page.waitForTimeout(500);
 ok(param('view') === 'metrics' && !param('tag'), "Home → Metrics: Home's tag does not leak into Metrics", page.url());
 await page.click('#rail-home');
 await settledHome();
-ok(!param('tag') && !(await chipV()), 'Metrics → Home: clean');
+ok(!param('tag') && (await chipV()) === 'last 4 weeks', 'Metrics → Home: clean', await chipV());
 const kd1 = await docKeydownListeners();
 ok(kd1 === kd0, 'no keydown listeners leaked (panels / drills opened and closed, views switched)', { kd0, kd1 });
 
@@ -529,7 +531,7 @@ await settledHome();
   const now = (await liveSnap()).now;
   ok(want.length ? prefixOf(now, want) : now.length === 0, 'vertical Home + agent: Now building', { now, want });
   ok(keysIn().join() === 'agent', 'vertical Home: the locked scope stays out of the URL', page.url());
-  ok((await chipV()) === 'Inder', 'chip: "Inder"');
+  ok((await chipV()) === 'last 4 weeks · 1 filter' && (await chipTitle()) === 'last 4 weeks · Inder', 'chip: 1 filter (tooltip: Inder)', [await chipV(), await chipTitle()]);
   await shot('home-7-vertical');
 }
 

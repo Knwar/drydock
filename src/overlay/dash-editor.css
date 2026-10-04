@@ -84,6 +84,13 @@ body.embed .home-edit, body.de-editing .home-edit { display: none; }
   pointer-events: none;
 }
 .de-row-bar > * { pointer-events: auto; }
+/* the label is decoration: presses fall through to the widget head under it (its drag zone), and a
+   drag never selects its text; the row handle beside it stays clickable */
+.de-row-bar > .de-row-label {
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
 .de-row-label {
   margin-top: 2px; /* centred on the 20px handle */
   padding: 0 6px;
@@ -100,6 +107,10 @@ body.embed .home-edit, body.de-editing .home-edit { display: none; }
 .de-row-bar:is(:hover, :focus-within, .de-selected) .de-btn, .de-row-bar:has(+ .dw-row:hover) .de-btn { opacity: 1; }
 .de-row-bar.de-selected { color: var(--accent); }
 .de-editing .dw-row.de-selected { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: 12px; }
+
+/* the canvas's scrollbar (beside the settings drawer) in the dark theme */
+body.de-editing #home-body { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.2) transparent; }
+body.de-editing #home-body:hover { scrollbar-color: rgba(255, 255, 255, 0.32) transparent; }
 
 /* sections */
 .de-editing .dw-sec-head { position: relative; min-height: 14px; }
