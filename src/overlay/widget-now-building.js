@@ -147,7 +147,7 @@ dwRegister({
   sizes: ['S', 'M', 'L'],
   load(ctx) {
     return ctx.shared('home', async () => {
-      const q = ctx.filters;
+      const q = fbNoRange(ctx.filters); // live: the range never narrows it
       const res = await fetch(`/home?project=${encodeURIComponent(ctx.projectId)}${q ? `&${q}` : ''}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();

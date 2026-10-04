@@ -591,7 +591,7 @@ dwRegister({
   sizes: ['S', 'M', 'L'],
   load(ctx) {
     return ctx.shared('home', async () => {
-      const f = ctx.filters;
+      const f = fbNoRange(ctx.filters); // the rows are live: the range shapes the panel's history only
       const res = await fetch(`/home?project=${encodeURIComponent(ctx.projectId)}${f ? `&${f}` : ''}`);
       if (!res.ok) throw new Error(`Couldn’t load agents (HTTP ${res.status})`);
       return res.json();
