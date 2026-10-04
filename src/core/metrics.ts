@@ -17,7 +17,9 @@
  *                                       events are deleted with it
  *  - phase_change {from, to}           the card's phase_id changed (burn scope)
  *  - reassign {from, to}               assignee changed (agent = the new one);
- *                                       closes an open blocker like assign
+ *                                       does NOT close a blocker: only assign does
+ *                                       (assignCard logs reassign + assign and is
+ *                                       the only path that clears blocked_at)
  *
  * Rules the derivation applies:
  *  - Event order: (created_at, rowid). rowid is the true insertion order within
@@ -225,7 +227,6 @@ export function deriveLaneHistory(card: MetricsCard, events: MetricsEvent[]): La
         lastRedirect = { at, interval: intervals.length - 1, review: reviews.length };
         break;
       case 'assign':
-      case 'reassign': // {from, to}; treated like assign: a (re)dispatch ends any open blocker
         closeBlock(at); // assignCard clears the blocker without an unblock event
         break;
       case 'block': {

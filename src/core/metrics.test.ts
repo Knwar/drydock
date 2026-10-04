@@ -173,20 +173,25 @@ describe('deriveLaneHistory / cardMetrics', () => {
     assert.equal(h.partial, false);
   });
 
-  it('reassign closes an open blocker like assign', () => {
-    const c = card({ lane: 'in_progress', assigned_agent: 'Bob' });
+  it('a bare reassign keeps an open blocker open; assignCard\'s assign closes it', () => {
+    const c = card({ lane: 'in_progress', assigned_agent: 'Bob', blocked_at: 20, blocked_reason: 'stuck' });
     const events = [
       ev('create', 0),
       move('backlog', 'in_progress', 10),
       ev('block', 20, { reason: 'stuck' }),
-      ev('reassign', 35, { from: 'Ada', to: 'Bob' }),
+      ev('reassign', 35, { from: 'Ada', to: 'Bob' }), // updateTask: blocked_at stays set
     ];
     const h = deriveLaneHistory(c, events);
-    assert.deepEqual(h.blocked, [{ from: 20, to: 35, reason: 'stuck' }]);
+    assert.deepEqual(h.blocked, [{ from: 20, to: null, reason: 'stuck' }]);
     const m = cardMetrics({ card: c, events }, 100);
-    assert.equal(m.blockedMs, 15);
-    assert.equal(m.blocked, false);
-    assert.equal(h.partial, false);
+    assert.equal(m.blockedMs, 80);
+    assert.equal(m.blocked, true);
+    // assignCard logs reassign then assign: the assign closes it
+    const c2 = card({ lane: 'in_progress', assigned_agent: 'Cy' });
+    const events2 = [...events, ev('reassign', 50, { from: 'Bob', to: 'Cy' }), ev('assign', 50)];
+    const h2 = deriveLaneHistory(c2, events2);
+    assert.deepEqual(h2.blocked, [{ from: 20, to: 50, reason: 'stuck' }]);
+    assert.equal(cardMetrics({ card: c2, events: events2 }, 100).blocked, false);
   });
 
   it('an open blocker counts up to now', () => {
