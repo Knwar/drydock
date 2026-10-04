@@ -30,7 +30,9 @@
 //   deBeginSave(); const ok = (await fetch(PUT …)).ok; deEndSave(ok); if (ok) deExit({ saved: true });
 //   deSetSaver(fn)            register the save routine: async fn() → bool (true: stored). The
 //                             narrow dialog's "Save and exit" runs it (then exits if still editing
-//                             and clean); with none registered it clicks #de-toolbar's .de-tb-save.
+//                             and clean); with none registered it clicks #de-toolbar's .de-tb-save
+//                             and watches the outcome. A failed save below 800px reopens the narrow
+//                             dialog with "Couldn’t save: <reason>".
 //   While saving (and 2s after a successful save) a live layout message for this board is our own
 //   echo: no 'external-change', no notice. deEndSave(true) also makes the draft the new base
 //   (dirty false, emits 'change').
@@ -194,6 +196,7 @@ function deEnter() {
 
 function deExit({ saved = false } = {}) {
   if (!deState.active) return;
+  deNarrowStop();
   deExitDlg?.close(); // left some other way (save, another board) with our dialog still up
   const layout = saved ? deState.draft : deState.base;
   const wasDirty = deState.dirty;
@@ -247,27 +250,89 @@ let deSaver = null;
 function deSetSaver(fn) {
   deSaver = typeof fn === 'function' ? fn : null;
 }
+// Save, then exit; a failure below 800px reopens the narrow dialog with the reason.
 async function deSaveNow() {
-  if (!deSaver) return void document.querySelector('#de-toolbar .de-tb-save')?.click(); // exits itself on success
   let ok = false;
-  try {
-    ok = !!(await deSaver());
-  } catch (e) {
-    console.error('dash-editor saver', e);
-  }
-  if (ok && deState.active && !deState.dirty) deExit({ saved: true });
+  let reason = '';
+  if (deSaver) {
+    try {
+      ok = !!(await deSaver());
+    } catch (e) {
+      console.error('dash-editor saver', e);
+      reason = e?.message || '';
+    }
+    if (ok && deState.active && !deState.dirty) deExit({ saved: true });
+  } else ({ ok, reason } = await deToolbarSave());
+  if (!deState.active) return; // saved and exited (or left some other way)
+  if (ok && !deState.dirty) return void deExit({ saved: true });
+  deAnnounce(`Couldn’t save: ${reason || 'try again'}`);
+  if (!deWide()) deNarrowPrompt(`Couldn’t save: ${reason || 'try again'}`);
+}
+
+// No saver registered: click the toolbar's Save and watch the outcome. Success: 'exit' with
+// { saved: true }. Failure: the save never starts (it returned early), or deState.saving drops back
+// to false with the draft still dirty, or nothing settles within DE_SAVE_WAIT_MS.
+const DE_SAVE_WAIT_MS = 15000;
+function deToolbarSave() {
+  return new Promise((resolve) => {
+    const btn = document.querySelector('#de-toolbar .de-tb-save');
+    if (!btn || btn.disabled) return resolve({ ok: false, reason: 'saving isn’t available right now' });
+    let done = false;
+    let poll = 0;
+    let timer = 0;
+    let off = null;
+    const finish = (ok, reason = '') => {
+      if (done) return;
+      done = true;
+      off?.();
+      clearInterval(poll);
+      clearTimeout(timer);
+      resolve({ ok, reason });
+    };
+    off = deOn('exit', (info) => finish(!!info?.saved));
+    btn.click();
+    if (done) return;
+    if (!deState.saving) return finish(false); // the toolbar returned early (reloading, nothing to save…)
+    poll = setInterval(() => {
+      if (!deState.active || deState.saving) return; // 'exit' settles the first case
+      if (!deState.dirty) return finish(true);
+      const msg = document.querySelector('#de-toolbar .de-tb-errors-title')?.textContent ?? '';
+      finish(false, (msg.match(/\(([^)]*)\)\.?$/) || msg.match(/: (.*?)\.?$/) || [])[1] || '');
+    }, 100);
+    timer = setTimeout(() => finish(false, 'the save didn’t finish'), DE_SAVE_WAIT_MS);
+  });
+}
+
+// the narrow dialog's retry while another dialog is up: one timer at most
+let deNarrowTimer = 0;
+function deNarrowStop() {
+  clearTimeout(deNarrowTimer);
+  deNarrowTimer = 0;
 }
 
 // Below 800px mid-edit: save (when dirty) or discard / exit, nothing else (Esc / backdrop don't close
 // it); widening the window again closes it (the matchMedia listener below).
-function deNarrowPrompt() {
-  if (!deState.active || deExitDlg?.kind === 'narrow') return;
+// error: a failed save's message, shown in the dialog (added to an open one).
+function deNarrowPrompt(error = '') {
+  deNarrowStop();
+  if (!deState.active) return;
+  if (deExitDlg?.kind === 'narrow') return void (error && deExitDlg.setError(error));
   if (deExitDlg) deExitDlg.close(); // the generic one offers Keep editing: replace it
-  // another dialog (library, templates…) owns the screen: ask once it has closed
-  if (svModal) return void setTimeout(() => deState.active && !deWide() && !deExitDlg && deRequestExit(), 500);
+  if (svModal || deState.saving) {
+    // another dialog (library, templates…) owns the screen, or a save is in flight (success exits,
+    // failure asks again): look again shortly, one timer at most
+    deNarrowTimer = setTimeout(() => {
+      deNarrowTimer = 0;
+      if (deState.active && !deWide() && !deExitDlg) deNarrowPrompt(error);
+    }, 500);
+    return;
+  }
   const dirty = deState.dirty;
   const { dlg, close, mount } = openModal({ labelledBy: 'de-narrow-title', describedBy: 'de-narrow-sub', busy: () => true, onClose: () => (deExitDlg = null), fallbackFocus: () => $('home-edit') });
-  deExitDlg = { kind: 'narrow', close };
+  const err = node('div', 'sv-error');
+  err.setAttribute('role', 'alert');
+  err.textContent = error;
+  deExitDlg = { kind: 'narrow', close, setError: (text) => (err.textContent = text) };
   dlg.classList.add('de-exit-dlg');
   const title = node('h2', 'sv-title', 'Editing needs a wider window');
   title.id = 'de-narrow-title';
@@ -291,7 +356,7 @@ function deNarrowPrompt() {
     };
     foot.append(discard, save);
   } else foot.append(discard);
-  dlg.append(title, sub, foot);
+  dlg.append(title, sub, err, foot);
   mount();
   (save ?? discard).focus();
 }
@@ -299,6 +364,7 @@ function deNarrowPrompt() {
 // The board changed under the editor: no one to ask, so discard and say so.
 function deAbandon() {
   if (!deState.active) return;
+  deNarrowStop();
   const dirty = deState.dirty;
   deExit();
   if (dirty) deAnnounce('Unsaved dashboard edits were discarded');
@@ -838,6 +904,7 @@ document.addEventListener('keydown', (e) => {
 window.matchMedia('(min-width: 800px)').addEventListener('change', (e) => {
   if (!deState.active) return;
   if (!e.matches) return void deRequestExit();
+  deNarrowStop();
   if (deExitDlg?.kind === 'narrow') deExitDlg.close();
 });
 

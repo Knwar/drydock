@@ -178,7 +178,7 @@ function dwRenderLayout(layout) {
   if (layout) dw.layout = layout;
   const root = $('dash-root');
   if (!root || !dw.layout) return;
-  for (const inst of dw.instances) dwFadeRO?.unobserve(inst.body);
+  for (const inst of dw.instances) dwFadeStop(inst);
   dw.instances = [];
   const frag = document.createDocumentFragment();
   // empty: view mode says so; edit mode with no sections prompts (the editor adds "+ Add section")
@@ -358,7 +358,7 @@ function dwWidget(w) {
   head.append(title, vars, asof);
   const body = node('div', 'dw-body');
   frame.append(head, body);
-  const inst = { w, frame, head, title, vars, asof, body, ctx: null, seq: 0, painted: false };
+  const inst = { w, frame, head, title, vars, asof, body, ctx: null, seq: 0, painted: false, fadeMO: null };
   inst.ctx = {
     id: w.id,
     size: w.size,
@@ -387,6 +387,9 @@ function dwWidget(w) {
   dwFrameTitle(inst);
   dwFadeRO?.observe(body);
   body.addEventListener('scroll', () => dwFadeCheck(body), { passive: true });
+  // content patched in place (onStatus, a refresh paint): check again, at most once per frame
+  inst.fadeMO = new MutationObserver(() => dwFadeSoon(body));
+  inst.fadeMO.observe(body, { childList: true, subtree: true, characterData: true });
   dw.instances.push(inst);
   return inst;
 }
@@ -487,7 +490,16 @@ function dwFadeCheck(body) {
   body.classList.toggle('dw-clipped', more);
 }
 function dwFadeSoon(body) {
-  requestAnimationFrame(() => body.isConnected && dwFadeCheck(body));
+  if (body._dwFadeQueued) return;
+  body._dwFadeQueued = true;
+  requestAnimationFrame(() => {
+    body._dwFadeQueued = false;
+    if (body.isConnected) dwFadeCheck(body);
+  });
+}
+function dwFadeStop(inst) {
+  dwFadeRO?.unobserve(inst.body);
+  inst.fadeMO?.disconnect();
 }
 const dwFadeRO = typeof ResizeObserver === 'function' ? new ResizeObserver((entries) => entries.forEach((e) => dwFadeCheck(e.target))) : null;
 
@@ -553,7 +565,7 @@ async function dwLoad(inst, cache) {
 const dwSig = (w) => `${w.type}|${JSON.stringify({ ...w.params, title: undefined })}`;
 
 function dwPrune() {
-  for (const i of dw.instances) if (!i.frame.isConnected) dwFadeRO?.unobserve(i.body);
+  for (const i of dw.instances) if (!i.frame.isConnected) dwFadeStop(i);
   dw.instances = dw.instances.filter((i) => i.frame.isConnected);
 }
 
