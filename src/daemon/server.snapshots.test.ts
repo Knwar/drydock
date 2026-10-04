@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { openDb } from '../core/db.js';
 import { startDaemon, type TestDaemon } from './test-daemon.js';
 
 // Daily snapshots (startup + debounced after phase changes), GET /metrics/history,
@@ -75,7 +76,7 @@ describe('daemon snapshots + /metrics/history + usage persistence', () => {
       return b.phases.length >= 2 ? b : undefined;
     });
     // only the top-level projects (the workspace + the standalone board) were processed
-    assert.match(daemon.output(), /snapshots: 2 top-level project\(s\)/);
+    assert.match(daemon.output(), /snapshots: 2 top-level project\(s\), 2 taken/);
     assert.deepEqual(h.phases.map((p: any) => p.phase_id).sort(), [wsPhase, vPhase].sort());
     const vRow = h.phases.find((p: any) => p.phase_id === vPhase);
     assert.equal(vRow.project_id, v);
@@ -102,24 +103,52 @@ describe('daemon snapshots + /metrics/history + usage persistence', () => {
       'budgetChange', 'from', 'milestoneMoves', 'phase_id', 'riskScoreChange', 'scopeChange', 'slipDays', 'spendChange', 'to',
     ]);
 
+    // any phase status change (here back to planned) forces a refresh, bypassing the staleness skip
+    const before = refreshed.phases[0].created_at;
+    assert.equal((await c.send('POST', `/phase/${vPhase}`, { status: 'planned' })).status, 200);
+    await until(async () => {
+      const b = await c.ok(`/metrics/history?project=${ws}&phase=${vPhase}`);
+      return b.phases[0].created_at > before ? b : undefined;
+    });
+
     // range + validation
+    assert.equal((await c.ok(`/metrics/history?project=${ws}&phase=${vPhase}&to=2000-01-01`)).deltas, null, 'no snapshot on/before to');
     assert.equal((await c.ok(`/metrics/history?project=${ws}&from=2000-01-01&to=2000-01-02`)).phases.length, 0);
     assert.equal((await c.get(`/metrics/history?project=nope`)).status, 404);
     assert.equal((await c.get(`/metrics/history`)).status, 400);
     assert.equal((await c.get(`/metrics/history?project=${ws}&phase=nope`)).status, 404);
     assert.equal((await c.get(`/metrics/history?project=${ws}&phase=${soloPhase}`)).status, 400);
     assert.equal((await c.get(`/metrics/history?project=${ws}&from=yesterday`)).status, 400);
+    assert.equal((await c.get(`/metrics/history?project=${ws}&from=2026-13-45`)).status, 400);
+    assert.equal((await c.get(`/metrics/history?project=${ws}&to=2026-02-30`)).status, 400);
+    assert.equal((await c.get(`/metrics/history?project=${ws}&from=2026-02-02&to=2026-02-01`)).status, 400);
+    await daemon.stop();
+
+    // third run, nothing changed since today's rows: the startup sweep skips both projects
+    daemon = await startDaemon({ dbPath });
+    await until(async () => (/snapshots: /.test(daemon.output()) ? true : undefined));
+    assert.match(daemon.output(), /snapshots: 2 top-level project\(s\), 0 taken/);
   });
 
-  it('usage samples survive a daemon restart', async (t) => {
+  it('usage samples survive a daemon restart; same-millisecond pushes are all kept', async (t) => {
     const dir = mkdtempSync(join(tmpdir(), 'kankan-usage-'));
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     const dbPath = join(dir, 'board.db');
     let daemon = await startDaemon({ dbPath });
     const resetsAt = Math.floor(Date.now() / 1000) + 3 * 3600;
-    const res = await client(daemon).send('POST', '/usage', { five_hour: { used_percentage: 42, resets_at: resetsAt } });
-    assert.equal(res.status, 200);
+    const push = (used: number) => client(daemon).send('POST', '/usage', { five_hour: { used_percentage: used, resets_at: resetsAt } });
+    const burst = await Promise.all([30, 31, 32, 33, 34].map(push)); // concurrent: likely to share a millisecond
+    for (const r of burst) assert.equal(r.status, 200);
+    assert.equal((await push(42)).status, 200);
     await daemon.stop();
+    const db = openDb(dbPath);
+    try {
+      const ats = (db.prepare('SELECT at FROM usage_samples ORDER BY at').all() as { at: number }[]).map((r) => r.at);
+      assert.equal(ats.length, 6, 'every push persisted');
+      assert.equal(new Set(ats).size, 6);
+    } finally {
+      db.close();
+    }
 
     daemon = await startDaemon({ dbPath });
     t.after(() => daemon.stop());
@@ -152,5 +181,54 @@ describe('daemon snapshots + /metrics/history + usage persistence', () => {
     assert.deepEqual(await reportBlockers('&workType=none'), [plain]);
     assert.equal((await c.get(`/report?project=${p}&workType=bogus`)).status, 400);
     assert.equal((await fetch(`${daemon.base}/report.md?project=${p}&workType=bogus`)).status, 400);
+  });
+
+  it('budgets stay unfiltered under workType on /metrics/cost and /report', async (t) => {
+    const daemon = await startDaemon();
+    t.after(() => daemon.stop());
+    const c = client(daemon);
+    const M = 1_000_000;
+    assert.equal(
+      (
+        await c.send('PUT', '/settings/prices', {
+          models: { 'claude-opus-5-5': { input: 10, output: 50, cache_read: 1, cache_creation: 12 } },
+          default: { input: 100, output: 100, cache_read: 100, cache_creation: 100 },
+        })
+      ).status,
+      200,
+    );
+    const p = await c.project(join(daemon.dbDir, 'app'));
+    const ph = await c.phase(p, 'P1');
+    const defect = await c.task(p, 'Defect', { phase_id: ph, work_type: 'defect' });
+    const plain = await c.task(p, 'Plain', { phase_id: ph });
+    const run = (id: string, model: string) => c.send('POST', `/task/${id}/activity`, { agent: 'builder', usage: { [model]: { input: M } } });
+    assert.equal((await run(defect, 'claude-opus-5-5')).status, 200); // $10
+    assert.equal((await run(plain, 'mystery-1')).status, 200); // $100
+    assert.equal((await c.send('PUT', `/phase/${ph}/budget`, { budget_usd: 50 })).status, 200);
+
+    // /metrics/cost: totals filtered, budget over the whole phase
+    const all = await c.ok(`/metrics/cost?project=${p}&tz=UTC`);
+    assert.equal(all.budgetsUnfiltered, false);
+    const cost = await c.ok(`/metrics/cost?project=${p}&tz=UTC&workType=defect`);
+    assert.equal(cost.totals.cost, 10);
+    assert.equal(cost.budgetsUnfiltered, true);
+    assert.deepEqual(
+      [cost.budgets[0].actual, cost.budgets[0].remainingCards, cost.budgets[0].overBudget],
+      [all.budgets[0].actual, all.budgets[0].remainingCards, true],
+    );
+    assert.equal(cost.budgets[0].actual, 110);
+    assert.equal(cost.budgets[0].remainingCards, 2);
+
+    // /report: same
+    const r = await c.ok(`/report?project=${p}&tz=UTC&workType=defect`);
+    assert.equal(r.metrics.cost.total_usd, 10);
+    assert.equal(r.metrics.cost.budgets_unfiltered, true);
+    assert.deepEqual([r.metrics.cost.budgets[0].actual_usd, r.metrics.cost.budgets[0].status], [110, 'over']);
+    assert.equal((await c.ok(`/report?project=${p}&tz=UTC`)).metrics.cost.budgets_unfiltered, false);
+    const md = await (await fetch(`${daemon.base}/report.md?project=${p}&tz=UTC&workType=defect`)).text();
+    assert.match(md, /Budget P1: \$110\.00 of \$50\.00.*over budget/);
+    assert.match(md, /\(budget status covers all work in the phase\)/);
+    const plainMd = await (await fetch(`${daemon.base}/report.md?project=${p}&tz=UTC`)).text();
+    assert.doesNotMatch(plainMd, /budget status covers all work/);
   });
 });

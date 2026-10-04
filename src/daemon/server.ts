@@ -1716,11 +1716,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const project = q.get('project');
     if (!project) return json(res, 400, { error: 'project required' });
     if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
-    const day = /^\d{4}-\d{2}-\d{2}$/;
+    // a real calendar day: the shape, and it survives a round trip (rejects 2026-13-45, 2026-02-30)
+    const isDay = (v: string) => {
+      const t = Date.parse(`${v}T00:00:00Z`);
+      return /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === v;
+    };
     const from = q.get('from') || undefined;
     const to = q.get('to') || undefined;
     for (const [k, v] of [['from', from], ['to', to]] as const)
-      if (v !== undefined && !day.test(v)) return json(res, 400, { error: `invalid ${k}: ${v} (expected YYYY-MM-DD)` });
+      if (v !== undefined && !isDay(v)) return json(res, 400, { error: `invalid ${k}: ${v} (expected a YYYY-MM-DD date)` });
     if (from && to && from > to) return json(res, 400, { error: 'from must be <= to' });
     const phaseId = q.get('phase') || undefined;
     if (phaseId) {
@@ -1730,7 +1734,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       if (!boards.includes(phase.project_id)) return json(res, 400, { error: 'phase is not on this project' });
     }
     const history = snapshots.getHistory(db, project, { phaseId, from, to });
-    return json(res, 200, { ...history, deltas: phaseId ? snapshots.deltasSince(db, phaseId, from) : null });
+    return json(res, 200, { ...history, deltas: phaseId ? snapshots.deltasSince(db, phaseId, from, to) : null });
   }
 
   // ── schedule (core/schedule.ts): every phase (incl. the verticals') vs its target date, + milestones ──
@@ -2148,7 +2152,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return json(res, 400, { error: 'position must be an integer >= 1' });
     const phase = board.updatePhase(db, phaseMatch[1], { status: b.status, position: b.position });
     announcePhases(phase.project_id);
-    if (b.status === 'active' || b.status === 'done') scheduleSnapshot(phase.project_id);
+    if (b.status !== undefined) scheduleSnapshot(phase.project_id);
     return json(res, 200, phase);
   }
 
@@ -2301,11 +2305,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const b = await readBody(req);
     if (!b.five_hour && !b.seven_day) return json(res, 400, { error: 'five_hour or seven_day required' });
     usage = { five_hour: b.five_hour ?? usage?.five_hour ?? null, seven_day: b.seven_day ?? usage?.seven_day ?? null };
-    const sample = { at: Date.now(), five_hour: toWindowSample(b.five_hour), seven_day: toWindowSample(b.seven_day) };
+    // `at` is the usage_samples key: a push in the same millisecond as (or, after a clock
+    // step back, before) the previous sample is bumped to previous + 1, so no push is lost
+    // and memory and the DB hold the same, strictly increasing `at`s.
+    const prevAt = usageSamples.length ? usageSamples[usageSamples.length - 1].at : -Infinity;
+    const sample = { at: Math.max(Date.now(), prevAt + 1), five_hour: toWindowSample(b.five_hour), seven_day: toWindowSample(b.seven_day) };
     if (sample.five_hour || sample.seven_day) {
       usageBurn.pruneSamples(usageSamples, sample.at).push(sample);
       try {
-        db.prepare('INSERT OR REPLACE INTO usage_samples (at, data) VALUES (?, ?)').run(sample.at, JSON.stringify(sample));
+        db.prepare('INSERT INTO usage_samples (at, data) VALUES (?, ?)').run(sample.at, JSON.stringify(sample));
         prunePersistedSamples();
       } catch (err) {
         console.error(`usage sample not persisted: ${(err as Error).message}`);
@@ -2493,29 +2501,82 @@ if (AUTOPILOT_ENGINE) {
 // ── daily snapshots (core/snapshots.ts) ─────────────────────────────
 // Only top-level projects (workspaces + standalone boards): a workspace's
 // takeSnapshots already covers its verticals. Always today, never a past date
-// (takeSnapshots is idempotent per day, so the hourly run just refreshes it).
-// Errors are logged, never thrown.
+// (takeSnapshots is idempotent per day, so a later run just refreshes it).
+// The startup / hourly sweep yields to the event loop between projects, stops
+// between projects once shutdown begins, and skips a project whose today's
+// rows are newer than its latest change (snapshotStale). Errors are logged, never thrown.
 const SNAPSHOT_INTERVAL_MS = 3_600_000;
 const SNAPSHOT_DEBOUNCE_MS = 2_000;
-function snapshotProject(id: string): void {
+
+/**
+ * Cheap "has anything changed?" check for a top-level project (its scope = it +
+ * its verticals): true when it has phases and today's phase rows are missing or
+ * older than the latest change to the inputs (task events + cards, build runs,
+ * phases, risks + links, milestones, prices). Deletions that leave no
+ * timestamp behind (a milestone or risk removed) are picked up by the next
+ * change, a forced refresh, or tomorrow's row. A scope with no phases is
+ * always taken (only milestones: cheap).
+ */
+function snapshotStale(top: string): boolean {
+  const boards = [top, ...(db.prepare('SELECT id FROM projects WHERE parent_id = ?').all(top) as { id: string }[]).map((r) => r.id)];
+  const qs = boards.map(() => '?').join(', ');
+  const phases = (db.prepare(`SELECT COUNT(*) AS n FROM phases WHERE project_id IN (${qs})`).get(...boards) as { n: number }).n;
+  if (phases === 0) return true;
+  const today = metrics.dayKey(Date.now(), metrics.localTimeZone());
+  const snap = db
+    .prepare(`SELECT COUNT(*) AS n, MIN(created_at) AS at FROM phase_snapshots WHERE date = ? AND project_id IN (${qs})`)
+    .get(today, ...boards) as { n: number; at: number | null };
+  if (snap.n < phases || snap.at === null) return true;
+  const latest = db
+    .prepare(
+      `SELECT MAX(t) AS t FROM (
+         SELECT MAX(created_at) AS t FROM task_events WHERE project_id IN (${qs})
+         UNION ALL SELECT MAX(updated_at) FROM tasks WHERE project_id IN (${qs})
+         UNION ALL SELECT MAX(created_at) FROM card_activity WHERE project_id IN (${qs})
+         UNION ALL SELECT MAX(updated_at) FROM phases WHERE project_id IN (${qs})
+         UNION ALL SELECT MAX(updated_at) FROM risks WHERE project_id IN (${qs})
+         UNION ALL SELECT MAX(updated_at) FROM milestones WHERE project_id IN (${qs})
+         UNION ALL SELECT MAX(created_at) FROM governance_links
+         UNION ALL SELECT MAX(updated_at) FROM settings WHERE key = 'prices')`,
+    )
+    .get(...boards, ...boards, ...boards, ...boards, ...boards, ...boards) as { t: number | null };
+  return latest.t !== null && latest.t >= snap.at;
+}
+
+/** Snapshot one top-level project today; `force` (after a phase change) bypasses the staleness skip. true = taken. */
+function snapshotProject(id: string, force = false): boolean {
   try {
+    if (!force && !snapshotStale(id)) return false;
     snapshots.takeSnapshots(db, id);
+    return true;
   } catch (err) {
     console.error(`snapshot failed for ${id}: ${(err as Error).message}`);
+    return false;
   }
 }
-function snapshotAll(): void {
-  try {
-    const rows = db.prepare('SELECT id FROM projects WHERE parent_id IS NULL').all() as { id: string }[];
-    for (const { id } of rows) snapshotProject(id);
-    console.log(`snapshots: ${rows.length} top-level project(s)`);
-  } catch (err) {
-    console.error(`snapshots failed: ${(err as Error).message}`);
-  }
+let snapshotSweep: Promise<void> | null = null;
+/** The startup / hourly sweep: one project at a time, yielding in between; never two sweeps at once. */
+function snapshotAll(): Promise<void> {
+  return (snapshotSweep ??= (async () => {
+    try {
+      const rows = db.prepare('SELECT id FROM projects WHERE parent_id IS NULL').all() as { id: string }[];
+      let taken = 0;
+      for (const { id } of rows) {
+        await new Promise((r) => setImmediate(r));
+        if (shuttingDown) return;
+        if (snapshotProject(id)) taken++;
+      }
+      console.log(`snapshots: ${rows.length} top-level project(s), ${taken} taken`);
+    } catch (err) {
+      console.error(`snapshots failed: ${(err as Error).message}`);
+    } finally {
+      snapshotSweep = null;
+    }
+  })());
 }
 /** top-level project → its pending debounced snapshot */
 const snapshotTimers = new Map<string, NodeJS.Timeout>();
-/** Re-snapshot `projectId`'s top-level project after a phase change: at most once per SNAPSHOT_DEBOUNCE_MS, off the request path. */
+/** Re-snapshot `projectId`'s top-level project after a phase change (forced): at most once per SNAPSHOT_DEBOUNCE_MS, off the request path. */
 function scheduleSnapshot(projectId: string): void {
   try {
     const row = db.prepare('SELECT id, parent_id FROM projects WHERE id = ?').get(projectId) as
@@ -2528,15 +2589,15 @@ function scheduleSnapshot(projectId: string): void {
       top,
       setTimeout(() => {
         snapshotTimers.delete(top);
-        snapshotProject(top);
+        if (!shuttingDown) snapshotProject(top, true);
       }, SNAPSHOT_DEBOUNCE_MS).unref(),
     );
   } catch (err) {
     console.error(`snapshot not scheduled: ${(err as Error).message}`);
   }
 }
-const startupSnapshot = setImmediate(snapshotAll);
-intervals.push(setInterval(snapshotAll, SNAPSHOT_INTERVAL_MS).unref());
+const startupSnapshot = setImmediate(() => void snapshotAll());
+intervals.push(setInterval(() => void snapshotAll(), SNAPSHOT_INTERVAL_MS).unref());
 
 // ── shutdown ────────────────────────────────────────────────────────
 // Without this, a stopped daemon orphans every pty shell (and whatever runs

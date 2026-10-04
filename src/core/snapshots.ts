@@ -197,18 +197,21 @@ const diff = (a: number | null, b: number | null): number | null =>
   a === null || b === null ? null : Math.round((b - a) * 1e6) / 1e6;
 
 /**
- * Compare a phase's latest snapshot with a baseline: the earliest snapshot on
- * or after `sinceDate`, or its first snapshot without one. null when there is
- * no snapshot to compare (none at all, or none on/after `sinceDate`).
+ * Compare a phase's latest snapshot (the latest on or before `untilDate` when
+ * given) with a baseline: the earliest snapshot on or after `sinceDate`, or its
+ * first snapshot without one. null when there is no snapshot to compare (none
+ * at all, or none in [sinceDate, untilDate]).
  */
-export function deltasSince(db: DB, phaseId: string, sinceDate?: string): Deltas | null {
+export function deltasSince(db: DB, phaseId: string, sinceDate?: string, untilDate?: string): Deltas | null {
   const base = db
     .prepare('SELECT * FROM phase_snapshots WHERE phase_id = ? AND date >= ? ORDER BY date LIMIT 1')
     .get(phaseId, sinceDate ?? '') as PhaseSnapshot | undefined;
-  const last = db.prepare('SELECT * FROM phase_snapshots WHERE phase_id = ? ORDER BY date DESC LIMIT 1').get(phaseId) as
-    | PhaseSnapshot
-    | undefined;
-  if (!base || !last) return null;
+  const last = (
+    untilDate === undefined
+      ? db.prepare('SELECT * FROM phase_snapshots WHERE phase_id = ? ORDER BY date DESC LIMIT 1').get(phaseId)
+      : db.prepare('SELECT * FROM phase_snapshots WHERE phase_id = ? AND date <= ? ORDER BY date DESC LIMIT 1').get(phaseId, untilDate)
+  ) as PhaseSnapshot | undefined;
+  if (!base || !last || base.date > last.date) return null;
 
   const scopeAbs = diff(base.scope, last.scope);
   const msAt = db.prepare(
