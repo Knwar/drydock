@@ -51,10 +51,11 @@ function dsWidgetCount(container) {
 // ── edits ──
 
 // A visible note (the live region speaks it; the toast's text is hidden from it). undoFor: the
-// layout a delete just produced → an Undo button, live only while that layout is still the draft.
+// layout a delete just produced → an Undo button, live only while that layout is still the draft;
+// refocus() → the restored item's element, focused after that Undo.
 let dsToastTimer = 0;
 let dsToastUndo = null;
-function dsToast(message, undoFor) {
+function dsToast(message, undoFor, refocus) {
   let t = $('ds-toast');
   if (!t) {
     t = node('div', 'ds-toast');
@@ -76,13 +77,23 @@ function dsToast(message, undoFor) {
     b.addEventListener('click', () => {
       const ok = dsToastUndo && deState.draft === dsToastUndo;
       dsToastHide();
-      if (ok && deUndo()) deTb?.redo?.focus(); // the toast is going: focus stays in the editor
+      if (ok && deUndo()) dsFocusAfterUndo(refocus); // the toast is going: focus stays in the editor
     });
     t.append(b);
   }
   t.classList.add('show');
   dsToastLater(undoFor ? 8000 : 4000);
 }
+// the restored item, else the toolbar's Redo (if the toolbar is loaded), else the Edit button
+function dsFocusAfterUndo(refocus) {
+  const redo = typeof deTb !== 'undefined' ? deTb.redo : null;
+  for (const el of [refocus?.(), redo, $('home-edit')]) {
+    if (!el?.isConnected || el.disabled) continue;
+    el.focus();
+    if (document.activeElement === el) return;
+  }
+}
+
 function dsToastLater(ms) {
   clearTimeout(dsToastTimer);
   dsToastTimer = setTimeout(dsToastHide, ms);
@@ -99,9 +110,9 @@ function dsRefuse(message) {
   dsToast(message);
 }
 
-// A delete: dsDo announces it; the toast shows it with Undo. → next
-function dsDeleted(next, label) {
-  if (next) dsToast(label, next);
+// A delete: dsDo announces it; the toast shows it with Undo (refocus: see dsToast). → next
+function dsDeleted(next, label, refocus) {
+  if (next) dsToast(label, next, refocus);
   return next;
 }
 
@@ -126,6 +137,7 @@ function dsFocus(selector) {
   return !!el;
 }
 const dsFor = (key) => `[data-de-for="${CSS.escape(key)}"]`;
+const dsHandle = (key) => $('dash-root')?.querySelector(dsFor(key)) ?? null;
 
 // ── the column picker (the shared menu, with a mini diagram per item) ──
 
@@ -282,7 +294,7 @@ deMenuItems('row', (id) => {
       danger: true,
       onSelect: () => {
         const label = n ? `Row and its ${n} widget${n > 1 ? 's' : ''} deleted` : 'Row deleted';
-        const next = dsDeleted(dsDo((L) => loRemoveRow(L, id), label), label);
+        const next = dsDeleted(dsDo((L) => loRemoveRow(L, id), label), label, () => dsHandle(`row:${id}`));
         if (!next) return;
         const after = loFind(next, p.container.id)?.node.rows?.[p.index];
         if (!(after && dsFocus(dsFor(`row:${after.id}`)))) dsFocus(`.ds-add-end[data-container-id="${CSS.escape(p.container.id)}"] > button`);
@@ -512,7 +524,7 @@ deMenuItems('section', (id) => {
   const widgets = `${n} widget${n > 1 ? 's' : ''}`;
   const del = () => {
     const label = n ? `Section and its ${widgets} deleted` : 'Section deleted';
-    const next = dsDeleted(dsDo((L) => loRemoveSection(L, id), label), label);
+    const next = dsDeleted(dsDo((L) => loRemoveSection(L, id), label), label, () => dsHandle(`section:${id}`));
     if (!next) return;
     const after = next.sections[Math.min(index, next.sections.length - 1)];
     if (!(after && dsFocus(dsFor(`section:${after.id}`)))) dsFocus('.ds-add-section-btn');
@@ -649,7 +661,7 @@ deMenuItems('tab', (id) => {
       disabled: tabs.length <= 1,
       onSelect: () => {
         const label = `Tab ${tabs[index].title} deleted`;
-        if (dsDeleted(dsDo((L) => loRemoveTab(L, id), label), label)) dsFocus(dsFor(`tabs:${widgetId}`));
+        if (dsDeleted(dsDo((L) => loRemoveTab(L, id), label), label, () => deNodeFor('tab', id))) dsFocus(dsFor(`tabs:${widgetId}`));
       },
     },
   ];
@@ -786,19 +798,33 @@ function dsDecorate(root) {
   }
 }
 
-// The tab + sits just right of the last tab, kept clear of the frame's tab / widget handles
-// (a tab handle 22px wide at right: 36px). Re-placed whenever a tab or the strip changes size
-// or the strip scrolls.
+// The tab + sits just right of the last tab, kept clear of the core's handles on the frame (the
+// tab / widget ⋮, measured: the leftmost one level with the strip). The strip's right margin
+// reserves that much (a margin, not padding: an overflowing strip scrolls its tabs under its own
+// padding), so the tabs never run under the + or the handles. Re-placed whenever a tab or the
+// strip changes size or the strip scrolls.
+const DS_TAB_ADD_GAP = 6;
 function dsPlaceTabAdd(frame) {
   const b = frame.querySelector(':scope > .ds-tab-add');
-  const tabs = frame.querySelectorAll('.dw-tabs-strip > .dw-tab[data-tab-id]');
+  const strip = frame.querySelector('.dw-tabs-strip');
+  const tabs = strip?.querySelectorAll(':scope > .dw-tab[data-tab-id]') ?? [];
   const last = tabs[tabs.length - 1];
   if (!b || !last?.getClientRects().length) return;
   const fr = frame.getBoundingClientRect();
+  const sr = strip.getBoundingClientRect();
+  const bw = b.offsetWidth;
+  const bh = b.offsetHeight;
+  let end = fr.right - DS_TAB_ADD_GAP; // no handles: the frame's edge
+  for (const h of frame.querySelectorAll(':scope > .de-btn')) {
+    const r = h.getBoundingClientRect();
+    if (r.width && r.top < sr.bottom && r.bottom > sr.top) end = Math.min(end, r.left);
+  }
+  const maxLeft = end - DS_TAB_ADD_GAP - bw; // viewport x
+  // the strip ends a gap before the +'s furthest place (its right edge as if unmargined, less that)
+  const unmargined = sr.right + (parseFloat(getComputedStyle(strip).marginRight) || 0);
+  strip.style.marginRight = `${Math.floor(unmargined - (maxLeft - DS_TAB_ADD_GAP))}px`;
   const lr = last.getBoundingClientRect();
-  const bw = b.offsetWidth || 22;
-  const bh = b.offsetHeight || 22;
-  const x = Math.max(4, Math.min(lr.right - fr.left + 6, fr.width - 58 - 6 - bw));
+  const x = Math.max(4, Math.min(lr.right + DS_TAB_ADD_GAP, maxLeft) - fr.left);
   b.style.left = `${x}px`;
   b.style.top = `${lr.top - fr.top + (lr.height - bh) / 2}px`;
 }
@@ -814,6 +840,8 @@ function dsTrackTabAdd(frame) {
       const ro = new ResizeObserver(place);
       ro.observe(frame);
       ro.observe(strip);
+      const add = frame.querySelector(':scope > .ds-tab-add');
+      if (add) ro.observe(add); // shown again after its input closes
       for (const tab of strip.querySelectorAll('.dw-tab')) ro.observe(tab);
       strip.addEventListener('scroll', place, { passive: true });
       dsTabAddObs.set(frame, {
@@ -821,6 +849,7 @@ function dsTrackTabAdd(frame) {
         stop: () => {
           ro.disconnect();
           strip.removeEventListener('scroll', place);
+          strip.style.marginRight = '';
         },
       });
     }

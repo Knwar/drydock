@@ -183,7 +183,8 @@
 .dw-tab.ds-renaming { visibility: hidden; }
 
 /* tabs: a round, dashed accent + just right of the last tab (placed by JS on the frame, outside
-   the tablist); unlike the square ⋮ handles it stays faintly visible */
+   the tablist; JS also sets the strip's right margin from the measured handles); unlike the
+   square ⋮ handles it stays faintly visible */
 .ds-tab-add {
   position: absolute;
   top: 8px;
@@ -210,7 +211,6 @@
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 .ds-tab-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.de-editing .dw-tabs-strip { padding-right: 92px; }
 
 /* swapped for an inline input: hidden for real (without relying on a global [hidden] rule) */
 .ds-tab-add[hidden], .ds-add-section-btn[hidden], .dw-sec-head > .dw-sec-toggle[hidden] { display: none !important; }
