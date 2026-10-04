@@ -1,48 +1,49 @@
 // Dashboard widget: active-agents. Who is on what right now, from Home's GET /home
 // (agents[] + now_building to join agent → current card). Live status messages
 // (onStatus) update activity and session state in place, without a refetch.
-// The data is { home, all, typed }: home is the filtered /home read; all is the same read
-// without the Type filter (=== home when no Type is set). Agents, their state and the summary
-// come from all (an agent busy on other types never looks idle); the Type filter only picks
-// which current card a row shows (home), with a quiet "Working on other types" when none matches.
+// The data is { home, all, filtered, agent }: home is the filtered /home read; all is the same read
+// without any card filter (Type, Tag, Scope, Phase, Agent; === home when none is set). Agents, their
+// state and the summary come from all (an agent busy outside the filter never looks idle); the filters
+// only pick which current card a row shows (home), with a quiet "… outside this filter" when none
+// matches. agent: the Agent filter, which narrows the rows to that agent (its state still from all).
 // Uses app.js globals read-only: node, avatarEl, teamByName, openAgentEditor,
-// openModal, svModal, fmtElapsed, LANE_NAME, home, tick, hctx, cards, projectId,
-// mxSparkline, mxMoney, mxPlural, MX_MONTHS, fmtTokens, setView, setKanbanHighlight; and
-// dashboard.js' dwDeltaChip, dwVs, dwDays, dwFirstActivity, dwAgentState, DW_AGENT_STATES.
+// openModal, svModal, fmtElapsed, LANE_NAME, home, tick, hctx, projectId,
+// mxSparkline, mxMoney, mxPlural, MX_MONTHS, fmtTokens; and dashboard.js' dwDeltaChip, dwVs, dwDays,
+// dwFirstActivity, dwAgentState, dwNowCard, dwKanbanTarget, dwOpenKanban, DW_AGENT_STATES.
 
 const AA_STATES = DW_AGENT_STATES; // the state rule is shared with Now building (dwAgentState)
 const AA_HL_LABEL = 'Active agents'; // the Kanban highlight banner's source: "N cards highlighted from Active agents"
 const AA_MAX_STACK = 5;
+const AA_CARD_FILTERS = ['scope', 'phase', 'tag', 'agent', 'workType']; // never idle a busy agent: state reads without them
 const aaPanel = { close: null, agentId: null, paint: null }; // the open side panel (one at a time)
 
 const aaSessions = dwAgentSessions; // board id → SessionView (dashboard.js, shared with Now building)
 
 const aaOwns = (a, nb) => !!nb.agent && (nb.agent === a.name || nb.agent === a.id);
 
-// The agent's current card: a blocked one first, else the one that most recently moved.
+// The agent's now card (dashboard.js dwNowCard): blocked, then live, then in progress, then in review.
 function aaCard(data, a) {
-  const mine = (data.now_building ?? []).filter((nb) => aaOwns(a, nb));
-  mine.sort((x, y) => Number(y.blocked) - Number(x.blocked) || y.since - x.since);
-  return mine[0] ?? null;
+  return dwNowCard((data.now_building ?? []).filter((nb) => aaOwns(a, nb)));
 }
 
 const aaIsReviewer = dwIsReviewer; // dashboard.js, shared with Now building
 
-// v: the widget's { home, all, typed }. card: the agent's current card across ALL its work (the
-// state's input); shown: the one its row shows (the Type filter's match); otherTypes: busy, but
-// none of its current cards is of the filtered type.
+// v: the widget's { home, all, filtered }. card: the agent's now card across ALL its work (the
+// state's input); shown: the one its row shows (the filters' match); outside: busy, but none of
+// its current cards matches the filters.
 function aaInfo(v, a) {
   const sessions = aaSessions(v.all);
   const card = aaCard(v.all, a);
   const needsYou = !!card && sessions.get(card.board.id)?.state === 'needs_you';
   // only its own card's blocker counts: a needs_you board shows in the header
   const { state, detail, attention } = dwAgentState(card, a.now, aaIsReviewer(a, card, sessions));
-  const shown = v.typed ? aaCard(v.home, a) : card;
-  return { a, card, shown, otherTypes: !shown && !!card, state, detail, attention, needsYou };
+  const shown = v.filtered ? aaCard(v.home, a) : card;
+  return { a, card, shown, outside: !shown && !!card, state, detail, attention, needsYou };
 }
 
 function aaRows(v) {
   return (v.all.agents ?? [])
+    .filter((a) => !v.agent || a.name === v.agent)
     .map((a) => aaInfo(v, a))
     .sort((x, y) => AA_STATES[x.state].rank - AA_STATES[y.state].rank || x.a.name.localeCompare(y.a.name));
 }
@@ -84,9 +85,9 @@ function aaWaiting(data) {
 function aaSummary(rows) {
   const n = (st) => rows.filter((r) => st.includes(r.state)).length;
   const el = node('div', 'aa-summary');
-  el.title = 'Counts every agent’s work, whatever the Type filter';
+  el.title = 'Counts every agent’s work, whatever the filters';
   el.append(
-    node('span', 'aa-sum-n', `${n(['working', 'reviewing'])} active`),
+    node('span', 'aa-sum-n', `${n(['working', 'reviewing', 'awaiting'])} active`),
     node('span', 'aa-sum-sep', '·'),
     node('span', `aa-sum-n${n(['blocked']) ? ' aa-sum-blocked' : ''}`, `${n(['blocked'])} blocked`),
     node('span', 'aa-sum-sep', '·'),
@@ -115,7 +116,7 @@ function aaRow(r, data, ctx, el) {
   const row = node('button', `aa-row aa-row-${r.state}`);
   row.type = 'button';
   row.dataset.agent = a.id;
-  row.setAttribute('aria-label', `${a.name}, ${AA_STATES[r.state].text}${card ? `, ${card.title}` : r.otherTypes ? ', working on other types' : ''}. Open details`);
+  row.setAttribute('aria-label', `${a.name}, ${AA_STATES[r.state].text}${card ? `, ${card.title}` : r.outside ? `, ${AA_STATES[r.state].text.toLowerCase()} outside this filter` : ''}. Open details`);
   const main = node('div', 'aa-main');
   const top = node('div', 'aa-top');
   const id = node('div', 'aa-id');
@@ -124,9 +125,9 @@ function aaRow(r, data, ctx, el) {
   const line = node('div', 'aa-line');
   if (card) {
     line.append(node('span', 'aa-card', card.title), node('span', 'aa-lane', LANE_NAME(card.lane)), aaSince(card.since, 'aa-elapsed'));
-  } else if (r.otherTypes) {
-    const note = node('span', 'aa-card aa-muted aa-other-types', 'Working on other types');
-    note.title = 'Its current card isn’t of the filtered type';
+  } else if (r.outside) {
+    const note = node('span', 'aa-card aa-muted aa-outside', `${AA_STATES[r.state].text} outside this filter`);
+    note.title = 'Its current card doesn’t match the filters';
     line.append(note);
   } else {
     line.append(node('span', `aa-card ${r.attention ? 'dw-attn' : 'aa-muted'}`, r.detail ?? 'No current card'));
@@ -139,7 +140,7 @@ function aaRow(r, data, ctx, el) {
 }
 
 function aaPaint(el, data, ctx) {
-  const rows = aaRows(data); // data: the widget's { home, all, typed }
+  const rows = aaRows(data); // data: the widget's { home, all, filtered, agent }
   const focused = el.contains(document.activeElement) ? document.activeElement.dataset.agent : null;
   el.replaceChildren();
   if (ctx.size === 'S') {
@@ -255,6 +256,7 @@ function aaOpenPanel(agentId, data, ctx, el) {
   let task = null;
   let branch = null; // { id, value }: the card's last known branch, kept visible while its task refetches
   let agentName = null;
+  let nowBoard = null; // the board of the agent's current card: where "Open in Kanban" lands first
   // since: the board's first activity (a previous period starting before it isn't a full one)
   const hs = { url: null, seq: 0, status: 'loading', data: null, since: null, error: '', shown: AA_HIST_PAGE };
   const isOpen = () => aaPanel.close === close;
@@ -302,7 +304,9 @@ function aaOpenPanel(agentId, data, ctx, el) {
     }
     const added = h.cards.reduce((n, c) => n + (c.lines_added ?? 0), 0);
     const removed = h.cards.reduce((n, c) => n + (c.lines_removed ?? 0), 0);
-    sec.append(label, grid, node('p', 'aa-p-note', `+${added.toLocaleString('en-US')} / −${removed.toLocaleString('en-US')} lines changed in range`));
+    // no card recorded a line (lines unknown): say so, never "+0 / −0"
+    const lines = added || removed ? `+${added.toLocaleString('en-US')} / −${removed.toLocaleString('en-US')} lines changed in range` : 'no line data';
+    sec.append(label, grid, node('p', 'aa-p-note', lines));
     return sec;
   }
 
@@ -362,30 +366,18 @@ function aaOpenPanel(agentId, data, ctx, el) {
     kb.type = 'button';
     kb.dataset.k = 'kanban';
     kb.disabled = !h.cards.length;
-    // Where the highlight lands: this board's Kanban when any of the cards are on it; else the board
-    // holding the most of them (?cards=, like Metrics' "Open all"). Never an empty highlight.
-    const here = h.cards.filter((c) => cards.has(c.id));
-    const byBoard = new Map();
-    for (const c of h.cards) {
-      if (!byBoard.has(c.board.id)) byBoard.set(c.board.id, { board: c.board, ids: [] });
-      byBoard.get(c.board.id).ids.push(c.id);
-    }
-    const target = here.length ? null : [...byBoard.values()].sort((x, y) => y.ids.length - x.ids.length)[0];
-    const shownN = here.length || target?.ids.length || 0;
+    // Where the highlight lands: the board of the agent's current card when it holds any of these
+    // cards, else the board holding the most of them (dwKanbanTarget). Never an empty highlight.
+    const target = dwKanbanTarget(h.cards, nowBoard);
     kb.onclick = () => {
       close();
-      if (target) {
-        location.search = `?project=${encodeURIComponent(target.board.id)}&cards=${encodeURIComponent(target.ids.join(','))}&from=${encodeURIComponent(AA_HL_LABEL)}&view=kanban`;
-        return;
-      }
-      setView('kanban');
-      setKanbanHighlight(here.map((c) => c.id), AA_HL_LABEL);
+      dwOpenKanban(target, AA_HL_LABEL);
     };
     headRow.append(kb);
     sec.append(headRow);
-    const hidden = h.cards.length - shownN;
-    if (h.cards.length && (target || hidden)) {
-      const where = target ? `Opens ${target.board.name}. ` : '';
+    const hidden = target?.rest ?? 0;
+    if (target && (target.board.id !== projectId || hidden)) {
+      const where = target.board.id !== projectId ? `Opens ${target.board.name}. ` : '';
       const rest = hidden ? `${mxPlural(hidden, 'card')} on other boards ${hidden === 1 ? 'isn’t' : 'aren’t'} shown there.` : '';
       sec.append(node('p', 'aa-p-note', `${where}${rest}`.trim()));
     }
@@ -453,6 +445,7 @@ function aaOpenPanel(agentId, data, ctx, el) {
     agentName = a.name;
     const r = aaInfo(d, a);
     const card = r.card;
+    nowBoard = card?.board.id ?? null;
 
     const head = node('div', 'aa-p-head');
     const id = node('div', 'aa-p-id');
@@ -561,7 +554,7 @@ dwRegister({
   title: 'Active agents',
   sizes: ['S', 'M', 'L'],
   ranged: false, // the rows are live; the side panel follows Home's range itself
-  // { home, all, typed } (see the header): the Type filter set → a second /home read without it
+  // { home, all, filtered, agent } (see the header): any card filter set → a second /home read without them
   async load(ctx) {
     const read = (key, f) =>
       ctx.shared(key, async () => {
@@ -570,14 +563,15 @@ dwRegister({
         return res.json();
       });
     const f = new URLSearchParams(fbNoRange(ctx.filters)); // the rows are live: the range shapes the panel's history only
-    if (!f.get('workType')) {
+    const agent = f.get('agent') || null;
+    if (!AA_CARD_FILTERS.some((k) => f.get(k))) {
       const home = await read('home', f.toString());
-      return { home, all: home, typed: false };
+      return { home, all: home, filtered: false, agent };
     }
-    const typed = read('home', f.toString());
-    f.delete('workType');
-    const [home, all] = await Promise.all([typed, read(`home-all-types|${f}`, f.toString())]);
-    return { home, all, typed: true };
+    const filtered = read('home', f.toString());
+    for (const k of AA_CARD_FILTERS) f.delete(k);
+    const [home, all] = await Promise.all([filtered, read(`home-unfiltered|${f}`, f.toString())]);
+    return { home, all, filtered: true, agent };
   },
   render(el, data, ctx) {
     if (!data?.all?.agents?.length) return { empty: 'No agents yet. Agents appear once a card is assigned.' };

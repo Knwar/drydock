@@ -2010,7 +2010,8 @@ export function getUpNext(
       waiting_on: waiting,
     };
   });
-  return { items, total_pending: ordered.length };
+  const pending = ordered.map(({ task, board }) => ({ id: task.id, board: { id: board.id, name: board.name } }));
+  return { items, total_pending: ordered.length, pending };
 }
 
 /** in_progress then in_review cards across the scope (lane, then board order, then position);

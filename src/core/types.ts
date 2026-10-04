@@ -490,6 +490,7 @@ export interface UpNextItem {
 export interface UpNext {
   items: UpNextItem[];
   total_pending: number; // queued + pickable backlog in scope
+  pending: { id: string; board: BoardRef }[]; // all total_pending cards (Up next's "View all" highlight)
 }
 
 /** One in_progress / in_review card in the Home view's "now building" list. */

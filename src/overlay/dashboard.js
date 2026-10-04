@@ -55,7 +55,10 @@
 //     not window: window.to is "now" for a rolling range.
 //   dwAgentState(card, activity, reviewer?) → { state, icon, text, rank, detail, label, live, attention }: an
 //     agent's displayed state, the one rule Now building and Active agents share (see DW_AGENT_STATES);
-//     dwAgentSessions(homeData) → Map board id → SessionView; dwIsReviewer(agent, card, sessions) → boolean.
+//     dwAgentSessions(homeData) → Map board id → SessionView; dwIsReviewer(agent, card, sessions) → boolean;
+//     dwNowCard(items) → the agent's now card; dwLive(activity) → is it real work.
+//   dwKanbanTarget(cards, preferBoardId?) → { board, ids, rest } | null; dwOpenKanban(target, label): open
+//     that board's Kanban with the cards highlighted (banner "N cards highlighted from <label>").
 
 const DW_SIZES = ['S', 'M', 'L', 'XL'];
 const DW_ROW_PX = 88;
@@ -141,27 +144,35 @@ function dwFirstActivity(ctx) {
 }
 
 // ── agent state: one rule for Now building and Active agents (they must never disagree) ──
-// card: the agent's current card (a /home now_building item: in progress or in review), or null.
-// activity: its latest status text ("<verb> <detail>"). Only real work ("Edit foo.js") is live activity:
-// null, "idle …" and "finished …" (a subagent stopped) are none; "needs you …" is the session waiting on
-// the human: detail "Needs you", attention true (callers style it with .dw-attn).
+// card: the agent's now card (Active agents: dwNowCard over its in-flight cards; Now building: the card
+// it shows), or null. activity: its latest status text ("<verb> <detail>"). Only real work ("Edit foo.js")
+// is live activity (dwLive): null, "idle …" and "finished …" (a subagent stopped) are none; "needs you …"
+// is the session waiting on the human: detail "Needs you", attention true (callers style it with .dw-attn).
 // reviewer: a reviewer persona, or a reviewer subagent live on the card (dwIsReviewer).
-//   1. the card is blocked                                   → Blocked
-//   2. the card is in review, or a reviewer has work         → Reviewing
-//   3. it has a card in flight, or any live activity         → Working
-//   4. neither                                               → Idle
-// An idle session never idles an agent with a card in flight: the card decides. The activity only adds
-// detail: a card in flight with no activity reads "Working · waiting for next action", never "idle".
-// Callers pass the agent's card from ALL its work (no Type filter), so a filter can't idle a busy agent.
+//   1. the card is blocked                                            → Blocked
+//   2. the card is in review: a reviewer on it                        → Reviewing
+//                             its owner, with live work               → Working
+//                             its owner, nothing live                 → Awaiting review
+//   3. a reviewer with live work and no card                          → Reviewing
+//   4. it has a card in flight, or any live activity                  → Working
+//   5. neither                                                        → Idle
+// A builder whose own card is in review is never "Reviewing", and Reviewing is never shown beside an
+// In Progress card. An idle session never idles an agent with a card in flight: the card decides. The
+// activity only adds detail: a card in progress with no activity reads "Working · waiting for next
+// action", never "idle".
+// Callers pass the agent's card from ALL its work (the unfiltered /home read), so no card filter (Type,
+// Tag, Scope, Phase, Agent) can idle a busy agent.
 // Now building labels each card (the card it shows, with that card's agent); Active agents labels each
-// agent, by its current card (a blocked one preferred, so an agent with any blocked card reads Blocked).
+// agent, by its now card (dwNowCard).
 // live: real work is under way (Now building's pulsing dot); never set by an idle / finished ping.
 const DW_AGENT_STATES = {
   blocked: { icon: '⚠', text: 'Blocked', rank: 0 },
   working: { icon: '▶', text: 'Working', rank: 1 },
   reviewing: { icon: '◎', text: 'Reviewing', rank: 1 },
+  awaiting: { icon: '◷', text: 'Awaiting review', rank: 1 },
   idle: { icon: '○', text: 'Idle', rank: 2 },
 };
+const dwLive = (activity) => !!activity && !/^(idle|finished|needs you)\b/.test(activity);
 function dwAgentState(card, activity, reviewer = false) {
   const verb = activity?.match(/^(idle|finished|needs you)\b/)?.[1] ?? null;
   const live = activity && !verb ? activity : null;
@@ -169,11 +180,43 @@ function dwAgentState(card, activity, reviewer = false) {
   const busy = card || live || attention;
   let state = 'idle';
   if (card?.blocked) state = 'blocked';
-  else if (card?.lane === 'in_review' || (reviewer && busy)) state = 'reviewing';
+  else if (card?.lane === 'in_review') state = reviewer ? 'reviewing' : live ? 'working' : 'awaiting';
+  else if (reviewer && busy && !card) state = 'reviewing';
   else if (busy) state = 'working';
   const s = DW_AGENT_STATES[state];
-  const detail = attention ? 'Needs you' : live || (card && !card.blocked ? 'waiting for next action' : null);
+  const detail = attention ? 'Needs you' : live || (card && state === 'working' ? 'waiting for next action' : null);
   return { state, ...s, detail, label: detail ? `${s.text} · ${detail}` : s.text, live: !!live, attention };
+}
+
+// An agent's now card among its in-flight /home items: a blocked one (Blocked wins the pill, and the row
+// shows the card it's blocked on), then one with live activity, then in progress, then in review; the
+// most recently moved first within each.
+function dwNowCard(items) {
+  const rank = (nb) => (nb.blocked ? 0 : dwLive(nb.activity) ? 1 : nb.lane === 'in_progress' ? 2 : 3);
+  return [...items].sort((x, y) => rank(x) - rank(y) || y.since - x.since)[0] ?? null;
+}
+
+// The Kanban a set of cards ([{ id, board: { id, name } }]) opens in: the prefer board when it holds any
+// of them, else the board holding the most. → { board, ids, rest } (rest: cards on other boards), or null.
+function dwKanbanTarget(items, prefer = null) {
+  const byBoard = new Map();
+  for (const c of items) {
+    if (!byBoard.has(c.board.id)) byBoard.set(c.board.id, { board: c.board, ids: [] });
+    byBoard.get(c.board.id).ids.push(c.id);
+  }
+  const target = byBoard.get(prefer) ?? [...byBoard.values()].sort((x, y) => y.ids.length - x.ids.length)[0];
+  return target ? { ...target, rest: items.length - target.ids.length } : null;
+}
+// Open the target's Kanban with its cards highlighted, the banner naming label ("from <label>"): this
+// board in place (setKanbanHighlight), another one via ?cards=…&from=… (highlightCardsFromUrl).
+function dwOpenKanban(target, label) {
+  if (target.board.id === projectId) {
+    setView('kanban');
+    setKanbanHighlight(target.ids, label);
+    return;
+  }
+  const e = encodeURIComponent;
+  location.search = `?project=${e(target.board.id)}&cards=${e(target.ids.join(','))}&from=${e(label)}&view=kanban`;
 }
 
 // board id → SessionView: /home's verticals carry them; standalone Home reads its own
@@ -188,7 +231,7 @@ function dwAgentSessions(data) {
 }
 
 // Reviewer role: no role field on team members, so the persona (name/skill) or a live
-// reviewer subagent on the agent's card says so.
+// reviewer subagent on the agent's card says so. Owning a card that is in review never does.
 function dwIsReviewer(a, card, sessions) {
   if (/review/i.test(a.skill ?? '') || /review/i.test(a.name ?? '')) return true;
   if (!card) return false;

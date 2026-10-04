@@ -21,7 +21,7 @@
 .aa-sum-sep { color: var(--dim); opacity: 0.6; }
 
 /* S: summary + stacked avatars */
-.aa-s { height: 100%; display: flex; flex-direction: column; justify-content: center; gap: 12px; }
+.aa-s { height: 100%; display: flex; flex-direction: column; justify-content: flex-start; gap: 12px; }
 .aa-stack { display: flex; align-items: center; padding-left: 8px; }
 .aa-stack-av { margin-left: -8px; box-shadow: 0 0 0 2px #151923; }
 .aa-stack-av.aa-blocked { box-shadow: 0 0 0 2px #151923, 0 0 0 3.5px #e06c75; }
@@ -86,6 +86,7 @@
 .aa-pill-icon { font-size: 9px; line-height: 1; }
 .aa-pill.aa-working { --chip: var(--accent); }
 .aa-pill.aa-reviewing { --chip: #b57edc; }
+.aa-pill.aa-awaiting { --chip: #e5c07b; }
 .aa-pill.aa-blocked { --chip: #e06c75; }
 .aa-pill.aa-idle { --chip: var(--dim); }
 

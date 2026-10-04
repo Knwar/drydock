@@ -1904,6 +1904,8 @@ describe('home view reads', () => {
     );
     assert.equal(total_pending, 8);
     assert.deepEqual(items[1].board, { id: mobile.id, name: 'Mobile' });
+    // every pending card with its board (Up next's "View all" highlight), in pick order
+    assert.deepEqual(getUpNext(db, ws.id, 3).pending.map((p) => [p.id, p.board.id]), items.map((i) => [i.id, i.board.id]));
   });
 
   it('now building: in_progress then in_review, subtasks, next criterion, since, blocked; workspace-wide', (t) => {

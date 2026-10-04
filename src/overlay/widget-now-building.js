@@ -17,7 +17,8 @@ function wnbPhase(item) {
 
 // The card's agent state + live action, by the rule Active agents uses too (dashboard.js
 // dwAgentState, with the same reviewer signal): "Working · Edit foo.js", or "Working · waiting for
-// next action" when the session is idle with the card still in flight (never a bare "idle").
+// next action" when the session is idle with the card still in progress (never a bare "idle"); a card
+// in review with no reviewer on it reads "Awaiting review".
 function wnbState(it, activity, sessions) {
   return dwAgentState(it, activity || null, dwIsReviewer(it.agent ? wnbAgent(it.agent) : {}, it, sessions));
 }
@@ -149,7 +150,8 @@ function wnbSmall(el, now, ctx) {
   const line = node('button', 'wnb-s');
   line.type = 'button';
   line.title = it.title;
-  line.append(node('span', 'wnb-s-n', `${now.length} building`), node('span', 'wnb-s-title', it.title));
+  // in flight: building + in review (WIP splits them), not all "building"
+  line.append(node('span', 'wnb-s-n', `${now.length} in flight`), node('span', 'wnb-s-title', it.title));
   const { done, total } = it.subtasks;
   if (total) line.append(node('span', 'wnb-s-frac', `${done}/${total}`));
   line.onclick = () => ctx.openCard(it.id, it.board.id);
@@ -188,7 +190,7 @@ dwRegister({
     if (rest.length) {
       const max = WNB_ROWS[ctx.size] ?? WNB_ROWS.M;
       const list = node('div', 'wnb-rows');
-      const showBoard = ctx.size === 'L';
+      const showBoard = ctx.size === 'L' || ctx.size === 'M';
       for (const it of rest.slice(0, max)) list.append(wnbRow(it, ctx, showBoard));
       if (rest.length > max) {
         const more = node('button', 'wnb-more', `+${rest.length - max} more`);
