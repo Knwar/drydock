@@ -1882,6 +1882,15 @@ describe('home view reads', () => {
     assert.equal(total_pending, 4); // the out-of-phase card isn't pending pick
   });
 
+  it('up next pending: the highlight ids are capped at 200, total_pending is not', (t) => {
+    const { db, ws, cleanup } = home();
+    t.after(cleanup);
+    for (let i = 0; i < 205; i++) createTask(db, ws.id, `b${i}`);
+    const up = getUpNext(db, ws.id);
+    assert.equal(up.total_pending, 205);
+    assert.equal(up.pending.length, 200);
+  });
+
   it('up next workspace merge: all queued (board order) first, then backlog round-robin', (t) => {
     const { db, ws, verticals, cleanup } = home();
     t.after(cleanup);
@@ -1904,7 +1913,7 @@ describe('home view reads', () => {
     );
     assert.equal(total_pending, 8);
     assert.deepEqual(items[1].board, { id: mobile.id, name: 'Mobile' });
-    // every pending card with its board (Up next's "View all" highlight), in pick order
+    // every pending card with its board (Up next's "View all" highlight), in pick order (capped at 200)
     assert.deepEqual(getUpNext(db, ws.id, 3).pending.map((p) => [p.id, p.board.id]), items.map((i) => [i.id, i.board.id]));
   });
 

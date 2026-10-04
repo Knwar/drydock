@@ -82,10 +82,10 @@ function aaWaiting(data) {
   return box;
 }
 
-function aaSummary(rows) {
+function aaSummary(rows, agent = null) {
   const n = (st) => rows.filter((r) => st.includes(r.state)).length;
   const el = node('div', 'aa-summary');
-  el.title = 'Counts every agent’s work, whatever the filters';
+  el.title = agent ? `Counts all of ${agent}’s work, whatever the other filters` : 'Counts every agent’s work, whatever the filters';
   el.append(
     node('span', 'aa-sum-n', `${n(['working', 'reviewing', 'awaiting'])} active`),
     node('span', 'aa-sum-sep', '·'),
@@ -145,7 +145,7 @@ function aaPaint(el, data, ctx) {
   el.replaceChildren();
   if (ctx.size === 'S') {
     const wrap = node('div', 'aa-s');
-    wrap.append(aaSummary(rows));
+    wrap.append(aaSummary(rows, data.agent));
     const waitingS = aaWaiting(data.all);
     if (waitingS) wrap.append(waitingS);
     wrap.append(aaStack(rows));
@@ -160,7 +160,7 @@ function aaPaint(el, data, ctx) {
     item.append(aaRow(r, data, ctx, el));
     list.append(item);
   }
-  el.append(aaSummary(rows));
+  el.append(aaSummary(rows, data.agent));
   const waiting = aaWaiting(data.all);
   if (waiting) el.append(waiting);
   el.append(list);
@@ -368,10 +368,12 @@ function aaOpenPanel(agentId, data, ctx, el) {
     kb.disabled = !h.cards.length;
     // Where the highlight lands: the board of the agent's current card when it holds any of these
     // cards, else the board holding the most of them (dwKanbanTarget). Never an empty highlight.
+    // the note reflects the current card at render; the click re-resolves it (it may have moved since)
     const target = dwKanbanTarget(h.cards, nowBoard);
     kb.onclick = () => {
+      const at = dwKanbanTarget(h.cards, nowBoard);
       close();
-      dwOpenKanban(target, AA_HL_LABEL);
+      dwOpenKanban(at, AA_HL_LABEL);
     };
     headRow.append(kb);
     sec.append(headRow);

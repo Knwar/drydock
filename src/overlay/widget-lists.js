@@ -97,9 +97,11 @@ dwRegister({
     // highlight them on the board holding the most (a workspace Home's own board may hold none)
     const target = dwKanbanTarget(up.pending ?? []);
     if (!target) return;
-    const one = !target.rest;
-    const link = wlLink(one ? `View all ${up.total_pending} in Kanban →` : `View ${target.ids.length} in ${homeBoardName(target.board)} Kanban →`, () => dwOpenKanban(target, WL_UP_NEXT_HL));
-    if (!one) link.title = `${mxPlural(target.rest, 'card')} on other boards ${target.rest === 1 ? 'isn’t' : 'aren’t'} shown there`;
+    // pending is capped (200): what isn't highlighted counts against total_pending
+    const rest = up.total_pending - target.ids.length;
+    const where = target.board.id === ctx.projectId ? 'Kanban' : `${homeBoardName(target.board)} Kanban`;
+    const link = wlLink(rest > 0 ? `View ${target.ids.length} in ${where} →` : `View all ${up.total_pending} in ${where} →`, () => dwOpenKanban(target, WL_UP_NEXT_HL));
+    if (rest > 0) link.title = `${mxPlural(rest, 'card')} on other boards ${rest === 1 ? 'isn’t' : 'aren’t'} shown there`;
     root.append(link);
   },
 });

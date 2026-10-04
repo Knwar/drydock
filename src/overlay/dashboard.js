@@ -231,12 +231,13 @@ function dwAgentSessions(data) {
 }
 
 // Reviewer role: no role field on team members, so the persona (name/skill) or a live
-// reviewer subagent on the agent's card says so. Owning a card that is in review never does.
+// reviewer subagent live on the agent's card says so. Owning a card that is in review never does.
 function dwIsReviewer(a, card, sessions) {
   if (/review/i.test(a.skill ?? '') || /review/i.test(a.name ?? '')) return true;
   if (!card) return false;
   const s = sessions.get(card.board.id);
-  return !!s?.agents?.some((e) => e.task_id === card.id && /review/i.test(e.agent));
+  // only while live on the card: a finished (or idle) reviewer subagent still listed doesn't count
+  return !!s?.agents?.some((e) => e.task_id === card.id && /review/i.test(e.agent) && dwLive(`${e.verb ?? ''} ${e.detail ?? ''}`.trim()));
 }
 
 function dwDeltaChip({ cur, prev, polarity = 0, fmt, label, subject, has = prev != null, labelLong = label, none, title, since, previousWindow, kind, short = false }) {

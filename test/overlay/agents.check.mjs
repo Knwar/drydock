@@ -218,6 +218,8 @@ try {
   ok(f.sum.includes('3 active'), 'Phase = Payments: the summary counts every agent', f.sum);
   f = await filtered('agent=Bob', 1);
   ok(Object.keys(f.rows).join() === 'Bob' && f.rows.Bob.pill === 'Working' && f.rows.Bob.line.startsWith('Bob defect'), 'Agent = Bob: just Bob, Working on his live card (not "Reviewing")', f.rows);
+  const bobTip = (await summary()).title;
+  ok(bobTip === 'Counts all of Bob’s work, whatever the other filters', 'Agent = Bob: the summary tooltip names Bob, not "every agent"', bobTip);
 
   // ---- 3. Open in Kanban labels its highlight ----
   const openKanban = async (name = 'Ada') => {

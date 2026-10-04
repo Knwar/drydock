@@ -1977,6 +1977,8 @@ function waitingOn(db: DB, dependsOn: string | null): WaitingOn[] {
  * Filters: only the shown boards (scope; a phase → its board), their cards matching
  * phase / tag / agent; a phase filter picks that phase's backlog instead of the active one.
  */
+const UP_NEXT_PENDING_MAX = 200; // up_next.pending: Up next's "View all" highlight ids, capped
+
 export function getUpNext(
   db: DB,
   projectId: string,
@@ -2010,7 +2012,7 @@ export function getUpNext(
       waiting_on: waiting,
     };
   });
-  const pending = ordered.map(({ task, board }) => ({ id: task.id, board: { id: board.id, name: board.name } }));
+  const pending = ordered.slice(0, UP_NEXT_PENDING_MAX).map(({ task, board }) => ({ id: task.id, board: { id: board.id, name: board.name } }));
   return { items, total_pending: ordered.length, pending };
 }
 
