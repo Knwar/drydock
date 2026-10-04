@@ -88,7 +88,7 @@ try {
   await j('POST', `/task/${a2}/move`, { lane: 'done' });
   await card('Bob defect', 'defect', 'Bob');
   // Ada's session went idle with her card still in flight (the QA case: "Ada · idle")
-  const status = (verb, detail = '') => j('POST', '/status', { project_id: web, agent: 'builder', verb, detail, task_id: a1 });
+  const status = (verb, detail = '', agent = 'builder') => j('POST', '/status', { project_id: web, agent, verb, detail, task_id: a1 });
   await status('idle');
 
   browser = await chromium.launch({ executablePath: CHROME, headless: true });
@@ -97,7 +97,15 @@ try {
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => m.type() === 'error' && !m.text().startsWith('Failed to load resource') && errors.push(`console: ${m.text()}`));
   const W = (t) => `.dw-widget[data-widget-type="${t}"]`;
-  const heroAction = () => page.$eval(`${W('now-building')} .wnb-action[data-card="${a1}"] .wnb-action-txt`, (e) => e.textContent);
+  const ACT = `${W('now-building')} .wnb-action[data-card="${a1}"]`;
+  const heroAction = () => page.$eval(`${ACT} .wnb-action-txt`, (e) => e.textContent);
+  // the hero's action line: text, the pulsing dot (.wnb-who.on), the attention colour (.dw-attn)
+  const hero = () =>
+    page.$eval(ACT, (a) => ({ text: a.querySelector('.wnb-action-txt').textContent, on: a.parentElement.classList.contains('on'), attn: a.querySelector('.wnb-action-txt').classList.contains('dw-attn') }));
+  const heroAfter = async (text) => {
+    await page.waitForFunction(([sel, t]) => document.querySelector(sel)?.textContent === t, [`${ACT} .wnb-action-txt`, text], { timeout: 5000 }).catch(() => {});
+    return hero();
+  };
   const rowsOf = () =>
     page.$$eval(`${W('active-agents')} .aa-row`, (rs) =>
       Object.fromEntries(rs.map((r) => [r.querySelector('.aa-name').textContent, { pill: r.querySelector('.aa-pill-text').textContent, line: r.querySelector('.aa-line').textContent }])),
@@ -116,14 +124,32 @@ try {
   let rows = await rowsOf();
   ok(rows.Ada?.pill === 'Working' && act0.startsWith(`${rows.Ada.pill} ·`), 'Now building and Active agents agree on Ada (Working)', { act0, ada: rows.Ada });
   ok(rows.Cy?.pill === 'Idle' && rows.Cy.line === 'No current card', 'an agent with no card is Idle', rows.Cy);
+  let h = await hero();
+  ok(!h.on && !h.attn, 'idle session: the dot is not lit', h);
   await status('Edit', 'foo.js');
-  await page.waitForFunction((sel) => document.querySelector(sel)?.textContent === 'Working · Edit foo.js', `${W('now-building')} .wnb-action[data-card="${a1}"] .wnb-action-txt`, { timeout: 5000 }).catch(() => {});
-  ok((await heroAction()) === 'Working · Edit foo.js', 'live status: "Working · Edit foo.js"', await heroAction());
+  h = await heroAfter('Working · Edit foo.js');
+  ok(h.text === 'Working · Edit foo.js' && h.on, 'live status: "Working · Edit foo.js", dot lit', h);
   await status('idle');
-  await page.waitForFunction((sel) => document.querySelector(sel)?.textContent === 'Working · waiting for next action', `${W('now-building')} .wnb-action[data-card="${a1}"] .wnb-action-txt`, { timeout: 5000 }).catch(() => {});
-  ok((await heroAction()) === 'Working · waiting for next action', 'live idle ping: back to "Working · waiting for next action" (never "idle")', await heroAction());
+  h = await heroAfter('Working · waiting for next action');
+  ok(h.text === 'Working · waiting for next action' && !h.on, 'live idle ping: back to "Working · waiting for next action" (never "idle"), dot off', h);
   rows = await rowsOf();
   ok(rows.Ada?.pill === 'Working', 'Active agents keeps Ada Working after the idle ping', rows.Ada);
+  await status('needs you', 'permission');
+  h = await heroAfter('Working · Needs you');
+  ok(h.text === 'Working · Needs you' && h.attn && !h.on, 'a "needs you" ping: "Working · Needs you" in the attention colour, dot off', h);
+  await status('finished');
+  h = await heroAfter('Working · waiting for next action');
+  ok(h.text === 'Working · waiting for next action' && !h.attn && !h.on, 'a "finished" ping: "Working · waiting for next action" (never "Working · finished"), dot off', h);
+  // a reviewer subagent on Ada's card: both widgets read Reviewing (the same reviewer signal)
+  await status('Read', 'x.js', 'reviewer');
+  h = await heroAfter('Reviewing · Read x.js');
+  await page.waitForFunction((sel) => [...document.querySelectorAll(sel)].some((r) => r.textContent.includes('Ada') && r.textContent.includes('Reviewing')), `${W('active-agents')} .aa-row`, { timeout: 5000 }).catch(() => {});
+  rows = await rowsOf();
+  ok(h.text === 'Reviewing · Read x.js' && h.on && rows.Ada?.pill === 'Reviewing', 'a reviewer subagent: Now building and Active agents both read Reviewing', { h, ada: rows.Ada });
+  await status('finished', '', 'reviewer');
+  h = await heroAfter('Working · waiting for next action');
+  rows = await rowsOf();
+  ok(h.text === 'Working · waiting for next action' && rows.Ada?.pill === 'Working', 'the reviewer finished: both back to Working', { h, ada: rows.Ada });
 
   // ---- 2. the Type filter doesn't idle busy agents ----
   await page.goto(`${base}/?project=${web}&view=home&workType=defect`);

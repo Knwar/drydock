@@ -16,9 +16,19 @@ function wnbPhase(item) {
 }
 
 // The card's agent state + live action, by the rule Active agents uses too (dashboard.js
-// dwAgentState): "Working · Edit foo.js", or "Working · waiting for next action" when the
-// session is idle with the card still in flight (never a bare "idle").
-const wnbActionText = (it, activity = it.activity) => dwAgentState(it, activity || null).label;
+// dwAgentState, with the same reviewer signal): "Working · Edit foo.js", or "Working · waiting for
+// next action" when the session is idle with the card still in flight (never a bare "idle").
+function wnbState(it, activity, sessions) {
+  return dwAgentState(it, activity || null, dwIsReviewer(it.agent ? wnbAgent(it.agent) : {}, it, sessions));
+}
+
+// The action line: its text, the pulsing dot only for live work, the attention colour for "Needs you".
+function wnbPaintAction(act, st) {
+  const txt = act.querySelector('.wnb-action-txt');
+  txt.textContent = st.label;
+  txt.classList.toggle('dw-attn', st.attention);
+  act.parentElement.classList.toggle('on', st.live);
+}
 
 function wnbElapsed(since) {
   const el = node('span', 'wnb-elapsed', fmtElapsed(since));
@@ -50,14 +60,15 @@ function wnbHero(it, data, ctx) {
   const title = node('div', 'wnb-title', it.title);
   title.title = it.title;
 
-  const who = node('div', `wnb-who${it.activity ? ' on' : ''}`);
+  const who = node('div', 'wnb-who');
   if (it.agent) who.append(avatarEl(wnbAgent(it.agent), 20), node('span', 'wnb-agent', it.agent));
   else who.append(node('span', 'wnb-agent wnb-dim', 'unassigned'));
   const act = node('span', 'wnb-action');
   act.dataset.card = it.id;
-  act._wnbItem = it; // onStatus re-derives the label from the card
-  act.append(node('span', 'home-dot'), node('span', 'wnb-action-txt', wnbActionText(it)));
+  act._wnbItem = it; // onStatus re-derives the state from the card
+  act.append(node('span', 'home-dot'), node('span', 'wnb-action-txt'));
   who.append(act);
+  wnbPaintAction(act, wnbState(it, it.activity, dwAgentSessions(data)));
 
   hero.append(chips, title, who);
 
@@ -158,6 +169,7 @@ dwRegister({
     });
   },
   render(el, data, ctx) {
+    el._wnbData = data; // onStatus: its sessions (the reviewer signal)
     const now = data.now_building ?? [];
     const root = node('div', `wnb wnb-${ctx.size}`);
     if (!now.length) {
@@ -192,12 +204,15 @@ dwRegister({
   // live action: applyHomeStatus has already written it onto the shared /home item
   onStatus(msg, el) {
     const st = msg.status;
-    if (!st?.task_id) return;
+    const data = el._wnbData;
+    if (!data || !st) return;
+    const sessions = dwAgentSessions(data);
+    if (msg.session && msg.project_id) sessions.set(msg.project_id, msg.session);
+    if (!st.task_id) return;
     for (const a of el.querySelectorAll('.wnb-action')) {
       if (a.dataset.card !== st.task_id) continue;
       const text = `${st.verb ?? ''} ${st.detail ?? ''}`.trim();
-      a.querySelector('.wnb-action-txt').textContent = wnbActionText(a._wnbItem, text);
-      a.parentElement.classList.toggle('on', !!text);
+      wnbPaintAction(a, wnbState(a._wnbItem, text, sessions));
     }
   },
 });

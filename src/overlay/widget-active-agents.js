@@ -15,16 +15,7 @@ const AA_HL_LABEL = 'Active agents'; // the Kanban highlight banner's source: "N
 const AA_MAX_STACK = 5;
 const aaPanel = { close: null, agentId: null, paint: null }; // the open side panel (one at a time)
 
-// board id → SessionView: /home's verticals carry them; standalone Home reads its
-// own (app.js home.sessions); status messages overwrite them (onStatus).
-function aaSessions(data) {
-  if (!data._aaSessions) {
-    const m = new Map(typeof home !== 'undefined' ? home.sessions : []);
-    for (const v of data.verticals ?? []) if (v.session) m.set(v.project.id, v.session);
-    Object.defineProperty(data, '_aaSessions', { value: m, enumerable: false, writable: true });
-  }
-  return data._aaSessions;
-}
+const aaSessions = dwAgentSessions; // board id → SessionView (dashboard.js, shared with Now building)
 
 const aaOwns = (a, nb) => !!nb.agent && (nb.agent === a.name || nb.agent === a.id);
 
@@ -35,14 +26,7 @@ function aaCard(data, a) {
   return mine[0] ?? null;
 }
 
-// Reviewer role: no role field on team members, so the persona (name/skill) or a live
-// reviewer subagent on the agent's card says so.
-function aaIsReviewer(a, card, sessions) {
-  if (/review/i.test(a.skill ?? '') || /review/i.test(a.name ?? '')) return true;
-  if (!card) return false;
-  const s = sessions.get(card.board.id);
-  return !!s?.agents?.some((e) => e.task_id === card.id && /review/i.test(e.agent));
-}
+const aaIsReviewer = dwIsReviewer; // dashboard.js, shared with Now building
 
 // v: the widget's { home, all, typed }. card: the agent's current card across ALL its work (the
 // state's input); shown: the one its row shows (the Type filter's match); otherTypes: busy, but
@@ -52,9 +36,9 @@ function aaInfo(v, a) {
   const card = aaCard(v.all, a);
   const needsYou = !!card && sessions.get(card.board.id)?.state === 'needs_you';
   // only its own card's blocker counts: a needs_you board shows in the header
-  const { state, detail } = dwAgentState(card, a.now, aaIsReviewer(a, card, sessions));
+  const { state, detail, attention } = dwAgentState(card, a.now, aaIsReviewer(a, card, sessions));
   const shown = v.typed ? aaCard(v.home, a) : card;
-  return { a, card, shown, otherTypes: !shown && !!card, state, detail, needsYou };
+  return { a, card, shown, otherTypes: !shown && !!card, state, detail, attention, needsYou };
 }
 
 function aaRows(v) {
@@ -145,7 +129,7 @@ function aaRow(r, data, ctx, el) {
     note.title = 'Its current card isn’t of the filtered type';
     line.append(note);
   } else {
-    line.append(node('span', 'aa-card aa-muted', r.detail ?? 'No current card'));
+    line.append(node('span', `aa-card ${r.attention ? 'dw-attn' : 'aa-muted'}`, r.detail ?? 'No current card'));
   }
   main.append(top, line);
   if (ctx.size === 'L') main.append(node('div', 'aa-quiet', `${a.cards} card${a.cards === 1 ? '' : 's'} · ${a.hours} h all-time`));
@@ -526,7 +510,7 @@ function aaOpenPanel(agentId, data, ctx, el) {
         br.append(node('span', 'aa-p-branch-k', 'Branch'), node('code', 'aa-p-branch-v', branch.value));
         now.append(br);
       }
-      if (r.detail) now.append(node('div', 'aa-p-activity', r.detail));
+      if (r.detail) now.append(node('div', `aa-p-activity${r.attention ? ' dw-attn' : ''}`, r.detail));
       if (card.blocked) {
         const why = node('div', 'aa-p-reason');
         why.append(node('span', 'aa-p-reason-k', 'Blocker'));
@@ -547,7 +531,7 @@ function aaOpenPanel(agentId, data, ctx, el) {
     } else {
       taskFor = null;
       task = null;
-      now.append(node('div', 'aa-p-muted', r.detail ?? 'No current card'));
+      now.append(node('div', r.attention ? 'aa-p-muted dw-attn' : 'aa-p-muted', r.detail ?? 'No current card'));
     }
 
     const hadFocus = top.contains(document.activeElement) ? document.activeElement.dataset.k : null;

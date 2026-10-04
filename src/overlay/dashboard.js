@@ -53,8 +53,9 @@
 //   dwPrevDays(previousWindow) → the comparison window's length in whole days, Math.round((to+1-from)/DAY)
 //     (at least 1), or null when there's no previousWindow (all time: no comparison). Use previousWindow,
 //     not window: window.to is "now" for a rolling range.
-//   dwAgentState(card, activity, reviewer?) → { state, icon, text, rank, detail, label }: an agent's
-//     displayed state, the one rule Now building and Active agents share (see DW_AGENT_STATES).
+//   dwAgentState(card, activity, reviewer?) → { state, icon, text, rank, detail, label, live, attention }: an
+//     agent's displayed state, the one rule Now building and Active agents share (see DW_AGENT_STATES);
+//     dwAgentSessions(homeData) → Map board id → SessionView; dwIsReviewer(agent, card, sessions) → boolean.
 
 const DW_SIZES = ['S', 'M', 'L', 'XL'];
 const DW_ROW_PX = 88;
@@ -141,9 +142,10 @@ function dwFirstActivity(ctx) {
 
 // ── agent state: one rule for Now building and Active agents (they must never disagree) ──
 // card: the agent's current card (a /home now_building item: in progress or in review), or null.
-// activity: its latest live status text ("Edit foo.js"); null, or an idle ping ("idle …"), when the
-// session is idle / silent: that's no activity.
-// reviewer: a reviewer persona, or a reviewer subagent live on the card.
+// activity: its latest status text ("<verb> <detail>"). Only real work ("Edit foo.js") is live activity:
+// null, "idle …" and "finished …" (a subagent stopped) are none; "needs you …" is the session waiting on
+// the human: detail "Needs you", attention true (callers style it with .dw-attn).
+// reviewer: a reviewer persona, or a reviewer subagent live on the card (dwIsReviewer).
 //   1. the card is blocked                                   → Blocked
 //   2. the card is in review, or a reviewer has work         → Reviewing
 //   3. it has a card in flight, or any live activity         → Working
@@ -151,6 +153,9 @@ function dwFirstActivity(ctx) {
 // An idle session never idles an agent with a card in flight: the card decides. The activity only adds
 // detail: a card in flight with no activity reads "Working · waiting for next action", never "idle".
 // Callers pass the agent's card from ALL its work (no Type filter), so a filter can't idle a busy agent.
+// Now building labels each card (the card it shows, with that card's agent); Active agents labels each
+// agent, by its current card (a blocked one preferred, so an agent with any blocked card reads Blocked).
+// live: real work is under way (Now building's pulsing dot); never set by an idle / finished ping.
 const DW_AGENT_STATES = {
   blocked: { icon: '⚠', text: 'Blocked', rank: 0 },
   working: { icon: '▶', text: 'Working', rank: 1 },
@@ -158,14 +163,37 @@ const DW_AGENT_STATES = {
   idle: { icon: '○', text: 'Idle', rank: 2 },
 };
 function dwAgentState(card, activity, reviewer = false) {
-  const live = activity && !/^idle\b/.test(activity) ? activity : null;
+  const verb = activity?.match(/^(idle|finished|needs you)\b/)?.[1] ?? null;
+  const live = activity && !verb ? activity : null;
+  const attention = verb === 'needs you';
+  const busy = card || live || attention;
   let state = 'idle';
   if (card?.blocked) state = 'blocked';
-  else if (card?.lane === 'in_review' || (reviewer && (card || live))) state = 'reviewing';
-  else if (card || live) state = 'working';
+  else if (card?.lane === 'in_review' || (reviewer && busy)) state = 'reviewing';
+  else if (busy) state = 'working';
   const s = DW_AGENT_STATES[state];
-  const detail = live || (card && !card.blocked ? 'waiting for next action' : null);
-  return { state, ...s, detail, label: detail ? `${s.text} · ${detail}` : s.text };
+  const detail = attention ? 'Needs you' : live || (card && !card.blocked ? 'waiting for next action' : null);
+  return { state, ...s, detail, label: detail ? `${s.text} · ${detail}` : s.text, live: !!live, attention };
+}
+
+// board id → SessionView: /home's verticals carry them; standalone Home reads its own
+// (app.js home.sessions); widgets' onStatus overwrite them. Cached on the /home data.
+function dwAgentSessions(data) {
+  if (!data._dwSessions) {
+    const m = new Map(typeof home !== 'undefined' ? home.sessions : []);
+    for (const v of data.verticals ?? []) if (v.session) m.set(v.project.id, v.session);
+    Object.defineProperty(data, '_dwSessions', { value: m, enumerable: false, writable: true });
+  }
+  return data._dwSessions;
+}
+
+// Reviewer role: no role field on team members, so the persona (name/skill) or a live
+// reviewer subagent on the agent's card says so.
+function dwIsReviewer(a, card, sessions) {
+  if (/review/i.test(a.skill ?? '') || /review/i.test(a.name ?? '')) return true;
+  if (!card) return false;
+  const s = sessions.get(card.board.id);
+  return !!s?.agents?.some((e) => e.task_id === card.id && /review/i.test(e.agent));
 }
 
 function dwDeltaChip({ cur, prev, polarity = 0, fmt, label, subject, has = prev != null, labelLong = label, none, title, since, previousWindow, kind, short = false }) {
