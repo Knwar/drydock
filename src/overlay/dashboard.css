@@ -263,3 +263,6 @@ body.reduce-motion .dw-skel-bar { animation: none; }
   body:not(.de-editing) .dw-slot.dw-slot-vacant { display: none; } /* stacked: no blank hole */
   .dw-empty-edit { display: none; }
 }
+/* an agent's session waiting on the human (dwAgentState attention): like the header's "needs you" */
+/* doubled: wins over the widget sheets (loaded later) colouring the same element (.aa-card, .aa-p-muted) */
+.dw-attn.dw-attn { color: #e06c75; font-weight: 600; }
