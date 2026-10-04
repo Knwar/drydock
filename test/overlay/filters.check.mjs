@@ -315,13 +315,14 @@ ok((await texts(`${H} .fb-bar label.mx-field > span`)).join('|') === 'Scope|Phas
 {
   const reqs = reqWatch();
   await page.click(`${W('active-agents')} .aa-row`);
-  await page.waitForSelector('.aa-delta');
+  await page.waitForSelector('.aa-panel .dw-delta');
   await quiet();
   reqs.stop();
   const hist = reqs.filter((u) => /\/agents\/[^/]+\/history/.test(new URL(u).pathname)).map((u) => new URL(u).searchParams);
   ok(hist.length === 1 && Number(hist[0].get('from')) === from4w && hist[0].get('compare') === 'previous', 'agent history read carries the 4w from (compare=previous)', hist.map((q) => q.toString()));
-  ok(!!(await page.$('.aa-delta:is(.aa-d-good, .aa-d-bad)')), 'agent panel at 4w: coloured deltas');
-  ok((await texts('.aa-delta .aa-d-vs')).some((t) => /^vs prev \d+ d$/.test(t)), 'agent panel: "vs prev N d"', await texts('.aa-delta .aa-d-vs'));
+  ok(!!(await page.$('.aa-panel .dw-delta:is(.dw-d-good, .dw-d-bad)')), 'agent panel at 4w: coloured deltas');
+  ok((await texts('.aa-panel .dw-delta .dw-d-vs')).some((t) => t === 'vs previous 4 weeks'), 'agent panel: "vs previous 4 weeks"', await texts('.aa-panel .dw-delta .dw-d-vs'));
+  ok(/^Stats · last 4 weeks$/i.test(await page.$eval('.aa-panel .aa-p-label:has(.aa-p-range)', (e) => e.textContent)), 'agent panel: "Stats · last 4 weeks"', await page.$eval('.aa-panel .aa-p-label:has(.aa-p-range)', (e) => e.textContent));
   await shot('home-2-agent-panel-4w');
 }
 
@@ -334,7 +335,7 @@ const pickRange = (id) => page.$eval(`${H} .mx-seg-btn[data-fb="range-${id}"]`, 
   const reqs = reqWatch();
   await pickRange('all');
   const skel = await page.evaluate(() => [...document.querySelectorAll('.dw-widget .dw-skel')].map((e) => e.closest('.dw-widget').dataset.widgetType).concat(document.querySelector('#home-sub').textContent === 'Loading…' ? ['home-sub'] : []));
-  await page.waitForFunction(() => [...document.querySelectorAll('.aa-delta')].every((c) => c.textContent === 'No previous period'), null, { timeout: 10000 });
+  await page.waitForFunction(() => [...document.querySelectorAll('.aa-panel .dw-delta')].every((c) => c.textContent === 'No previous period'), null, { timeout: 10000 });
   await quiet();
   reqs.stop();
   ok(!skel.length, 'range change: no skeleton / "Loading…" flash', skel);
@@ -345,13 +346,13 @@ const pickRange = (id) => page.$eval(`${H} .mx-seg-btn[data-fb="range-${id}"]`, 
   ok(cost.length > 0 && cost.every((q) => !q.has('from')), 'All: the KPI read re-read without from', cost.map((q) => q.toString()));
   const after = await liveSnap();
   ok(JSON.stringify(after) === JSON.stringify(before), 'All: now-building, up-next, agent rows and board tiles unchanged', { before, after });
-  ok((await texts('.aa-delta')).every((t) => t === 'No previous period') && !(await page.$('.aa-delta:is(.aa-d-good, .aa-d-bad)')), 'All: the agent panel deltas grey ("No previous period")');
+  ok((await texts('.aa-panel .dw-delta')).every((t) => t === 'No previous period') && !(await page.$('.aa-panel .dw-delta:is(.dw-d-good, .dw-d-bad)')), 'All: the agent panel deltas grey ("No previous period")');
   ok(param('range') === 'all' && keysIn().join() === 'range', 'All: range=all in the URL', page.url());
   ok((await chipV()) === 'all time' && !!(await page.$(`${H} .fb-chip.on`)), 'All: chip reads "all time"', await chipV());
   await shot('home-3-all-time');
   // 2w: the live widgets still unchanged
   await pickRange('2w');
-  await page.waitForFunction(() => [...document.querySelectorAll('.aa-delta .aa-d-vs')].some((e) => /vs prev/.test(e.textContent)), null, { timeout: 10000 });
+  await page.waitForFunction(() => [...document.querySelectorAll('.aa-panel .dw-delta .dw-d-vs')].some((e) => e.textContent === 'vs previous 2 weeks'), null, { timeout: 10000 });
   await quiet();
   ok(JSON.stringify(await liveSnap()) === JSON.stringify(before), '2w: live widgets unchanged', await liveSnap());
   await pickRange('all');

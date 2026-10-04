@@ -3,7 +3,8 @@
 // (onStatus) update activity and session state in place, without a refetch.
 // Uses app.js globals read-only: node, avatarEl, teamByName, openAgentEditor,
 // openModal, svModal, fmtElapsed, LANE_NAME, home, tick, hctx, cards, projectId,
-// mxSparkline, mxMoney, mxPlural, MX_MONTHS, fmtTokens, setView, setKanbanHighlight.
+// mxSparkline, mxMoney, mxPlural, MX_MONTHS, fmtTokens, setView, setKanbanHighlight; and
+// dashboard.js' dwDeltaChip, dwVs, dwDays, dwFirstActivity.
 
 const AA_STATES = {
   blocked: { icon: '⚠', text: 'Blocked', rank: 0 },
@@ -182,81 +183,56 @@ const AA_HIST_PAGE = 20;
 const AA_DAY = 86_400_000;
 const AA_OUTCOME = { done: 'Done', reassigned: 'Reassigned', redirected: 'Redirected' };
 
-// Durations in human units: 45 m, 5.5 h, 3.2 d.
-function aaDur(ms) {
+// Durations in human units: 45 m, 5.5 h, 3.2 d. ref: format in the unit ref would get (a delta in
+// its value's unit: "2.4 d ▼ −1.2 d", not "−28 h").
+function aaDur(ms, ref = ms) {
   if (ms === null || ms === undefined) return '—';
   const v = Math.abs(ms);
+  const r = Math.abs(ref ?? ms);
   const n = (x) => (x < 10 ? x.toFixed(1).replace(/\.0$/, '') : String(Math.round(x)));
-  if (v < 3_600_000) return `${Math.round(v / 60_000)} m`;
-  if (v < 48 * 3_600_000) return `${n(v / 3_600_000)} h`;
+  if (r < 3_600_000) return `${Math.round(v / 60_000)} m`;
+  if (r < 48 * 3_600_000) return `${n(v / 3_600_000)} h`;
   return `${n(v / AA_DAY)} d`;
 }
 
-// pol: 1 = up is good, -1 = down is good, 0 = neutral. diff: the change's magnitude in the stat's units.
+// Tokens in the unit ref would get (fmtTokens' units): "2.0M ▼ −0.4M", not "−450.0k".
+const aaTok = (n, ref = n) => (ref >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : ref >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n | 0));
+
+// pol: 1 = up is good, -1 = down is good, 0 = neutral. diff(magnitude, cur): the change in the value's units.
 const AA_STATS = [
   { key: 'cardsDone', label: 'Cards done', pol: 1, fmt: (v) => String(v), diff: (d) => String(d) },
-  { key: 'firstPassRate', label: 'First pass', pol: 1, fmt: (v) => (v === null ? '—' : `${Math.round(v * 100)}%`), diff: (d) => `${Math.round(d * 100)} pts` },
+  { key: 'firstPassRate', label: 'First pass', pol: 1, kind: 'pts', fmt: (v) => (v === null ? '—' : `${Math.round(v * 100)}%`), diff: (d) => `${Math.round(d * 100)} pts` },
   { key: 'medianCycleMs', label: 'Median cycle', pol: -1, fmt: aaDur, diff: aaDur },
   { key: 'cost', label: 'Cost', pol: -1, fmt: mxMoney, diff: mxMoney },
-  { key: 'tokens', label: 'Tokens', pol: 0, fmt: fmtTokens, diff: fmtTokens },
+  { key: 'tokens', label: 'Tokens', pol: 0, fmt: fmtTokens, diff: aaTok },
 ];
 
 // The history read for the widget's range: Home's filters (ctx.filters), only what the endpoint takes.
 function aaHistoryUrl(name, ctx) {
   const f = new URLSearchParams(ctx.filters);
   const q = new URLSearchParams({ project: f.get('scope') || ctx.projectId });
-  for (const k of ['from', 'to']) if (f.get(k)) q.set(k, f.get(k));
+  for (const k of ['from', 'to', 'workType']) if (f.get(k)) q.set(k, f.get(k));
   const tz = typeof hctx !== 'undefined' ? hctx.f?.tz : null;
   if (tz) q.set('tz', tz);
   q.set('compare', 'previous');
   return `/agents/${encodeURIComponent(name)}/history?${q}`;
 }
 
-// Window length in days (null = all time: no comparison). Taken from previousWindow, not window:
-// window.to is "now" for a rolling range, so (to - from) is a fraction of a day short for part of
-// each day and rounds to the wrong N; previousWindow spans whole calendar days (to inclusive), and
-// it is the span the deltas actually compare against.
-const aaDays = (h) => {
-  const pw = h.previousWindow;
-  return pw ? Math.max(1, Math.round((pw.to + 1 - pw.from) / AA_DAY)) : null;
-};
-
-// "▲ +3 · +50% vs prev 14 d": colour by polarity, grey when there's nothing to compare.
-function aaDelta(s, cur, prev, days) {
-  const chip = node('span', 'aa-delta');
-  chip.setAttribute('role', 'img'); // its aria-label (with the better / worse verdict) is what's announced
-  const a = cur?.[s.key];
-  const b = prev?.[s.key];
-  if (!prev || a === null || a === undefined || b === null || b === undefined) {
-    chip.classList.add('aa-d-flat');
-    chip.append(node('span', 'aa-d-chg', prev ? '—' : 'No previous period'));
-    if (prev) chip.append(node('span', 'aa-d-vs', `vs prev ${days} d`));
-    chip.setAttribute('aria-label', prev ? `${s.label}: no comparison vs previous ${days} days` : `${s.label}: no previous period`);
-    return chip;
-  }
-  // a change that rounds to zero at the stat's display precision ("0 m", "$0.00", "0 pts") is no change
-  const shown = s.diff(Math.abs(a - b));
-  const d = Number(shown.replace(/[^\d.]/g, '')) === 0 ? 0 : a - b;
-  if (d === 0) {
-    chip.classList.add('aa-d-flat');
-    chip.append(node('span', 'aa-d-chg', '±0'), node('span', 'aa-d-vs', `vs prev ${days} d`));
-    chip.setAttribute('aria-label', `${s.label} unchanged vs previous ${days} days`);
-    return chip;
-  }
-  const tone = s.pol === 0 ? 'flat' : d * s.pol > 0 ? 'good' : 'bad';
-  chip.classList.add(`aa-d-${tone}`);
-  const sign = d > 0 ? '+' : '−';
-  const pct = b !== 0 ? `${sign}${Math.abs(Math.round((d / Math.abs(b)) * 100))}%` : null;
-  const arrow = node('span', 'aa-d-arrow', d > 0 ? '▲' : '▼');
-  arrow.setAttribute('aria-hidden', 'true');
-  const val = `${sign}${shown}`;
-  const chg = node('span', 'aa-d-chg');
-  chg.append(arrow, node('span', 'aa-d-val', pct ? `${val} · ${pct}` : val));
-  chip.append(chg, node('span', 'aa-d-vs', `vs prev ${days} d`));
-  const dir = d > 0 ? 'up' : 'down';
-  const verdict = tone === 'good' ? ', better' : tone === 'bad' ? ', worse' : '';
-  chip.setAttribute('aria-label', `${s.label} ${dir} ${val}${pct ? ` (${pct})` : ''} vs previous ${days} days${verdict}`);
-  return chip;
+// "▲ +3 · +50% vs previous 2 weeks" (dwDeltaChip): the range's name (a custom range "vs prev 14 d"),
+// the exact dates as the tooltip, grey when there's nothing (or no full period, since) to compare.
+function aaDelta(s, h, range, since) {
+  return dwDeltaChip({
+    cur: h.totals?.[s.key],
+    prev: h.previous?.[s.key],
+    has: !!h.previous && !!h.previousWindow,
+    polarity: s.pol,
+    fmt: s.diff,
+    kind: s.kind,
+    subject: s.label,
+    ...dwVs(range, h.previousWindow, h.window),
+    since,
+    previousWindow: h.previousWindow,
+  });
 }
 
 function aaDay(ts) {
@@ -288,23 +264,26 @@ function aaOpenPanel(agentId, data, ctx, el) {
   let task = null;
   let branch = null; // { id, value }: the card's last known branch, kept visible while its task refetches
   let agentName = null;
-  const hs = { url: null, seq: 0, status: 'loading', data: null, error: '', shown: AA_HIST_PAGE };
+  // since: the board's first activity (a previous period starting before it isn't a full one)
+  const hs = { url: null, seq: 0, status: 'loading', data: null, since: null, error: '', shown: AA_HIST_PAGE };
   const isOpen = () => aaPanel.close === close;
   const focusClose = () => dlg.querySelector('[data-k="close"]')?.focus();
 
   function loadHistory(url) {
     const seq = ++hs.seq;
-    Object.assign(hs, { url, status: 'loading', data: null, error: '', shown: AA_HIST_PAGE });
+    Object.assign(hs, { url, status: 'loading', data: null, since: null, error: '', shown: AA_HIST_PAGE });
     renderHist();
-    fetch(url)
-      .then(async (res) => {
-        const body = await res.json().catch(() => null);
-        if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
-        return body;
-      })
-      .then((d) => {
+    const hist = fetch(url).then(async (res) => {
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+      return body;
+    });
+    // without it the chips still compare (as before), they just can't tell a partial period
+    const since = dwFirstActivity(ctx).catch(() => null);
+    Promise.all([hist, since])
+      .then(([d, first]) => {
         if (!isOpen() || seq !== hs.seq) return;
-        Object.assign(hs, { status: 'ok', data: d });
+        Object.assign(hs, { status: 'ok', data: d, since: first });
         renderHist();
         live.textContent = `Loaded ${mxPlural(d.cards.length, 'card')}`;
       })
@@ -317,15 +296,16 @@ function aaOpenPanel(agentId, data, ctx, el) {
   }
 
   function statsSection(h) {
-    const days = aaDays(h);
+    const range = ctx.range;
     const sec = node('section', 'aa-p-sec');
     const label = node('h3', 'aa-p-label', 'Stats');
-    label.append(node('span', 'aa-p-range', days ? ` · last ${days} d` : ' · all time'));
+    // a rolling range by its name, a custom one by its dates ("Sep 14 – 27")
+    label.append(node('span', 'aa-p-range', !h.window ? ' · all time' : range.name ? ` · last ${range.name}` : ` · ${dwDays(h.window.from, h.window.to)}`));
     const grid = node('dl', 'aa-p-stats');
     for (const s of AA_STATS) {
       const box = node('div', 'aa-p-stat');
       const dd = node('dd');
-      dd.append(node('span', 'aa-p-val', s.fmt(h.totals[s.key])), aaDelta(s, h.totals, h.previous, days));
+      dd.append(node('span', 'aa-p-val', s.fmt(h.totals[s.key])), aaDelta(s, h, range, hs.since));
       box.append(node('dt', null, s.label), dd);
       grid.append(box);
     }
@@ -589,6 +569,7 @@ dwRegister({
   type: 'active-agents',
   title: 'Active agents',
   sizes: ['S', 'M', 'L'],
+  ranged: false, // the rows are live; the side panel follows Home's range itself
   load(ctx) {
     return ctx.shared('home', async () => {
       const f = fbNoRange(ctx.filters); // the rows are live: the range shapes the panel's history only
