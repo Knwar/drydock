@@ -252,6 +252,13 @@ const W = (t) => `.dw-widget[data-widget-type="${t}"]`;
 const HT = `${W('workspace-boards')} .dash-tile`;
 const hsel = (label) => `${H} label.mx-field:has(> span:text-is("${label}")) select`;
 // /home for the current filters landed, the widgets painted (no skeletons), the reads done
+// A live refetch scheduled on open (the socket's init; debounced, ≤ REFETCH_MAX_WAIT_MS 1.5 s) lands
+// later as a /home read: wait it out before counting reads (dash.refetchFirst is cleared when it fires).
+async function refetchSettled() {
+  await page.waitForTimeout(1600);
+  await page.waitForFunction(() => dash.refetchFirst == null, null, { timeout: 5000 });
+  await settledHome();
+}
 async function settledHome() {
   await page.waitForFunction(
     () => typeof hctx !== 'undefined' && hctx.meta && home.data && home.key === fbParams(hctx, true, false) && document.querySelector('.dw-widget') && !document.querySelector('.dw-skel') && !document.querySelector(`${'#home-filters'} .fb-bar .mx-dim`),
@@ -554,6 +561,7 @@ const dataReqs = (pg) => {
 const reqLog = dataReqs(page);
 await page.goto(`${base}/?project=${seed.ws}&view=home&tag=api`);
 await settledHome();
+await refetchSettled();
 await openBar();
 await page.waitForSelector(`${H} .fb-bar select[data-fb="agent"]`);
 await page.focus(`${H} select[data-fb="agent"]`);
@@ -632,6 +640,7 @@ const slow = async (r) => {
 };
 await page.goto(`${base}/?project=${seed.ws}&view=home&tag=ui`);
 await settledHome();
+await refetchSettled();
 await page.route('**/home?*', slow);
 {
   const reqs = reqWatch();
@@ -771,7 +780,7 @@ await page.unroute('**/home?*', slow);
   await page.focus('#card-opener-probe');
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => !document.getElementById('card-modal').classList.contains('hidden'));
-  await quiet(); // the modal's /task read lands first
+  await page.waitForFunction((id) => document.getElementById('card-title').textContent === cards.get(id)?.title, ids[0], { timeout: 10000 }); // the modal's /task read landed
   await page.keyboard.press('Escape');
   ok(
     (await page.evaluate(() => document.getElementById('card-modal').classList.contains('hidden') && document.activeElement.id)) === 'card-opener-probe',
