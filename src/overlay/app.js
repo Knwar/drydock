@@ -4047,7 +4047,7 @@ async function refreshCardModal() {
   const estInput = metaEl.querySelector('.cm-est-in');
   const estDraft = estInput && document.activeElement === estInput ? estInput.value : null;
   // removing the focused input blurs it, and Chrome then fires `change`: that must not save the draft
-  if (estDraft !== null) estInput.onchange = null;
+  if (estDraft !== null) estInput.onchange = estInput.onblur = null;
   metaEl.replaceChildren(
     ...meta.map((m) => {
       if (typeof m === 'string') return node('span', '', m);
@@ -4097,7 +4097,7 @@ async function refreshCardModal() {
 // a failure shows inline next to it (the live card update re-renders on success). The PATCH in
 // flight lives in cardWtPending, so a select redrawn meanwhile shows its value, disabled, and
 // the outcome lands on whichever select is on screen for the card when it completes.
-const cardWtCurrent = (id) => (openCardId === id ? document.querySelector('#card-meta .cm-wt-wrap') : null);
+const cardWtCurrent = (id) => (openCardId === id ? document.querySelector('#card-meta .cm-wt-sel')?.closest('.cm-wt-wrap') ?? null : null);
 function cardWtPaint(wrap, value, pending, error) {
   const field = wrap.querySelector('.cm-wt');
   const sel = wrap.querySelector('select');
@@ -4155,8 +4155,13 @@ function cardWorkTypeEl(id, value) {
 
 // The meta line's "Est. human hours": a number input (empty = no estimate) that PATCHes
 // estimate_hours on Enter or on change (blur); a bad value or a failed save shows inline next to
-// it. `state.saved` is the last value sent, so Enter + the change that follows save once.
+// it. `state.saved` is the last value sent, so Enter, change and blur save once. Unparseable text
+// (validity.badInput, e.g. "1e": the input then reads "") is an error, never a clear.
 async function cardEstimateSave(id, input, err, state) {
+  if (input.validity.badInput) {
+    err.textContent = 'Enter hours > 0 and ≤ 1000, or leave it empty';
+    return;
+  }
   const raw = input.value.trim();
   const next = raw === '' ? null : Number(raw);
   if (next !== null && !(Number.isFinite(next) && next > 0 && next <= 1000)) {
@@ -4187,16 +4192,17 @@ async function cardEstimateSave(id, input, err, state) {
   if (msg) input.focus();
 }
 function cardEstimateEl(id, value) {
-  const wrap = node('span', 'cm-wt-wrap');
-  const field = node('label', 'cm-wt cm-est');
-  field.append(node('span', 'cm-wt-k', 'Est. human hours'));
+  const wrap = node('span', 'cm-est-wrap');
+  const field = node('label', 'cm-est');
+  field.append(node('span', 'cm-est-k', 'Est. human hours'));
   const input = node('input', 'cm-est-in');
   Object.assign(input, { type: 'number', min: '0', max: '1000', step: 'any', placeholder: '—', value: value ?? '' });
   input.setAttribute('aria-label', 'Estimated human hours');
-  const err = node('span', 'cm-wt-err');
+  const err = node('span', 'cm-est-err');
   err.setAttribute('role', 'alert');
   const state = { saved: value };
   input.onchange = () => cardEstimateSave(id, input, err, state);
+  input.onblur = () => cardEstimateSave(id, input, err, state); // a draft kept across a re-render fires no change
   input.onkeydown = (e) => {
     if (e.key === 'Enter') cardEstimateSave(id, input, err, state); // also a draft kept across a re-render (no change event)
   };

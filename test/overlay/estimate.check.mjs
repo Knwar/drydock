@@ -89,9 +89,16 @@ try {
   await page.waitForFunction(() => !document.getElementById('card-modal').classList.contains('hidden'), null, { timeout: 15000 });
   await page.waitForSelector('#card-meta .cm-est-in', { timeout: 10000 });
   const input = '#card-meta .cm-est-in';
-  const err = () => page.$eval('#card-meta .cm-est', (f) => f.parentElement.querySelector('.cm-wt-err').textContent);
+  const err = () => page.$eval('#card-meta .cm-est-err', (e) => e.textContent);
+  // PATCHes of the card's estimate, as the page sends them (the save-once dedupe)
+  let estPatches = 0;
+  page.on('request', (r) => r.method() === 'PATCH' && r.url().endsWith(`/task/${id}`) && (r.postData() ?? '').includes('estimate_hours') && estPatches++);
   ok(
-    (await page.$eval('#card-meta .cm-est .cm-wt-k', (e) => e.textContent)) === 'Est. human hours' &&
+    (await page.$$('#card-meta .cm-est .cm-wt, #card-meta .cm-est-wrap.cm-wt-wrap, #card-meta .cm-est.cm-wt')).length === 0,
+    'the estimate field has its own classes (no .cm-wt / .cm-wt-wrap)',
+  );
+  ok(
+    (await page.$eval('#card-meta .cm-est .cm-est-k', (e) => e.textContent)) === 'Est. human hours' &&
       (await page.$eval('#card-meta', (m) => [...m.children].findIndex((c) => c.querySelector('.cm-est')) === [...m.children].findIndex((c) => c.querySelector('.cm-wt-sel')) + 1)),
     'the field sits right after the work-type select',
   );
@@ -103,6 +110,20 @@ try {
   ok((await estimate()) === 6, 'Enter saves 6 (GET /task)', await estimate());
   await page.waitForFunction((sel) => document.querySelector(sel)?.value === '6', input, { timeout: 5000 }).catch(() => {});
   ok((await page.$eval(input, (e) => e.value)) === '6', 'the re-rendered field shows 6');
+
+  // 1b. unparseable text ("1e": validity.badInput, value reads "") is an error, not a clear
+  await page.click(input, { clickCount: 3 });
+  await page.keyboard.press('Backspace');
+  await page.keyboard.type('1e');
+  const bad = await page.$eval(input, (e) => ({ badInput: e.validity.badInput, value: e.value }));
+  await page.press(input, 'Enter');
+  await page.waitForTimeout(400);
+  ok(bad.badInput && bad.value === '', '"1e" is badInput (reads empty)', bad);
+  ok(/> 0 and ≤ 1000/.test(await err()), 'an inline error for "1e"', await err());
+  ok((await estimate()) === 6, '"1e" sends nothing (no clear)', await estimate());
+  await page.$eval(input, (e) => e.blur());
+  await page.waitForTimeout(300);
+  ok((await estimate()) === 6, '"1e" on blur sends nothing either', await estimate());
 
   // 2. 0 → inline error, nothing saved
   await page.fill(input, '0');
@@ -133,10 +154,46 @@ try {
   ok(after.rerendered, 'the modal re-rendered on the live update', after);
   ok(after.value === '12.5' && after.focused, 'the draft and focus survive the live update', after);
   ok((await estimate()) === null, 'the draft is not saved by the re-render', await estimate());
-  // and the draft still saves afterwards
+  // and the draft still saves afterwards: Enter
   await page.press(input, 'Enter');
   await page.waitForFunction(async (id) => (await (await fetch(`/task/${id}`)).json()).estimate_hours === 12.5, id, { timeout: 5000 }).catch(() => {});
   ok((await estimate()) === 12.5, 'Enter then saves the kept draft', await estimate());
+
+  // 5. a kept draft also saves on blur; Enter + blur (+ change) still save once
+  await page.waitForFunction((sel) => !document.querySelector(sel)?.disabled, input, { timeout: 5000 });
+  await page.focus(input);
+  await page.fill(input, '7');
+  await page.evaluate(() => (window.__estMarker = document.querySelector('#card-meta .cm-est-in')));
+  await j('PATCH', `/task/${id}`, { requirements: 'Second live update' });
+  await page.waitForFunction(() => document.getElementById('card-desc').textContent.includes('Second live update'), null, { timeout: 5000 }).catch(() => {});
+  ok(
+    await page.evaluate(() => {
+      const el = document.querySelector('#card-meta .cm-est-in');
+      return el !== window.__estMarker && el.value === '7' && document.activeElement === el;
+    }),
+    'second live update: draft 7 kept, focused',
+  );
+  const n0 = estPatches;
+  await page.$eval(input, (e) => e.blur());
+  await page.waitForFunction(async (id) => (await (await fetch(`/task/${id}`)).json()).estimate_hours === 7, id, { timeout: 5000 }).catch(() => {});
+  ok((await estimate()) === 7, 'blur saves the kept draft', await estimate());
+  ok(estPatches - n0 === 1, 'one PATCH for the blur', estPatches - n0);
+  // a typed value: Enter (keydown), then blur (+ the change it fires) → still one PATCH
+  await page.waitForFunction((sel) => !document.querySelector(sel)?.disabled, input, { timeout: 5000 });
+  const n1 = estPatches;
+  await page.focus(input);
+  await page.fill(input, '8');
+  await page.press(input, 'Enter');
+  await page.$eval(input, (e) => e.blur());
+  await page.waitForFunction(async (id) => (await (await fetch(`/task/${id}`)).json()).estimate_hours === 8, id, { timeout: 5000 }).catch(() => {});
+  await page.waitForTimeout(400);
+  ok((await estimate()) === 8 && estPatches - n1 === 1, 'Enter + blur save once', { est: await estimate(), patches: estPatches - n1 });
+
+  // the work-type control is still the one cardWtCurrent finds: a type change saves and repaints
+  await page.selectOption('#card-meta .cm-wt-sel', 'defect');
+  await page.waitForFunction(async (id) => (await (await fetch(`/task/${id}`)).json()).work_type === 'defect', id, { timeout: 5000 }).catch(() => {});
+  ok((await j('GET', `/task/${id}`)).work_type === 'defect', 'the work-type select still saves');
+  ok((await page.$eval('#card-meta .cm-wt', (f) => f.dataset.wt)) === 'defect', 'the work-type field repaints (cardWtCurrent finds it)');
 
   ok(errors.length === 0, 'no page errors', errors);
   console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');

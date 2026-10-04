@@ -1835,6 +1835,11 @@ body.reduce-motion .home-dot { animation: none !important; }
 .cm-wt-sel:disabled { opacity: 0.6; cursor: progress; }
 .cm-wt-err { color: #e06c75; }
 .cm-wt-err:empty { display: none; }
+#card-meta > .cm-est-wrap { display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; padding: 0; }
+.cm-est { display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 5px; background: rgba(255, 255, 255, 0.03); padding: 0 2px 0 8px; }
+.cm-est-k { opacity: 0.75; }
+.cm-est-err { color: #e06c75; }
+.cm-est-err:empty { display: none; }
 .cm-est-in { font: inherit; color: inherit; background: transparent; border: 0; width: 4.5em; padding: 2px 2px; }
 .cm-est-in:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
 

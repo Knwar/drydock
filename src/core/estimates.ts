@@ -99,7 +99,7 @@ export function estimatesFrom(
       noSpend: points.length - spent.length,
       estimateHours: hours,
       cost: round6(cost),
-      hoursPerDollar: cost > 0 ? hours / cost : null,
+      hoursPerDollar: cost > 0 ? round6(hours / cost) : null,
       dollarsPerHour: hours > 0 ? round6(cost / hours) : null,
     },
     perception: {
