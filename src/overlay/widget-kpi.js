@@ -171,7 +171,7 @@ async function kpiBudgetLoad(ctx) {
   // series and the range spend (totals), compared with the previous period
   const [cost, since] = await Promise.all([
     kpiGet(ctx, '/metrics/cost', { project: f.project, tz: MX_LOCAL_TZ, phase: id, from: f.from, to: f.to, limit: 1, compare: 'previous' }),
-    dwFirstActivity(ctx),
+    dwFirstActivity(ctx).catch(() => null),
   ]);
   const b = cost.budgets.find((x) => x.phase_id === id);
   if (!b || b.budget === null) return { empty: 'Set a budget on the active phase to track spend' };
@@ -225,7 +225,7 @@ async function kpiDecisionsLoad(ctx) {
     kpiGet(ctx, '/attention', { project: f.project }),
     kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType }),
     kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType, from: f.from, to: f.to, compare: 'previous' }),
-    dwFirstActivity(ctx),
+    dwFirstActivity(ctx).catch(() => null),
   ]);
   const seen = new Set();
   const items = [];
