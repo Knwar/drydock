@@ -59,14 +59,16 @@
 //                             open / close submenus, hovering an item moves the roving focus to it
 //                             (one highlight) and hovering a parent opens its submenu; scrolls past
 //                             max-height; closes on scroll / resize). Item: { label, onSelect?,
-//                             children?, disabled?, checked?, radio?, primary?, danger? } or
+//                             children?, disabled?, checked?, radio?, primary?, danger?, group? } or
 //                             { separator: true }.
 //                             checked !== undefined → menuitemcheckbox (radio: true → menuitemradio).
 //   deMenuItems(kind, fn)     contribute items: fn(id, info) → items[]; info = { kind, id, item, el,
 //                             layout }. Modules' items concatenate in registration order with
 //                             separators between modules. Ordering across all modules: items with
 //                             primary: true come first, items with danger: true come last (after a
-//                             separator), everything else keeps registration order.
+//                             separator), everything else keeps registration order. Items with the
+//                             same group key render together as one block, across modules (at the
+//                             group's first appearance; 'arrange': Duplicate, Move, Size).
 //   deMenuFor(kind, id, anchorEl)   open the registered menu for one target
 //
 // Decoration (edit mode, after every render; idempotent)
@@ -76,14 +78,16 @@
 //   tabs widgets: .de-tab-handle (the selected tab; on the frame, outside the tablist) + context
 //     menu / Shift+F10 on a tab → 'tab' items
 //   widget bodies (except tabs) are inert while editing: they still scroll, a click selects the frame
-//   a click on empty dashboard space (no frame / row / section head / control) clears the selection
+//   a click on empty dashboard space (no frame / row / section head / control) or on a row bar
+//   outside its handle clears the selection; Esc clears it too (before Esc leaves edit mode)
 //   empty slots: .de-slot-empty "Empty slot" with a .de-slot-handle → 'slot' items
 //   Every handle carries data-de-for="<kind>:<id>" (a tab strip's: "tabs:<widget id>"). Clicking a frame / row / section / slot selects it.
 //   deDecorate(fn)  fn(root) after the core's decoration (drag listeners etc.)
 //
 // Escape hatch: #de-hatch (a "Done" button + the "changed elsewhere" notice) until the toolbar
 // card lands; the toolbar hides it (#de-hatch { display: none }). Esc → deRequestExit() too, only
-// on Home with no dialog / card modal open and nothing else having claimed it.
+// on Home with no dialog / card modal open and nothing else having claimed it. Esc peels one layer
+// at a time: submenu → menu → config drawer → selection → leave edit mode.
 
 const DE_HISTORY_CAP = 100;
 const DE_COALESCE_MS = 1000;
@@ -339,7 +343,7 @@ function deNarrowPrompt(error = '') {
   const sub = node('p', 'sv-sub', dirty ? 'The dashboard can only be edited at 800px or wider. Save your edits or discard them, or widen the window to keep editing.' : 'The dashboard can only be edited at 800px or wider.');
   sub.id = 'de-narrow-sub';
   const foot = node('div', 'sv-foot');
-  const discard = node('button', dirty ? 'home-btn pl-danger' : 'home-btn', dirty ? 'Discard changes' : 'Exit editing');
+  const discard = node('button', dirty ? 'home-btn de-danger-outline' : 'home-btn', dirty ? 'Discard changes' : 'Exit editing');
   discard.type = 'button';
   discard.onclick = () => {
     close();
@@ -471,11 +475,13 @@ function deMenuItems(kind, fn) {
   deMenuRegistry.push({ kind, fn });
 }
 
-// primary items first, then each module's rest (registration order, separated), danger items last
+// primary items first, then each module's rest (registration order, separated), danger items last;
+// items sharing a group key form one block (where the group first appears), whichever module adds them
 function deItemsFor(kind, id, info) {
   const primary = [];
   const danger = [];
-  const middle = [];
+  const blocks = [];
+  const groups = new Map(); // group → its block
   for (const r of deMenuRegistry) {
     if (r.kind !== kind) continue;
     let items = [];
@@ -489,10 +495,14 @@ function deItemsFor(kind, id, info) {
       if (!it) continue;
       if (it.primary && !it.separator) primary.push(it);
       else if (it.danger && !it.separator) danger.push(it);
-      else rest.push(it);
+      else if (it.group != null && !it.separator) {
+        if (!groups.has(it.group)) blocks.push(groups.set(it.group, []).get(it.group));
+        groups.get(it.group).push(it);
+      } else rest.push(it);
     }
-    if (rest.some((it) => !it.separator)) middle.push({ separator: true }, ...rest);
+    if (rest.some((it) => !it.separator)) blocks.push(rest);
   }
+  const middle = blocks.flatMap((b) => [{ separator: true }, ...b]);
   const out = [...primary, { separator: true }, ...middle, { separator: true }, ...danger];
   // no leading / trailing / doubled separators
   const clean = out.filter((it, i) => !it.separator || (i > 0 && out.slice(0, i).some((p) => !p.separator) && out.slice(i + 1).some((n) => !n.separator) && !out[i + 1]?.separator));
@@ -854,9 +864,10 @@ $('dash-root')?.addEventListener('click', (e) => {
   const hit =
     (t.closest('.de-slot-empty') && { kind: 'slot', id: t.closest('.dw-slot').dataset.slotId }) ||
     (t.closest('.dw-widget[data-widget-id]') && { kind: 'widget', id: t.closest('.dw-widget').dataset.widgetId }) ||
-    (t.closest('.de-row-bar, .dw-row[data-row-id]') && { kind: 'row', id: t.closest('.de-row-bar, .dw-row').dataset.rowId }) ||
+    (t.closest('.dw-row[data-row-id]') && { kind: 'row', id: t.closest('.dw-row').dataset.rowId }) ||
     (t.closest('.dw-sec-head') && t.closest('.dw-section[data-section-id]') && { kind: 'section', id: t.closest('.dw-section').dataset.sectionId });
   if (hit) deSelect(hit);
+  else if (t.closest('.de-row-bar')) deSelect(null); // the row bar outside its handle: clears
 });
 
 // a click on empty dashboard space (not a frame, row, section head, handle, menu, drawer, toolbar
@@ -888,6 +899,9 @@ function deHatch(show) {
   $('home-body')?.prepend(hatch);
 }
 
+// the widget config drawer (dash-editor-config.js; Esc closes it via decClose) is open
+const deDrawerOpen = () => !!$('dec-drawer') && !$('dec-drawer').hidden;
+
 // a dialog (openModal's, the card modal) owns the keyboard
 const deDialogOpen = () => svModal || !!document.querySelector('.sv-backdrop') || !$('card-modal')?.classList.contains('hidden');
 
@@ -896,6 +910,16 @@ document.addEventListener('keydown', (e) => {
   if (activeView !== 'home' || deDialogOpen()) return;
   if (e.target.closest?.('input, textarea, select, [contenteditable], [role="dialog"], dialog')) return;
   e.preventDefault();
+  // one layer per Esc (an open menu already returned above): the config drawer, then the
+  // selection, then leaving edit mode
+  if (deDrawerOpen()) {
+    if (typeof decClose === 'function') decClose();
+    return;
+  }
+  if (deState.selected) {
+    deSelect(null);
+    return void deAnnounce('Selection cleared');
+  }
   deRequestExit();
 });
 

@@ -157,7 +157,7 @@ async function kpiDecisionsLoad(ctx) {
   const f = kpiFilters(ctx);
   const [att, wait] = await Promise.all([
     kpiGet(ctx, '/attention', { project: f.project }),
-    kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase }),
+    kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType }),
   ]);
   const seen = new Set();
   const items = [];

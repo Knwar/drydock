@@ -51,6 +51,15 @@ body.de-editing #home-body { scroll-padding-top: calc(var(--de-tb-h, 52px) + 14p
 .de-tb-badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .de-tb-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
 
+/* a narrow bar (a window under 800px, or the config drawer squeezing the canvas): the badge and
+   status on one line, the buttons on the next, never on top of each other */
+.de-tb { container: de-tb / inline-size; }
+@container de-tb (max-width: 640px) {
+  .de-tb-main { flex-wrap: wrap; row-gap: 8px; }
+  .de-tb-left, .de-tb-right { flex: 1 1 100%; }
+  .de-tb-right { justify-content: flex-start; }
+}
+
 /* buttons: quiet secondaries, one primary */
 .de-tb-btn {
   flex: none;

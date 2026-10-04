@@ -62,9 +62,17 @@ div.wl-tile:hover { background: var(--lane-bg); }
 .wl-tile .dt-name { font-size: 14px; }
 .wl-tile .dt-pill { font-size: 9.5px; padding: 2px 8px; }
 .wl-tile .dt-sub { margin-top: -4px; }
-/* five lanes in a narrow tile: labels fit whole (columns never narrower than their label) */
+/* five lanes in a narrow tile: short labels at the usual size ("Back", "Queue", "Prog", "Rev",
+   "Done"; columns never narrower than their label). The full label stays in the markup for
+   assistive tech, visually collapsed; the short one is decorative (empty alt text). */
 .wl-tile .dt-lanes { grid-template-columns: repeat(5, minmax(min-content, 1fr)); gap: 3px; }
 .wl-tile .dt-lane { padding: 4px 1px; }
-.wl-tile .dt-lane-l { font-size: 8.5px; letter-spacing: 0; overflow: visible; text-overflow: clip; }
+.wl-tile .dt-lane-l { font-size: 0; letter-spacing: 0; overflow: visible; text-overflow: clip; }
+.wl-tile .dt-lane-l::after { font-size: 9px; letter-spacing: 0.05em; }
+.wl-tile .dt-lane[data-lane="backlog"] .dt-lane-l::after { content: 'Back'; content: 'Back' / ''; }
+.wl-tile .dt-lane[data-lane="queued"] .dt-lane-l::after { content: 'Queue'; content: 'Queue' / ''; }
+.wl-tile .dt-lane[data-lane="in_progress"] .dt-lane-l::after { content: 'Prog'; content: 'Prog' / ''; }
+.wl-tile .dt-lane[data-lane="in_review"] .dt-lane-l::after { content: 'Rev'; content: 'Rev' / ''; }
+.wl-tile .dt-lane[data-lane="done"] .dt-lane-l::after { content: 'Done'; content: 'Done' / ''; }
 .wl-tile .dt-lane-n { font-size: 14px; }
 .wl-tile .dt-foot { padding-top: 7px; }

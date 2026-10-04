@@ -1,6 +1,6 @@
 /* ── Dashboard editor core: edit-mode chrome on Home's #dash-root ──
    Calm and quiet: handles appear on hover / focus, the selection is an accent outline and the
-   only layout change between view and edit is the slim bar above each row. */
+   row bars overlay each row's top edge, so the rows themselves don't move between view and edit. */
 
 /* the Edit dashboard button (Home header): desktop only, never embedded, gone while editing */
 .home-edit {
@@ -65,23 +65,39 @@ body.embed .home-edit, body.de-editing .home-edit { display: none; }
 .de-editing .dw-widget:hover { border-color: rgba(255, 255, 255, 0.16); }
 .de-editing .dw-widget.de-selected { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* rows: a slim bar above each row */
+/* rows: a bar with no vertical space of its own: its "Row n" label and handle sit just inside the
+   row's top-left (inset), clear of the previous row's resize strip (in the gap above) and of the
+   selection outlines (outside the frames); the bar line itself lets clicks through */
 .de-row-bar {
+  position: relative;
+  z-index: 3;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 22px;
-  margin-bottom: calc(6px - var(--dw-gap));
-  padding: 0 4px;
-  border-radius: 6px;
+  align-items: flex-start;
+  gap: 4px;
+  height: 0;
+  padding: 6px 8px 0; /* the inset; margin-bottom gives that space back: the row starts at the bar's top */
+  margin-bottom: calc(-1 * var(--dw-gap) - 6px);
   font-size: 10.5px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--dim);
-  opacity: 0.7;
+  pointer-events: none;
 }
-.de-row-bar:hover, .de-row-bar:focus-within, .de-row-bar.de-selected { opacity: 1; }
-.de-row-bar:hover .de-btn, .de-row-bar:focus-within .de-btn, .de-row-bar.de-selected .de-btn { opacity: 1; }
+.de-row-bar > * { pointer-events: auto; }
+.de-row-label {
+  margin-top: 2px; /* centred on the 20px handle */
+  padding: 0 6px;
+  border-radius: 6px;
+  background: #1c2130;
+  line-height: 16px;
+  opacity: 0.8;
+}
+/* the row's first widget makes room under the label: its head (or a headless body) starts lower */
+.de-editing .dw-row > .dw-slot:first-child > .dw-widget:first-child > .dw-head { padding-top: 32px; }
+.de-editing .dw-row > .dw-slot:first-child > .dw-widget:first-child > .dw-head.hidden + .dw-body { padding-top: 32px; }
+.de-row-bar .de-btn { width: 20px; height: 20px; }
+.de-row-bar:hover .de-row-label, .de-row-bar:focus-within .de-row-label, .de-row-bar.de-selected .de-row-label { opacity: 1; }
+.de-row-bar:is(:hover, :focus-within, .de-selected) .de-btn, .de-row-bar:has(+ .dw-row:hover) .de-btn { opacity: 1; }
 .de-row-bar.de-selected { color: var(--accent); }
 .de-editing .dw-row.de-selected { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: 12px; }
 
@@ -157,8 +173,11 @@ body.embed .home-edit, body.de-editing .home-edit { display: none; }
 .de-menu-caret { flex: none; color: var(--dim); }
 .de-menu-sep { height: 1px; margin: 4px 6px; background: rgba(255, 255, 255, 0.08); }
 
-/* the exit dialogs (discard / narrow window): compact */
-.sv-dialog.de-exit-dlg { width: min(420px, 100%); }
+/* the exit dialogs (discard / narrow window) and the section-delete confirm: compact */
+.sv-dialog.de-exit-dlg, .sv-dialog.de-compact-dlg { width: min(420px, 100%); }
+/* a secondary danger action (the narrow dialog's Discard beside its primary Save and exit) */
+.sv-dialog .home-btn.de-danger-outline { color: #e06c75; background: none; border-color: color-mix(in srgb, #e06c75 55%, transparent); }
+.sv-dialog .home-btn.de-danger-outline:hover:not(:disabled) { background: color-mix(in srgb, #e06c75 10%, transparent); }
 
 /* edit mode with no sections: a centred prompt above "+ Add section" */
 .dw-edit-empty {

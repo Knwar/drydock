@@ -556,6 +556,7 @@ function dsConfirmDeleteSection(sec, widgets, onDelete) {
     fallbackFocus: () => $('dash-root')?.querySelector(dsFor(`section:${sec.id}`)),
   });
   dsConfirmClose = close;
+  dlg.classList.add('de-compact-dlg');
   const title = node('h2', 'sv-title', `Delete ${sec.title ? `“${sec.title}”` : 'this section'} and its ${widgets}?`);
   title.id = 'ds-del-title';
   const sub = node('p', 'sv-sub', 'The section and everything in it leave your draft. You can undo this.');
