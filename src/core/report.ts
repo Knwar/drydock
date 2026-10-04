@@ -30,7 +30,7 @@ import { waitMetrics } from './wait-time.js';
 import { costMetrics, type CostBudget } from './cost.js';
 import { listDecisions, listRisks, workspaceOf, type Decision, type Listed, type Risk } from './decisions.js';
 import { schedule, type ScheduleStatus } from './schedule.js';
-import type { Lane, PhaseStatus } from './types.js';
+import type { Lane, PhaseStatus, WorkType } from './types.js';
 
 export type Rag = 'green' | 'amber' | 'red' | 'done' | 'grey';
 
@@ -61,6 +61,8 @@ export interface ReportPhaseInput {
   target_date: string | null;
   p50: string | null;
   p85: string | null;
+  /** schedule.ts's p95 (same simulation as p50/p85); absent = no forecast. */
+  p95?: string | null;
   total: number;
   remaining: number;
 }
@@ -119,6 +121,7 @@ export interface ReportPhase {
   target_date: string | null;
   p50: string | null;
   p85: string | null;
+  p95: string | null;
   total: number;
   remaining: number;
   blockers: { task_id: string; title: string; reason: string | null; since: number }[];
@@ -256,6 +259,7 @@ export function buildReport(input: ReportInput): Report {
       target_date: p.target_date,
       p50: p.p50,
       p85: p.p85,
+      p95: p.p95 ?? null,
       total: p.total,
       remaining: p.remaining,
       blockers,
@@ -371,7 +375,16 @@ export function defaultRange(to: number, tz: string, days = DEFAULT_REPORT_DAYS)
 }
 
 /** Gather every module's output for `projectId` (+ its verticals) over [from, to] and build the report. */
-export function loadReport(db: DB, projectId: string, opts: { tz: string; now: number; from?: number; to?: number }): Report {
+/**
+ * workType (a work type, or 'none' for unclassified cards that still exist)
+ * narrows the card-based parts: cards, flow, quality, waits/blockers and cost.
+ * The phase table (schedule) stays whole: it is per phase, not per card.
+ */
+export function loadReport(
+  db: DB,
+  projectId: string,
+  opts: { tz: string; now: number; from?: number; to?: number; workType?: WorkType | 'none' },
+): Report {
   const { tz, now } = opts;
   const to = opts.to ?? now;
   const from = opts.from ?? defaultRange(to, tz).from;
@@ -386,11 +399,12 @@ export function loadReport(db: DB, projectId: string, opts: { tz: string; now: n
   const wsRow = ws === projectId ? null : (db.prepare('SELECT id, name FROM projects WHERE id = ?').get(ws) as { id: string; name: string });
 
   const sched = schedule(db, projectId, { tz, now });
-  const ds = deriveCards(loadCardHistories(db, { projectIds: [projectId] }), now);
+  const { workType } = opts;
+  const ds = deriveCards(loadCardHistories(db, { projectIds: [projectId], workType }), now);
   const flow = flowFromDerived(ds, { tz, now, from, to });
   const quality = qualityFromDerived(ds, { tz, now, from, to });
-  const wait = waitMetrics(db, { projectIds: [projectId], from, to }, { tz, now });
-  const cost = costMetrics(db, { projectIds: [projectId], from, to }, { tz, now });
+  const wait = waitMetrics(db, { projectIds: [projectId], workType, from, to }, { tz, now });
+  const cost = costMetrics(db, { projectIds: [projectId], workType, from, to }, { tz, now });
 
   return buildReport({
     project: self,
