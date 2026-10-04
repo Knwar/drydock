@@ -1,6 +1,6 @@
 // Status report page: renders GET /report (see src/core/report.ts). The DOM is
 // built with node() + textContent only: no innerHTML with data.
-// URL: report.html?project=<id>[&days=7|14|30][&tz=<IANA>]
+// URL: report.html?project=<id>[&days=7|14|30][&from=YYYY-MM-DD][&tz=<IANA>] (from: since that day, overrides days)
 (() => {
   const RANGES = [7, 14, 30];
   const RAG_LABEL = { green: 'Green', amber: 'Amber', red: 'Red', done: 'Done', grey: 'Grey' };
@@ -22,11 +22,12 @@
   const project = params.get('project');
   const days = RANGES.includes(Number(params.get('days'))) ? Number(params.get('days')) : 7;
   const tz = params.get('tz') || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(params.get('from') ?? '') ? params.get('from') : null;
 
   const dayKey = (ts) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(ts);
   const addDays = (day, n) => new Date(Date.parse(`${day}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
-  /** The report query: the last `days` days in tz (from the start of the first one to now). */
-  const query = () => new URLSearchParams({ project, from: addDays(dayKey(Date.now()), -(days - 1)), tz }).toString();
+  /** The report query: the last `days` days in tz (from the start of the first one to now), or since `from`. */
+  const query = () => new URLSearchParams({ project, from: from ?? addDays(dayKey(Date.now()), -(days - 1)), tz }).toString();
 
   // ---------- formatters ----------
   function span(ms) {
@@ -133,10 +134,11 @@
     for (const n of RANGES) {
       const b = node('button', 'rp-btn', `${n} days`);
       b.type = 'button';
-      b.setAttribute('aria-current', String(n === days));
+      b.setAttribute('aria-current', String(!from && n === days));
       b.onclick = () => {
         const u = new URL(location.href);
         u.searchParams.set('days', String(n));
+        u.searchParams.delete('from');
         location.href = u.toString();
       };
       seg.append(b);

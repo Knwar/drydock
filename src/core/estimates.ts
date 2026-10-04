@@ -8,7 +8,8 @@
  *  - hourlyRate: over done cards with an estimate AND recorded spend (cards without spend
  *    would count hours for free, so they are left out and counted in `noSpend`):
  *    hoursPerDollar = Σ estimate_hours / Σ spend, dollarsPerHour = Σ spend / Σ estimate_hours
- *    ("$ per human-equivalent hour").
+ *    ("$ per human-equivalent hour"). byAgent: the same split by the card's assigned agent (null =
+ *    unassigned); a card's spend is all of its runs, so it counts toward its assignee alone.
  *  - perception: each estimated done card's estimate vs its measured cycle time (hours) and
  *    spend; ratio = cycle hours / estimate (null for a zero cycle time). medianRatio is over the
  *    cards with a ratio; the top 5 misses are the largest |ln ratio| (2x over and 2x under are
@@ -32,6 +33,14 @@ export interface EstimatePoint {
   ratio: number | null;
 }
 
+export interface AgentRate {
+  agent: string | null;
+  cards: number;
+  estimateHours: number;
+  cost: number;
+  hoursPerDollar: number | null;
+}
+
 export interface EstimateMetrics {
   range: { from: number | null; to: number; tz: string };
   done: number;
@@ -45,6 +54,8 @@ export interface EstimateMetrics {
     cost: number;
     hoursPerDollar: number | null;
     dollarsPerHour: number | null;
+    /** The rate per assigned agent (null = unassigned), most hours first. */
+    byAgent: AgentRate[];
   };
   perception: {
     cards: EstimatePoint[];
@@ -89,6 +100,19 @@ export function estimatesFrom(
   const spent = points.filter((p) => p.cost > 0);
   const hours = spent.reduce((s, p) => s + p.estimateHours, 0);
   const cost = spent.reduce((s, p) => s + p.cost, 0);
+  const agentOf = new Map(done.map((x) => [x.m.id, x.m.agent]));
+  const agents = new Map<string | null, AgentRate>();
+  for (const p of spent) {
+    const agent = agentOf.get(p.id) ?? null;
+    let a = agents.get(agent);
+    if (!a) agents.set(agent, (a = { agent, cards: 0, estimateHours: 0, cost: 0, hoursPerDollar: null }));
+    a.cards++;
+    a.estimateHours += p.estimateHours;
+    a.cost += p.cost;
+  }
+  const byAgent = [...agents.values()]
+    .map((a) => ({ ...a, cost: round6(a.cost), hoursPerDollar: a.cost > 0 ? round6(a.estimateHours / a.cost) : null }))
+    .sort((a, b) => b.estimateHours - a.estimateHours || (a.agent ?? '\uffff').localeCompare(b.agent ?? '\uffff'));
   const miss = (p: EstimatePoint) => Math.abs(Math.log(p.ratio!));
   return {
     range: { from: opts.from ?? null, to, tz: opts.tz },
@@ -101,6 +125,7 @@ export function estimatesFrom(
       cost: round6(cost),
       hoursPerDollar: cost > 0 ? round6(hours / cost) : null,
       dollarsPerHour: hours > 0 ? round6(cost / hours) : null,
+      byAgent,
     },
     perception: {
       cards: points,
