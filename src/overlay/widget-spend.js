@@ -41,6 +41,34 @@ function spStatus(kind, text, title) {
   return el;
 }
 
+// One money format for a whole list: cents on every figure when any needs them ($15.00 beside $6.04),
+// else whole dollars (mxMoney's). → fmt(usd)
+function spMoneyFmt(values) {
+  const cents = values.some((v) => v !== null && v !== undefined && v > 0 && v < 10);
+  if (!cents) return mxMoney;
+  return (usd) => (usd === null || usd === undefined ? '—' : `$${usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+}
+
+// A sparkline that fills its box's width (stretched; the stroke and the end dot keep their shape:
+// the dot is a zero-length round-capped line, drawn as a circle at any scale).
+function spSpark(values) {
+  const W = 300;
+  const H = 34;
+  // the data's own min–max, so small changes show; all values equal → a flat line mid-height
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const x = (i) => 4 + (i * (W - 8)) / (values.length - 1);
+  const y = (v) => (max === min ? H / 2 : H - 4 - ((v - min) * (H - 10)) / (max - min));
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', 'aria-hidden': 'true', class: 'sp-spark-svg' });
+  const lx = x(values.length - 1).toFixed(1);
+  const ly = y(values[values.length - 1]).toFixed(1);
+  svg.append(
+    svgEl('polyline', { points: values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' '), class: 'sp-spark-line', 'vector-effect': 'non-scaling-stroke' }),
+    svgEl('line', { x1: lx, y1: ly, x2: lx, y2: ly, class: 'sp-spark-dot', 'vector-effect': 'non-scaling-stroke' }),
+  );
+  return svg;
+}
+
 // A share as a percentage: "45%", "<1%" for a sliver, "0%".
 const spPct = (share) => (share > 0 && share < 0.005 ? '<1%' : `${Math.round(share * 100)}%`);
 
@@ -78,7 +106,8 @@ function spSpendRender(el, d, ctx) {
       dwDeltaChip({ cur: spend, prev: cost.previous?.totals.cost ?? null, polarity: -1, fmt: mxMoney, subject: 'AI spend', has: !!cost.previous && !!cost.previousWindow, ...cmp }),
     ),
   );
-  // cost per card done: the range's spend over the cards done in it (null with none done)
+  // avg spend per card done: the range's spend over the cards done in it (null with none done). Not the
+  // budget projection's "median card cost" (budget-burn): a mean over this range vs a median over all time.
   const done = flow.throughput.total;
   const prevDone = flow.previous?.throughput ?? null;
   const per = done ? spend / done : null;
@@ -86,9 +115,9 @@ function spSpendRender(el, d, ctx) {
   figs.append(
     spFigure(
       per === null ? '—' : mxMoney(per),
-      'per card done',
+      S ? 'avg / card' : 'avg spend per card done',
       S ? null : done ? `${mxMoney(spend)} ÷ ${mxPlural(done, 'card')} done` : 'no cards done in range',
-      dwDeltaChip({ cur: per, prev: prevPer, polarity: -1, fmt: mxMoney, subject: 'Cost per card done', has: !!cost.previous && !!flow.previous && !!cost.previousWindow, ...cmp }),
+      dwDeltaChip({ cur: per, prev: prevPer, polarity: -1, fmt: mxMoney, subject: 'Average spend per card done', has: !!cost.previous && !!flow.previous && !!cost.previousWindow, ...cmp }),
     ),
   );
   el.append(figs);
@@ -103,13 +132,14 @@ function spSpendRender(el, d, ctx) {
   if (weekly.length >= 2) {
     const spark = node('div', 'sp-detail sp-spark');
     const peak = Math.max(...weekly.map((w) => w.cost));
-    spark.append(node('span', 'sp-k', `weekly spend · last ${weekly.length} weeks · peak ${mxMoney(peak)}`), mxSparkline(weekly.map((w) => w.cost)));
+    spark.append(node('span', 'sp-k', `weekly spend · last ${weekly.length} weeks · peak ${mxMoney(peak)}`), spSpark(weekly.map((w) => w.cost)));
     el.append(spark);
   }
   if (ctx.size !== 'L' || !cost.byCard.length) return;
   const top = node('div', 'sp-detail');
   top.append(node('span', 'sp-k', `most expensive cards · ${cost.byCard.length < SP_TOP ? cost.byCard.length : `top ${SP_TOP}`} of ${cost.cardCount}`));
   const list = node('ul', 'sp-list');
+  const money = spMoneyFmt(cost.byCard.slice(0, SP_TOP).map((c) => c.cost));
   for (const c of cost.byCard.slice(0, SP_TOP)) {
     const li = node('li');
     const row = node(c.deleted ? 'div' : 'button', 'sp-item');
@@ -120,7 +150,7 @@ function spSpendRender(el, d, ctx) {
     }
     const title = node('span', 'sp-item-title', c.deleted ? 'Deleted card' : (c.title ?? c.id));
     if (c.deleted) title.classList.add('sp-muted');
-    row.append(title, node('span', 'sp-item-val', `${c.estimated ? '~' : ''}${mxMoney(c.cost)}`));
+    row.append(title, node('span', 'sp-item-val', `${c.estimated ? '~' : ''}${money(c.cost)}`));
     if (c.estimated) row.lastChild.title = 'Partly estimated';
     li.append(row);
     list.append(li);
@@ -201,28 +231,38 @@ function spMixBar(name, mix, types) {
 }
 
 // "▲ +5 pts": a share's change in percentage points (no relative %: a % of a share misleads).
-// pol: 1 up is good, -1 down is good, 0 neutral. partial: the previous period starts before the board's
-// first activity (grey, as dwDeltaChip). Reuses dashboard.css's delta chip look.
-function spPtsChip(cur, prev, pol, subject, partial = false) {
+// pol: 1 up is good, -1 down is good, 0 neutral. cmp: dwVs's comparison (the tooltip names it, the
+// aria-label says it in full; the column head carries the short label). partial: the previous period
+// starts before the board's first activity (grey, as dwDeltaChip); allTime: no previous period at all.
+// Reuses dashboard.css's delta chip look.
+function spPtsChip(cur, prev, pol, subject, cmp, partial = false, allTime = false) {
   const chip = node('span', 'dw-delta sp-pts');
   chip.setAttribute('role', 'img');
+  if (cmp.label) chip.title = cmp.title ? `${cmp.label} (${cmp.title})` : cmp.label;
+  const vs = cmp.labelLong ? ` ${cmp.labelLong}` : '';
+  if (allTime) {
+    chip.classList.add('dw-d-flat');
+    chip.append(node('span', 'dw-d-chg', 'No previous period'));
+    chip.setAttribute('aria-label', `${subject}: no previous period`);
+    return chip;
+  }
   if (partial) {
     chip.classList.add('dw-d-flat');
     chip.append(node('span', 'dw-d-chg', 'No full previous period'));
-    chip.setAttribute('aria-label', `${subject}: no full previous period`);
+    chip.setAttribute('aria-label', `${subject}: no full previous period${vs}`);
     return chip;
   }
   if (cur === null || prev === null) {
     chip.classList.add('dw-d-flat');
     chip.append(node('span', 'dw-d-chg', '—'));
-    chip.setAttribute('aria-label', `${subject}: no comparison`);
+    chip.setAttribute('aria-label', `${subject}: no comparison${vs}`);
     return chip;
   }
   const d = Math.round(cur * 100) - Math.round(prev * 100);
   if (d === 0) {
     chip.classList.add('dw-d-flat');
     chip.append(node('span', 'dw-d-chg', '±0'));
-    chip.setAttribute('aria-label', `${subject} unchanged`);
+    chip.setAttribute('aria-label', `${subject} unchanged${vs}`);
     return chip;
   }
   const tone = pol === 0 ? 'flat' : d * pol > 0 ? 'good' : 'bad';
@@ -234,7 +274,7 @@ function spPtsChip(cur, prev, pol, subject, partial = false) {
   chg.append(arrow, node('span', 'dw-d-val', val));
   chip.append(chg);
   const verdict = tone === 'good' ? ', better' : tone === 'bad' ? ', worse' : '';
-  chip.setAttribute('aria-label', `${subject} ${d > 0 ? 'up' : 'down'} ${Math.abs(d)} points${verdict}`);
+  chip.setAttribute('aria-label', `${subject} ${d > 0 ? 'up' : 'down'} ${Math.abs(d)} points${vs}${verdict}`);
   return chip;
 }
 
@@ -307,20 +347,28 @@ function spMixRender(el, d, ctx) {
     const pol = t === 'none' ? -1 : 0; // less unclassified is better; the rest is a judgment call
     if (L) {
       const cell = node('td', 'sp-col-d');
-      cell.append(spPtsChip(d.spend.total && prev?.spend.total ? s : null, prev?.spend.total ? ps : null, pol, `${label} share of spend`, partial));
+      if (!prev || prev.spend.total) cell.append(spPtsChip(d.spend.total && prev?.spend.total ? s : null, prev?.spend.total ? ps : null, pol, `${label} share of spend`, cmp, partial, !pw));
       tr.append(cell);
     }
     tr.append(node('td', '', t === 'deleted' ? '' : d.done ? spPct(c) : '—'));
     if (L) {
       const cell = node('td', 'sp-col-d');
-      if (t !== 'deleted') cell.append(spPtsChip(d.done && prev?.cards.total ? c : null, prev?.cards.total ? pc : null, pol, `${label} share of cards done`, partial));
+      if (t !== 'deleted' && (!prev || prev.cards.total)) cell.append(spPtsChip(d.done && prev?.cards.total ? c : null, prev?.cards.total ? pc : null, pol, `${label} share of cards done`, cmp, partial, !pw));
       tr.append(cell);
     }
     tbody.append(tr);
   }
   table.append(thead, tbody);
   el.append(table);
-  if (L && !d.prev) el.append(node('div', 'sp-note', d.cost.previousWindow ? 'No previous period to compare' : 'All time: no previous period to compare'));
+  // the comparison the Δ chips make, named as every other chip names it (all time: the chips say there's none)
+  if (L && pw && cmp.label) {
+    const note = node('div', 'sp-note', `Δ: change in share, ${cmp.label}`);
+    if (cmp.title) note.title = cmp.title;
+    el.append(note);
+  }
+  // a previous window with nothing in it: say so once, muted, instead of a column of bare "—" chips
+  const noPrev = L && prev ? [!prev.spend.total && 'spend', !prev.cards.total && 'cards done'].filter(Boolean) : [];
+  if (noPrev.length) el.append(node('div', 'sp-note', `No previous data (${noPrev.join(', ')}) ${cmp.label || 'in the previous period'}`));
 }
 
 // ── budget-burn: "Will we finish within budget?" ──
@@ -373,6 +421,8 @@ function spBurnRender(el, d, ctx) {
   // a tag / agent / type filter never narrows a budget: say so before the figures
   if (cost.budgetsUnfiltered) el.append(spStatus('info', 'Budgets cover all work in the phase: the Type, Tag and Agent filters don’t narrow them'));
   const list = node('ul', 'sp-burn');
+  // one money format for every figure in the list (the XL gap included)
+  const money = spMoneyFmt(cost.budgets.flatMap((b) => [b.actual, b.budget, b.projected, ...(size === 'XL' && b.budget !== null ? [Math.abs((b.projected ?? b.actual) - b.budget)] : [])]));
   for (const b of cost.budgets) {
     const li = node('li', 'sp-phase');
     const head = node('div', 'sp-phase-head');
@@ -381,7 +431,7 @@ function spBurnRender(el, d, ctx) {
       li.classList.add('sp-phase-none');
       head.append(spStatus('none', 'No budget set'));
       li.append(head);
-      if (size !== 'M') li.append(node('div', 'sp-phase-nums', `${mxMoney(b.actual)} spent`));
+      if (size !== 'M') li.append(node('div', 'sp-phase-nums', `${money(b.actual)} spent`));
       list.append(li);
       continue;
     }
@@ -389,15 +439,15 @@ function spBurnRender(el, d, ctx) {
     head.append(spStatus(kind, text));
     li.append(head, spBullet(b, kind));
     const nums = node('div', 'sp-phase-nums');
-    const proj = b.projected === null ? 'no projection yet' : `projected ${mxMoney(b.projected)}`;
-    nums.append(node('span', '', `${mxMoney(b.actual)} of ${mxMoney(b.budget)}`), node('span', '', proj));
+    const proj = b.projected === null ? 'no projection yet' : `projected ${money(b.projected)}`;
+    nums.append(node('span', '', `${money(b.actual)} of ${money(b.budget)}`), node('span', '', proj));
     if (size !== 'M') nums.append(node('span', '', b.remainingCards ? `${mxPlural(b.remainingCards, 'card')} left` : 'no cards left'));
     if (size === 'XL') {
       const used = b.budget > 0 ? `${Math.round((b.actual / b.budget) * 100)}% used` : null;
       const end = b.projected ?? b.actual;
       const gap = end - b.budget;
       if (used) nums.append(node('span', '', used));
-      nums.append(node('span', '', gap > 0 ? `${mxMoney(gap)} over at completion` : `${mxMoney(-gap)} headroom at completion`));
+      nums.append(node('span', '', gap > 0 ? `${money(gap)} over at completion` : `${money(-gap)} headroom at completion`));
     }
     li.append(nums);
     list.append(li);
@@ -409,7 +459,7 @@ function spBurnRender(el, d, ctx) {
     el.append(legend);
   }
   if (size === 'XL' && cost.medianCardCost !== null)
-    el.append(node('div', 'sp-note', `Projected = actual + cards left × median done-card cost (${mxMoney(cost.medianCardCost)})`));
+    el.append(node('div', 'sp-note', `Projected = actual + cards left × median card cost (${mxMoney(cost.medianCardCost)}, over every done card on the board)`));
 }
 
 // ── registration ──

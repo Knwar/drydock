@@ -1,5 +1,6 @@
 /* ── Dashboard widget: now-building. Fixed frame: everything clips, nothing grows the row. ── */
 .wnb {
+  container-type: inline-size; /* narrow rows drop columns by the widget's width, not the window's */
   height: 100%;
   min-height: 0;
   min-width: 0;
@@ -83,9 +84,16 @@ body.reduce-motion .wnb-who.on .home-dot { animation: none; }
 .wnb-row:hover { background: rgba(255, 255, 255, 0.05); }
 .wnb-row:focus-visible, .wnb-more:focus-visible, .wnb-s:focus-visible, .wnb-idle-txt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .wnb-row-board { flex: none; max-width: 22%; color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
-.wnb-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wnb-row-title { flex: 1; min-width: 6em; overflow: hidden; text-overflow: ellipsis; }
 .wnb-row-agent { flex: none; max-width: 22%; color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
 .wnb-row .wnb-elapsed { margin-left: 0; padding-left: 0; min-width: 4.5em; text-align: right; }
+.wnb-row .home-pill { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* narrow: the title keeps its room; the agent column goes first, then the board shrinks */
+@container (max-width: 420px) {
+  .wnb-row-agent { display: none; }
+  .wnb-row-board { max-width: 18%; }
+  .wnb-row .wnb-elapsed { min-width: 0; }
+}
 .wnb-more {
   flex: none;
   align-self: flex-start;
@@ -125,7 +133,7 @@ body.reduce-motion .wnb-who.on .home-dot { animation: none; }
 .wnb-S .wnb-idle-row { padding: 6px 10px; }
 
 /* S: one line */
-.wnb-S { justify-content: center; }
+.wnb-S { justify-content: flex-start; }
 .wnb-s {
   display: flex;
   align-items: baseline;

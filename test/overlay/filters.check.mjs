@@ -580,8 +580,9 @@ await page.evaluate(() => (document.activeElement.__mark = 'agent'));
   const s = await page.evaluate(() => ({ mark: document.activeElement.__mark, fb: document.activeElement.dataset?.fb }));
   ok(s.mark === 'agent', 'Home: a refetch keeps the focused Agent select', s);
   console.log(`     Home refetch while filtered: ${reqLog.length} requests (${reqLog.join(', ')})`);
-  // (no Type filter is set here: with one, Active agents adds exactly one unfiltered /home read, by design)
-  ok(reqLog.filter((u) => u === '/home').length === 1 && reqLog.filter((u) => u === '/workspace/cards').length <= 1 && reqLog.filter((u) => u === '/workspace/summary').length <= 1, 'Home: one /home (+ ≤ 1 cards, ≤ 1 board summary) per refetch while filtered', reqLog);
+  // a card filter (tag=api) is set: Active agents adds exactly one unfiltered /home read, by design (its
+  // agent states never come from the filtered read)
+  ok(reqLog.filter((u) => u === '/home').length === 2 && reqLog.filter((u) => u === '/workspace/cards').length <= 1 && reqLog.filter((u) => u === '/workspace/summary').length <= 1, 'Home: two /home (filtered + Active agents’ unfiltered; + ≤ 1 cards, ≤ 1 board summary) per refetch while filtered', reqLog);
   // (one /phases read is the KPI budget's active-phase lookup for this board, shared by URL with top-risks; not a fan-out)
   ok(!reqLog.some((u) => /^\/(board|task\/)/.test(u)) && reqLog.filter((u) => u === '/phases').length <= 1, 'Home: no per-board fan-out (no /board or Up-next /task reads; ≤ 1 /phases)', reqLog);
 }

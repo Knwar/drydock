@@ -99,7 +99,13 @@ function fwUnitIn(ms, ref, dayAtH) {
   if (h < dayAtH) return `${n(ms / 3_600_000)}h`;
   return `${n(ms / 86_400_000)}d`;
 }
-const fwSpanIn = (ms, ref) => fwUnitIn(ms, ref, 48); // mxSpan's units
+// cycle-breakdown's durations: days from 24h on (47m, 5.2h, 1.4d), never "34h" beside "2.5d"
+function fwDur(ms) {
+  if (ms === null || ms === undefined) return '—';
+  return fwUnitIn(ms, ms, 24);
+}
+// a change in the larger of its own and the current value's unit: "−4.7d", never "−113h"
+const fwSpanIn = (ms, ref) => fwUnitIn(ms, Math.max(Math.abs(ms), ref ?? 0), 24);
 // mxWait's units: picked from ref in rounded minutes, as mxWait does (59.6 min reads "1h")
 function fwWaitIn(ms, ref) {
   const n = (v) => (v < 10 ? v.toFixed(1).replace(/\.0$/, '') : String(Math.round(v)));
@@ -158,7 +164,7 @@ function fwBlockedBar(blocked, scale) {
 }
 
 function fwStageLabel(pct, times) {
-  return `${pct} time per stage: ${FW_STAGES.map((st) => `${st.name} ${mxSpan(times[st.k])}`).join(', ')}; of which blocked ${mxSpan(times.blocked)} (overlapping those stages)`;
+  return `${pct} time per stage: ${FW_STAGES.map((st) => `${st.name} ${fwDur(times[st.k])}`).join(', ')}; of which blocked ${fwDur(times.blocked)} (overlapping those stages)`;
 }
 
 // One labelled bar block: "p50" bar, then the blocked bar on the same scale. The bar's length is
@@ -167,11 +173,11 @@ function fwStageBlock(pct, times, ctx) {
   const box = node('div', 'fw-stage-block');
   const { svg, total } = fwStageBar(times, fwStageLabel(pct, times));
   const head = node('div', 'fw-stage-head');
-  head.append(node('span', 'fw-k', `${pct} per stage`), node('span', 'fw-stage-sum', `sum of stage ${pct}s ${mxSpan(total)} (not a cycle-time ${pct})`));
+  head.append(node('span', 'fw-k', `${pct} per stage`), node('span', 'fw-stage-sum', `sum of stage ${pct}s ${fwDur(total)} (not a cycle-time ${pct})`));
   box.append(head, svg);
   const b = node('div', 'fw-blocked');
   const txt = node('span', 'fw-blocked-text');
-  txt.append(fwSwatch(FW_BLOCKED), node('span', '', `of which blocked ${mxSpan(times.blocked)}`));
+  txt.append(fwSwatch(FW_BLOCKED), node('span', '', `of which blocked ${fwDur(times.blocked)}`));
   if (ctx.size === 'L') txt.append(node('span', 'fw-dim', '\u00a0· overlaps the stages above'));
   b.append(fwBlockedBar(times.blocked, total), txt);
   box.append(b);
@@ -188,7 +194,7 @@ function fwCycleRender(el, d, ctx) {
   const r = d.flow;
   const sb = r.stageBreakdown;
   const n = r.throughput.total;
-  el.append(fwMain(mxSpan(r.cycleTime.p50), 'p50 cycle', `${mxPlural(n, 'card')} done · queued → done`));
+  el.append(fwMain(fwDur(r.cycleTime.p50), 'p50 cycle', `${mxPlural(n, 'card')} done · queued → done`));
   el.append(fwDeltaRow(fwPrevChip(r, ctx, d.since, 'p50 cycle time', -1, fwSpanIn, r.cycleTime.p50, r.previous?.cycleTime?.p50 ?? null)));
   el.append(fwStageBlock('p50', sb.p50, ctx));
   const prevSb = r.previous?.stageBreakdown?.p50 ?? null;
@@ -203,16 +209,16 @@ function fwCycleRender(el, d, ctx) {
   for (const st of FW_STAGES) {
     const name = node('span', 'fw-lg-name');
     name.append(fwSwatch(st.color), node('span', '', st.name));
-    table.append(name, node('span', 'fw-num', mxSpan(sb.p50[st.k])));
+    table.append(name, node('span', 'fw-num', fwDur(sb.p50[st.k])));
     if (ctx.size === 'L') {
-      table.append(node('span', 'fw-num fw-dim', mxSpan(sb.p85[st.k])));
+      table.append(node('span', 'fw-num fw-dim', fwDur(sb.p85[st.k])));
       table.append(prevSb ? fwPrevChip(r, ctx, d.since, `${st.name} p50`, -1, fwSpanIn, sb.p50[st.k], prevSb[st.k], true) : node('span'));
     }
   }
   el.append(table);
   if (ctx.size === 'L') {
     const head = node('div', 'fw-cycle-p85');
-    head.append(node('span', 'fw-k', 'Cycle time p85'), node('span', 'fw-resolve-v', mxSpan(r.cycleTime.p85)));
+    head.append(node('span', 'fw-k', 'Cycle time p85'), node('span', 'fw-resolve-v', fwDur(r.cycleTime.p85)));
     el.append(head, fwStageBlock('p85', sb.p85, ctx));
   }
 }
@@ -410,7 +416,7 @@ function fwTrendRender(el, d, ctx) {
   const H = 100;
   const max = Math.max(1, ...weeks.map((w) => w.count));
   const yOf = (v) => (v / max) * (H - 4);
-  const summary = weeks.map((w) => `week of ${mxShortDay(w.start)}: ${w.count}${w.partial ? ' (partial week)' : ''}`).join(', ');
+  const summary = weeks.map((w) => `week of ${dwDay(w.start)}: ${w.count}${w.partial ? ' (partial week)' : ''}`).join(', ');
   const chart = node('div', 'fw-tt');
   chart.style.setProperty('--n', String(weeks.length));
   const svg = fwSvg(weeks.length * SLOT, H, 'fw-tt-svg', `Cards done per week, by work type: ${summary}`);
@@ -418,7 +424,7 @@ function fwTrendRender(el, d, ctx) {
     const g = svgEl('g', w.partial ? { 'fill-opacity': 0.45 } : {});
     const t = svgEl('title');
     const parts = FW_TYPES.filter((ty) => w.byType[ty.k]).map((ty) => `${ty.name} ${w.byType[ty.k]}`);
-    t.textContent = `Week of ${mxShortDay(w.start)}: ${w.count} done${w.partial ? ' (partial week)' : ''}${parts.length ? ` · ${parts.join(', ')}` : ''}`;
+    t.textContent = `Week of ${dwDay(w.start)}: ${w.count} done${w.partial ? ' (partial week)' : ''}${parts.length ? ` · ${parts.join(', ')}` : ''}`;
     g.append(t);
     const x = i * SLOT + SLOT * 0.18;
     const bw = SLOT * 0.64;
@@ -438,15 +444,18 @@ function fwTrendRender(el, d, ctx) {
     svg.append(svgEl('line', { x1: 0, x2: weeks.length * SLOT, y1: ya, y2: ya, stroke: '#e8eaf0', 'stroke-opacity': 0.55, 'stroke-width': 1, 'stroke-dasharray': '4 4', 'vector-effect': 'non-scaling-stroke' }));
   }
   chart.append(svg);
-  if (ctx.size === 'XL') {
-    const vals = node('div', 'fw-tt-row fw-tt-vals');
-    for (const w of weeks) vals.append(node('span', w.partial ? 'fw-dim' : '', String(w.count)));
-    chart.append(vals);
-  }
+  // the week counts: every one at XL; at M / L at least the highest and the lowest week
+  const counts = weeks.map((w) => w.count);
+  const hi = counts.indexOf(Math.max(...counts));
+  const lo = counts.indexOf(Math.min(...counts));
+  const vals = node('div', 'fw-tt-row fw-tt-vals');
+  vals.setAttribute('aria-hidden', 'true');
+  weeks.forEach((w, i) => vals.append(node('span', w.partial ? 'fw-dim' : '', ctx.size === 'XL' || i === hi || i === lo ? String(w.count) : '')));
+  chart.append(vals);
   const every = Math.max(1, Math.ceil(weeks.length / (ctx.size === 'M' ? 4 : ctx.size === 'L' ? 6 : 10)));
   const xs = node('div', 'fw-tt-row fw-tt-x');
   xs.setAttribute('aria-hidden', 'true');
-  weeks.forEach((w, i) => xs.append(node('span', '', i % every === 0 ? mxShortDay(w.start) : '')));
+  weeks.forEach((w, i) => xs.append(node('span', '', i % every === 0 ? dwDay(w.start) : '')));
   chart.append(xs);
   el.append(chart);
 
@@ -488,7 +497,7 @@ function fwEscalationRender(el, d, ctx) {
   const per = (b, n) => (n ? b / n : null);
   const cur = per(nb, done);
   const prev = flow.previous && wait.previous ? per(wait.previous.blocked.count, flow.previous.throughput) : null;
-  el.append(fwMain(cur === null ? '—' : fwRatio(cur), 'blockers / card done', `${mxPlural(nb, 'blocker')} · ${mxPlural(done, 'card')} done`));
+  el.append(fwMain(cur === null ? '—' : fwRatio(cur), cur !== null && fwRatio(cur) === '1' ? 'blocker / card done' : 'blockers / card done', `${mxPlural(nb, 'blocker')} · ${mxPlural(done, 'card')} done`));
   // both reads share the window; previous exists only when both have it
   const r = { previous: flow.previous && wait.previous, previousWindow: flow.previousWindow, window: flow.window };
   el.append(fwDeltaRow(fwPrevChip(r, ctx, d.since, 'Blockers per card done', -1, fwRatio, cur, prev)));

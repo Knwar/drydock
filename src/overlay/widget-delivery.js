@@ -3,11 +3,13 @@
 // (+ its milestones), /metrics/history (daily phase + milestone snapshots: the baseline is a phase's /
 // milestone's first snapshot), /metrics/cost (budgets), /workspace/cards, /risks, /metrics/wait. Reads go through ctx.shared keyed by URL, so widgets (and the KPI tiles)
 // asking for the same read in one cycle share it. Uses app.js globals read-only (node, svgEl, mx*,
-// MX_MONTHS, MX_LOCAL_TZ). Status is always an icon + text, never colour alone; user strings go in
+// MX_LOCAL_TZ) and dashboard.js's dwDay. Status is always an icon + text, never colour alone; user strings go in
 // via textContent. Schedule slip bands (the research doc): green within 5%, amber 6–15%, red over 15%.
 
 const DL_DAY = 86_400_000;
 const DL_NO_SNAP = 'No snapshots yet — history starts tomorrow';
+// src/core/forecast.ts MIN_DONE / MIN_DAYS: the history a forecast needs
+const DL_FORECAST_NEED = 'Needs ≥\u00a05 done cards over ≥\u00a010 days of history to forecast';
 const DL_STATES = {
   ok: '✓',
   warn: '!',
@@ -48,9 +50,13 @@ const dlCards = (ctx) => dwCards(ctx); // the board in scope's cards: Home's one
 // The phase a single-phase widget answers for: Home's phase filter, else the board's active phase.
 const dlPhase = (s, f) => (f.phase ? s.phases.find((p) => p.id === f.phase) : s.phases.find((p) => p.project_id === f.project && p.phase_status === 'active')) ?? null;
 
-const dlDay = (day) => `${MX_MONTHS[mxUtc(day).getUTCMonth()]} ${mxUtc(day).getUTCDate()}`; // Oct 20
+const dlDay = (day) => dwDay(day); // Oct 20: the dashboard's one date format
+// server text (a schedule reason) with its ISO days in that format
+const dlText = (s) => (s ?? '').replace(/\b\d{4}-\d{2}-\d{2}\b/g, (d) => dlDay(d));
+// the schedule's reason for no forecast: the real history threshold when that's the cause
+const dlNoForecast = (p) => (p.reason === 'not enough history to forecast' ? DL_FORECAST_NEED : dlText(p.reason));
 const dlDiff = (a, b) => (a && b ? Math.round((mxUtc(b) - mxUtc(a)) / DL_DAY) : null); // days from a to b
-const dlSigned = (n, unit = ' d') => (n === 0 ? `±0${unit}` : `${n > 0 ? '+' : '−'}${Math.abs(n)}${unit}`);
+const dlSigned = (n, unit = '\u00a0d') => (n === 0 ? `±0${unit}` : `${n > 0 ? '+' : '−'}${Math.abs(n)}${unit}`);
 const dlPct = (n) => `${n > 0 ? '+' : n < 0 ? '−' : '±'}${Math.abs(Math.round(n))}%`;
 
 // A status: icon + text (colour only reinforces).
@@ -125,11 +131,11 @@ function dlSlipChip(s, short = false) {
     return el;
   }
   const kind = dlSlipKind(s.slip, s.basis);
-  const pct = s.basis ? ` · ${dlPct((s.slip / s.basis) * 100)}` : '';
   const el = node('span', `dl-slip dl-${kind}`);
   const ico = node('span', 'dl-slip-arrow', s.slip > 0 ? '▲' : s.slip < 0 ? '▼' : '=');
   ico.setAttribute('aria-hidden', 'true');
-  el.append(ico, node('span', 'dl-slip-val', `${dlSigned(s.slip)}${pct}`));
+  el.append(ico, node('span', 'dl-slip-val', dlSigned(s.slip)));
+  if (s.basis) el.title = `${dlPct((s.slip / s.basis) * 100)} of the planned duration (baseline day to its p85, ${mxPlural(s.basis, 'day')})`;
   if (!short) el.append(node('span', 'dl-slip-vs', 'vs baseline'));
   el.setAttribute('role', 'img');
   const verdict = kind === 'ok' ? 'within 5%' : kind === 'warn' ? '6 to 15%, at risk' : 'over 15%, off track';
@@ -195,6 +201,7 @@ function dlHealthS(el, rows) {
 
 function dlBudgetCell(b) {
   const cell = node('span', 'dl-cell dl-c-budget');
+  cell.dataset.k = 'Budget';
   if (!b || b.budget === null) {
     cell.append(node('span', 'dl-dim', 'No budget'));
     return cell;
@@ -206,22 +213,24 @@ function dlBudgetCell(b) {
 
 function dlTargetCell(p) {
   const cell = node('span', 'dl-cell dl-c-target');
+  cell.dataset.k = 'p85 vs target';
   if (p.phase_status === 'done' || p.status === 'complete') {
     cell.append(node('span', 'dl-dim', p.phase_status === 'done' ? 'Done' : 'All cards done'));
     return cell;
   }
   cell.append(node('span', 'dl-v', p.p85 ? dlDay(p.p85) : '—'));
-  if (!p.target_date) cell.append(node('span', 'dl-sub', 'no target'));
-  else if (!p.p85) cell.append(node('span', 'dl-sub', `target ${dlDay(p.target_date)} · no forecast`));
+  if (!p.target_date) cell.append(node('span', 'dl-sub', 'no target')); // said once (the reason is "no target date")
+  else if (!p.p85) cell.append(node('span', 'dl-sub', `target ${dlDay(p.target_date)} · no forecast: ${dlNoForecast(p)}`));
   else {
     const d = dlDiff(p.target_date, p.p85);
-    cell.append(node('span', 'dl-sub', `target ${dlDay(p.target_date)} · ${d > 0 ? `${d} d over` : d === 0 ? 'on target' : `${-d} d spare`}`));
+    cell.append(node('span', 'dl-sub', `target ${dlDay(p.target_date)} · ${d > 0 ? `${d}\u00a0d\u00a0over` : d === 0 ? 'on target' : `${-d}\u00a0d\u00a0spare`}`));
   }
   return cell;
 }
 
 function dlProgressCell(p) {
   const cell = node('span', 'dl-cell dl-c-prog');
+  cell.dataset.k = 'Done';
   const done = p.total - p.remaining;
   cell.append(node('span', 'dl-v', `${done}/${p.total}`));
   const bar = node('span', 'dl-prog');
@@ -233,6 +242,8 @@ function dlProgressCell(p) {
   return cell;
 }
 
+// The table follows the BODY's width (a container query in widget-delivery.css), not the size alone:
+// every column when wide; Budget merged under Status when narrower; below ~560px each phase stacks.
 function dlHealthRender(el, d, ctx) {
   if (ctx.size === 'S') return dlHealthS(el, d.rows);
   const wide = ctx.size === 'L' || ctx.size === 'XL';
@@ -241,8 +252,8 @@ function dlHealthRender(el, d, ctx) {
   table.setAttribute('role', 'list');
   const head = node('div', 'dl-ph-head');
   head.setAttribute('aria-hidden', 'true');
-  const cols = ['Phase', 'Status', 'p85 vs target', 'Slip vs baseline', ...(wide ? ['Budget'] : []), 'Done'];
-  for (const c of cols) head.append(node('span', 'dl-ph-h', c));
+  const cols = [['name', 'Phase'], ['status', 'Status'], ['target', 'p85 vs target'], ['slip', 'Slip vs baseline'], ...(wide ? [['budget', 'Budget']] : []), ['prog', 'Done']];
+  for (const [k, c] of cols) head.append(node('span', `dl-ph-h dl-c-${k}`, c));
   table.append(head);
   for (const r of rows) {
     const p = r.p;
@@ -258,12 +269,14 @@ function dlHealthRender(el, d, ctx) {
     const name = node('span', 'dl-cell dl-c-name');
     name.append(node('span', 'dl-name', p.title));
     if (ctx.size === 'XL') {
-      const sub = [p.reason, r.blockers ? mxPlural(r.blockers, 'open blocker') : null].filter(Boolean).join(' · ');
+      // a missing target is already the target cell's "no target"
+      const sub = [p.target_date ? dlText(p.reason) : null, r.blockers ? mxPlural(r.blockers, 'open blocker') : null].filter(Boolean).join(' · ');
       if (sub) name.append(node('span', 'dl-sub dl-reason', sub));
     }
     const slip = node('span', 'dl-cell dl-c-slip');
+    slip.dataset.k = 'Slip vs baseline';
     slip.append(dlSlipChip(r.slip, true)); // the column header says "vs baseline"
-    row.append(name, dlRag(r.rag, 'dl-cell'), dlTargetCell(p), slip);
+    row.append(name, dlRag(r.rag, 'dl-cell dl-c-status'), dlTargetCell(p), slip);
     if (wide) row.append(dlBudgetCell(r.budget));
     row.append(dlProgressCell(p));
     table.append(item);
@@ -271,7 +284,7 @@ function dlHealthRender(el, d, ctx) {
   el.append(table);
   const hidden = d.rows.length - rows.length;
   if (!rows.length) el.append(node('div', 'dl-note', 'All phases done'));
-  else if (hidden) el.append(node('div', 'dl-note', `+ ${mxPlural(hidden, 'done phase')} (shown at L)`));
+  else if (hidden) el.append(node('div', 'dl-note', `${mxPlural(hidden, 'done phase')} hidden — widen to see`));
 }
 
 // ── forecast: "When will the active phase land?" ──
@@ -282,7 +295,7 @@ async function dlForecastLoad(ctx) {
   if (!phase) return { empty: 'No active phase to forecast' };
   if (phase.phase_status === 'done' || phase.status === 'complete') return { empty: `${phase.title}: every card is done` };
   if (!phase.target_date) return { empty: `Set a target date on ${phase.title} to forecast it` };
-  if (!phase.p85) return { empty: `No forecast for ${phase.title}: ${phase.reason}` };
+  if (!phase.p85) return { empty: `No forecast for ${phase.title}: ${dlNoForecast(phase)}` };
   const [h, cards] = await Promise.all([dlHistory(ctx, f, phase.id), dlCards(ctx)]);
   // the next milestone: the phase's own, else any on the board in scope
   const next = (list) => list.filter((m) => m.date >= s.today).sort((a, b) => a.date.localeCompare(b.date))[0] ?? null;
@@ -329,7 +342,7 @@ function dlForecastRender(el, d, ctx) {
   for (const [k, v] of [['p50', p.p50], ['p85', p.p85], ['p95', p.p95]]) {
     const c = node('div', 'dl-pct');
     const days = v ? dlDiff(d.today, v) : null;
-    c.append(node('span', 'dl-k', k), node('span', 'dl-v', v ? dlDay(v) : '—'), node('span', 'dl-sub', days === null ? '' : days <= 0 ? 'today' : `in ${mxPlural(days, 'day')}`));
+    c.append(node('span', 'dl-k', k), node('span', 'dl-v', v ? dlDay(v) : '—'), node('span', 'dl-sub', days === null ? '' : days <= 0 ? 'today' : `in ${days}\u00a0${days === 1 ? 'day' : 'days'}`));
     pcts.append(c);
   }
   el.append(pcts);
@@ -337,13 +350,13 @@ function dlForecastRender(el, d, ctx) {
   // L: why (the schedule's reason) and the next commitment
   const det = node('div', 'dl-detail');
   const why = node('div', 'dl-fc-item');
-  why.append(node('span', 'dl-k', 'Why'), node('span', 'dl-reason-l', p.reason));
+  why.append(node('span', 'dl-k', 'Why'), node('span', 'dl-reason-l', dlText(p.reason)));
   const ms = node('div', 'dl-fc-item');
   ms.append(node('span', 'dl-k', 'Next milestone'));
   const m = d.milestone;
   if (m) {
     const days = dlDiff(d.today, m.date);
-    ms.append(node('span', 'dl-v', `${m.title} · ${dlDay(m.date)}`), node('span', 'dl-sub', days === 0 ? 'today' : `in ${mxPlural(days, 'day')}`));
+    ms.append(node('span', 'dl-v', `${m.title} · ${dlDay(m.date)}`), node('span', 'dl-sub', days === 0 ? 'today' : `in ${days}\u00a0${days === 1 ? 'day' : 'days'}`));
   } else ms.append(node('span', 'dl-sub', 'none scheduled'));
   det.append(why, ms);
   el.append(det);
@@ -356,10 +369,14 @@ async function dlMilestonesLoad(ctx) {
   const ms = f.phase ? s.milestones.filter((m) => m.phase_id === f.phase) : s.milestones; // the same list GET /milestones returns
   if (!ms.length) return { empty: f.phase ? 'No milestones on this phase' : 'No milestones yet — add one on the Phases view' };
   const base = new Map(h.milestones.map((m) => [m.milestone_id, m.series[0]]));
-  const phases = new Map(s.phases.map((p) => [p.id, p.title]));
+  const phases = new Map(s.phases.map((p) => [p.id, p]));
   const rows = ms.map((m) => {
     const b = base.get(m.id);
-    return { id: m.id, title: m.title, date: m.date, phase: phases.get(m.phase_id) ?? null, base: b ?? null, moved: b ? dlDiff(b.milestone_date, m.date) : null, past: m.date < s.today };
+    const ph = phases.get(m.phase_id) ?? null;
+    const past = m.date < s.today;
+    // a past milestone whose phase isn't done: missed (no phase: nothing to judge it by, just passed)
+    const missed = past && !!ph && ph.phase_status !== 'done' && ph.status !== 'complete';
+    return { id: m.id, title: m.title, date: m.date, phase: ph?.title ?? null, base: b ?? null, moved: b ? dlDiff(b.milestone_date, m.date) : null, past, missed };
   });
   const upcoming = rows.filter((r) => !r.past).sort((a, b) => a.date.localeCompare(b.date));
   const past = rows.filter((r) => r.past).sort((a, b) => b.date.localeCompare(a.date));
@@ -382,10 +399,19 @@ function dlMovedCell(r) {
 }
 
 function dlMilestoneRow(r, today) {
-  const li = node('li', `dl-ms${r.past ? ' dl-past' : ''}`);
+  const li = node('li', `dl-ms${r.missed ? ' dl-missed' : r.past ? ' dl-past' : ''}`);
   const date = node('span', 'dl-ms-date');
   const days = dlDiff(today, r.date);
-  date.append(node('span', 'dl-v', dlDay(r.date)), node('span', 'dl-sub', r.past ? 'passed' : days === 0 ? 'today' : `in ${days} d`));
+  let when;
+  if (r.missed) {
+    // icon + text, compact enough for the date column
+    when = node('span', 'dl-sub dl-bad dl-ms-missed');
+    const ico = node('span', '', '✕ ');
+    ico.setAttribute('aria-hidden', 'true');
+    when.append(ico, node('span', '', 'missed'));
+    when.title = `${r.phase} wasn’t done by ${dlDay(r.date)}`;
+  } else when = node('span', 'dl-sub', r.past ? 'passed' : days === 0 ? 'today' : `in ${days}\u00a0d`);
+  date.append(node('span', 'dl-v', dlDay(r.date)), when);
   const t = node('span', 'dl-ms-title');
   t.append(node('span', 'dl-name', r.title));
   if (r.phase) t.append(node('span', 'dl-sub', r.phase));
@@ -553,8 +579,16 @@ function dlPlannedRender(el, d, ctx) {
 }
 
 // ── gate-readiness: "Can this phase pass its gate?" ──
-// High risk: likelihood × impact ≥ 15, open or mitigating, no mitigation written down.
+// THE high-risk rule, shared by gate-readiness and top-risks (widget-quality.js): an open risk
+// (status open or mitigating) scoring likelihood × impact ≥ DL_HIGH_RISK fails with no mitigation
+// written down, and warns with one (it's still open). → 'bad' | 'warn', or null (not open and high).
 const DL_HIGH_RISK = 15;
+const DL_RISK_RULE = `Rule: an open risk scoring ${DL_HIGH_RISK}+ (likelihood × impact) fails with no mitigation, and warns with one`;
+function dlHighRisk(r) {
+  if (r.likelihood * r.impact < DL_HIGH_RISK || (r.status !== 'open' && r.status !== 'mitigating')) return null;
+  return r.mitigation?.trim() ? 'warn' : 'bad';
+}
+
 async function dlGateLoad(ctx) {
   const f = dlFilters(ctx);
   const s = await dlSchedule(ctx, f);
@@ -570,7 +604,8 @@ async function dlGateLoad(ctx) {
   const ids = new Set(mine.map((c) => c.id));
   const open = mine.filter((c) => c.lane !== 'done');
   const blocked = open.filter((c) => c.blocked);
-  const high = risks.filter((r) => r.likelihood * r.impact >= DL_HIGH_RISK && (r.status === 'open' || r.status === 'mitigating') && !r.mitigation?.trim());
+  const high = risks.filter((r) => dlHighRisk(r) === 'bad');
+  const mitigated = risks.filter((r) => dlHighRisk(r) === 'warn');
   const b = cost.budgets.find((x) => x.phase_id === phase.id) ?? null;
   const waiting = wait.waiting.needsYou.filter((n) => n.task_id && ids.has(n.task_id));
   const cardOf = (id) => mine.find((c) => c.id === id);
@@ -583,9 +618,15 @@ async function dlGateLoad(ctx) {
     },
     {
       ok: !high.length,
-      label: 'No unmitigated high risk',
-      detail: high.length ? `${mxPlural(high.length, 'risk')} score ${DL_HIGH_RISK}+ with no mitigation` : `${mxPlural(risks.length, 'linked risk')}, none high and unmitigated`,
-      list: high.map((r) => ({ text: `${r.title} · score ${r.likelihood * r.impact}` })),
+      warn: !high.length && mitigated.length > 0,
+      label: `No unmitigated high risk (score ≥\u00a0${DL_HIGH_RISK})`,
+      detail: high.length
+        ? `${mxPlural(high.length, 'open risk')} score ${DL_HIGH_RISK}+ with no mitigation`
+        : mitigated.length
+          ? `${mitigated.length} open high risk${mitigated.length === 1 ? '' : 's'}, mitigated`
+          : `${mxPlural(risks.length, 'linked risk')}, none open and high`,
+      title: DL_RISK_RULE,
+      list: [...high, ...mitigated].map((r) => ({ text: `${r.title} · score ${r.likelihood * r.impact}${dlHighRisk(r) === 'warn' ? ' · mitigated, still open' : ''}` })),
     },
     {
       ok: !b?.overBudget,
@@ -611,16 +652,23 @@ async function dlGateLoad(ctx) {
 
 function dlGateRender(el, d, ctx) {
   const failed = d.items.filter((i) => !i.ok).length;
+  const warned = d.items.filter((i) => i.ok && i.warn).length;
   const head = node('div', 'dl-gate-head');
-  head.append(failed ? dlStatus('bad', 'Hold', 'dl-verdict') : dlStatus('ok', 'Go', 'dl-verdict'), node('span', 'dl-sub', failed ? `${failed} of ${d.items.length} checks open · ${d.phase.title}` : `all ${d.items.length} checks pass · ${d.phase.title}`));
+  const warnNote = warned ? ` · ${warned} warning${warned === 1 ? '' : 's'}` : '';
+  head.append(
+    failed ? dlStatus('bad', 'Hold', 'dl-verdict') : dlStatus('ok', 'Go', 'dl-verdict'),
+    node('span', 'dl-sub', failed ? `${failed} of ${d.items.length} checks open${warnNote} · ${d.phase.title}` : `all ${d.items.length} checks pass${warnNote} · ${d.phase.title}`),
+  );
   el.append(head);
   const list = node('ul', 'dl-gate');
   for (const it of d.items) {
+    const kind = !it.ok ? 'bad' : it.warn ? 'warn' : 'ok';
     const li = node('li', `dl-gate-item${it.ok ? '' : ' dl-fail'}`);
+    if (it.title) li.title = it.title;
     const line = node('div', 'dl-gate-line');
-    line.append(dlStatus(it.ok ? 'ok' : 'bad', it.ok ? 'Pass' : 'Fail', 'dl-gate-st'), node('span', 'dl-name', it.label), node('span', 'dl-sub', it.detail));
+    line.append(dlStatus(kind, { ok: 'Pass', warn: 'Warn', bad: 'Fail' }[kind], 'dl-gate-st'), node('span', 'dl-name', it.label), node('span', 'dl-sub', it.detail));
     li.append(line);
-    if (ctx.size === 'L' && !it.ok && it.list.length) {
+    if (ctx.size === 'L' && kind !== 'ok' && it.list.length) {
       const sub = node('ul', 'dl-gate-sub');
       for (const x of it.list.slice(0, 4)) {
         const sli = node('li');
