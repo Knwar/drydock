@@ -53,6 +53,8 @@
 //   dwPrevDays(previousWindow) → the comparison window's length in whole days, Math.round((to+1-from)/DAY)
 //     (at least 1), or null when there's no previousWindow (all time: no comparison). Use previousWindow,
 //     not window: window.to is "now" for a rolling range.
+//   dwAgentState(card, activity, reviewer?) → { state, icon, text, rank, detail, label }: an agent's
+//     displayed state, the one rule Now building and Active agents share (see DW_AGENT_STATES).
 
 const DW_SIZES = ['S', 'M', 'L', 'XL'];
 const DW_ROW_PX = 88;
@@ -135,6 +137,35 @@ function dwFirstActivity(ctx) {
   const from = Math.floor((Date.now() - 56 * DW_DAY) / 60_000) * 60_000;
   const url = `/metrics/flow?${new URLSearchParams({ project, tz: MX_LOCAL_TZ, from: String(from) })}`;
   return ctx.shared(url, () => mxGet(url)).then((r) => r.firstActivityAt ?? null);
+}
+
+// ── agent state: one rule for Now building and Active agents (they must never disagree) ──
+// card: the agent's current card (a /home now_building item: in progress or in review), or null.
+// activity: its latest live status text ("Edit foo.js"); null, or an idle ping ("idle …"), when the
+// session is idle / silent: that's no activity.
+// reviewer: a reviewer persona, or a reviewer subagent live on the card.
+//   1. the card is blocked                                   → Blocked
+//   2. the card is in review, or a reviewer has work         → Reviewing
+//   3. it has a card in flight, or any live activity         → Working
+//   4. neither                                               → Idle
+// An idle session never idles an agent with a card in flight: the card decides. The activity only adds
+// detail: a card in flight with no activity reads "Working · waiting for next action", never "idle".
+// Callers pass the agent's card from ALL its work (no Type filter), so a filter can't idle a busy agent.
+const DW_AGENT_STATES = {
+  blocked: { icon: '⚠', text: 'Blocked', rank: 0 },
+  working: { icon: '▶', text: 'Working', rank: 1 },
+  reviewing: { icon: '◎', text: 'Reviewing', rank: 1 },
+  idle: { icon: '○', text: 'Idle', rank: 2 },
+};
+function dwAgentState(card, activity, reviewer = false) {
+  const live = activity && !/^idle\b/.test(activity) ? activity : null;
+  let state = 'idle';
+  if (card?.blocked) state = 'blocked';
+  else if (card?.lane === 'in_review' || (reviewer && (card || live))) state = 'reviewing';
+  else if (card || live) state = 'working';
+  const s = DW_AGENT_STATES[state];
+  const detail = live || (card && !card.blocked ? 'waiting for next action' : null);
+  return { state, ...s, detail, label: detail ? `${s.text} · ${detail}` : s.text };
 }
 
 function dwDeltaChip({ cur, prev, polarity = 0, fmt, label, subject, has = prev != null, labelLong = label, none, title, since, previousWindow, kind, short = false }) {

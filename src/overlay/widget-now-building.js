@@ -15,7 +15,10 @@ function wnbPhase(item) {
   return fbPhaseById(hctx.meta, pid)?.title ?? phases.find((p) => p.id === pid)?.title ?? null;
 }
 
-const wnbActionText = (it) => it.activity || 'idle';
+// The card's agent state + live action, by the rule Active agents uses too (dashboard.js
+// dwAgentState): "Working · Edit foo.js", or "Working · waiting for next action" when the
+// session is idle with the card still in flight (never a bare "idle").
+const wnbActionText = (it, activity = it.activity) => dwAgentState(it, activity || null).label;
 
 function wnbElapsed(since) {
   const el = node('span', 'wnb-elapsed', fmtElapsed(since));
@@ -52,6 +55,7 @@ function wnbHero(it, data, ctx) {
   else who.append(node('span', 'wnb-agent wnb-dim', 'unassigned'));
   const act = node('span', 'wnb-action');
   act.dataset.card = it.id;
+  act._wnbItem = it; // onStatus re-derives the label from the card
   act.append(node('span', 'home-dot'), node('span', 'wnb-action-txt', wnbActionText(it)));
   who.append(act);
 
@@ -192,7 +196,7 @@ dwRegister({
     for (const a of el.querySelectorAll('.wnb-action')) {
       if (a.dataset.card !== st.task_id) continue;
       const text = `${st.verb ?? ''} ${st.detail ?? ''}`.trim();
-      a.querySelector('.wnb-action-txt').textContent = text || 'idle';
+      a.querySelector('.wnb-action-txt').textContent = wnbActionText(a._wnbItem, text);
       a.parentElement.classList.toggle('on', !!text);
     }
   },
