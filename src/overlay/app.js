@@ -3700,7 +3700,7 @@ function cardEl(card) {
   const meta = [
     card.blocked && `<span class="blocked-pill" title="${esc(card.blocked_reason ?? '')}">✋ blocked</span>`,
     card.tag && `<span class="tag">${esc(team(card.tag).name)}</span>`,
-    WORK_TYPE_LABEL[card.work_type] && `<span class="wt wt-${card.work_type}">${WORK_TYPE_LABEL[card.work_type]}</span>`,
+    Object.hasOwn(WORK_TYPE_LABEL, card.work_type ?? '') && `<span class="wt wt-${card.work_type}">${WORK_TYPE_LABEL[card.work_type]}</span>`,
     card.agent && `<span class="agent">${esc(card.agent)}</span>`,
     card.skill && `<span class="skill">✦ ${esc(card.skill)}</span>`,
     card.rounds > 0 && `<span class="rounds${card.rounds >= 2 ? ' cap' : ''}">R${card.rounds}</span>`,
@@ -3817,6 +3817,7 @@ function renderMarkdown(src) {
 // ── card detail modal ───────────────────────────────────────────────
 let openCardId = null;
 let cardWtError = null; // { id, msg }: the last failed work-type change, shown inline until the next try
+const cardWtPending = new Map(); // card id → the work type a PATCH in flight is saving ('' = unclassified)
 
 const LANE_NAME = (l) => ({ backlog: 'Backlog', queued: 'Queued', in_progress: 'In Progress', in_review: 'In Review', done: 'Done' })[l] ?? l;
 
@@ -3908,11 +3909,47 @@ async function refreshCardModal() {
 }
 
 // The meta line's work type: a select ("Unclassified" + the 4 types) that PATCHes the card;
-// a failure shows inline next to it (the live card update re-renders on success).
+// a failure shows inline next to it (the live card update re-renders on success). The PATCH in
+// flight lives in cardWtPending, so a select redrawn meanwhile shows its value, disabled, and
+// the outcome lands on whichever select is on screen for the card when it completes.
+const cardWtCurrent = (id) => (openCardId === id ? document.querySelector('#card-meta .cm-wt-wrap') : null);
+function cardWtPaint(wrap, value, pending, error) {
+  const field = wrap.querySelector('.cm-wt');
+  const sel = wrap.querySelector('select');
+  if (value) field.dataset.wt = value;
+  else delete field.dataset.wt;
+  sel.value = value;
+  sel.disabled = pending;
+  wrap.querySelector('.cm-wt-err').textContent = error;
+}
+async function cardWtSave(id, prev, next) {
+  if (cardWtPending.has(id)) return; // one PATCH at a time per card
+  cardWtPending.set(id, next);
+  cardWtError = null;
+  const now = cardWtCurrent(id);
+  if (now) cardWtPaint(now, next, true, '');
+  let msg = null;
+  try {
+    const res = await fetch(`/task/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ work_type: next || null }),
+    });
+    if (!res.ok) msg = (await res.json().catch(() => null))?.error ?? `HTTP ${res.status}`;
+  } catch {
+    msg = 'Daemon unreachable';
+  }
+  cardWtPending.delete(id);
+  if (msg) cardWtError = { id, msg: `Couldn't change type: ${msg}` };
+  const wrap = cardWtCurrent(id); // the select on screen now (a live update may have redrawn it)
+  if (!wrap) return;
+  // failure: back to what the card still has; success: the saved value (the live update follows)
+  cardWtPaint(wrap, msg ? prev : next, false, msg ? cardWtError.msg : '');
+  if (msg) wrap.querySelector('select').focus();
+}
 function cardWorkTypeEl(id, value) {
   const wrap = node('span', 'cm-wt-wrap');
   const field = node('label', 'cm-wt');
-  if (value) field.dataset.wt = value;
   field.append(node('span', 'cm-wt-k', 'Type'));
   const sel = node('select', 'cm-wt-sel');
   for (const [v, text] of [['', 'Unclassified'], ...WORK_TYPES]) {
@@ -3920,41 +3957,14 @@ function cardWorkTypeEl(id, value) {
     o.value = v;
     sel.append(o);
   }
-  sel.value = value;
   sel.setAttribute('aria-label', 'Work type');
-  sel.onchange = async () => {
-    const next = sel.value;
-    sel.disabled = true;
-    cardWtError = null;
-    err.textContent = '';
-    let msg = null;
-    try {
-      const res = await fetch(`/task/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ work_type: next || null }),
-      });
-      if (!res.ok) msg = (await res.json().catch(() => null))?.error ?? `HTTP ${res.status}`;
-    } catch {
-      msg = 'Daemon unreachable';
-    }
-    if (openCardId !== id) return;
-    sel.disabled = false;
-    if (msg) {
-      cardWtError = { id, msg: `Couldn't change type: ${msg}` };
-      err.textContent = cardWtError.msg;
-      sel.value = value; // back to what the card still has
-      sel.focus();
-    } else if (field.isConnected) {
-      // reflect it now; the live card update re-renders the modal with the saved value
-      if (next) field.dataset.wt = next;
-      else delete field.dataset.wt;
-    }
-  };
+  sel.onchange = () => cardWtSave(id, value, sel.value);
   field.append(sel);
-  const err = node('span', 'cm-wt-err', cardWtError?.id === id ? cardWtError.msg : '');
+  const err = node('span', 'cm-wt-err');
   err.setAttribute('role', 'alert');
   wrap.append(field, err);
+  const pending = cardWtPending.has(id);
+  cardWtPaint(wrap, pending ? cardWtPending.get(id) : value, pending, cardWtError?.id === id ? cardWtError.msg : '');
   return wrap;
 }
 
