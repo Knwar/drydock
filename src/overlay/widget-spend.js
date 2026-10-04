@@ -274,10 +274,19 @@ function spMixRender(el, d, ctx) {
     c.scope = 'col';
     return c;
   };
+  // the Δ columns stay narrow ("Δ"): the comparison (a custom range's dates can be long) is the tooltip
+  const thD = (what) => {
+    const c = th('Δ', 'sp-col-d');
+    if (cmp.label) {
+      c.title = cmp.title ? `Δ ${cmp.label} (${cmp.title})` : `Δ ${cmp.label}`;
+      c.setAttribute('aria-label', `Change in ${what} share ${cmp.labelLong}`);
+    }
+    return c;
+  };
   hr.append(th('Type', 'sp-col-type'), th('Spend'));
-  if (L) hr.append(th(cmp.label ? `Δ ${cmp.label}` : 'Δ', 'sp-col-d'));
+  if (L) hr.append(thD('spend'));
   hr.append(th('Cards'));
-  if (L) hr.append(th(cmp.label ? `Δ ${cmp.label}` : 'Δ', 'sp-col-d'));
+  if (L) hr.append(thD('cards done'));
   thead.append(hr);
   const tbody = node('tbody');
   const prev = d.prev;

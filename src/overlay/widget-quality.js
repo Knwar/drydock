@@ -201,7 +201,10 @@ function wqSpeedRender(el, d, ctx) {
   // defect share at the chip's precision (whole points): a ±0 chip never reads as "stability down"
   const dsUp = ds !== null && dsPrev !== null && Math.round((ds - dsPrev) * 100) > 0;
   const stabDown = up(rw, rwPrev) || dsUp;
+  // a previous period starting before the board's first activity would flatter / alarm: no verdict
+  const partial = (r) => d.since != null && !!r.previousWindow && r.previousWindow.from < d.since;
   if (!flow.previous || !q.previous) el.append(wqStatus('none', 'No previous period to compare'));
+  else if (partial(flow) || partial(q)) el.append(wqStatus('none', 'No full previous period'));
   else if (thrUp && stabDown) el.append(wqStatus('warn', 'Speed up, stability down'));
   else if (stabDown) el.append(wqStatus('warn', 'Stability down, speed not up'));
   else if (thrUp) el.append(wqStatus('ok', 'Speed up, stability held'));

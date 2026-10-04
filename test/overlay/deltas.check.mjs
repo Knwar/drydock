@@ -1,6 +1,7 @@
 // Headless checks of the Phase E widgets' delta chips + range flags (card e53db713): a quality chip
 // whose previous period predates the board's first activity is grey ("No full previous period"), a
-// custom range's chip names the previous period's dates, and an unranged widget (wip) hides Range in
+// custom range's chip names the previous period's dates, speed-stability gives no verdict from a
+// pre-history period, cycle-breakdown's stage chips go a muted "—", and an unranged widget (wip) hides Range in
 // its config drawer. Self-contained: starts its own daemon on a scratch DB + port, seeds ~8 weeks of
 // data (metrics-seed.mjs), drives Chrome, then kills the daemon and removes the DB.
 // Not part of `npm test` (needs Chrome + playwright-core). Run from the repo root:
@@ -100,6 +101,11 @@ try {
               slot('s3', 4, w('wip', 'wip', 'M')),
             ],
           },
+          {
+            id: 'row2',
+            height: 5,
+            slots: [slot('s4', 6, w('ss', 'speed-stability', 'L')), slot('s5', 6, w('cb', 'cycle-breakdown', 'L'))],
+          },
         ],
       },
     ],
@@ -122,6 +128,18 @@ try {
   await shot('deltas-8w');
   const pre = await chips('q-home');
   ok(pre.length > 0 && pre.every((c) => c.flat && c.text === 'No full previous period' && c.vs === null), 'quality (8 weeks): pre-history chips are grey "No full previous period", no label', pre);
+
+  // speed-stability: no "speed up / stability held" verdict from a partial previous period
+  await waitChips('ss');
+  const verdict = await page.$eval('.dw-widget[data-widget-id="ss"] .wq-status', (e) => ({ text: e.textContent, none: e.classList.contains('wq-none') }));
+  ok(verdict.none && verdict.text.endsWith('No full previous period'), 'speed-stability (8 weeks): the verdict is grey "No full previous period"', verdict);
+
+  // cycle-breakdown L: the stage chips are a short muted "—" (tooltip), the column head says why
+  await waitChips('cb');
+  const stage = await page.$$eval('.dw-widget[data-widget-id="cb"] .fw-legend-l .dw-delta', (els) => els.map((e) => ({ text: e.textContent, flat: e.classList.contains('dw-d-flat'), title: e.title })));
+  const head = await page.$$eval('.dw-widget[data-widget-id="cb"] .fw-legend-l > .fw-k', (els) => els.map((e) => e.textContent));
+  ok(stage.length === 3 && stage.every((c) => c.text === '—' && c.flat && c.title === 'No full previous period'), 'cycle-breakdown L (8 weeks): stage chips are a muted "—" titled "No full previous period"', stage);
+  ok(head[3] === 'No full previous period', 'cycle-breakdown L (8 weeks): the stage delta column head reads "No full previous period"', head);
 
   // ---- custom range override: the short label names the previous period's dates ----
   await waitChips('q-custom');

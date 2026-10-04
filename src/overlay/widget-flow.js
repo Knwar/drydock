@@ -84,13 +84,14 @@ function fwPrevChip(r, ctx, since, subject, polarity, fmt, cur, prev, short = fa
     ...vs,
     label: short ? '' : vs.label,
     none: short ? '—' : undefined,
+    short,
     since,
     previousWindow: r.previousWindow,
   });
 }
 
 // A duration change ms in the unit ref (the current value) is shown in: "2.4d ▼ −1.2d", never "−28h".
-// dayAtH: the hours from which ref reads in days (mxSpan: 48, mxWait: 24).
+// dayAtH: the hours from which ref reads in days (mxSpan: 48).
 function fwUnitIn(ms, ref, dayAtH) {
   const n = (v) => (v < 10 ? v.toFixed(1).replace(/\.0$/, '') : String(Math.round(v)));
   const h = (ref ?? ms) / 3_600_000;
@@ -99,7 +100,14 @@ function fwUnitIn(ms, ref, dayAtH) {
   return `${n(ms / 86_400_000)}d`;
 }
 const fwSpanIn = (ms, ref) => fwUnitIn(ms, ref, 48); // mxSpan's units
-const fwWaitIn = (ms, ref) => fwUnitIn(ms, ref, 24); // mxWait's units
+// mxWait's units: picked from ref in rounded minutes, as mxWait does (59.6 min reads "1h")
+function fwWaitIn(ms, ref) {
+  const n = (v) => (v < 10 ? v.toFixed(1).replace(/\.0$/, '') : String(Math.round(v)));
+  const m = Math.max(0, Math.round((ref ?? ms) / 60_000));
+  if (m < 60) return `${Math.round(ms / 60_000)}m`;
+  if (m < 24 * 60) return `${n(ms / 3_600_000)}h`;
+  return `${n(ms / 86_400_000)}d`;
+}
 
 function fwDeltaRow(chip, caption) {
   const row = node('div', 'fw-delta-row');
@@ -188,7 +196,9 @@ function fwCycleRender(el, d, ctx) {
   const table = node('div', `fw-legend-grid${ctx.size === 'L' ? ' fw-legend-l' : ''}`);
   if (ctx.size === 'L') {
     const vs = dwVs(ctx.range, r.previousWindow, r.window);
-    table.append(node('span', 'fw-k', 'Stage'), node('span', 'fw-k fw-num', 'p50'), node('span', 'fw-k fw-num', 'p85'), node('span', 'fw-k', prevSb ? vs.label : ''));
+    // a previous period starting before the board's first activity: the stage chips are a muted "—"
+    const partial = d.since != null && !!r.previousWindow && r.previousWindow.from < d.since;
+    table.append(node('span', 'fw-k', 'Stage'), node('span', 'fw-k fw-num', 'p50'), node('span', 'fw-k fw-num', 'p85'), node('span', 'fw-k', prevSb ? (partial ? 'No full previous period' : vs.label) : ''));
   }
   for (const st of FW_STAGES) {
     const name = node('span', 'fw-lg-name');
