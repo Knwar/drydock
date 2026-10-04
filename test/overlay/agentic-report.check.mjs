@@ -122,6 +122,9 @@ try {
     ['steer-nodate', 'steering-pack', 'M', { period: 'steering' }],
     ['steer-bad', 'steering-pack', 'M', { period: 'steering', steeringDate: '2026-02-30' }],
     ['runway-M', 'usage-runway', 'M', {}],
+    // stale stored overrides for filters these types don't use (filters: [workType] / [phase]): ignored, kept
+    ['steer-stale', 'steering-pack', 'M', { vars: { tag: 'api', agent: 'Ada', phase: 'nope' } }],
+    ['runway-stale', 'usage-runway', 'M', { vars: { tag: 'api', workType: 'feature' } }],
   ];
   const layout = (ws) => ({
     layout: {
@@ -296,6 +299,17 @@ try {
   ok(!/Payment provider/.test(by(w, 'steer-M').text), 'steering-pack M: no decision list (headline + counts)');
   const nodate = by(w, 'steer-nodate');
   ok(nodate.state === 'empty' && /Set the last steering date/.test(nodate.text), 'steering-pack "since last steering date" with no date: asks for it', nodate);
+  // a stored override for a filter the type doesn't use: no chip the user can't clear, no "not applied" note,
+  // not sent with its reads, and still stored as it was
+  const stale = await page.evaluate(() =>
+    ['steer-stale', 'runway-stale'].map((id) => {
+      const f = document.querySelector(`.dw-widget[data-widget-id="${id}"]`);
+      return { id, chip: f.querySelector('.dw-vars').textContent, note: !!f.querySelector('.ar-unused'), vars: dwVars(dw.layout.sections[0].rows.find((r) => r.id === `r-${id}`).slots[0].widgets[0]) };
+    }),
+  );
+  ok(stale.every((x) => x.chip === '' && !x.note && x.vars === null), 'stale overrides of unused filters: no chip, no "not applied" note, not applied', stale);
+  const stored = (await j('GET', `/project/${seed.ws}/layout`)).layout.sections[0].rows.find((r) => r.id === 'r-steer-stale').slots[0].widgets[0].params.vars;
+  ok(stored?.tag === 'api' && stored.agent === 'Ada' && stored.phase === 'nope', 'stale overrides: kept in the stored layout untouched', stored);
   const bad = by(w, 'steer-bad');
   ok(bad.state === 'empty' && /2026-02-30\) isn’t a real date/.test(bad.text), 'steering-pack: an impossible date (2026-02-30) "isn’t a real date"', bad.text);
   for (const id of ['steer-M', 'steer-L', 'steer-XL']) {

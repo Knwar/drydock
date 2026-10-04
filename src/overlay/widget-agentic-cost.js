@@ -215,7 +215,7 @@ function acLatencyRender(el, d, ctx) {
     const why = `Blocked time on ${on}.${multi ? ` The slowest of ${slip.phases.length} active phases across the workspace and its verticals (they run in parallel, so their delays don’t add up); ${mxNum(total)} days blocked in total.` : ''}`;
     if (slip.approximation) {
       const note = node('span', 'ac-approx', 'approximation');
-      note.title = `Approximation: the phase has no depends_on chain of 2+ cards to follow, so this counts the blocked time on its in-flight cards instead.`;
+      note.title = `Approximation: ${slip.reason || 'the phase has no depends_on chain of 2+ cards to follow, so this counts the blocked time on its in-flight cards instead.'}`;
       fig.append(note);
     }
     fig.title = why;

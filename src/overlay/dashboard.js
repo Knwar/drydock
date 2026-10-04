@@ -703,13 +703,16 @@ function dwEllipsisTipOn(el, body) {
 }
 
 // A widget's own filter overrides (params.vars), only the keys that are set (an unranged widget's
-// range / from / to never apply: its data doesn't follow the range).
+// range / from / to never apply: its data doesn't follow the range), and only the filters its type
+// uses (dwUsesFilter; range / from / to count as 'range'): a stale stored override for a filter the
+// type doesn't use is ignored (kept in params.vars, never applied or shown as a chip).
 function dwVars(w) {
   const v = w.params?.vars;
   if (!v || typeof v !== 'object') return null;
   const out = {};
   const keys = dwRanged(w) ? ['scope', 'phase', 'tag', 'agent', 'workType', 'range', 'from', 'to'] : ['scope', 'phase', 'tag', 'agent', 'workType'];
-  for (const k of keys) if (v[k] != null && v[k] !== '') out[k] = String(v[k]);
+  const filterOf = (k) => (k === 'from' || k === 'to' ? 'range' : k);
+  for (const k of keys) if (v[k] != null && v[k] !== '' && (k === 'scope' || dwUsesFilter(w.type, filterOf(k)))) out[k] = String(v[k]);
   return Object.keys(out).length ? out : null;
 }
 // The widget's filters as query params: Home's (hctx) with its params.vars merged over them.
