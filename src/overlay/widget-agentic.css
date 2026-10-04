@@ -1,1 +1,146 @@
-/* Dashboard widgets: Agentic (autonomy-index, agent-stops, batch-size, spec-adherence, governance-posture). Stub: styles land with the widget card for this group. */
+/* Dashboard widgets: Agentic (autonomy-index, agent-stops, batch-size, spec-adherence, governance-posture). Calm figures, status as icon + text, inline SVG trends. */
+.ag {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 100%;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* the head's "Experimental" note: small, muted, beside the title */
+.ag-exp {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+  opacity: 0.8;
+}
+
+/* figures */
+.ag-figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px 14px; }
+.ag-fig { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; }
+.ag-value { font-size: 26px; font-weight: 600; line-height: 1.1; letter-spacing: -0.01em; color: var(--text); white-space: nowrap; }
+.ag-fig-sm .ag-value { font-size: 18px; }
+.ag-label { font-size: 12px; color: var(--dim); max-width: 100%; }
+.ag-sub { font-size: 11.5px; color: var(--dim); }
+.ag-fig .dw-delta { margin-top: 3px; }
+/* a long grey chip ("No full previous period") wraps inside its figure, never over the next one */
+.ag-fig .dw-d-chg, .ag-fig .dw-d-vs { white-space: normal; max-width: 100%; }
+.ag-k { font-size: 10.5px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; }
+.ag-v { font-size: 12.5px; color: var(--text); }
+.ag-note { margin: 0; font-size: 11px; line-height: 1.45; color: var(--dim); }
+
+/* status: the icon carries a distinct glyph, the text says it; colour only reinforces */
+.ag-status { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; font-weight: 600; min-width: 0; cursor: help; }
+.ag-ico {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+.ag-status-text { min-width: 0; line-height: 16px; }
+.ag-ok { color: #5dd3a8; }
+.ag-warn { color: #e5c07b; }
+.ag-bad { color: #e06c75; }
+.ag-none { color: var(--dim); }
+.ag-none .ag-status-text { font-weight: 500; }
+
+/* M / L details */
+.ag-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  min-width: 0;
+}
+.ag-k-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 8px; min-width: 0; }
+.ag-chart { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ag-axis { font-size: 11px; color: var(--dim); }
+
+/* sparkline */
+.ag-spark { display: block; width: 100%; height: 36px; }
+.ag-spark-tall { height: 56px; }
+.ag-grid { stroke: rgba(255, 255, 255, 0.07); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.ag-pre-band { fill: rgba(139, 147, 167, 0.12); }
+.ag-spark-line { fill: none; stroke: #5dd3a8; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.ag-spark-dot { stroke: #5dd3a8; stroke-width: 4; stroke-linecap: round; opacity: 0.7; }
+.ag-spark-last { stroke: #5dd3a8; stroke-width: 7; stroke-linecap: round; }
+
+/* paired weekly bars: self-stops | interrupts */
+.ag-bars { display: block; width: 100%; height: 36px; }
+.ag-bars-tall { height: 64px; }
+.ag-bar-agent { fill: #5dd3a8; }
+.ag-bar-human { fill: #e5c07b; }
+.ag-bar-pre { fill: #8b93a7; opacity: 0.45; }
+.ag-legend { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 12px; font-size: 11.5px; color: var(--dim); }
+.ag-lg::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; background: var(--c); }
+.ag-lg-agent { --c: #5dd3a8; }
+.ag-lg-human { --c: #e5c07b; }
+
+/* batch-size: over / under split + the largest cards */
+.ag-split { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: rgba(255, 255, 255, 0.06); }
+.ag-split-over, .ag-split-under { flex: 0 1 0; min-width: 0; }
+.ag-split-over { background: #e5c07b; }
+.ag-split-under { background: rgba(93, 211, 168, 0.55); }
+.ag-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.ag-link:hover { text-decoration: underline; }
+.ag-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.ag-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ag-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.ag-item:hover { background: rgba(255, 255, 255, 0.05); }
+.ag-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ag-item-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ag-item-v { flex: none; font-size: 11.5px; color: var(--dim); }
+.ag-item-v.ag-over { color: #e5c07b; }
+
+/* spec-adherence: per-phase table */
+.ag-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+.ag-table th { font-size: 10.5px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; text-align: right; padding: 0 0 4px 6px; }
+.ag-table td { text-align: right; padding: 4px 0 4px 6px; border-top: 1px solid rgba(255, 255, 255, 0.05); color: var(--text); }
+.ag-table th:first-child, .ag-table td:first-child { text-align: left; padding-left: 0; width: 38%; }
+.ag-td-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* governance-posture */
+.ag-risky { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.ag-patterns { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 3px 14px; }
+.ag-pat { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--dim); }
+.ag-pat code { font-family: var(--mono, ui-monospace, monospace); font-size: 11px; }
+.ag-pat-hit { color: #e06c75; font-weight: 600; }
+
+/* a narrow head (an S widget): the note takes its own line, never truncating the title */
+@container dw-head (max-width: 420px) {
+  .ag-exp { flex-basis: 100%; margin-top: -4px; }
+}
