@@ -47,7 +47,7 @@ import {
   percentile,
   type MetricsFilter,
 } from './metrics.js';
-import type { ModelUsage, UsageBreakdown } from './types.js';
+import { WORK_TYPES, type ModelUsage, type UsageBreakdown, type WorkType } from './types.js';
 
 // ---------- price table ----------
 
@@ -222,7 +222,7 @@ export interface CostRow {
   created_at: number;
   usage: UsageBreakdown | null;
   /** The card, or null when it has been deleted (its runs' cost still counts). */
-  card: { title: string; phase_id: string | null; lane: string; tag: string | null } | null;
+  card: { title: string; phase_id: string | null; lane: string; tag: string | null; work_type: WorkType | null } | null;
 }
 
 /**
@@ -242,7 +242,7 @@ export function loadCostRows(db: DB, projectIds: string[], phaseId?: string): Co
   const raw = db
     .prepare(
       `SELECT c.id, c.project_id, c.task_id, c.agent, c.tokens, c.tokens_out, c.created_at,
-              t.id AS t_id, t.title, t.phase_id, t.lane, t.tag,
+              t.id AS t_id, t.title, t.phase_id, t.lane, t.tag, t.work_type,
               j.key AS model, json_extract(j.value, '$.input') AS input, json_extract(j.value, '$.output') AS output,
               json_extract(j.value, '$.cache_read') AS cache_read, json_extract(j.value, '$.cache_creation') AS cache_creation
        FROM card_activity c
@@ -264,6 +264,7 @@ export function loadCostRows(db: DB, projectIds: string[], phaseId?: string): Co
     phase_id: string | null;
     lane: string;
     tag: string | null;
+    work_type: WorkType | null;
     model: string | null;
     input: number | null;
     output: number | null;
@@ -283,7 +284,7 @@ export function loadCostRows(db: DB, projectIds: string[], phaseId?: string): Co
         tokens_out: r.tokens_out,
         created_at: r.created_at,
         usage: null,
-        card: r.t_id === null ? null : { title: r.title, phase_id: r.phase_id, lane: r.lane, tag: r.tag },
+        card: r.t_id === null ? null : { title: r.title, phase_id: r.phase_id, lane: r.lane, tag: r.tag, work_type: r.work_type },
       };
       rows.push(row);
     }
@@ -411,6 +412,8 @@ export interface CostMetrics {
   byAgent: { agent: string | null; cost: number; runs: number; cards: number }[];
   byBoard: { project_id: string; name: string | null; cost: number; runs: number; cards: number }[];
   byPlan: { id: string; title: string; cost: number; cards: number }[];
+  /** Every work type, then 'none' (unclassified, or a deleted card), zero-filled. */
+  byWorkType: { workType: WorkType | 'none'; cost: number; cards: number }[];
   byCard: { id: string; title: string | null; phase_id: string | null; project_id: string; lane: string | null; cost: number; tokens: number; runs: number; estimated: boolean; deleted: boolean }[];
   /** Cards with any cost in the window (byCard holds the top `limit` of them). */
   cardCount: number;
@@ -440,6 +443,9 @@ const addTo = (b: Bucket, r: PricedRow) => {
   b.cards.add(r.task_id);
 };
 
+/** A run's card work type; 'none' when unclassified or the card is deleted. */
+const workTypeOf = (r: CostRow): WorkType | 'none' => r.card?.work_type ?? 'none';
+
 /**
  * Aggregate priced, all-time rows. `filter.tag` / `filter.agent` (the run's
  * credited agent) / from-to (the run's time) select the rows every view is
@@ -450,7 +456,10 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
   const to = filter.to ?? opts.now;
   if (filter.from !== undefined) checkRange(filter.from, to);
   const scoped = pricing.rows.filter(
-    (r) => (filter.tag === undefined || r.card?.tag === filter.tag) && (filter.agent === undefined || r.agent === filter.agent),
+    (r) =>
+      (filter.tag === undefined || r.card?.tag === filter.tag) &&
+      (filter.agent === undefined || r.agent === filter.agent) &&
+      (filter.workType === undefined || workTypeOf(r) === filter.workType),
   );
   const rows = scoped.filter((r) => r.created_at <= to && (filter.from === undefined || r.created_at >= filter.from));
 
@@ -458,6 +467,7 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
   const phases = new Map<string, Bucket>();
   const agents = new Map<string, Bucket>();
   const boards = new Map<string, Bucket>();
+  const workTypes = new Map<string, Bucket>();
   const cards = new Map<string, Bucket & { tokens: number; estimated: boolean; row: PricedRow }>();
   const models = new Map<string, Omit<PricedModel, 'model'>>();
   let cost = 0;
@@ -488,6 +498,7 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
     addTo(bucket(phases, r.card?.phase_id ?? ''), r);
     addTo(bucket(agents, r.agent ?? ''), r);
     addTo(bucket(boards, r.project_id), r);
+    addTo(bucket(workTypes, workTypeOf(r)), r);
     let c = cards.get(r.task_id);
     if (!c) cards.set(r.task_id, (c = { cost: 0, runs: 0, cards: new Set(), tokens: 0, estimated: false, row: r }));
     addTo(c, r);
@@ -609,6 +620,10 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
         return { id: p.id, title: p.title, cost: round(ids.reduce((s, id) => s + cardCost.get(id)!, 0)), cards: ids.length };
       }),
     ),
+    byWorkType: [...WORK_TYPES, 'none' as const].map((workType) => {
+      const b = workTypes.get(workType);
+      return { workType, cost: round(b?.cost ?? 0), cards: b?.cards.size ?? 0 };
+    }),
     byCard: cardList.slice(0, limit),
     cardCount: cardList.length,
     weekly: weekly.map((w) => ({ ...w, cost: round(w.cost) })),
@@ -649,12 +664,14 @@ export function costMetrics(
   const remainingByPhase = new Map<string, number>();
   if (boardIds.length) {
     const tagSql = filter.tag !== undefined ? 'AND tag = ?' : '';
+    const wtSql = filter.workType === 'none' ? 'AND work_type IS NULL' : filter.workType !== undefined ? 'AND work_type = ?' : '';
+    const extra = [...(filter.tag !== undefined ? [filter.tag] : []), ...(filter.workType && filter.workType !== 'none' ? [filter.workType] : [])];
     const rows = db
       .prepare(
         `SELECT phase_id, COUNT(*) AS n FROM tasks
-         WHERE project_id IN (${bq}) AND phase_id IS NOT NULL AND lane != 'done' ${tagSql} GROUP BY phase_id`,
+         WHERE project_id IN (${bq}) AND phase_id IS NOT NULL AND lane != 'done' ${tagSql} ${wtSql} GROUP BY phase_id`,
       )
-      .all(...boardIds.map((b) => b.id), ...(filter.tag !== undefined ? [filter.tag] : [])) as { phase_id: string; n: number }[];
+      .all(...boardIds.map((b) => b.id), ...extra) as { phase_id: string; n: number }[];
     for (const r of rows) remainingByPhase.set(r.phase_id, r.n);
   }
   return aggregateCost(pricing, table, filter, { ...opts, boardNames, phases, remainingByPhase });

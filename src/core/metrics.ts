@@ -38,7 +38,7 @@
  *    in_review (a card sitting in its first review has 0); else the task column.
  */
 import type { DB } from './db.js';
-import { LANES, type Lane, type Task } from './types.js';
+import { LANES, WORK_TYPES, type Lane, type Task, type WorkType } from './types.js';
 
 // ---------- types ----------
 
@@ -57,7 +57,8 @@ export type MetricsCard = Pick<
   | 'review_rounds'
   | 'created_at'
   | 'updated_at'
->;
+> &
+  Partial<Pick<Task, 'work_type'>>;
 
 /** A task_events row (payload may be the raw JSON string or already parsed). */
 export interface MetricsEvent {
@@ -128,6 +129,8 @@ export interface MetricsFilter {
   tag?: string;
   /** Card's assigned agent, or any agent recorded on its events / card_activity. */
   agent?: string;
+  /** A work type, or 'none' for unclassified cards (work_type IS NULL). */
+  workType?: WorkType | 'none';
   /** Epoch ms window: keeps cards whose life (created -> done/deleted/open) overlaps it. */
   from?: number;
   to?: number;
@@ -855,6 +858,11 @@ function filterWhere(filter: LoadFilter): { sql: string; params: (string | numbe
     where.push('t.tag = ?');
     params.push(filter.tag);
   }
+  if (filter.workType === 'none') where.push('t.work_type IS NULL');
+  else if (filter.workType !== undefined) {
+    where.push('t.work_type = ?');
+    params.push(filter.workType);
+  }
   if (filter.agent !== undefined) {
     where.push(
       `(t.assigned_agent = ?
@@ -882,7 +890,7 @@ function loadRaw(db: DB, filter: LoadFilter): CardHistory[] {
   const cards = db
     .prepare(
       `SELECT t.id, t.project_id, t.phase_id, t.title, t.lane, t.tag, t.assigned_agent, t.blocked_at,
-              t.blocked_reason, t.review_rounds, t.created_at, t.updated_at
+              t.blocked_reason, t.review_rounds, t.created_at, t.updated_at, t.work_type
        FROM tasks t ${sql} ORDER BY t.created_at, t.id`,
     )
     .all(...params) as MetricsCard[];
@@ -924,8 +932,37 @@ function loadDerived(db: DB, filter: MetricsFilter, now: number): DerivedCard[] 
   return deriveCards(loadRaw(db, { ...filter, from: undefined }), now);
 }
 
-export function flowMetrics(db: DB, filter: MetricsFilter, opts: { tz: string; now: number }): FlowMetrics {
-  return flowFromDerived(loadDerived(db, filter, opts.now), { ...opts, from: filter.from, to: filter.to });
+/** /metrics/flow: the flow view plus its per-work-type throughput and the scope's first activity. */
+export interface FlowView extends FlowMetrics {
+  /** Cards done in the range per work type ('none' = unclassified); sums to throughput.total. */
+  throughputByWorkType: Record<WorkType | 'none', number>;
+  /** Earliest card create or done event in the filtered scope (from / to ignored); null with no cards. */
+  firstActivityAt: number | null;
+}
+
+export function flowMetrics(db: DB, filter: MetricsFilter, opts: { tz: string; now: number }): FlowView {
+  const ds = loadDerived(db, filter, opts.now);
+  const flow = flowFromDerived(ds, { ...opts, from: filter.from, to: filter.to });
+  const { from, to } = flow.range;
+  const byType = Object.fromEntries([...WORK_TYPES, 'none'].map((t) => [t, 0])) as FlowView['throughputByWorkType'];
+  for (const x of ds) if (x.m.doneAt !== null && x.m.doneAt >= from && x.m.doneAt <= to) byType[x.h.card.work_type ?? 'none']++;
+  return { ...flow, throughputByWorkType: byType, firstActivityAt: firstActivityAt(db, filter) };
+}
+
+/** Earliest card create or move-to-done event of the cards matching `filter`'s non-date parts. */
+function firstActivityAt(db: DB, filter: MetricsFilter): number | null {
+  const { sql, params } = filterWhere({ ...filter, from: undefined, to: undefined });
+  const row = db
+    .prepare(
+      `SELECT MIN(at) AS at FROM (
+         SELECT t.created_at AS at FROM tasks t ${sql}
+         UNION ALL
+         SELECT e.created_at AS at FROM task_events e JOIN tasks t ON t.id = e.task_id ${sql ? `${sql} AND` : 'WHERE'}
+           (e.type = 'create' OR (e.type = 'move' AND json_valid(e.payload) AND json_extract(e.payload, '$.to') = 'done'))
+       )`,
+    )
+    .get(...params, ...params) as { at: number | null };
+  return row.at;
 }
 
 export function summaryMetrics(db: DB, filter: MetricsFilter, opts: { tz: string; now: number }): MetricsSummary {

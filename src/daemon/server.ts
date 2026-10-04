@@ -26,7 +26,8 @@ import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js
 import { openDb } from '../core/db.js';
 import { cardLines } from '../core/lines.js';
 import { cachedCodeVersion, readCodeVersion } from './code-version.js';
-import type { CardFilter, PlanDraft, Project, Task } from '../core/types.js';
+import { parseCompare, withPrevious, type WindowedFilter, type WithPrevious } from '../core/compare.js';
+import { WORK_TYPES, type CardFilter, type PlanDraft, type Project, type Task, type WorkType } from '../core/types.js';
 import { looksLikeClaude, NUDGE_PROMPT, resetsAtMs, shouldNudge, type NudgeInput } from './autopilot.js';
 import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
@@ -257,6 +258,7 @@ function toCard(task: Task) {
     phase_id: task.phase_id,
     blocked: !!task.blocked_at,
     blocked_reason: task.blocked_reason,
+    work_type: task.work_type,
     subs: board.progressOf(task.subtasks),
     lane_since: board.laneSince(db, task.id),
   };
@@ -690,6 +692,34 @@ async function gitDiff(root: string, file: string): Promise<string> {
 }
 
 // ── http helpers ────────────────────────────────────────────────────
+/** The workType query param: a work type, 'none' (unclassified) or absent. Anything else → MetricsParamError (a 400). */
+function workTypeParam(q: URLSearchParams): WorkType | 'none' | undefined {
+  const v = q.get('workType');
+  if (!v) return undefined;
+  if (v === 'none' || (WORK_TYPES as readonly string[]).includes(v)) return v as WorkType | 'none';
+  throw new metrics.MetricsParamError(`invalid workType: ${v} (expected ${WORK_TYPES.join(', ')} or none)`);
+}
+
+/**
+ * Run `compute` over `filter`. With a `compare` param (previous | <from>,<to>) the result also
+ * carries `previous` (its headline fields, via `pick`), `window` and `previousWindow`; an all-time
+ * filter gives previous: null. Without the param the result is returned untouched. A bad compare
+ * value → MetricsParamError (a 400).
+ */
+function withCompare<F extends WindowedFilter, T, P>(
+  q: URLSearchParams,
+  filter: F,
+  compute: (f: F) => T,
+  pick: (r: T) => P,
+  opts: { tz: string; now: number },
+): T | WithPrevious<T, P> {
+  const raw = q.get('compare');
+  if (raw === null) return compute(filter);
+  const win = parseCompare(raw, filter, opts);
+  if (!win && raw !== 'previous') throw new metrics.MetricsParamError(`invalid compare: ${raw} (expected previous or <from>,<to>)`);
+  return withPrevious(filter, compute, pick, { now: opts.now, compare: filter.from == null ? null : win });
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -919,6 +949,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         const v = q.get(edge);
         if (v) f[edge] = metrics.parseTime(v, tz, edge);
       }
+      const workType = workTypeParam(q);
+      if (workType) f.workType = workType;
     } catch (err) {
       if (err instanceof metrics.MetricsParamError) return err.message;
       throw err;
@@ -1524,9 +1556,40 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const to = q.get('to');
       if (from) filter.from = metrics.parseTime(from, tz, 'from');
       if (to) filter.to = metrics.parseTime(to, tz, 'to');
-      const view =
-        pathname === '/metrics/flow' ? metrics.flowMetrics : pathname === '/metrics/quality' ? quality.qualityMetrics : metrics.summaryMetrics;
-      return json(res, 200, view(db, filter, { tz, now }));
+      const workType = workTypeParam(q);
+      if (workType) filter.workType = workType;
+      const opts = { tz, now };
+      if (pathname === '/metrics/flow') {
+        return json(
+          res,
+          200,
+          withCompare(q, filter, (f) => metrics.flowMetrics(db, f, opts), (r) => ({
+            throughput: r.throughput.total,
+            cycleTime: { p50: r.cycleTime.p50, p85: r.cycleTime.p85 },
+            leadTime: { p50: r.leadTime.p50, p85: r.leadTime.p85 },
+          }), opts),
+        );
+      }
+      if (pathname === '/metrics/quality') {
+        return json(
+          res,
+          200,
+          withCompare(q, filter, (f) => quality.qualityMetrics(db, f, opts), (r) => ({
+            firstPassRate: r.totals.firstPassRate,
+            avgRounds: r.totals.avgRounds,
+            rework: r.totals.rework,
+          }), opts),
+        );
+      }
+      return json(
+        res,
+        200,
+        withCompare(q, filter, (f) => metrics.summaryMetrics(db, f, opts), (r) => ({
+          throughput: r.throughput.reduce((n, w) => n + w.count, 0),
+          cycleTime: { p50: r.cycleTime.p50, p85: r.cycleTime.p85 },
+          wip: r.wip,
+        }), opts),
+      );
     } catch (err) {
       // bad params → 400; anything else is ours → 500 (route()'s outer catch would say 400)
       const status = err instanceof metrics.MetricsParamError ? 400 : 500;
@@ -1552,7 +1615,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const to = q.get('to');
       if (from) filter.from = metrics.parseTime(from, tz, 'from');
       if (to) filter.to = metrics.parseTime(to, tz, 'to');
-      return json(res, 200, waitTime.waitMetrics(db, filter, { tz, now }));
+      const opts = { tz, now };
+      return json(
+        res,
+        200,
+        withCompare(q, filter, (f) => waitTime.waitMetrics(db, f, opts), (r) => ({
+          needsYou: { count: r.needsYou.count, totalMs: r.needsYou.totalMs, p50: r.needsYou.duration.p50 },
+          blocked: { count: r.blocked.count, totalMs: r.blocked.totalMs, p50: r.blocked.resolution.p50 },
+        }), opts),
+      );
     } catch (err) {
       const status = err instanceof metrics.MetricsParamError ? 400 : 500;
       return json(res, status, { error: (err as Error).message });
@@ -1627,13 +1698,17 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       states.sweep(now); // close needs_you intervals whose session has silently gone offline
       const from = q.get('from');
       const to = q.get('to');
-      const r = report.loadReport(db, project, {
-        tz,
-        now,
+      const range = {
         from: from ? metrics.parseTime(from, tz, 'from') : undefined,
         to: to ? metrics.parseTime(to, tz, 'to') : undefined,
-      });
-      if (pathname === '/report') return json(res, 200, r);
+      };
+      const load = (f: typeof range) => report.loadReport(db, project, { tz, now, ...f });
+      if (pathname === '/report') {
+        // compare: the current window is the report's (default: the last 7 days), never all time
+        if (q.has('compare')) range.from ??= report.defaultRange(range.to ?? now, tz).from;
+        return json(res, 200, withCompare(q, range, load, (r) => r.metrics, { tz, now }));
+      }
+      const r = load(range);
       res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' });
       return void res.end(report.reportMarkdown(r));
     } catch (err) {
@@ -1660,6 +1735,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const to = q.get('to');
       if (from) filter.from = metrics.parseTime(from, tz, 'from');
       if (to) filter.to = metrics.parseTime(to, tz, 'to');
+      const workType = workTypeParam(q);
+      if (workType) filter.workType = workType;
       const limit = forecast.intParam(q.get('limit'), 'limit', 1, 100);
       const plans = drafts
         .listDrafts(db, project)
@@ -1668,7 +1745,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
           const draft = drafts.getDraft(db, d.id);
           return draft ? [{ id: draft.id, title: draft.title, cardIds: Object.values(draft.data.committed) }] : [];
         });
-      return json(res, 200, cost.costMetrics(db, filter, { tz, now: Date.now(), limit, plans }));
+      const now = Date.now();
+      return json(
+        res,
+        200,
+        withCompare(
+          q,
+          filter,
+          (f) => cost.costMetrics(db, f, { tz, now, limit, plans }),
+          (r) => ({ totals: r.totals, medianCardCost: r.medianCardCost }),
+          { tz, now },
+        ),
+      );
     } catch (err) {
       const status = err instanceof metrics.MetricsParamError ? 400 : 500;
       return json(res, status, { error: (err as Error).message });
@@ -1909,6 +1997,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       requirements: b.requirements,
       depends_on: b.depends_on,
       phase_id: b.phase_id,
+      work_type: b.work_type,
     });
     announce(task);
     return json(res, 200, { task_id: task.id });
