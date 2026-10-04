@@ -3338,9 +3338,11 @@ function highlightCardsFromUrl() {
   const url = new URL(location.href);
   const raw = url.searchParams.get('cards');
   if (raw === null) return;
+  const from = url.searchParams.get('from'); // the banner's source label ("from <label>"); default Metrics
   url.searchParams.delete('cards');
+  url.searchParams.delete('from');
   history.replaceState(null, '', url);
-  setKanbanHighlight(raw.split(',').filter(Boolean));
+  setKanbanHighlight(raw.split(',').filter(Boolean), from || 'Metrics');
 }
 document.addEventListener(
   'keydown',

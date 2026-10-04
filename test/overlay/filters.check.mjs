@@ -699,6 +699,87 @@ await page.unroute('**/home?*', slow);
   await tab.close();
 }
 
+// ---- Home's range persists across views (sessionStorage); a range in the URL wins ----
+{
+  await page.goto(`${base}/?project=${seed.ws}&view=home`);
+  await settledHome();
+  await openBar();
+  await page.click(`${H} .mx-seg-btn[data-fb="range-2w"]`);
+  await quiet();
+  await page.click('#rail-metrics');
+  await page.waitForTimeout(500);
+  await page.click('#rail-home');
+  await settledHome();
+  ok((await page.evaluate(() => hctx.f.range)) === '2w' && param('range') === '2w', 'Home 2w → Metrics → Home: still 2w (and in the URL)', page.url());
+  await page.goto(`${base}/?project=${seed.ws}&view=home&range=8w`);
+  await settledHome();
+  ok((await page.evaluate(() => hctx.f.range)) === '8w', '?range=8w wins over the stored range');
+  await page.evaluate(() => sessionStorage.removeItem('kankan.home.range'));
+}
+
+// ---- 700px: the open filter bars fit the viewport ----
+{
+  // controls past the viewport's edges + the page's horizontal overflow
+  const fits = (sel) =>
+    page.$eval(sel, (bar) => {
+      const vw = document.documentElement.clientWidth;
+      const out = [...bar.querySelectorAll('button, select, input, label')]
+        .filter((e) => e.getClientRects().length)
+        .filter((e) => {
+          const r = e.getBoundingClientRect();
+          return r.left < -0.5 || r.right > vw + 0.5;
+        })
+        .map((e) => e.dataset.fb ?? e.textContent.slice(0, 20));
+      return { out, overflow: document.documentElement.scrollWidth > vw || bar.scrollWidth > bar.clientWidth + 1 };
+    });
+  await page.setViewportSize({ width: 700, height: 1000 });
+  await page.goto(`${base}/?project=${seed.ws}&view=home`);
+  await settledHome();
+  await openBar();
+  const home = await fits(`${H} .fb-bar`);
+  ok(!home.overflow && !home.out.length, '700px: Home filter bar wraps inside the viewport', home);
+  await shot('home-700-open');
+  await page.goto(`${base}/?project=${seed.ws}&view=metrics`);
+  await page.waitForSelector('#mx-filters label.mx-field', { timeout: 15000 });
+  const mxf = await fits('#mx-filters');
+  ok(!mxf.overflow && !mxf.out.length, '700px: Metrics filter bar wraps inside the viewport', mxf);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+}
+
+// ---- Kanban: highlight source label (call + cross-board URL), Esc on the card modal ----
+{
+  await page.goto(`${base}/?project=${seed.ws}&view=kanban`);
+  await page.waitForSelector('#board .card, .card', { timeout: 15000 });
+  const ids = await page.evaluate(() => [...cards.keys()].slice(0, 2));
+  await page.evaluate((ids) => setKanbanHighlight(ids, 'X'), ids);
+  ok((await page.$eval('.mx-hl-chip span', (e) => e.textContent)) === '2 cards highlighted from X', 'setKanbanHighlight(ids, "X"): banner "from X"');
+  await page.evaluate((ids) => setKanbanHighlight(ids), ids);
+  ok((await page.$eval('.mx-hl-chip span', (e) => e.textContent)) === '2 cards highlighted from Metrics', 'no label: banner "from Metrics"');
+  await page.evaluate(() => clearKanbanHighlight());
+  await page.goto(`${base}/?project=${seed.ws}&view=kanban&cards=${ids.join(',')}&from=Active%20agents`);
+  await page.waitForSelector('.mx-hl-chip', { timeout: 15000 });
+  ok((await page.$eval('.mx-hl-chip span', (e) => e.textContent)) === '2 cards highlighted from Active agents' && !param('cards') && !param('from'), '?cards=…&from=…: banner names the source, both params stripped', page.url());
+  await page.evaluate(() => clearKanbanHighlight());
+  // Esc closes the card modal; focus returns to the opener
+  await page.evaluate((id) => {
+    const b = document.createElement('button');
+    b.id = 'card-opener-probe';
+    b.textContent = 'open';
+    b.onclick = () => openCardModal(id);
+    document.body.append(b);
+  }, ids[0]);
+  await page.focus('#card-opener-probe');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => !document.getElementById('card-modal').classList.contains('hidden'));
+  await quiet(); // the modal's /task read lands first
+  await page.keyboard.press('Escape');
+  ok(
+    (await page.evaluate(() => document.getElementById('card-modal').classList.contains('hidden') && document.activeElement.id)) === 'card-opener-probe',
+    'Esc closes the card modal, focus back on its opener',
+  );
+  await page.evaluate(() => document.getElementById('card-opener-probe').remove());
+}
+
 ok(errors.length === 0, 'no page errors', errors);
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 } finally {
