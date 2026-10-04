@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -9,13 +9,15 @@ import {
   costPerAgentHour,
   reworkCost,
   roundOfRun,
+  combineSlips,
+  forecastReasonText,
   unionWaitMs,
   slipDays,
   usageRunway,
   type CostRun,
   type ReviewRecord,
 } from './agentic.js';
-import { advancePhase, createPhase, createTask, getOrCreateProject, moveTask, raiseBlocker, recordActivity, recordReview, updateTask } from './board.js';
+import { advancePhase, createPhase, createTask, createVertical, getOrCreateProject, moveTask, raiseBlocker, recordActivity, recordReview, updateTask } from './board.js';
 import { withPrevious } from './compare.js';
 import { openDb } from './db.js';
 import { usageBurn, type ForecastInfo, type UsageSample } from './usage-burn.js';
@@ -203,6 +205,48 @@ describe('costAnomaly', () => {
     assert.equal(r.flagged.length, 1);
     assert.equal(r.flagged[0].spend, 5);
   });
+  it('judges the board total: a small phase\'s occasional spend no longer floods the flags', () => {
+    // phase Big spends ~10/day; phase Tiny spends 0.5 on a few scattered days
+    const runs = [];
+    for (let d = 0; d < 28; d++) runs.push({ phase_id: 'Big', cost: d % 2 ? 10.4 : 9.6, created_at: at(d) });
+    for (const d of [3, 16, 20, 24]) runs.push({ phase_id: 'Tiny', cost: 0.5, created_at: at(d) });
+    const r = costAnomaly(runs, { from: T0 + 14 * DAY, to: T0 + 28 * DAY - 1, tz: 'UTC' });
+    assert.equal(r.basis, 'board_total');
+    assert.deepEqual(r.flagged, [], 'Tiny on its own would flag every spend day; the total never stands out');
+    assert.equal(r.total.length, 28);
+    assert.equal(r.total[16].spend, 9.6 + 0.5);
+    assert.deepEqual(r.series.map((x) => x.phase_id).sort(), ['Big', 'Tiny']);
+  });
+  it('a flagged day names its top phase and every phase\'s amount', () => {
+    const runs = [];
+    for (let d = 0; d < 14; d++) runs.push({ phase_id: 'A', cost: d % 2 ? 2 : 1, created_at: at(d) });
+    runs.push({ phase_id: 'A', cost: 1, created_at: at(14) }, { phase_id: 'B', cost: 9, created_at: at(14) });
+    const r = costAnomaly(runs, { from: T0 + 14 * DAY, to: T0 + 15 * DAY - 1, tz: 'UTC', phaseTitles: new Map([['B', 'Bee']]) });
+    assert.equal(r.flagged.length, 1);
+    const f = r.flagged[0];
+    assert.deepEqual([f.spend, f.phase_id, f.title, f.phaseSpend], [10, 'B', 'Bee', 9]);
+    assert.deepEqual(f.byPhase, [
+      { phase_id: 'B', title: 'Bee', spend: 9 },
+      { phase_id: 'A', title: null, spend: 1 },
+    ]);
+    assert.equal(f.excess, 10 - 1.5);
+  });
+  it('the $ floor: over mean + 2 sigma but under max($1, 25% of the mean) is not flagged', () => {
+    // a near-constant 0.20/day baseline: sigma ~0, so 0.30 is "over 2 sigma" but only 10 cents over
+    const runs = [];
+    for (let d = 0; d < 14; d++) runs.push({ phase_id: 'P', cost: 0.2, created_at: at(d) });
+    runs.push({ phase_id: 'P', cost: 0.3, created_at: at(14) });
+    const opts = { from: T0 + 14 * DAY, to: T0 + 15 * DAY - 1, tz: 'UTC' };
+    const r = costAnomaly(runs, opts);
+    assert.deepEqual([r.flagged.length, r.minExcess, r.minExcessPct], [0, 1, 0.25]);
+    // 25% of a large mean: 100/day baseline, 110 is over 2 sigma (sigma 0) but under the 25 floor
+    const big = [];
+    for (let d = 0; d < 14; d++) big.push({ phase_id: 'P', cost: 100, created_at: at(d) });
+    big.push({ phase_id: 'P', cost: 110, created_at: at(14) });
+    assert.equal(costAnomaly(big, opts).flagged.length, 0);
+    big[14] = { phase_id: 'P', cost: 126, created_at: at(14) };
+    assert.equal(costAnomaly(big, opts).flagged.length, 1);
+  });
   it('judgedDays: days with enough trailing data; the rule is exposed', () => {
     const runs = [0, 1, 2, 3].map((d) => ({ phase_id: 'P', cost: 1, created_at: at(10 + d) }));
     const opts = { from: T0 + 14 * DAY, to: T0 + 16 * DAY - 1, tz: 'UTC' };
@@ -261,6 +305,40 @@ describe('usageRunway', () => {
     assert.deepEqual(n.status === 'ok' && [n.weeklyBeforeP85, n.gapDays], [null, null]);
     const u = usageRunway(usageBurn([], none, { tz: 'UTC', now }), none, 'UTC', now);
     assert.equal(u.status, 'unavailable');
+    assert.ok(u.status === 'unavailable' && u.reasonText.length > 0);
+    assert.equal(u.forecast?.reasonText, 'No active phase to forecast');
+    assert.equal(n.status === 'ok' && n.forecast?.reasonText, 'No active phase to forecast');
+  });
+
+  it('reasonText beside a forecast reason code', () => {
+    assert.equal(forecastReasonText('too_few_done'), 'Needs ≥ 5 done cards to forecast');
+    assert.equal(forecastReasonText('too_few_days'), 'Needs ≥ 10 days of history to forecast');
+    assert.match(forecastReasonText('no_throughput'), /No cards done yet/);
+    const info: ForecastInfo = { status: 'insufficient_history', phase: { id: 'P', title: 'P' }, reason: 'too_few_done' };
+    const r = usageRunway(usageBurn(samples, info, { tz: 'UTC', now }), info, 'UTC', now);
+    assert.deepEqual(r.status === 'ok' && [r.forecast?.status !== 'ok' && r.forecast?.reason, r.forecast?.reasonText], ['too_few_done', 'Needs ≥ 5 done cards to forecast']);
+    // an ok forecast carries no reasonText
+    const okInfo = ok('2026-06-11');
+    const o = usageRunway(usageBurn(samples, okInfo, { tz: 'UTC', now }), okInfo, 'UTC', now);
+    assert.equal(o.status === 'ok' && o.forecast?.reasonText, undefined);
+  });
+});
+
+describe('combineSlips', () => {
+  const phase = (id: string) => ({ id, title: id });
+  const card = (id: string, lane: string, depends_on: string[] = []) => ({ id, title: id, lane, depends_on });
+  it('sums blocked time over the phases; basis mixed when they differ; the first phase leads', () => {
+    const ws = { ...slipDays(phase('W'), [card('a', 'done'), card('b', 'queued', ['a'])], [{ task_id: 'b', from: 0, to: DAY }], DAY), project_id: 'ws' };
+    const v = { ...slipDays(phase('V'), [card('c', 'in_progress')], [{ task_id: 'c', from: 0, to: DAY / 2 }], DAY), project_id: 'v' };
+    const s = combineSlips([ws, v], 'workspace+verticals');
+    assert.deepEqual([s.scope, s.phase?.id, s.basis, s.approximation, s.days], ['workspace+verticals', 'W', 'mixed', true, 1.5]);
+    assert.deepEqual(s.phases.map((p) => [p.project_id, p.days]), [
+      ['ws', 1],
+      ['v', 0.5],
+    ]);
+    assert.deepEqual(s.cards.map((c) => c.id), ['a', 'b', 'c']);
+    const none = combineSlips([], 'board');
+    assert.deepEqual([none.phase, none.reason, none.phases, none.scope], [null, 'no active phase', [], 'board']);
   });
 });
 
@@ -303,6 +381,10 @@ describe('agenticCostMetrics (DB)', () => {
     db.prepare(
       "INSERT INTO wait_intervals (project_id, agent_id, task_id, kind, started_at, ended_at, reason, closed_by) VALUES (?, 'orchestrator', ?, 'needs_you', ?, NULL, 'question', NULL)",
     ).run(p.id, a.id, now - 30 * 60_000);
+    // a second needs_you wait overlapping the first on the same board
+    db.prepare(
+      "INSERT INTO wait_intervals (project_id, agent_id, task_id, kind, started_at, ended_at, reason, closed_by) VALUES (?, 'sub', ?, 'needs_you', ?, ?, 'permission', 'working')",
+    ).run(p.id, a.id, now - 2.5 * HOUR, now - 1.75 * HOUR);
 
     const from = now - DAY;
     const r = agenticCostMetrics(db, { projectIds: [p.id], from, to: now }, { tz: 'UTC', now, project: p.id });
@@ -310,8 +392,10 @@ describe('agenticCostMetrics (DB)', () => {
     assert.deepEqual(r.reworkCost.top, [{ id: a.id, title: 'A', cost: 3, tokens: 1_000_000, failedRounds: 1 }]);
     const d = r.decisionLatencyCost;
     assert.equal(d.costPerAgentHour, 3); // $6 over 2 active hours
-    // needs_you [-3h, -2h] + [-30m, now] = 1.5h; blocked [-2.5h, now] = 2.5h; overlapping: their union is 3h
-    assert.equal(d.needsYouHours, 1.5);
+    // needs_you [-3h, -2h] ∪ [-2.5h, -1.75h] ∪ [-30m, now] = 1.75h (overlap counted once);
+    // blocked [-2.5h, now] = 2.5h; both kinds together: [-3h, now] = 3h
+    assert.equal(d.needsYouHours, 1.75);
+    assert.ok(d.needsYouHours <= d.humanWaitHours && d.blockedHours <= d.humanWaitHours, 'no part exceeds the total');
     assert.equal(d.blockedHours, 2.5);
     assert.equal(d.humanWaitHours, 3);
     assert.equal(d.idleCost, 9);
@@ -324,7 +408,8 @@ describe('agenticCostMetrics (DB)', () => {
     ]);
     assert.equal(d.queue![1].title, 'A');
     assert.equal(r.costAnomaly.series.length, 1);
-    assert.deepEqual(r.usageRunway, { status: 'unavailable', reason: r.usageRunway!.status === 'unavailable' ? r.usageRunway!.reason : '', forecast: r.usageRunway!.forecast });
+    assert.equal(r.usageRunway!.status, 'unavailable');
+    assert.ok(r.usageRunway!.status === 'unavailable' && r.usageRunway!.reasonText.length > 0);
     assert.equal(r.usageRunway!.forecast?.phase?.id, phase.id);
 
     // the daemon's usage samples feed the runway
@@ -344,6 +429,38 @@ describe('agenticCostMetrics (DB)', () => {
     );
     assert.equal(c.reworkCost.cost, 3);
     assert.deepEqual(c.previous, { rework: 0, wait: 0 });
+    db.close();
+  });
+
+  it('slip on a workspace covers its verticals\' active phases', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentic-cost-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    mkdirSync(join(dir, 'web'));
+    const db = openDb();
+    const ws = getOrCreateProject(db, dir);
+    const web = createVertical(db, ws.id, 'web', join(dir, 'web'));
+    createPhase(db, ws.id, 'WS phase');
+    advancePhase(db, ws.id);
+    const vp = createPhase(db, web.id, 'Web phase');
+    advancePhase(db, web.id);
+    const c = createTask(db, web.id, 'Blocked on web', { phase_id: vp.id });
+    moveTask(db, c.id, 'in_progress');
+    raiseBlocker(db, c.id, 'q');
+    const now = Date.now();
+    db.prepare("UPDATE task_events SET created_at = ? WHERE task_id = ? AND type = 'block'").run(now - DAY, c.id);
+    db.prepare("UPDATE task_events SET created_at = ? WHERE task_id = ? AND type != 'block'").run(now - 2 * DAY, c.id);
+    db.prepare('UPDATE tasks SET created_at = ?, blocked_at = ? WHERE id = ?').run(now - 2 * DAY, now - DAY, c.id);
+    const slip = agenticCostMetrics(db, { projectIds: [ws.id] }, { tz: 'UTC', now, project: ws.id }).decisionLatencyCost.slip!;
+    assert.equal(slip.scope, 'workspace+verticals');
+    assert.deepEqual(slip.phases.map((p) => [p.project_id, p.phase?.title]), [
+      [ws.id, 'WS phase'],
+      [web.id, 'Web phase'],
+    ]);
+    assert.equal(slip.phase?.title, 'WS phase');
+    assert.ok(Math.abs(slip.days - 1) < 1e-3, `${slip.days}`);
+    // the vertical on its own: its phase only
+    const own = agenticCostMetrics(db, { projectIds: [web.id] }, { tz: 'UTC', now, project: web.id }).decisionLatencyCost.slip!;
+    assert.deepEqual([own.scope, own.phases.length, own.phase?.title], ['board', 1, 'Web phase']);
     db.close();
   });
 
