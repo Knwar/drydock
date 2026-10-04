@@ -26,6 +26,10 @@ async function api(method: string, path: string, body?: unknown): Promise<ToolRe
 
 const server = new McpServer({ name: 'kankan', version: '0.1.0' });
 
+const WORK_TYPE = z.enum(['feature', 'defect', 'debt', 'risk']);
+const WORK_TYPE_GUIDE =
+  ' work_type: feature = new user value; defect = fixing broken behaviour; debt = refactor, upgrade, tests or cleanup; risk = security, compliance or reliability.';
+
 server.registerTool(
   'get_or_create_project',
   {
@@ -69,7 +73,7 @@ server.registerTool(
 server.registerTool(
   'create_task',
   {
-    description: 'Create a task in the backlog. Returns {task_id}. Pass phase_id to file it under a phase.',
+    description: 'Create a task in the backlog. Returns {task_id}. Pass phase_id to file it under a phase.' + WORK_TYPE_GUIDE,
     inputSchema: {
       project_id: z.string(),
       title: z.string(),
@@ -77,6 +81,7 @@ server.registerTool(
       requirements: z.string().optional(),
       depends_on: z.array(z.string()).optional(),
       phase_id: z.string().optional(),
+      work_type: WORK_TYPE.optional(),
     },
   },
   (input) => api('POST', '/task', input),
@@ -85,13 +90,16 @@ server.registerTool(
 server.registerTool(
   'update_task',
   {
-    description: 'Update a task’s requirements, tag, depends_on, or subtasks (acceptance criteria, replaces the whole list).',
+    description:
+      'Update a task’s requirements, tag, depends_on, subtasks (acceptance criteria, replaces the whole list), or work_type (null clears it).' +
+      WORK_TYPE_GUIDE,
     inputSchema: {
       task_id: z.string(),
       requirements: z.string().optional(),
       tag: z.enum(['ui', 'api', 'db', 'infra']).optional(),
       depends_on: z.array(z.string()).optional(),
       subtasks: z.array(z.string()).optional(),
+      work_type: WORK_TYPE.nullable().optional(),
     },
   },
   ({ task_id, ...patch }) => api('PATCH', `/task/${task_id}`, patch),
@@ -747,7 +755,7 @@ server.registerTool(
   'get_report',
   {
     description:
-      "A status report for summarising project status to the user or publishing a weekly report: overall + per-phase RAG (from the schedule; an open blocker turns a green phase amber), what shipped in the range (by board and phase), what's next (queued / in-progress cards, milestones in the next 14 days), metrics (throughput, cycle p50/p85, first-pass rate, time waiting on you, cost + budgets with caveats), risks and decisions. A workspace includes its verticals. Range defaults to the last 7 days; from/to take YYYY-MM-DD (in tz), a datetime or epoch ms. format 'markdown' (default) returns ready-to-share Markdown; 'json' the structured report.",
+      "A status report for summarising project status to the user or publishing a weekly report: overall + per-phase RAG (from the schedule, with p50/p85/p95 forecast finish dates in json; an open blocker turns a green phase amber), what shipped in the range (by board and phase), what's next (queued / in-progress cards, milestones in the next 14 days), metrics (throughput, cycle p50/p85, first-pass rate, time waiting on you, cost + budgets with caveats), risks and decisions. A workspace includes its verticals. Range defaults to the last 7 days; from/to take YYYY-MM-DD (in tz), a datetime or epoch ms. format 'markdown' (default) returns ready-to-share Markdown; 'json' the structured report.",
     inputSchema: {
       project_id: z.string(),
       from: z.string().optional(),
@@ -756,10 +764,24 @@ server.registerTool(
       format: z.enum(['markdown', 'json']).optional(),
     },
   },
-  ({ project_id, format, ...range }) => {
+  async ({ project_id, format, ...range }) => {
     const params = new URLSearchParams({ project: project_id });
     for (const [k, v] of Object.entries(range)) if (v) params.set(k, v);
-    return api('GET', `${format === 'json' ? '/report' : '/report.md'}?${params}`);
+    if (format !== 'json') return api('GET', `/report.md?${params}`);
+    const report = await api('GET', `/report?${params}`);
+    if (report.isError) return report;
+    // the report's phases carry p50/p85 only: add each phase's p95 from the schedule
+    // (same default seed, so it reads off the same simulation)
+    const schedParams = new URLSearchParams({ project: project_id });
+    if (range.tz) schedParams.set('tz', range.tz);
+    const sched = await api('GET', `/metrics/schedule?${schedParams}`);
+    if (sched.isError) return { content: [...report.content, { type: 'text' as const, text: `p95 unavailable: ${sched.content[0]?.text}` }] };
+    const p95 = new Map(
+      (JSON.parse(sched.content[0].text).phases as { id: string; p95?: string | null }[]).map((p) => [p.id, p.p95 ?? null]),
+    );
+    const r = JSON.parse(report.content[0].text);
+    r.phases = (r.phases as { id: string }[]).map((p) => ({ ...p, p95: p95.get(p.id) ?? null }));
+    return { content: [{ type: 'text' as const, text: JSON.stringify(r) }] };
   },
 );
 
