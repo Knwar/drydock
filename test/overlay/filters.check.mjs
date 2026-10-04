@@ -438,7 +438,8 @@ await settledHome();
   const s = await liveSnap();
   ok(prefixOf(s.now, homeApi.now_building.map((x) => x.title)), "scope api: Now building = the server's api Home", { got: s.now, want: homeApi.now_building.map((x) => x.title) });
   ok(prefixOf(s.up, homeApi.up_next.items.map((x) => x.title)), "scope api: Up next = the server's api Home (same pick order)", { got: s.up, want: homeApi.up_next.items.map((x) => x.title) });
-  ok((await page.$eval(`${W('up-next')} .home-link`, (e) => e.textContent)) === `View all ${homeApi.up_next.total_pending} in Kanban →`, "scope api: total pending = the server's", homeApi.up_next.total_pending);
+  // (the link names the board when it isn't this one: "View all 7 in api Kanban →")
+  ok(new RegExp(`^View all ${homeApi.up_next.total_pending} in (api )?Kanban →$`).test(await page.$eval(`${W('up-next')} .home-link`, (e) => e.textContent)), "scope api: total pending = the server's", homeApi.up_next.total_pending);
   ok((await chipV()) === 'last 4 weeks · 1 filter' && (await chipTitle()) === 'last 4 weeks · api', 'chip: 1 filter (tooltip: api)', [await chipV(), await chipTitle()]);
   await shot('home-5-scope-api');
 }
@@ -801,17 +802,29 @@ await page.unroute('**/home?*', slow);
 
 // ---- the decisions KPI: every card filter (Phase, Tag, Agent, Type), focusable, opens its drill ----
 {
+  // a card with a live blocker, its tag and agent: the filters below must find it (real data to check)
+  const all = await api(`/metrics/wait?project=${seed.ws}`);
+  const ids = (r) => [...r.waiting.blockers.map((x) => x.task_id), ...r.waiting.needsYou.map((x) => x.task_id)];
+  const target = all.waiting.blockers.map((x) => cards.find((c) => c.id === x.task_id)).find((c) => c?.tag && c?.agent);
+  ok(!!target, 'seed: a blocked card with a tag and an agent to filter on', all.waiting.blockers);
+  const { tag, agent } = target ?? { tag: 'ui', agent: 'Ada' };
+  const qs = `tag=${encodeURIComponent(tag)}&agent=${encodeURIComponent(agent)}`;
   const reqs = reqWatch();
-  await page.goto(`${base}/?project=${seed.ws}&view=home&tag=ui&agent=Ada`);
+  await page.goto(`${base}/?project=${seed.ws}&view=home&${qs}`);
   await settledHome();
   reqs.stop();
   const waits = reqs.filter((u) => new URL(u).pathname === '/metrics/wait').map((u) => new URL(u).searchParams);
-  const kpiWaits = waits.filter((q) => q.get('tag') === 'ui');
-  ok(kpiWaits.length === 2 && kpiWaits.every((q) => q.get('agent') === 'Ada'), "decisions KPI: both /metrics/wait reads carry Home's tag and agent", waits.map(String));
-  const ui = await api(`/metrics/wait?project=${seed.ws}&tag=ui&agent=Ada`);
-  const all = await api(`/metrics/wait?project=${seed.ws}`);
-  const ids = (r) => [...r.waiting.blockers.map((x) => x.task_id), ...r.waiting.needsYou.map((x) => x.task_id)];
-  ok(ids(ui).every((id) => { const c = cards.find((x) => x.id === id); return c && c.tag === 'ui'; }) && ids(ui).length <= ids(all).length, '/metrics/wait?tag&agent: only waits on matching cards', { ui: ids(ui), all: ids(all) });
+  const kpiWaits = waits.filter((q) => q.get('tag') === tag);
+  ok(kpiWaits.length === 2 && kpiWaits.every((q) => q.get('agent') === agent), "decisions KPI: both /metrics/wait reads carry Home's tag and agent", waits.map(String));
+  const atts = reqs.filter((u) => new URL(u).pathname === '/attention').map((u) => new URL(u).searchParams);
+  ok(atts.some((q) => q.get('tag') === tag && q.get('agent') === agent), "decisions KPI: its /attention read carries Home's tag and agent", atts.map(String));
+  const hit = await api(`/metrics/wait?project=${seed.ws}&${qs}`);
+  ok(ids(hit).includes(target?.id) && ids(hit).every((id) => cards.find((x) => x.id === id)?.tag === tag), '/metrics/wait?tag&agent: the matching blocked card, and only cards with that tag', { hit: ids(hit), target: target?.id });
+  const miss = await api(`/metrics/wait?project=${seed.ws}&tag=${encodeURIComponent(tag)}&agent=nobody-at-all`);
+  ok(ids(miss).length === 0 && ids(all).length > ids(miss).length, '/metrics/wait: an agent with no cards matches nothing', ids(miss));
+  const att = await api(`/attention?project=${seed.ws}&${qs}`);
+  const attAll = await api(`/attention?project=${seed.ws}`);
+  ok(att.length > 0 && att.length <= attAll.length && att.every((a) => cards.find((c) => c.id === a.card_id)?.tag === tag), '/attention?tag&agent: non-empty, only matching cards', { att: att.map((a) => a.card_id), all: attAll.length });
   const K = `${W('kpi')}:has(.dw-title:text-is("What needs a human?"))`;
   const main = await page.$(`${K} button.kpi-main`);
   ok(!!main, 'decisions KPI: the headline is a button (focusable)');
@@ -822,6 +835,8 @@ await page.unroute('**/home?*', slow);
   await page.keyboard.press('Enter');
   await page.waitForSelector('#home-view .mx-drill', { timeout: 10000 });
   ok((await page.$eval('.mx-drill .mx-kicker', (e) => e.textContent)) === 'WHAT NEEDS A HUMAN' && (await page.$$('.mx-drill-row')).length === n, 'decisions KPI: Enter opens its drill, one row per item', { n, rows: (await page.$$('.mx-drill-row')).length });
+  const dsub = await page.$eval('.mx-drill-sub', (e) => e.textContent);
+  ok(dsub.includes('all phases'), 'a drill opened without a phase says "all phases" (no phase named by coincidence)', dsub);
   await page.keyboard.press('Escape');
   const kpis = await page.$$eval(`${W('kpi')} .kpi-main`, (es) => es.map((e) => e.tagName));
   ok(kpis.length >= 2 && kpis.every((t) => t === 'BUTTON'), 'every KPI headline shown is a button (an empty-state KPI has none)', kpis);
@@ -849,8 +864,15 @@ await page.unroute('**/home?*', slow);
   await page.waitForSelector('#home-view .mx-drill');
   const sub = await page.$eval('.mx-drill-sub', (e) => e.textContent);
   ok(sub.includes(title) && !sub.includes('all phases'), "phase drill: the subtitle names the drill's phase, not \"all phases\"", { sub, title });
-  await page.keyboard.press('Escape');
-  await page.click(`${W('tabs')} .dw-tab:text-is("Needs you")`);
+  // a widget drill (ctx.drillCards): the banner names the widget it came from
+  const widgetTitle = await page.$eval(`${W('phase-health')} .dw-title`, (e) => e.textContent);
+  await page.click('.mx-drill-foot .mx-btn');
+  await page.waitForSelector('.mx-hl-chip', { timeout: 15000 });
+  const hl = await page.$eval('.mx-hl-chip span', (e) => e.textContent);
+  ok(hl.endsWith(` highlighted from Home · ${widgetTitle}`), 'Open all from a widget drill: banner "from Home · <widget title>"', { hl, widgetTitle });
+  await page.evaluate(() => clearKanbanHighlight());
+  await page.goto(`${base}/?project=${seed.ws}&view=home`);
+  await settledHome();
 }
 
 // ---- Esc closes the expanded filter bar (the custom-range popover first) ----

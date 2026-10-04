@@ -136,10 +136,10 @@ describe('delta', () => {
 
 // The overlay's rolling ranges ("last N weeks", mxWindow) are 7×N whole local days ending today, sent as
 // `from` (that day's local midnight) with no `to`. compare=previous (metrics.previousPeriod) must then be
-// the 7×N days before, whatever the weekday (no Monday alignment) and across a DST change.
+// the 7×N days before, whatever the weekday (no Monday alignment) and across the March and November DST changes.
 describe('previousPeriod for a rolling 7×N-day range', () => {
   const tz = 'America/New_York';
-  for (const today of ['2026-10-05', '2026-10-07', '2026-10-11', '2026-03-12']) {
+  for (const today of ['2026-10-05', '2026-10-07', '2026-10-11', '2026-03-12', '2026-11-03', '2026-11-20']) {
     for (const weeks of [2, 4, 8]) {
       it(`${weeks}w ending ${today}`, () => {
         const fromDay = addDays(today, 1 - 7 * weeks);

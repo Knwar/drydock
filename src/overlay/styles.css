@@ -157,11 +157,11 @@ header {
    header, the tooltip carries the numbers), the board name truncates and the stats give way, so
    name, LIVE, the pill, settings and the timer never overlap */
 @media (max-width: 499px) {
-  header { position: relative; grid-template-columns: minmax(0, 1fr) 34px auto; column-gap: 8px; }
+  header { position: relative; grid-template-columns: minmax(0, 1fr) 36px auto; column-gap: 8px; }
   .head-left { gap: 8px; }
   #stats { display: none; }
   .head-center { justify-self: center; cursor: pointer; }
-  .head-center:not(.open) { padding: 4px 9px; }
+  .head-center:not(.open) { justify-content: center; min-width: 32px; min-height: 32px; padding: 0 8px; } /* a ≥ 32px tap target */
   .head-center:not(.open) > :not(.spark) { display: none; }
   .head-center:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .head-center.open .cu-label { display: inline; }

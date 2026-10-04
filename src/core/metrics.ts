@@ -902,6 +902,12 @@ function filterWhere(filter: LoadFilter): { sql: string; params: (string | numbe
   return { sql: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
 }
 
+/** Ids of the cards matching a filter's card fields (scope, phase, tag, agent, work type; no dates), as the metrics match them. */
+export function matchingCardIds(db: DB, filter: MetricsFilter): Set<string> {
+  const { sql, params } = filterWhere({ ...filter, from: undefined, to: undefined });
+  return new Set((db.prepare(`SELECT t.id FROM tasks t ${sql}`).all(...params) as { id: string }[]).map((r) => r.id));
+}
+
 /** The SQL part of the load: cards matching `filter` (coarse date prefilter only) + their events. */
 function loadRaw(db: DB, filter: LoadFilter): CardHistory[] {
   const { sql, params } = filterWhere(filter);

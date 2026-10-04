@@ -264,26 +264,18 @@ body:not(.de-editing) .dw-widget[data-type="send-to-agent"].is-empty { flex: non
 body:not(.de-editing) .dw-widget[data-type="send-to-agent"].is-empty > .dw-body { flex: none; }
 body:not(.de-editing) .dw-widget[data-type="send-to-agent"].is-empty .dw-empty { height: auto; justify-content: flex-start; padding: 0; }
 
-/* a tab group alone in its row (view mode, desktop): the row is sized for its tallest tab; a shorter
-   active tab shrinks the frame to its content instead of leaving the rest empty (the row height stays
-   the cap: a taller tab still scrolls inside the panel) */
-@media (min-width: 800px) {
-  body:not(.de-editing) .dw-row:has(> .dw-slot:only-child > .dw-widget[data-type="tabs"]:only-child) { height: auto; }
-  body:not(.de-editing) .dw-slot:only-child > .dw-widget[data-type="tabs"]:only-child { flex: 0 1 auto; max-height: var(--dw-row-h); }
-  body:not(.de-editing) .dw-slot:only-child > .dw-widget[data-type="tabs"]:only-child > .dw-body { flex: 0 1 auto; }
-  body:not(.de-editing) .dw-slot:only-child > .dw-widget[data-type="tabs"]:only-child .dw-tabs-panel { flex: 0 1 auto; }
-}
-
 /* below 800px: slots stack in order, each keeping its row's height */
 @media (max-width: 799px) {
   .dw-row { grid-template-columns: minmax(0, 1fr); height: auto; }
   .dw-slot { grid-column: auto; height: var(--dw-row-h); }
   body:not(.de-editing) .dw-slot.dw-slot-vacant { display: none; } /* stacked: no blank hole */
   .dw-empty-edit { display: none; }
-  /* a tab group grows to its active tab's stacked rows: no fixed height, no scroll inside the panel */
-  .dw-slot:has(> .dw-widget[data-type="tabs"]) { height: auto; }
-  .dw-widget[data-type="tabs"] { flex: none; }
-  .dw-widget[data-type="tabs"] > .dw-body, .dw-tabs-panel { flex: none; overflow: visible; }
+  /* a tab group alone in its slot grows to its active tab's stacked rows: no fixed height, no scroll
+     inside the panel (view mode; a slot it shares keeps its height, so its neighbours keep theirs) */
+  body:not(.de-editing) .dw-slot:has(> .dw-widget[data-type="tabs"]:only-child) { height: auto; }
+  body:not(.de-editing) .dw-slot > .dw-widget[data-type="tabs"]:only-child { flex: none; }
+  body:not(.de-editing) .dw-slot > .dw-widget[data-type="tabs"]:only-child > .dw-body,
+  body:not(.de-editing) .dw-slot > .dw-widget[data-type="tabs"]:only-child .dw-tabs-panel { flex: none; overflow: visible; }
 }
 /* an agent's session waiting on the human (dwAgentState attention): like the header's "needs you" */
 /* doubled: wins over the widget sheets (loaded later) colouring the same element (.aa-card, .aa-p-muted) */

@@ -273,6 +273,7 @@ function applyEvent(msg) {
 // full bars under the header, a tap elsewhere / Esc closes them; the tooltip carries the numbers.
 const cuEl = document.getElementById('claude-usage');
 const cuCompact = matchMedia('(max-width: 499px)');
+let cuLabel = 'Usage limits'; // the compact button's name: "Usage limits: 5h 38%, week 64%"
 function cuSetOpen(open) {
   cuEl.classList.toggle('open', open);
   if (cuCompact.matches) cuEl.setAttribute('aria-expanded', String(open));
@@ -283,9 +284,11 @@ function cuSync() {
     cuEl.tabIndex = 0;
     cuEl.setAttribute('role', 'button');
     cuEl.setAttribute('aria-expanded', String(cuEl.classList.contains('open')));
+    cuEl.setAttribute('aria-label', cuLabel);
   } else {
     cuEl.removeAttribute('tabindex');
     cuEl.removeAttribute('role');
+    cuEl.removeAttribute('aria-label');
     cuEl.removeAttribute('aria-expanded');
     cuEl.classList.remove('open');
   }
@@ -320,6 +323,8 @@ function renderUsage(usage) {
   cuEl.classList.toggle('cu-warn', hot !== null && hot >= 60 && hot < 85);
   const pctText = (w) => (typeof w?.used_percentage === 'number' ? `${Math.round(w.used_percentage)}%` : '—');
   cuEl.title = `Claude subscription usage limits · 5h ${pctText(usage?.five_hour)} · week ${pctText(usage?.seven_day)}`;
+  cuLabel = `Usage limits: 5h ${pctText(usage?.five_hour)}, week ${pctText(usage?.seven_day)}`;
+  cuSync();
   for (const [id, win] of windows) {
     const el = document.getElementById(id);
     const pct = win?.used_percentage;
@@ -1176,23 +1181,11 @@ function drawFilterChip(host, ctx, opts) {
 // Any non-default filter (the chip would name it).
 const fbAnyActive = (ctx, fields) => fbActiveLabels(ctx, fields).length > 0;
 
-// The element the user last pressed / typed on: names the Home widget a drill-down came from.
-let fbDrillOrigin = null;
-for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, (e) => (fbDrillOrigin = e.target), true);
-// The Home widget (its frame title) the drill-down was opened from: "Home · Boards"; else just Home.
-function fbHomeSource() {
-  const el = [document.activeElement, fbDrillOrigin].find((x) => x instanceof Element && x.closest('#home-view .dw-widget'));
-  const t = el?.closest('.dw-widget').querySelector(':scope > .dw-head .dw-title')?.textContent;
-  return t ? `Home · ${t}` : 'Home';
-}
-
 // A drill-down of cards (dashboard / Home counts): title, board, lane, agent; Open / Open all in Kanban.
-// phase: the drill's own phase (named in the subtitle when the filters have none); default: the one
-// phase every card shares, if any.
-function fbDrillCards(ctx, host, { kicker, title, cards, range, phase }) {
+// phase: the drill's own phase (a phase's cards), named in the subtitle when the filters have none.
+// source: what "Open all" says the highlight came from ("Home · Now building"; Home's default: Home).
+function fbDrillCards(ctx, host, { kicker, title, cards, range, phase = null, source }) {
   const now = Date.now();
-  const phases = new Set(cards.map((c) => c.phase_id ?? null));
-  const ownPhase = phase ?? (phases.size === 1 ? [...phases][0] : null);
   const rows = cards.map((c) => {
     const since = c.lane_since ?? c.updated_at ?? now;
     const done = c.lane === 'done';
@@ -1213,8 +1206,8 @@ function fbDrillCards(ctx, host, { kicker, title, cards, range, phase }) {
     host,
     kicker,
     title,
-    sub: [range, fbScopeLabel(ctx, ownPhase)].filter(Boolean).join(' · '),
-    source: ctx === hctx ? fbHomeSource() : undefined,
+    sub: [range, fbScopeLabel(ctx, phase)].filter(Boolean).join(' · '),
+    source: source ?? (ctx === hctx ? 'Home' : undefined),
     stat: allDone ? '' : 'time in lane',
     rows,
     sorts: allDone
@@ -5196,7 +5189,7 @@ function renderDashFilters(force) {
   else if (dctx.filtersStale) filterChipSoft(host, dctx, opts);
 }
 const dashRangeLabel = () => (dctx.f.range === 'all' ? '' : `done ${dctx.f.range === 'custom' ? fbWindowLabel(dctx) : `in ${dctx.f.range}`}`);
-// The tiny done-lane label: "done 2w", "done 3 Aug–26 Sep".
+// The tiny done-lane label: "done 2w", "done Aug 3–Sep 26" (fbWindowLabel's dates, the spaces dropped).
 const dashDoneLabel = () => `done ${dctx.f.range === 'custom' ? fbWindowLabel(dctx).replace(' – ', '–') : dctx.f.range}`;
 async function dashDrillLane(b, lane, isMain) {
   const meta = await dashMeta();
@@ -5750,6 +5743,7 @@ async function homeDrillLane(project, lane) {
     kicker: `${homeBoardName(project)} · ${LANE_LABELS[lane]}`.toUpperCase(),
     title: lane === 'done' ? `${mxPlural(list.length, 'card')} done` : `${mxPlural(list.length, 'card')} in ${LANE_LABELS[lane]}`,
     cards: list,
+    source: 'Home · Verticals', // its one caller: the Verticals widget's lane counts
   });
 }
 async function homeDrillNow() {
@@ -5757,7 +5751,7 @@ async function homeDrillNow() {
   if (activeView !== 'home' || !home.data) return;
   const items = homeNowItems();
   const list = items.map((it) => ({ ...(hctx.meta?.cards.get(it.id) ?? {}), id: it.id, title: it.title, board: it.board.id, lane: it.lane, agent: it.agent, lane_since: it.since, blocked: it.blocked }));
-  fbDrillCards(hctx, homeView, { kicker: 'NOW BUILDING', title: `${mxPlural(list.length, 'card')} in flight`, cards: list });
+  fbDrillCards(hctx, homeView, { kicker: 'NOW BUILDING', title: `${mxPlural(list.length, 'card')} in flight`, cards: list, source: 'Home · Now building' });
 }
 
 // /home under Home's filters, without the range (live state); key: the filters it was read with.

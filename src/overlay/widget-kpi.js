@@ -218,21 +218,19 @@ function kpiBudgetRender(el, d, ctx) {
 }
 
 // ── decisions: "What needs a human?" ──
-// Every card filter applies (Phase, Tag, Agent, Type): /metrics/wait filters server-side; /attention
-// (every card of the scope) here, its tags from the shared /workspace/cards read (only with a Tag filter).
+// Every card filter applies (Phase, Tag, Agent, Type): /metrics/wait filters them all server-side;
+// /attention takes tag / agent (matched as the metrics do), phase and type are applied here.
 const KPI_DECISIONS_HINT = 'List what needs a human (Home’s Phase, Tag, Agent and Type filters apply)';
 async function kpiDecisionsLoad(ctx) {
   const f = kpiFilters(ctx);
   const card = { phase: f.phase, tag: f.tag, agent: f.agent, workType: f.workType };
   // live (range-free) reads for the list + count; a separate ranged compare read only for the chip
-  const [att, wait, ranged, since, all] = await Promise.all([
-    kpiGet(ctx, '/attention', { project: f.project }),
+  const [att, wait, ranged, since] = await Promise.all([
+    kpiGet(ctx, '/attention', { project: f.project, tag: f.tag, agent: f.agent }),
     kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, ...card }),
     kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, ...card, from: f.from, to: f.to, compare: 'previous' }),
     dwFirstActivity(ctx).catch(() => null),
-    f.tag ? dwCards(ctx) : null,
   ]);
-  const tagOf = new Map((all?.cards ?? []).map((c) => [c.id, c.tag ?? null]));
   const seen = new Set();
   const items = [];
   const add = (it) => {
@@ -240,12 +238,11 @@ async function kpiDecisionsLoad(ctx) {
     if (it.id) seen.add(it.id);
     items.push(it);
   };
-  // the card filters, applied here (/attention returns every card): Type 'none' = unclassified
+  // the Type filter, applied here (/attention returns every type): 'none' = unclassified
   const typeOk = (a) => !f.workType || (f.workType === 'none' ? !a.work_type : a.work_type === f.workType);
-  const cardOk = (a) => typeOk(a) && (!f.tag || tagOf.get(a.card_id) === f.tag) && (!f.agent || a.agent === f.agent);
   // decisions: blockers (raised, failed twice, unmerged, sync conflicts) + sessions waiting on you; the
   // stall heuristic ("Agent quiet … — may be stuck") is a guess, not a decision: counted apart
-  const scoped = att.filter((a) => a.severity === 'blocker' && (!f.phase || a.phase_id === f.phase) && cardOk(a));
+  const scoped = att.filter((a) => a.severity === 'blocker' && (!f.phase || a.phase_id === f.phase) && typeOk(a));
   for (const a of scoped) if (a.kind !== 'stalled') add({ id: a.card_id, board: f.project, title: a.title, since: a.since });
   for (const x of wait.waiting.blockers) add({ id: x.task_id, board: x.project_id, title: x.title, since: x.since });
   for (const n of wait.waiting.needsYou) add({ id: n.task_id, board: n.project_id, title: n.reason ? `Session waiting: ${n.reason}` : 'A session is waiting on you', since: n.since });

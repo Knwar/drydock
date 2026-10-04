@@ -264,7 +264,7 @@ function dlHealthRender(el, d, ctx) {
     if (r.cards.length) {
       row.type = 'button';
       row.title = `List the cards in ${p.title}`;
-      row.onclick = () => ctx.drillCards({ kicker: `PHASE · ${p.title}`.toUpperCase(), title: mxPlural(r.cards.length, 'card'), cards: r.cards });
+      row.onclick = () => ctx.drillCards({ kicker: `PHASE · ${p.title}`.toUpperCase(), title: mxPlural(r.cards.length, 'card'), cards: r.cards, phase: p.id });
     }
     const name = node('span', 'dl-cell dl-c-name');
     name.append(node('span', 'dl-name', p.title));

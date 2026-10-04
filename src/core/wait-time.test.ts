@@ -14,7 +14,7 @@ import {
   resolveBlocker,
 } from './board.js';
 import { openDb, type DB } from './db.js';
-import { MetricsParamError } from './metrics.js';
+import { matchingCardIds, MetricsParamError } from './metrics.js';
 import { NEEDS_YOU_MAX_MS, OFFLINE_MS, SessionStates, type StatusEntry } from '../daemon/session-state.js';
 import {
   closeOpenWaits,
@@ -365,6 +365,10 @@ describe('wait-time DB readers', () => {
     assert.deepEqual(ids({ agent: 'Ada' }), { needs: [a.id], blockers: [a.id] });
     assert.deepEqual(ids({ tag: 'ui', agent: 'Bo' }), { needs: [], blockers: [] });
     assert.equal(waitMetrics(db, { projectIds: [ws.id], tag: 'ui', agent: 'Ada' }, { tz: 'UTC', now }).waiting.count, 2);
+    // the same match /attention?tag&agent uses (the vertical's card is in the workspace's scope)
+    assert.deepEqual([...matchingCardIds(db, { projectIds: [ws.id], tag: 'ui' })], [a.id]);
+    assert.deepEqual([...matchingCardIds(db, { projectIds: [ws.id], tag: 'api' })], [b.id]);
+    assert.deepEqual([...matchingCardIds(db, { projectIds: [ws.id], agent: 'Ada' })], [a.id]);
   });
 
   it('deleteProject drops a board\'s waits; mergeVerticals moves them (ending the open one)', (t) => {

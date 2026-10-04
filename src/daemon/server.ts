@@ -1481,7 +1481,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (method === 'GET' && pathname === '/attention') {
     const project = url.searchParams.get('project');
     if (!project) return json(res, 400, { error: 'project required' });
-    return json(res, 200, board.getAttention(db, project));
+    const items = board.getAttention(db, project);
+    // tag / agent: only items on matching cards, matched as the metrics do (agent: the assignee or
+    // anyone on the card's history); a card-less item drops out
+    const tag = url.searchParams.get('tag') || undefined;
+    const agent = url.searchParams.get('agent') || undefined;
+    if (!tag && !agent) return json(res, 200, items);
+    const ids = metrics.matchingCardIds(db, { projectIds: [project], tag, agent });
+    return json(res, 200, items.filter((a) => a.card_id && ids.has(a.card_id)));
   }
 
   if (method === 'POST' && pathname === '/pty/agent') {
@@ -2315,9 +2322,13 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!root) return json(res, 404, { error: 'unknown project' });
     if (pathname === '/git/status') {
       // quiet=1 (the rail's change-count badge): a non-git root is no changes, not an error the
-      // browser would log on every board load
-      if (!url.searchParams.get('quiet')) return json(res, 200, await gitStatus(root));
-      return json(res, 200, await gitStatus(root).catch(() => ({ branch: null, base: null, files: [], remote: null })));
+      // browser would log on every board load; any other failure still reports
+      try {
+        return json(res, 200, await gitStatus(root));
+      } catch (err) {
+        if (url.searchParams.get('quiet') && /not a git repository/i.test((err as Error).message)) return json(res, 200, { branch: null, base: null, files: [], remote: null });
+        throw err;
+      }
     }
     const file = url.searchParams.get('file');
     if (!file) return json(res, 400, { error: 'file required' });
