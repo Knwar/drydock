@@ -3,8 +3,9 @@
  * the batches are, whether specs are met, and the governance posture. Built only
  * on what is already recorded (no new capture):
  *
- *  - autonomy:  cards done in [from, to]; autonomous = no `block` and no `redirect`
- *               event anywhere in the card's history. Weekly by the done week. needsHuman
+ *  - autonomy:  cards done in [from, to]; autonomous = no stop anywhere in the card's
+ *               history: no blocker (`block`), no redirect and no reopen, the same rule
+ *               `stops` uses (cardStops). Weekly by the done week. needsHuman
  *               lists the others (newest done first, capped at NEEDS_HUMAN_CAP) for a drill.
  *  - stops:     events in [from, to]. Agent self-stops = `block` (raise_blocker).
  *               Human interrupts = `redirect` (redirect_task) + reopens: a move back
@@ -44,15 +45,14 @@ import {
   loadCardHistories,
   matchingCardIds,
   MAX_RANGE_DAYS,
-  percentile,
   sortEvents,
   type DerivedCard,
   type MetricsFilter,
 } from './metrics.js';
 import { cardQuality } from './quality.js';
-import { getActivePhase } from './board.js';
+import { getActivePhase, listVerticals } from './board.js';
 import { getPrices, loadCostRows, matchesCostFilter, priceRows, type CostFilter } from './cost.js';
-import { phaseForecastInfo } from './forecast.js';
+import { MIN_DAYS, MIN_DONE, phaseForecastInfo } from './forecast.js';
 import { longestChain } from './plan-graph.js';
 import { usageBurn, type ForecastInfo, type LimitReport, type UsageBurn, type UsageSample } from './usage-burn.js';
 import { computeWait, loadBlockers, loadNeedsYou } from './wait-time.js';
@@ -139,6 +139,7 @@ export interface AgenticMetrics {
     cards: number;
     over: number;
     pctOver: number | null;
+    /** True median of the lines (the mean of the middle two for an even count). */
     median: number | null;
     top: { id: string; title: string; lines: number; doneAt: number }[];
     /** Done cards without line data (excluded above). */
@@ -172,6 +173,13 @@ export interface AgenticMetrics {
 }
 
 const ratio = (n: number, d: number) => (d ? n / d : null);
+
+/** The median of sorted values (the mean of the middle two for an even count); null for none. */
+function trueMedian(sorted: number[]): number | null {
+  if (!sorted.length) return null;
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
 
 function field(payload: unknown, key: string): unknown {
   let p = payload;
@@ -209,7 +217,8 @@ export function cardStops(x: DerivedCard): { at: number; kind: 'agent' | 'redire
 /** The most cards autonomy.needsHuman lists. */
 export const NEEDS_HUMAN_CAP = 200;
 
-const isAutonomous = (x: DerivedCard) => !x.h.events.some((e) => e.type === 'block' || e.type === 'redirect');
+/** No blocker, redirect or reopen in the card's history (cardStops' rule, unwindowed). */
+const isAutonomous = (x: DerivedCard) => cardStops(x).length === 0;
 
 /** The command a risky pattern matches, else null. */
 export function riskyPattern(command: string): string | null {
@@ -347,7 +356,7 @@ export function agenticFromInput(input: AgenticInput, opts: AgenticOptions): Age
       cards: sized.length,
       over,
       pctOver: ratio(over, sized.length),
-      median: percentile(sortedLines, 50),
+      median: trueMedian(sortedLines),
       top: [...sized].sort((a, b) => b.lines - a.lines || a.id.localeCompare(b.id)).slice(0, 5),
       noData: done.length - sized.length,
     },
@@ -493,22 +502,29 @@ export function agenticMetrics(db: DB, filter: MetricsFilter, opts: { tz: string
 //    duration are left out of both) in the window: "$ of idle agent time". Wait hours are
 //    the UNION per board of the needs_you and blocker intervals (wait-time.ts loaders),
 //    clipped to the window (open ones run to now): a blocker normally overlaps a needs_you
-//    wait, and overlapping time on a board counts once. needsYouHours / blockedHours are
-//    wait-time.ts's own totals (each on its own, so they can sum to more than the union).
+//    wait, and overlapping time on a board counts once. needsYouHours / blockedHours are each
+//    kind's own union per board (two needs_you waits or two blockers overlapping on a board
+//    count once too), so neither exceeds the total; together they can exceed it (the overlap).
 //    Live (not windowed): days of slip and the queue.
 //      - slip: blocked time (all of it, open blockers up to now) on the cards of the active
 //        phase's critical path: the longest depends_on chain among the phase's cards
 //        (plan-graph longestChain). With no chain of 2+ cards there is no critical path, and
 //        it falls back to the phase's in-flight cards (queued / in_progress / in_review),
-//        flagged `approximation: true`.
+//        flagged `approximation: true`. On a workspace (no phase filter) every vertical's
+//        active phase is judged the same way; verticals run in parallel, so the headline slip
+//        is the MAX over the phases (that phase's days, cards, basis and `phase`), and
+//        blockedDaysTotal is their sum. `phases` holds each one, `scope` says which ('board'
+//        or 'workspace+verticals').
 //      - queue: needs_you sessions + open blockers in scope now, oldest first.
-//  - costAnomaly: daily spend per phase over [from - 14 days, to] (local days in tz). A day
-//    in [from, to] is flagged when spend > mean + 2 sigma of its 14 trailing days, counting
-//    only trailing days on or after the phase's first spend ever (idle days after that are
-//    real zeros; days before it are no data), only with >= 5 such days, and only when the
-//    trailing days are not all zero (so a flat-zero baseline never flags). sigma: population.
-//    judgedDays: the in-range days some phase could judge (>= 5 such trailing days; a flat-zero
-//    baseline still counts as judged); 0 = not enough history to flag anything.
+//  - costAnomaly: the board's TOTAL daily spend (all phases summed) over [from - 14 days, to]
+//    (local days in tz); per-phase series ride along as context. A day in [from, to] is flagged
+//    when total > mean + 2 sigma of its 14 trailing days AND the excess (total - mean) is
+//    >= max($1, 25% of the mean), so a small phase's occasional spend, or cents over a flat
+//    baseline, never floods the flags. Trailing days count from the board's first spend ever
+//    (idle days after it are real zeros; days before it are no data), need >= 5 of them, and
+//    a flat-zero baseline never flags. sigma: population. A flagged day names its top phase
+//    (and every phase's amount). judgedDays: the in-range days with >= 5 such trailing days
+//    (a flat-zero baseline still counts as judged); 0 = not enough history to flag anything.
 //  - usageRunway (live, no range): usage-burn.ts over the daemon's usage samples (persisted
 //    in usage_samples) and the active phase's forecast (forecast.ts phaseForecastInfo).
 //    weeklyBeforeP85 is usage-burn's vsForecast (hit day on or before the p85 day), true when
@@ -520,6 +536,9 @@ export function agenticMetrics(db: DB, filter: MetricsFilter, opts: { tz: string
 export const ANOMALY_TRAILING_DAYS = 14;
 export const ANOMALY_MIN_DAYS = 5;
 export const ANOMALY_SIGMAS = 2;
+/** A flagged day's excess over the trailing mean must be at least max($1, 25% of the mean). */
+export const ANOMALY_MIN_EXCESS = 1;
+export const ANOMALY_MIN_EXCESS_PCT = 0.25;
 const HOUR = 3_600_000;
 
 /** A priced build run (a cost.ts PricedRow, trimmed to what the cost figures use). */
@@ -664,6 +683,35 @@ export interface Slip {
   reason: string | null;
 }
 
+/**
+ * Slip across boards: one Slip per active phase, combined. Verticals run in parallel, so their
+ * delays don't add up: the headline (days, blockedMs, phase, basis, cards, reason) is the phase
+ * with the most blocked time; blockedDaysTotal is the sum over all of them.
+ */
+export interface CombinedSlip extends Slip {
+  /** Σ blocked days over every phase (context: the headline `days` is the max). */
+  blockedDaysTotal: number;
+  /** 'board': the board's own active phase; 'workspace+verticals': the workspace's and its verticals' active phases. */
+  scope: 'board' | 'workspace+verticals';
+  /** Each phase's own slip, with its board. */
+  phases: (Slip & { project_id: string })[];
+}
+
+/** Combine per-phase slips: the phase with the most blocked time sets the headline (ties: the first,
+ *  i.e. the requested board's); the sum is blockedDaysTotal. */
+export function combineSlips(parts: (Slip & { project_id: string })[], scope: CombinedSlip['scope']): CombinedSlip {
+  const real = parts.filter((p) => p.phase !== null);
+  if (!real.length) return { ...slipDays(null, [], [], 0), scope, phases: [], blockedDaysTotal: 0 };
+  const top = real.reduce((m, p) => (p.blockedMs > m.blockedMs ? p : m), real[0]);
+  const { project_id: _, ...headline } = top;
+  return {
+    ...headline,
+    blockedDaysTotal: real.reduce((a, p) => a + p.blockedMs, 0) / 86_400_000,
+    scope,
+    phases: real,
+  };
+}
+
 /** Days of slip from the phase's cards and their blocker intervals (open ones run to now). */
 export function slipDays(
   phase: { id: string; title: string } | null,
@@ -694,19 +742,49 @@ export function slipDays(
   };
 }
 
+export interface CostAnomalyFlag {
+  date: string;
+  /** The board's total spend that day (all phases). */
+  spend: number;
+  /** Trailing mean / sigma of the board's daily total. */
+  mean: number;
+  sigma: number;
+  /** spend - mean. */
+  excess: number;
+  /** The phase that spent the most that day, and its amount. */
+  phase_id: string | null;
+  title: string | null;
+  phaseSpend: number;
+  /** Every phase that spent that day, most first. */
+  byPhase: { phase_id: string | null; title: string | null; spend: number }[];
+}
+
 export interface CostAnomaly {
   range: { from: string; to: string; trailingFrom: string };
+  /** What is judged: the board's total daily spend (all phases summed). */
+  basis: 'board_total';
+  /** The board's total spend per day over [trailingFrom, to]. */
+  total: { date: string; spend: number }[];
+  /** Per-phase daily spend over the same days (context: who spent). */
   series: { phase_id: string | null; title: string | null; days: { date: string; spend: number }[] }[];
-  flagged: { date: string; phase_id: string | null; title: string | null; spend: number; mean: number; sigma: number }[];
-  /** In-range days that at least one phase had >= minDays trailing days of data for (0 = not enough history). */
+  flagged: CostAnomalyFlag[];
+  /** In-range days with >= minDays trailing days of the board's data (0 = not enough history). */
   judgedDays: number;
-  /** The rule: trailing window length, the minimum trailing days of data, and the sigmas over the mean. */
+  /** The rule: trailing window length, the minimum trailing days of data, the sigmas over the mean,
+   *  and the floor on the excess: >= max(minExcess $, minExcessPct x the trailing mean). */
   trailingDays: number;
   minDays: number;
   sigmas: number;
+  minExcess: number;
+  minExcessPct: number;
 }
 
-/** Daily spend per phase and the days over mean + 2 sigma of their trailing 14 days. */
+/**
+ * The board's total daily spend, flagged where it stands out from its trailing 14 days: total >
+ * mean + 2 sigma AND total - mean >= max($1, 25% of the mean). Trailing days count from the
+ * board's first spend ever (idle days after it are real zeros), need >= 5 of them, and a
+ * flat-zero baseline never flags. A flagged day names its top-spending phase.
+ */
 export function costAnomaly(
   runs: Pick<CostRun, 'phase_id' | 'cost' | 'created_at'>[],
   opts: { from: number; to: number; tz: string; phaseTitles?: Map<string, string> },
@@ -717,46 +795,66 @@ export function costAnomaly(
   const days: string[] = [];
   for (let d = trailingFrom; d <= toDay; d = addDays(d, 1)) days.push(d);
   const byPhase = new Map<string | null, Map<string, number>>();
-  const firstSpend = new Map<string | null, string>(); // the phase's first spend day, over all history
+  const totals = new Map<string, number>();
+  let firstSpend: string | null = null; // the board's first spend day, over all history
   for (const r of runs) {
     const day = dayKey(r.created_at, opts.tz);
-    const f = firstSpend.get(r.phase_id);
-    if (f === undefined || day < f) firstSpend.set(r.phase_id, day);
+    if (firstSpend === null || day < firstSpend) firstSpend = day;
     if (day < trailingFrom || day > toDay) continue;
     const m = byPhase.get(r.phase_id) ?? new Map<string, number>();
     m.set(day, (m.get(day) ?? 0) + r.cost);
     byPhase.set(r.phase_id, m);
+    totals.set(day, (totals.get(day) ?? 0) + r.cost);
   }
   const title = (id: string | null) => (id === null ? null : (opts.phaseTitles?.get(id) ?? null));
-  const series: CostAnomaly['series'] = [];
-  const flagged: CostAnomaly['flagged'] = [];
-  const judged = new Set<string>();
-  for (const [phase_id, m] of byPhase) {
-    const spend = days.map((d) => m.get(d) ?? 0);
-    const firstDay = firstSpend.get(phase_id)!;
-    const first = days.findIndex((d) => d >= firstDay);
-    series.push({ phase_id, title: title(phase_id), days: days.map((date, i) => ({ date, spend: round6(spend[i]) })) });
-    for (let i = ANOMALY_TRAILING_DAYS; i < days.length; i++) {
-      const trailing = spend.slice(Math.max(i - ANOMALY_TRAILING_DAYS, first), i);
+  const series: CostAnomaly['series'] = [...byPhase].map(([phase_id, m]) => ({
+    phase_id,
+    title: title(phase_id),
+    days: days.map((date) => ({ date, spend: round6(m.get(date) ?? 0) })),
+  }));
+  const total = days.map((d) => totals.get(d) ?? 0);
+  const flagged: CostAnomalyFlag[] = [];
+  let judgedDays = 0;
+  if (firstSpend !== null) {
+    const first = days.findIndex((d) => d >= firstSpend!);
+    for (let i = ANOMALY_TRAILING_DAYS; i < days.length && first >= 0; i++) {
+      const trailing = total.slice(Math.max(i - ANOMALY_TRAILING_DAYS, first), i);
       if (trailing.length < ANOMALY_MIN_DAYS) continue;
-      judged.add(days[i]);
-      const mean = trailing.reduce((s, v) => s + v, 0) / trailing.length;
-      const sigma = Math.sqrt(trailing.reduce((s, v) => s + (v - mean) ** 2, 0) / trailing.length);
-      // a flat-zero baseline (sigma 0, no spend) would flag any spend at all: not an anomaly signal
-      if (sigma === 0 && !trailing.some((v) => v > 0)) continue;
-      if (spend[i] > mean + ANOMALY_SIGMAS * sigma)
-        flagged.push({ date: days[i], phase_id, title: title(phase_id), spend: round6(spend[i]), mean: round6(mean), sigma: round6(sigma) });
+      judgedDays++;
+      const mean = trailing.reduce((a, v) => a + v, 0) / trailing.length;
+      const sigma = Math.sqrt(trailing.reduce((a, v) => a + (v - mean) ** 2, 0) / trailing.length);
+      if (sigma === 0 && !trailing.some((v) => v > 0)) continue; // a flat-zero baseline: no signal
+      const excess = total[i] - mean;
+      if (total[i] <= mean + ANOMALY_SIGMAS * sigma || excess < Math.max(ANOMALY_MIN_EXCESS, ANOMALY_MIN_EXCESS_PCT * mean)) continue;
+      const parts = [...byPhase]
+        .map(([phase_id, m]) => ({ phase_id, title: title(phase_id), spend: round6(m.get(days[i]) ?? 0) }))
+        .filter((p) => p.spend > 0)
+        .sort((a, b) => b.spend - a.spend || String(a.phase_id).localeCompare(String(b.phase_id)));
+      flagged.push({
+        date: days[i],
+        spend: round6(total[i]),
+        mean: round6(mean),
+        sigma: round6(sigma),
+        excess: round6(excess),
+        phase_id: parts[0]?.phase_id ?? null,
+        title: parts[0]?.title ?? null,
+        phaseSpend: parts[0]?.spend ?? 0,
+        byPhase: parts,
+      });
     }
   }
-  flagged.sort((a, b) => a.date.localeCompare(b.date) || String(a.phase_id).localeCompare(String(b.phase_id)));
   return {
     range: { from: fromDay, to: toDay, trailingFrom },
+    basis: 'board_total',
+    total: days.map((date, i) => ({ date, spend: round6(total[i]) })),
     series,
     flagged,
-    judgedDays: judged.size,
+    judgedDays,
     trailingDays: ANOMALY_TRAILING_DAYS,
     minDays: ANOMALY_MIN_DAYS,
     sigmas: ANOMALY_SIGMAS,
+    minExcess: ANOMALY_MIN_EXCESS,
+    minExcessPct: ANOMALY_MIN_EXCESS_PCT,
   };
 }
 
@@ -765,18 +863,40 @@ export type UsageRunway =
       status: 'ok';
       fiveHour: LimitReport | null;
       weekly: LimitReport | null;
-      forecast: ForecastInfo | null;
+      forecast: RunwayForecast | null;
       /** Does the weekly limit run out before the active phase's p85 finish? null = unknown (no projection / no forecast / the window resets first). */
       weeklyBeforeP85: boolean | null;
       /** p85 day - the weekly hit day, in days (> 0: runs out that many days before p85); null when weeklyBeforeP85 is. */
       gapDays: number | null;
       messages: string[];
     }
-  | { status: 'unavailable'; reason: string; forecast: ForecastInfo | null };
+  | { status: 'unavailable'; reason: string; reasonText: string; forecast: RunwayForecast | null };
+
+/** The forecast the runway compares against; a non-ok one carries a readable reasonText beside its code. */
+export type RunwayForecast = ForecastInfo & { reasonText?: string };
+
+/** Readable text for a forecast reason code (a code that is already a sentence passes through). */
+export function forecastReasonText(reason: string): string {
+  switch (reason) {
+    case 'too_few_done':
+      return `Needs ≥ ${MIN_DONE} done cards to forecast`;
+    case 'too_few_days':
+      return `Needs ≥ ${MIN_DAYS} days of history to forecast`;
+    case 'no_throughput':
+      return 'No cards done yet: no throughput to forecast from';
+    case 'the project has no active phase':
+      return 'No active phase to forecast';
+    default:
+      return reason;
+  }
+}
+
+const withReasonText = (info: ForecastInfo | null): RunwayForecast | null =>
+  info && info.status !== 'ok' ? { ...info, reasonText: forecastReasonText(info.reason) } : info;
 
 /** The runway from a usage-burn view: when the limits run out and the weekly limit vs the p85 finish. */
 export function usageRunway(burn: UsageBurn, info: ForecastInfo | null, tz: string, now: number): UsageRunway {
-  if (burn.status !== 'ok') return { status: 'unavailable', reason: burn.reason, forecast: info };
+  if (burn.status !== 'ok') return { status: 'unavailable', reason: burn.reason, reasonText: burn.reason, forecast: withReasonText(info) };
   const week = burn.limits.seven_day;
   let before: boolean | null = null;
   let gap: number | null = null;
@@ -793,7 +913,7 @@ export function usageRunway(burn: UsageBurn, info: ForecastInfo | null, tz: stri
     status: 'ok',
     fiveHour: burn.limits.five_hour,
     weekly: week,
-    forecast: info,
+    forecast: withReasonText(info),
     weeklyBeforeP85: before,
     gapDays: gap,
     messages: burn.messages,
@@ -815,7 +935,7 @@ export interface AgenticCost {
     /** humanWaitHours x costPerAgentHour; null without a rate. */
     idleCost: number | null;
     /** Live (now), not windowed; null in a compare's previous run. */
-    slip: Slip | null;
+    slip: CombinedSlip | null;
     queue:
       | { kind: 'needs_you' | 'blocker'; project_id: string; task_id: string | null; title: string | null; reason: string | null; since: number; waitingMs: number }[]
       | null;
@@ -823,6 +943,26 @@ export interface AgenticCost {
   costAnomaly: CostAnomaly;
   /** Live only; null in a compare's previous run. */
   usageRunway: UsageRunway | null;
+}
+
+/** A phase's cards with their parsed depends_on (for the critical path). */
+function phaseCards(db: DB, phaseId: string): SlipCard[] {
+  return (
+    db.prepare('SELECT id, title, lane, depends_on FROM tasks WHERE phase_id = ? ORDER BY position, id').all(phaseId) as {
+      id: string;
+      title: string;
+      lane: string;
+      depends_on: string | null;
+    }[]
+  ).map((c) => {
+    let deps: unknown;
+    try {
+      deps = JSON.parse(c.depends_on ?? '[]');
+    } catch {
+      deps = [];
+    }
+    return { ...c, depends_on: Array.isArray(deps) ? deps.filter((d): d is string => typeof d === 'string') : [] };
+  });
 }
 
 /**
@@ -879,48 +1019,40 @@ export function agenticCostMetrics(
   const needs = loadNeedsYou(db, waitFilter);
   const blockers = loadBlockers(db, waitFilter);
   const wait = computeWait(needs, blockers, { tz, now, from: filter.from, to: filter.to });
-  // overlapping needs_you and blocker time on a board counts once
-  const waitHours =
-    unionWaitMs(
-      [
-        ...needs.map((n) => ({ project_id: n.project_id, from: n.started_at, to: n.ended_at })),
-        ...blockers.map((b) => ({ project_id: b.project_id, from: b.from, to: b.to })),
-      ],
-      { from: wait.range.from, to: wait.range.to, now },
-    ) / HOUR;
+  // overlapping time on a board counts once: per kind (the parts) and across both (the total),
+  // so neither part ever exceeds the total
+  const win = { from: wait.range.from, to: wait.range.to, now };
+  const needSpans = needs.map((n) => ({ project_id: n.project_id, from: n.started_at, to: n.ended_at }));
+  const blockSpans = blockers.map((b) => ({ project_id: b.project_id, from: b.from, to: b.to }));
+  const needsYouMs = unionWaitMs(needSpans, win);
+  const blockedMs = unionWaitMs(blockSpans, win);
+  const waitHours = unionWaitMs([...needSpans, ...blockSpans], win) / HOUR;
   const rate = costPerAgentHour(inWindow);
 
   const phaseTitles = new Map((db.prepare('SELECT id, title FROM phases').all() as { id: string; title: string }[]).map((p) => [p.id, p.title]));
   // no from: the window starts at the first run in it (capped like every other metrics range)
   const anomalyFrom = filter.from ?? Math.max(inWindow.reduce((m, r) => Math.min(m, r.created_at), to), to - (MAX_RANGE_DAYS - 1) * 86_400_000);
 
-  let slip: Slip | null = null;
+  let slip: CombinedSlip | null = null;
   let queue: AgenticCost['decisionLatencyCost']['queue'] = null;
   let runway: UsageRunway | null = null;
   if (opts.live !== false) {
-    const row = (
+    // slip: the requested phase, else the board's active phase plus, on a workspace, each vertical's
+    const phaseRow = (sql: string, arg: string) =>
+      (db.prepare(sql).get(arg) as { id: string; title: string; project_id: string } | undefined) ?? null;
+    const ownRow =
       filter.phaseId !== undefined
-        ? db.prepare('SELECT id, title FROM phases WHERE id = ?').get(filter.phaseId)
-        : getActivePhase(db, opts.project)
-    ) as { id: string; title: string } | null | undefined;
-    const phase = row ? { id: row.id, title: row.title } : null;
-    const cards = phase
-      ? (db.prepare('SELECT id, title, lane, depends_on FROM tasks WHERE phase_id = ? ORDER BY position, id').all(phase.id) as {
-          id: string;
-          title: string;
-          lane: string;
-          depends_on: string | null;
-        }[]).map((c) => {
-          let deps: unknown;
-          try {
-            deps = JSON.parse(c.depends_on ?? '[]');
-          } catch {
-            deps = [];
-          }
-          return { ...c, depends_on: Array.isArray(deps) ? deps.filter((d): d is string => typeof d === 'string') : [] };
-        })
-      : [];
-    slip = slipDays(phase, cards, phase ? loadBlockers(db, { phaseId: phase.id }) : [], now);
+        ? phaseRow('SELECT id, title, project_id FROM phases WHERE id = ?', filter.phaseId)
+        : (getActivePhase(db, opts.project) as { id: string; title: string; project_id: string } | null);
+    const verticals = filter.phaseId !== undefined ? [] : listVerticals(db, opts.project);
+    const rows = [ownRow, ...verticals.map((v) => getActivePhase(db, v.id) as { id: string; title: string; project_id: string } | null)].filter(
+      (r): r is { id: string; title: string; project_id: string } => r !== null,
+    );
+    const phase = ownRow ? { id: ownRow.id, title: ownRow.title } : null;
+    slip = combineSlips(
+      rows.map((r) => ({ ...slipDays({ id: r.id, title: r.title }, phaseCards(db, r.id), loadBlockers(db, { phaseId: r.id }), now), project_id: r.project_id })),
+      verticals.length ? 'workspace+verticals' : 'board',
+    );
     const needTitles = new Map(
       (db
         .prepare('SELECT id, title FROM tasks WHERE id IN (SELECT value FROM json_each(?))')
@@ -950,8 +1082,8 @@ export function agenticCostMetrics(
     decisionLatencyCost: {
       label: '$ of idle agent time',
       humanWaitHours: waitHours,
-      needsYouHours: wait.needsYou.totalMs / HOUR,
-      blockedHours: wait.blocked.totalMs / HOUR,
+      needsYouHours: needsYouMs / HOUR,
+      blockedHours: blockedMs / HOUR,
       costPerAgentHour: rate === null ? null : round6(rate),
       idleCost: rate === null ? null : round6(waitHours * rate),
       slip,

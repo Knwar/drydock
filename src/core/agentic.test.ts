@@ -139,6 +139,34 @@ describe('agentic metrics (pure)', () => {
     ]);
   });
 
+  it('autonomy: a reopen (done → in_progress, no fail) is a human intervention, like in stops; review-fail rework is not', () => {
+    const r = agenticFromInput(
+      input([
+        // done, reopened by a human, done again
+        card('reopened', 'done', [
+          review('pass', MON + 5),
+          move('in_review', 'done', MON + 6),
+          move('done', 'in_progress', MON + 7),
+          move('in_progress', 'in_review', MON + 8),
+          move('in_review', 'done', MON + 9),
+        ]),
+        // a fail review and its rework: still autonomous
+        card('rework', 'done', [
+          review('fail', MON + 5),
+          move('in_review', 'in_progress', MON + 6),
+          move('in_progress', 'in_review', MON + 7),
+          review('pass', MON + 8),
+          move('in_review', 'done', MON + 9),
+        ]),
+      ]),
+      opts,
+    );
+    assert.deepEqual([r.autonomy.done, r.autonomy.autonomous], [2, 1]);
+    assert.deepEqual(r.autonomy.needsHuman.map((c) => c.id), ['reopened']);
+    // consistent with stops: the same card is the one human stop
+    assert.deepEqual([r.stops.human, r.stops.reopens], [1, 1]);
+  });
+
   it('autonomy.needsHuman: newest done first whatever the input order, ties by id, capped', () => {
     const name = (i: number) => `b${String(i).padStart(3, '0')}`;
     const many = Array.from({ length: NEEDS_HUMAN_CAP + 5 }, (_, i) => shipped(name(i), MON + 100 + i * 10, [ev('block', MON + 50 + i)]));
@@ -228,7 +256,7 @@ describe('agentic metrics (pure)', () => {
       cards: 6,
       over: 3,
       pctOver: 0.5,
-      median: 200, // nearest rank over [10, 50, 200, 201, 500, 1000]
+      median: 200.5, // true median of [10, 50, 200, 201, 500, 1000]: the mean of 200 and 201
       top: [
         { id: 'f', title: 'f', lines: 1000, doneAt: MON + 11 },
         { id: 'b', title: 'b', lines: 500, doneAt: MON + 11 },
