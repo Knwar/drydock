@@ -80,12 +80,13 @@ function wqRateSpark(values, { tall = false } = {}) {
 }
 
 // ── quality: "Is work right the first time?" ──
-// First-pass fell in each of the last 2 weeks: the last 3 COMPLETE weeks with reviews (the week
-// still running at the range's end is skipped, as are weeks without reviews), each rate lower.
-// → { weeks, falling } (falling null: fewer than 3 such weeks).
+// First-pass fell in each of the last 2 weeks: the last 3 COMPLETE weeks with reviews (a week cut
+// by the range's start or still running at its end is skipped, as are weeks without reviews), each
+// rate lower. → { weeks, falling } (falling null: fewer than 3 such weeks).
 function wqFalling(q) {
+  const start = mxDayKey(q.range.from, q.range.tz); // the range's first day
   const end = mxDayKey(q.range.to + 1, q.range.tz); // the first day after the range
-  const weeks = q.weekly.filter((w) => mxAddDays(w.start, 7) <= end && w.firstPassRate !== null).slice(-3);
+  const weeks = q.weekly.filter((w) => w.start >= start && mxAddDays(w.start, 7) <= end && w.firstPassRate !== null).slice(-3);
   if (weeks.length < 3) return { weeks, falling: null };
   const [a, b, c] = weeks.map((w) => w.firstPassRate);
   return { weeks, falling: c < b && b < a };
@@ -113,7 +114,7 @@ function wqQualityRender(el, d, ctx) {
     falling === null ? wqStatus('none', 'Too few reviewed weeks for a trend') : wqStatus(falling ? 'warn' : 'ok', falling ? 'First-pass fell 2 weeks running' : 'No sustained first-pass drop');
   trend.title =
     falling === null
-      ? `Needs 3 complete weeks with reviews (the current week is left out); ${judged.length ? `this range has ${judged.length}` : 'this range has none'}`
+      ? `Needs 3 complete weeks with reviews (weeks cut by the range’s start or end are left out); ${judged.length ? `this range has ${judged.length}` : 'this range has none'}`
       : `Complete weeks compared: ${judged.map((w) => `week of ${wqDay(w.start)} ${wqPct(w.firstPassRate)}`).join(' → ')}`;
   el.append(trend);
   if (ctx.size === 'S') return;
