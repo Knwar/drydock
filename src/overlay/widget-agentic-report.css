@@ -68,3 +68,12 @@
   cursor: help;
 }
 .ar-more { font-size: 11.5px; color: var(--dim); padding-top: 2px; }
+
+/* steering-pack L / XL: the sections in two columns once the pack is wide enough, so the pre-read fits
+   its height instead of scrolling (one column when narrow: the body scrolls under the bottom fade) */
+.ar-pack { container: ar-pack / inline-size; }
+.ar-grid { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+@container ar-pack (min-width: 560px) {
+  .ar-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 28px; align-items: start; }
+}
+.ar-gated-min { font-size: 11.5px; }

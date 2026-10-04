@@ -120,6 +120,8 @@ try {
     ['steer-L', 'steering-pack', 'L', { period: '2weeks' }],
     ['steer-XL', 'steering-pack', 'XL', { period: 'steering', steeringDate: steerDay }],
     ['steer-nodate', 'steering-pack', 'M', { period: 'steering' }],
+    ['steer-bad', 'steering-pack', 'M', { period: 'steering', steeringDate: '2026-02-30' }],
+    ['runway-M', 'usage-runway', 'M', {}],
   ];
   const layout = (ws) => ({
     layout: {
@@ -195,7 +197,7 @@ try {
   for (const [id] of WS) {
     const x = by(w, id);
     ok(!!x && x.exp === 'Experimental', `${id}: the head says "Experimental"`, x?.exp);
-    if (id === 'steer-nodate') continue;
+    if (id === 'steer-nodate' || id === 'steer-bad') continue;
     ok(!!x && x.state === null, `${id}: renders (no error / empty / stale state)`, x && { state: x.state, text: x.text.slice(0, 160) });
     ok(!!x && !BAD.test(x.text), `${id}: no NaN / undefined / null in its text`, x?.text.match(BAD)?.[0]);
   }
@@ -210,19 +212,65 @@ try {
     ok(r.coverage === cov && g.coverage === cov, `rate/gap ${s}: the coverage line ("${cov}")`, [r.coverage, g.coverage]);
     ok(/^\d[\d.,]* h$/.test(r.value) && r.chips === 1, `agent-hourly-rate ${s}: hours per dollar + its delta chip`, r);
     ok(/^\d[\d.,]*×$/.test(g.value) && g.chips === 1, `perception-gap ${s}: the median ratio + its delta chip`, g);
-    ok(/above 1× means the work took longer than estimated/.test(g.help), `perception-gap ${s}: the tooltip explains a ratio > 1`, g.help);
+    ok(/^Agent build time ÷ human estimate/.test(g.help) && /agent-hours/.test(g.help) && /above 1×, more/.test(g.help), `perception-gap ${s}: the tooltip explains the measure (agent build time, agent-hours) and a ratio > 1`, g.help);
+    const p = est.perception;
+    ok((!p.fallbacks || g.help.includes(`${p.fallbacks} card`)) && (!p.tooShort || g.help.includes(`${p.tooShort} card`)) && p.measure === 'build_time', `perception-gap ${s}: the tooltip counts the fallback (${p.fallbacks}) and too-short (${p.tooShort}) cards`, g.help);
+    ok(/agent build time ÷ human estimate/.test(g.text) && !/cycle|measured ÷/.test(g.text), `perception-gap ${s}: labelled "agent build time ÷ human estimate"`, g.text.slice(0, 120));
     ok(r.detail === (s !== 'S') && g.detail === (s !== 'S'), `rate/gap ${s}: ${s === 'S' ? 'headline only' : 'the detail tier'}`);
   }
-  const names = est.hourlyRate.byAgent.map((a) => a.agent ?? 'Unassigned');
+  const names = est.hourlyRate.byAgent.map((a) => a.agent ?? 'No agent');
   ok(names.length > 0 && JSON.stringify(by(w, 'rate-L').agents) === JSON.stringify(names) && by(w, 'rate-M').agents.length === 0, 'agent-hourly-rate L: the per-agent breakdown (byAgent), not at M', { ui: by(w, 'rate-L').agents, names });
   ok(by(w, 'gap-L').list === est.perception.topMisses.length && by(w, 'gap-L').list > 0 && by(w, 'gap-M').list === 0, 'perception-gap L: the top (≤ 5) misses, not at M', by(w, 'gap-L').list);
+  // units and bases spelled out; one money format per widget
+  const rateInfo = await page.evaluate(() => {
+    const f = (id) => document.querySelector(`.dw-widget[data-widget-id="${id}"] .dw-body`);
+    const perHour = [...f('rate-M').querySelectorAll('.ag-fig')].find((x) => /per estimated human hour/.test(x.textContent));
+    return {
+      chips: ['rate-S', 'gap-S'].map((id) => f(id).querySelector('.dw-delta')?.textContent ?? ''),
+      flat: ['rate-S', 'gap-S'].map((id) => f(id).querySelector('.dw-delta')?.classList.contains('dw-d-flat')),
+      perHour: perHour?.title ?? '',
+      heads: [...f('rate-L').querySelectorAll('.ar-agents th')].map((th) => th.title),
+      // the figures' money (not the "per $1" in the label)
+      money: ['rate-M', 'rate-L'].map((id) => (f(id).innerText.replace(/per \$1\b/g, '').match(/\$[\d,]+(?:\.\d+)?/g) ?? [])),
+    };
+  });
+  ok((rateInfo.flat[0] || rateInfo.chips[0].includes('h/$')) && (rateInfo.flat[1] || rateInfo.chips[1].includes('×')), 'chips: h/$ for the hourly rate, × for the ratio', rateInfo.chips);
+  ok(/AI spend on the estimated done cards ÷ their estimated human hours/.test(rateInfo.perHour), 'agent-hourly-rate: "$ per human-equivalent hour" spells out its basis', rateInfo.perHour);
+  ok(/share of its spend/.test(rateInfo.heads[2]) && /runs this agent ran/.test(rateInfo.heads[3]), 'agent-hourly-rate L: the table heads state the byAgent basis (hours by spend share, spend per run agent)', rateInfo.heads);
+  const allMoney = rateInfo.money.flat();
+  ok(allMoney.length > 0 && (allMoney.every((x) => x.includes('.')) || allMoney.every((x) => !x.includes('.'))) && rateInfo.money[0][0] === rateInfo.money[1][0], 'agent-hourly-rate: one money format, the same at M and L', rateInfo.money);
+  const units = await page.evaluate(() => ({
+    tiny: arRatio(0.004),
+    zero: arRatio(0),
+    one: arRatio(1),
+    hrs: arHours(0.001),
+    noAgent: (() => {
+      const el = document.createElement('div');
+      arRateRender(
+        el,
+        { e: { done: 4, coverage: { estimated: 4, pct: 1 }, hourlyRate: { cards: 1, noSpend: 0, estimateHours: 2, cost: 4, hoursPerDollar: 0.5, dollarsPerHour: 2, byAgent: [{ agent: null, cards: 1, estimateHours: 2, cost: 4, hoursPerDollar: 0.5 }] } } },
+        { size: 'L', range: { id: '4w' } },
+      );
+      const td = el.querySelector('.ar-agents tbody td');
+      return { text: td?.textContent, title: td?.title };
+    })(),
+  }));
+  ok(units.tiny === '<0.01×' && units.zero === '<0.01×' && units.one === '1×' && units.hrs === '<0.01 h', 'perception-gap: a tiny ratio shows "<0.01×", never "0×"', units);
+  ok(units.noAgent.text === 'No agent' && /no credited agent/.test(units.noAgent.title), 'agent-hourly-rate L: a null agent is "No agent" (runs with no credited agent)', units.noAgent);
 
   // drill: the top misses
   await page.click('.dw-widget[data-widget-id="gap-L"] .ag-k-row .ag-link');
   await page.waitForFunction(() => document.querySelector('.mx-drill .mx-kicker')?.textContent === 'ESTIMATE MISSES', null, { timeout: 10000 });
   const drillRows = await page.$eval('.mx-drill', (p) => p.querySelectorAll('.mx-drill-row').length);
+  const gd = await page.$eval('.mx-drill', (p) => ({
+    sub: p.querySelector('.mx-drill-sub')?.textContent ?? '',
+    sort: p.querySelector('.mx-drill-tools select')?.selectedOptions[0]?.textContent ?? '',
+    titles: [...p.querySelectorAll('.mx-drill-row .mx-drill-title')].map((e) => e.textContent),
+  }));
   if (OUT) await page.screenshot({ path: `${OUT}/drill-misses.png` });
   ok(drillRows === est.perception.topMisses.length, 'perception-gap drill: opens the top misses', drillRows);
+  ok(/^Last 4 weeks · /.test(gd.sub), 'perception-gap drill: the subtitle names the period', gd.sub);
+  ok(gd.sort === 'Biggest miss first' && JSON.stringify(gd.titles) === JSON.stringify(est.perception.topMisses.map((c) => c.title)), 'perception-gap drill: in the widget’s order (biggest miss first)', gd);
   await page.keyboard.press('Escape');
 
   // steering pack: counts match /report over each period
@@ -248,6 +296,32 @@ try {
   ok(!/Payment provider/.test(by(w, 'steer-M').text), 'steering-pack M: no decision list (headline + counts)');
   const nodate = by(w, 'steer-nodate');
   ok(nodate.state === 'empty' && /Set the last steering date/.test(nodate.text), 'steering-pack "since last steering date" with no date: asks for it', nodate);
+  const bad = by(w, 'steer-bad');
+  ok(bad.state === 'empty' && /2026-02-30\) isn’t a real date/.test(bad.text), 'steering-pack: an impossible date (2026-02-30) "isn’t a real date"', bad.text);
+  for (const id of ['steer-M', 'steer-L', 'steer-XL']) {
+    const x = by(w, id);
+    const shipped = Number(x.counts[3]);
+    ok(x.text.includes(shipped === 1 ? '1\ncard shipped' : `${shipped}\ncards shipped`), `${id}: "card(s) shipped" pluralised (${shipped})`, x.text.match(/\d+\ncards? shipped/)?.[0]);
+  }
+  ok(/Decided by you/.test(xl.text) && !/Decided by user/.test(xl.text), 'steering-pack XL: the human decider is "you", never "user"', xl.text.match(/Decided by \w+/g));
+  // L and XL fit their rows at 1440 (two columns); a narrow (390) body scrolls under the bottom fade
+  const fit = await page.evaluate(() => ['steer-L', 'steer-XL'].map((id) => {
+    const b = document.querySelector(`.dw-widget[data-widget-id="${id}"] .dw-body`);
+    return { id, over: b.scrollHeight - b.clientHeight, cols: getComputedStyle(b.querySelector('.ar-grid')).gridTemplateColumns.split(' ').length };
+  }));
+  ok(fit.every((f) => f.over <= 1 && f.cols === 2), 'steering-pack L / XL at 1440: two columns, no scrolling', fit);
+
+  // narrow: one column, and a body that scrolls shows the fade cue
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.waitForTimeout(500);
+  const narrow = await page.evaluate(() => ['steer-L', 'steer-XL'].map((id) => {
+    const b = document.querySelector(`.dw-widget[data-widget-id="${id}"] .dw-body`);
+    return { id, over: b.scrollHeight - b.clientHeight, fade: b.classList.contains('dw-clipped'), mask: getComputedStyle(b).maskImage || getComputedStyle(b).webkitMaskImage };
+  }));
+  if (OUT) await page.screenshot({ path: `${OUT}/steer-390.png` });
+  ok(narrow.every((n) => n.over <= 1 || (n.fade && /gradient/.test(n.mask))), 'steering-pack at 390: a scrolling body shows the bottom fade', narrow);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.waitForTimeout(300);
 
   // Copy as Markdown: the Clipboard API, then the execCommand fallback without it
   await page.click('.dw-widget[data-widget-id="steer-M"] .ar-actions button');
@@ -285,7 +359,64 @@ try {
   for (const id of ['rate-M', 'gap-M']) {
     const x = by(m, id);
     ok(x.gated === 'Add estimates to cards to see this' && /^Based on 0 of \d+ done cards with estimates \(0%\)$/.test(x.coverage) && x.value === null && !x.detail, `${id} (0% coverage): grey "Add estimates to cards to see this" + the coverage line`, x);
+    ok(/Shown once 30% or more of the done cards have an estimate/.test(x.text), `${id} (gated): states the 30% minimum inline`, x.text);
   }
+
+  // ---- Home filtered by work type + tag: the pack's report link carries the work type; the tag is named as not applied ----
+  await page.goto(`${base}/?project=${seed.ws}&view=home&range=4w&workType=feature&tag=api`);
+  await settle(WS.length);
+  const fw = await widgets();
+  const href = new URLSearchParams(by(fw, 'steer-M').href.split('?')[1]);
+  ok(href.get('workType') === 'feature', '"Open full report" carries the work type', by(fw, 'steer-M').href);
+  ok(/^Tag filter not applied/.test(by(fw, 'steer-L').text.match(/Tag filter not applied[^\n]*/)?.[0] ?? ''), 'steering-pack: says the Tag filter is not applied', by(fw, 'steer-L').text.slice(0, 300));
+  const rpw = await context.newPage();
+  const repReq = rpw.waitForRequest((q) => q.url().includes('/report?'), { timeout: 10000 });
+  await rpw.goto(`${base}${by(fw, 'steer-M').href}`);
+  ok(new URL((await repReq).url()).searchParams.get('workType') === 'feature', 'report.html: reads /report with the work type it was opened with');
+  await rpw.close();
+
+  // ---- the editor: the config drawer shows only the filters a widget uses; the library clears the selection ----
+  await page.goto(`${base}/?project=${seed.ws}&view=home&range=4w`);
+  await settle(WS.length);
+  await page.click('#home-edit');
+  await page.waitForFunction(() => deState.active, null, { timeout: 5000 });
+  const drawer = async (id) => {
+    await page.evaluate((x) => decOpen(x), id);
+    await page.waitForTimeout(200);
+    return page.$$eval('#dec-drawer [data-dec-field^="v-"]', (els) => els.map((e) => e.dataset.decField).filter((k) => !/^v-(from|to)$/.test(k)));
+  };
+  const dRunway = await drawer('runway-M');
+  const dSteer = await drawer('steer-M');
+  const dRate = await drawer('rate-M');
+  ok(JSON.stringify(dRunway) === JSON.stringify(['v-phase']), 'drawer: usage-runway offers only the Phase override (filters: [phase])', dRunway);
+  ok(JSON.stringify(dSteer) === JSON.stringify(['v-workType']), 'drawer: steering-pack offers only the Type override (filters: [workType])', dSteer);
+  ok(['v-phase', 'v-range', 'v-agent', 'v-tag', 'v-workType', 'v-compare'].every((k) => dRate.includes(k)), 'drawer: a widget declaring no filters keeps every field (the default)', dRate);
+  await page.evaluate(() => decClose({ refocus: false }));
+  // library: the selected widget's slot is already full → warned; after an add the selection clears
+  const lib = await page.evaluate(async () => {
+    deSelect({ kind: 'widget', id: 'rate-S' });
+    deLibraryOpen();
+    await new Promise((r) => setTimeout(r, 100));
+    const sub = document.querySelector('.de-lib-sub');
+    const before = { text: sub.textContent, warn: sub.classList.contains('de-lib-warn') };
+    document.querySelector('.de-lib-type[data-type="cost-anomaly"]').click();
+    await new Promise((r) => setTimeout(r, 50));
+    document.querySelector('.de-lib-form button[type=submit]').click();
+    await new Promise((r) => setTimeout(r, 200));
+    const slot = loFind(deState.draft, 's-rate-S').node.widgets.length;
+    const selected = deState.selected;
+    deLibraryOpen();
+    await new Promise((r) => setTimeout(r, 100));
+    const next = document.querySelector('.de-lib-sub').textContent;
+    const icons = [...document.querySelectorAll('.de-lib-type')].filter((b) => DE_LIB_TYPES[b.dataset.type]?.group === 'Agentic (experimental)').map((b) => ({ type: b.dataset.type, parts: b.querySelector('.de-lib-ic').children.length, generic: /de-lib-ic-generic/.test(b.querySelector('.de-lib-ic').className) }));
+    document.querySelector('.de-lib-close').click();
+    return { before, slot, selected, next, toast: document.querySelector('#ds-toast')?.textContent ?? '', icons };
+  });
+  if (OUT) await page.screenshot({ path: `${OUT}/editor-library.png` });
+  ok(lib.before.warn && /fits about 1/.test(lib.before.text), 'library: adding to a slot that already fills its row is warned about', lib.before);
+  ok(lib.slot === 2 && /now holds 2 widgets/.test(lib.toast), 'library: the over-full slot is named after the add (toast)', lib);
+  ok(lib.selected === null && /new row/.test(lib.next), 'library: after "Add widget" the selection clears; the next add makes a new row', lib);
+  ok(lib.icons.length === 12 && lib.icons.every((i) => i.parts > 0 && !i.generic), 'library: every agentic widget has its own schematic icon', lib.icons);
 
   ok(errors.length === 0, 'no page errors', errors);
   console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');

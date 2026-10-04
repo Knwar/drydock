@@ -23,11 +23,12 @@
   const days = RANGES.includes(Number(params.get('days'))) ? Number(params.get('days')) : 7;
   const tz = params.get('tz') || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const from = /^\d{4}-\d{2}-\d{2}$/.test(params.get('from') ?? '') ? params.get('from') : null;
+  const workType = params.get('workType') || null; // a work type filter (e.g. from Home's steering pack)
 
   const dayKey = (ts) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(ts);
   const addDays = (day, n) => new Date(Date.parse(`${day}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
   /** The report query: the last `days` days in tz (from the start of the first one to now), or since `from`. */
-  const query = () => new URLSearchParams({ project, from: from ?? addDays(dayKey(Date.now()), -(days - 1)), tz }).toString();
+  const query = () => new URLSearchParams({ project, from: from ?? addDays(dayKey(Date.now()), -(days - 1)), tz, ...(workType ? { workType } : {}) }).toString();
 
   // ---------- formatters ----------
   function span(ms) {

@@ -67,6 +67,7 @@ describe('reworkCost', () => {
         cost: 9,
         tokens: 9000,
         runs: 4,
+        failedRounds: 3,
         pct: Math.round((9 / 22) * 1000) / 1000,
         totalCost: 22,
         top: [
@@ -81,7 +82,8 @@ describe('reworkCost', () => {
     const reviews = new Map(['a', 'b', 'c', 'd', 'e', 'f'].map((id) => [id, [rev(id, 1, 'fail', T0 + 10)]]));
     const r = reworkCost(['a', 'b', 'c', 'd', 'e', 'f'].map((id, i) => run(id, T0, i + 1)), reviews);
     assert.deepEqual(r.top.map((c) => c.id), ['f', 'e', 'd', 'c', 'b']);
-    assert.deepEqual(reworkCost([], new Map()), { cost: 0, tokens: 0, runs: 0, pct: null, totalCost: 0, top: [] });
+    assert.equal(r.failedRounds, 6, 'every card\'s failed rounds, not only the top 5');
+    assert.deepEqual(reworkCost([], new Map()), { cost: 0, tokens: 0, runs: 0, failedRounds: 0, pct: null, totalCost: 0, top: [] });
   });
 });
 
@@ -480,7 +482,7 @@ describe('agenticCostMetrics (DB)', () => {
     const p = getOrCreateProject(db, dir);
     const now = Date.now();
     const r = agenticCostMetrics(db, { projectIds: [p.id] }, { tz: 'UTC', now, project: p.id });
-    assert.deepEqual(r.reworkCost, { cost: 0, tokens: 0, runs: 0, pct: null, totalCost: 0, top: [] });
+    assert.deepEqual(r.reworkCost, { cost: 0, tokens: 0, runs: 0, failedRounds: 0, pct: null, totalCost: 0, top: [] });
     assert.deepEqual(
       [r.decisionLatencyCost.humanWaitHours, r.decisionLatencyCost.costPerAgentHour, r.decisionLatencyCost.idleCost, r.decisionLatencyCost.queue],
       [0, null, null, []],

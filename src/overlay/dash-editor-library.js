@@ -5,7 +5,10 @@
 //
 //   deLibraryOpen(target?)   the right-side "Add widget" sheet. target: a slot id to add into;
 //                            otherwise the selected widget's / slot's slot; otherwise a new row
-//                            (height 4, one 12-span slot) at the end of the first section.
+//                            (height 4, one 12-span slot) at the end of the first section. After an
+//                            add the selection is cleared (the next add makes its own row, never
+//                            stacking into the same slot); a slot that would hold more widgets than
+//                            its row fits (deLibSlotFit) is warned about, before and after.
 //   Menus: 'widget' → Duplicate, Remove; 'slot' → Add widget here…
 
 // One line + group + schematic icon per type; unknown types land in "Other" with a generic line.
@@ -44,7 +47,7 @@ const DE_LIB_TYPES = {
   'usage-runway': { group: 'Agentic (experimental)', desc: 'When the 5-hour and weekly usage limits run out, against the phase forecast.' },
   'steering-pack': { group: 'Agentic (experimental)', desc: 'A one-page steering pre-read: RAG status, decisions, top risks and moved milestones.' },
   'agent-hourly-rate': { group: 'Agentic (experimental)', desc: 'Human-equivalent hours delivered per dollar, from card estimates.' },
-  'perception-gap': { group: 'Agentic (experimental)', desc: 'Measured time against the human estimate: are cards faster or slower than expected.' },
+  'perception-gap': { group: 'Agentic (experimental)', desc: 'Agent build time against the human estimate: are cards faster or slower than expected.' },
   'active-agents': { group: 'People', desc: 'Who is working, reviewing or waiting on you.' },
   'send-to-agent': { group: 'Actions', desc: 'Send a prompt to an agent session from Home.' },
   tabs: { group: 'Layout', name: 'Tabs', desc: 'A tab group: each tab holds its own rows of widgets.' },
@@ -103,6 +106,8 @@ function deLibIcon(type) {
     'cycle-breakdown': 3, wip: 3, 'review-queue': 3, 'throughput-trend': 5, escalation: 1,
     quality: 1, 'speed-stability': 4, 'top-risks': 3,
     'ai-spend': 3, 'investment-mix': 1, 'budget-burn': 4,
+    'autonomy-index': 2, 'agent-stops': 4, 'batch-size': 4, 'spec-adherence': 3, 'governance-posture': 1, 'rework-cost': 2,
+    'decision-latency-cost': 2, 'cost-anomaly': 5, 'usage-runway': 2, 'steering-pack': 4, 'agent-hourly-rate': 2, 'perception-gap': 2,
   };
   for (let i = 0; i < (parts[type] ?? 1); i++) ic.append(node('span'));
   return ic;
@@ -123,13 +128,30 @@ function deLibPlacement(layout, target) {
   return { sectionId: sec.id };
 }
 
+// Stacked widgets share their row's height: a widget needs about this many row units to be readable.
+const DE_LIB_UNITS_PER_WIDGET = 3;
+// → { count, fit, height }: the widgets a slot holds, how many its row's height fits (at least 1)
+function deLibSlotFit(layout, slotId) {
+  const hit = loFind(layout, slotId);
+  if (hit?.kind !== 'slot') return null;
+  const height = hit.parent?.height ?? 4;
+  return { count: hit.node.widgets?.length ?? 0, fit: Math.max(1, Math.floor(height / DE_LIB_UNITS_PER_WIDGET)), height };
+}
+// A warning when adding one more widget to the slot overfills it ('' when it fits).
+function deLibOverfullText(layout, slotId, adding = 1) {
+  const f = deLibSlotFit(layout, slotId);
+  if (!f || f.count + adding <= f.fit) return '';
+  const n = f.count + adding;
+  return `That slot would hold ${n} widgets, but its row (height ${f.height}) fits about ${f.fit}: they’d be cramped. Make the row taller, or pick an empty slot.`;
+}
+
 function deLibPlacementText(layout, place) {
   if (place.error) return place.error;
   if (place.sectionId) {
     const title = layout.sections[0].title;
     return `Adds a new row at the end of ${title ? `“${title}”` : 'the first section'}.`;
   }
-  return 'Adds to the selected slot.';
+  return `Adds to the selected slot.${place.slotId && deLibOverfullText(layout, place.slotId) ? ` ${deLibOverfullText(layout, place.slotId)}` : ''}`;
 }
 
 // a widget object with fresh ids against this layout
@@ -196,7 +218,9 @@ function deLibraryOpen(target) {
   const titleWrap = node('div', 'de-lib-head-text');
   const title = node('h2', 'sv-title de-lib-title', 'Add widget');
   title.id = `de-lib-title-${uid}`;
-  const sub = node('p', 'sv-sub de-lib-sub', deLibPlacementText(deState.draft, deLibPlacement(deState.draft, target)));
+  const place0 = deLibPlacement(deState.draft, target);
+  const sub = node('p', 'sv-sub de-lib-sub', deLibPlacementText(deState.draft, place0));
+  if (place0.slotId && deLibOverfullText(deState.draft, place0.slotId)) sub.classList.add('de-lib-warn');
   sub.id = `de-lib-sub-${uid}`;
   titleWrap.append(title, sub);
   const x = node('button', 'de-lib-close', '✕');
@@ -364,7 +388,15 @@ function deLibraryOpen(target) {
         return;
       }
       close();
-      deSelect({ kind: 'widget', id: res.id });
+      // clear the selection: the next add goes to a new row, not stacked into this widget's slot
+      deSelect(null);
+      const slot = loFind(deState.draft, res.id)?.parent;
+      const crowded = slot && deLibOverfullText(deState.draft, slot.id, 0);
+      if (crowded) {
+        const msg = `Added ${res.title}. ${crowded.replace('would hold', 'now holds').replace('they’d be', 'they’re')}`;
+        if (typeof dsToast === 'function') dsToast(msg); // visible (dash-editor-structure.js); the live region announces it
+        deAnnounce(msg);
+      }
       const el = deNodeFor('widget', res.id);
       el?.querySelector(':scope > .de-handle')?.focus({ preventScroll: true });
       el?.scrollIntoView({ block: 'nearest', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });

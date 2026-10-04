@@ -190,6 +190,17 @@ try {
     run(restarted, 'rs1', 1, now - 60 * D);
     for (const k of [2, 1]) run(restarted, 'rs1', 1, now - k * D);
     run(restarted, 'rs1', 1, now - H);
+    // two more open blockers, on in-flight cards of the workspace's and the web vertical's active phases: a queue
+    // of 3+ (M's "+N more") and blocked time on 2+ parallel phases (slip's max headline + its total)
+    for (const board of [seed.ws, seed.web]) {
+      const c = db
+        .prepare(`SELECT t.id FROM tasks t JOIN phases p ON p.id = t.phase_id WHERE t.project_id = ? AND p.status = 'active' AND t.lane IN ('queued', 'in_progress', 'in_review') AND t.blocked_at IS NULL LIMIT 1`)
+        .get(board);
+      if (!c) continue;
+      const at = now - (board === seed.ws ? 4 : 6) * H;
+      db.prepare('UPDATE tasks SET blocked_at = ?, blocked_reason = ? WHERE id = ?').run(at, 'Need a decision', c.id);
+      db.prepare(`INSERT INTO task_events (project_id, task_id, type, payload, agent, created_at) VALUES (?, ?, 'block', ?, 'builder', ?)`).run(board, c.id, JSON.stringify({ reason: 'Need a decision' }), at);
+    }
   })();
   db.close();
 
@@ -233,8 +244,25 @@ try {
   const bounds = await page.evaluate(() => [0.254, 0.255, 0.26, 0.25, 0.1, 0.096, 0.094, 0].map((p) => acReworkKind(p)[0]));
   ok(JSON.stringify(bounds) === JSON.stringify(['warn', 'bad', 'bad', 'warn', 'warn', 'warn', 'ok', 'ok']), 'rework-cost: 25.4% (shows 25%) amber, 25.5% red, 9.6% (shows 10%) amber, 9.4% green', bounds);
 
+  // rework-cost: the label counts the failed rounds; one money format whatever the size
+  ok(by(w4, 'rework-cost', 'M').text.includes(`across ${R.reworkCost.failedRounds} failed round${R.reworkCost.failedRounds === 1 ? '' : 's'}`) && R.reworkCost.failedRounds > 0, 'rework-cost M: "N runs across M failed rounds"', { text: by(w4, 'rework-cost', 'M').text.slice(0, 80), api: R.reworkCost.failedRounds });
+  ok(by(w4, 'rework-cost', 'S').money[0] === by(w4, 'rework-cost', 'L').money[0] && by(w4, 'rework-cost', 'M').money[0] === by(w4, 'rework-cost', 'L').money[0], 'rework-cost: the headline reads the same at S, M and L (one format per widget)', ['S', 'M', 'L'].map((s) => by(w4, 'rework-cost', s).money[0]));
+
   // decision-latency-cost: $ of idle agent time, slip (approximation named), the queue oldest first
   const dl = R.decisionLatencyCost;
+  const lat = await page.$$eval('.dw-widget[data-widget-type="decision-latency-cost"] .ac-fig:first-child', (els) => els.map((f) => ({ title: f.title, lines: [...f.querySelectorAll('.ac-label')].map((l) => l.textContent), cut: [...f.querySelectorAll('.ac-label')].some((l) => getComputedStyle(l).textOverflow === 'ellipsis' && getComputedStyle(l).whiteSpace === 'nowrap') })));
+  ok(lat.every((f) => /median, over the agents that ran in this period, of each agent’s AI spend ÷ its active agent-hours/.test(f.title)), 'decision-latency-cost: the $/agent-hour basis is spelled out in the tooltip', lat.map((f) => f.title.slice(0, 80)));
+  ok(lat[0].lines.length === 1 && lat[1].lines.length === 2 && /\/agent-hour/.test(lat[1].lines[1]) && lat.every((f) => !f.cut), 'decision-latency-cost: S one caption line; M’s "$/agent-hour" line wraps, never cut', lat);
+  const slipFig = await page.$eval('.dw-widget[data-widget-id="decision-latency-cost-M"] .ac-fig:nth-child(2)', (f) => ({ title: f.title, text: f.innerText }));
+  ok(dl.slip.basis !== 'in_flight' || !/critical path/.test(slipFig.title + slipFig.text), 'decision-latency-cost: no "critical path" wording when the slip is on in-flight cards', slipFig);
+  const multi = dl.slip.scope === 'workspace+verticals' && dl.slip.phases.length > 1;
+  ok(multi && dl.queue.length > 2, 'seed: slip over 2+ parallel phases and a queue of 3+', { scope: dl.slip.scope, phases: dl.slip.phases.length, queue: dl.queue.length });
+  ok(!multi || slipFig.text.includes(`blocked across ${dl.slip.phases.length} phases`), 'decision-latency-cost (workspace + verticals): the total across phases is a secondary figure', { slipFig, scope: dl.slip.scope, phases: dl.slip.phases.length });
+  const latEmpty = await page.evaluate(() => [
+    acLatencyRender(document.createElement('div'), { r: { decisionLatencyCost: { humanWaitHours: 0, queue: [], slip: null, idleCost: null, costPerAgentHour: null } } }, { size: 'M', filters: '' })?.empty,
+    acLatencyRender(document.createElement('div'), { r: { decisionLatencyCost: { humanWaitHours: 0, queue: [], slip: null, idleCost: null, costPerAgentHour: null } } }, { size: 'M', filters: 'from=1' })?.empty,
+  ]);
+  ok(/^Nothing waited on you yet/.test(latEmpty[0]) && /^Nothing waited on you in this period/.test(latEmpty[1]), 'decision-latency-cost (nothing waited): an empty state, not dashes', latEmpty);
   ok(/of idle agent time waiting on you/.test(by(w4, 'decision-latency-cost', 'M').text), 'decision-latency-cost: "$ of idle agent time waiting on you"');
   ok(by(w4, 'decision-latency-cost', 'M').approx === !!dl.slip?.approximation, 'decision-latency-cost: labelled an approximation exactly when the API says so', { approx: by(w4, 'decision-latency-cost', 'M').approx, api: dl.slip?.approximation });
   ok(by(w4, 'decision-latency-cost', 'S').list === 0 && by(w4, 'decision-latency-cost', 'M').list === Math.min(2, dl.queue.length) && by(w4, 'decision-latency-cost', 'L').list === Math.min(5, dl.queue.length), 'decision-latency-cost: the waiting queue at M and up, not S', dl.queue.length);
@@ -244,6 +272,8 @@ try {
   ok(dl.queue.length >= 2 && dl.queue.every((q, i) => i === 0 || dl.queue[i - 1].since <= q.since), 'seed: the queue has 2+ items, oldest first', dl.queue.map((q) => q.since));
   ok(JSON.stringify(qRows) === JSON.stringify(wantRows), 'decision-latency-cost L: every queue row oldest first', { qRows, wantRows });
   ok(JSON.stringify(by(w4, 'decision-latency-cost', 'M').rows) === JSON.stringify(wantRows.slice(0, 2)), 'decision-latency-cost M: the two oldest');
+  const moreM = await page.$eval('.dw-widget[data-widget-id="decision-latency-cost-M"] .ac-detail-head', (h) => h.querySelector('.ac-more')?.textContent ?? null);
+  ok(dl.queue.length > 2 ? moreM === `+${dl.queue.length - 2} more` : moreM === null, 'decision-latency-cost M: "+N more" in the queue head', { moreM, n: dl.queue.length });
   // a needs-you row with no card opens the Needs-you drill
   const idx = dl.queue.findIndex((q) => !q.task_id);
   ok(idx >= 0 && idx < 5, 'seed: a waiting session with no card is in the L queue', idx);
@@ -264,7 +294,25 @@ try {
   ok(by(w4, 'cost-anomaly', 'M').spark && by(w4, 'cost-anomaly', 'M').flags === flagDates.size, 'cost-anomaly M: daily sparkline with one dot per flagged day', { flags: by(w4, 'cost-anomaly', 'M').flags, days: flagDates.size });
   const am = by(w4, 'cost-anomaly', 'M');
   const newest = fl[fl.length - 1];
-  ok(am.flagRows.length === Math.min(3, fl.length) && am.flagRows[0].includes(newest.title ?? 'No phase') && /^[A-Z][a-z]{2} \d{1,2} · .+ · \$[\d,.]+$/.test(am.flagRows[0]), 'cost-anomaly M: a visible list of the newest (≤ 3) flagged days, "Oct 3 · Checkout · $41"', am.flagRows);
+  ok(am.flagRows.length === Math.min(3, fl.length) && am.flagRows[0].endsWith(`top ${newest.title ?? 'No phase'}`) && /^[A-Z][a-z]{2} \d{1,2} · \$[\d,.]+ · top .+$/.test(am.flagRows[0]), 'cost-anomaly M: a visible list of the newest (≤ 3) flagged days with the board total and the top phase, "Oct 3 · $41 · top Checkout"', am.flagRows);
+  ok(R.costAnomaly.basis === 'board_total' && Array.isArray(R.costAnomaly.total), 'seed: the anomaly is judged on the board total', R.costAnomaly.basis);
+  // the dots sit ON the total line (the line is the board's daily total, the flags' basis)
+  const onLine = await page.$eval('.dw-widget[data-widget-id="cost-anomaly-M"] .ac-spark-svg', (svg) => {
+    const pts = svg.querySelector('.ac-spark-line').getAttribute('points').split(' ');
+    return [...svg.querySelectorAll('.ac-spark-flag')].every((d) => pts.includes(`${d.getAttribute('x1')},${d.getAttribute('y1')}`));
+  });
+  const inRange = R.costAnomaly.total.filter((x) => x.date >= R.costAnomaly.range.from);
+  const linePts = await page.$eval('.dw-widget[data-widget-id="cost-anomaly-M"] .ac-spark-line', (l) => l.getAttribute('points').split(' ').length);
+  ok(onLine && linePts === inRange.length, 'cost-anomaly M: the line is the board’s daily total and every dot sits on it', { onLine, linePts, days: inRange.length });
+  const topCell = await page.$eval('.dw-widget[data-widget-id="cost-anomaly-L"] .ac-table tbody tr td.ac-phase', (td) => td.textContent).catch(() => '');
+  ok(topCell.startsWith(`${newest.title ?? 'No phase'} · $`), 'cost-anomaly L: the table names each day’s top phase (and its amount)', topCell);
+  const aKind = fl.length > 5 ? 'bad' : fl.length ? 'warn' : 'ok';
+  ok(by(w4, 'cost-anomaly', 'M').status[0].kind === aKind, `cost-anomaly: ${fl.length} flagged days → ${aKind} (red over 5, amber 1–5)`, by(w4, 'cost-anomaly', 'M').status[0]);
+  const kinds = await page.evaluate(() => [0, 1, 5, 6].map((k) => acAnomalyKind(k)[0]));
+  ok(JSON.stringify(kinds) === JSON.stringify(['ok', 'warn', 'warn', 'bad']), 'cost-anomaly: 0 green, 1–5 amber, 6+ red', kinds);
+  const floor = `max($${R.costAnomaly.minExcess}, ${Math.round(R.costAnomaly.minExcessPct * 100)}% of the mean)`;
+  ok(by(w4, 'cost-anomaly', 'M').status[0].title.includes(floor) && /board’s total spend/.test(by(w4, 'cost-anomaly', 'M').status[0].title), `cost-anomaly: the tooltip states the floor rule ("${floor}") and the board-total basis`, by(w4, 'cost-anomaly', 'M').status[0].title);
+  ok(!/phase’s/.test(by(w4, 'cost-anomaly', 'M').text) && /board total over its/.test(by(w4, 'cost-anomaly', 'M').text), 'cost-anomaly M: the caption says board total (never "the phase’s mean")', by(w4, 'cost-anomaly', 'M').text);
   ok(fl.length <= 3 || am.notes.includes(`+${fl.length - 3} more`), 'cost-anomaly M: "+N more" past 3', am.notes);
   ok(by(w4, 'cost-anomaly', 'L').table === Math.min(6, fl.length), 'cost-anomaly L: the flagged days with phase, spend, mean and σ', by(w4, 'cost-anomaly', 'L').table);
   const rule = `trailing ${R.costAnomaly.trailingDays}-day mean + ${R.costAnomaly.sigmas}σ`;
@@ -284,6 +332,15 @@ try {
   await page.waitForTimeout(400);
   await shot('375');
   ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), '375px: no horizontal page scroll');
+  // a narrow M: the "+N more" stays in view (it sits in the queue head, above the rows the body may cut)
+  if (dl.queue.length > 2) {
+    const seen = await page.$eval('.dw-widget[data-widget-id="decision-latency-cost-M"]', (f) => {
+      const b = f.querySelector('.dw-body').getBoundingClientRect();
+      const m = f.querySelector('.ac-detail-head .ac-more')?.getBoundingClientRect();
+      return !!m && m.bottom <= b.bottom && m.top >= b.top;
+    });
+    ok(seen, '375px: decision-latency-cost M shows its "+N more" without scrolling');
+  }
   await page.setViewportSize({ width: 1440, height: 1000 });
 
   // ---- the young board (2 days of spend): "Needs ≥ 5 days of history"; a board with no runs: empty ----
@@ -328,6 +385,15 @@ try {
   ok(rw.u?.weeklyBeforeP85 === null && rw.u.forecast?.status !== 'ok', 'runway (no forecast): weeklyBeforeP85 null', rw.u && { b: rw.u.weeklyBeforeP85, f: rw.u.forecast });
   ok(SIZES.every((s) => by(rw.w, 'usage-runway', s).status[0]?.kind === 'none' && by(rw.w, 'usage-runway', s).status[0].text.endsWith('Weekly vs p85: unknown')), 'usage-runway (no forecast): grey "Weekly vs p85: unknown"', rw.w.map((w) => w.status));
   ok(by(rw.w, 'usage-runway', 'M').notes.some((t) => /^No phase forecast: /.test(t)), 'usage-runway (no forecast): says why', by(rw.w, 'usage-runway', 'M').notes);
+  const wantWhy = rw.u.forecast?.reasonText ?? 'No active phase';
+  ok(by(rw.w, 'usage-runway', 'M').notes.some((t) => t.toLowerCase().includes(wantWhy.toLowerCase())) && !rw.w.some((w) => /\b[a-z]+_[a-z_]+\b/.test(w.text + w.status.map((x) => x.title).join(' '))), 'usage-runway: the backend’s reasonText, never a raw code', { notes: by(rw.w, 'usage-runway', 'M').notes, wantWhy });
+  const codes = await page.evaluate(() => {
+    const el = document.createElement('div');
+    acRunwayRender(el, { u: { status: 'unavailable', reason: 'some_code', reasonText: 'A readable reason', forecast: null } }, { size: 'M' });
+    const kind = acRunwayKind({ weekly: { state: 'projected', message: 'm' }, forecast: { status: 'insufficient', reason: 'too_few_done', reasonText: 'Needs ≥ 3 done cards to forecast' }, weeklyBeforeP85: null });
+    return { text: el.innerText, title: kind[2] };
+  });
+  ok(/A readable reason/.test(codes.text) && !/some_code/.test(codes.text) && codes.title === 'Needs ≥ 3 done cards to forecast', 'usage-runway: unavailable / forecast reasons show reasonText, not the code', codes);
   // the weekly window resets before it is reached: won't run out this week
   await push({ seven_day: { used_percentage: 5, resets_at: Math.round((Date.now() + D) / 1000) } });
   rw = await runway(seed.ws, 'runway-resets');

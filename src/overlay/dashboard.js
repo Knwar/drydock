@@ -6,10 +6,12 @@
 //   dwRegister({ type, title: string | (params) => string, sizes: ['S','M','L','XL'] subset, load?(ctx) → Promise<data>,
 //                render(el, data, ctx) → void | { empty: 'reason' }, onStatus?(msg, el, ctx),
 //                params?: [{ key, label, type: 'select'|'text'|'number'|'toggle', options?: [{ value, label }], default?, min?, max? }],
-//                ranged?: boolean | (params) => boolean })
+//                ranged?: boolean | (params) => boolean, filters?: ('phase'|'range'|'agent'|'tag'|'workType'|'compare')[] })
 //   ranged (default true): the widget's data follows the date range. false: the editor hides its Range
 //   field, its override chip never names a range, and a stored range override is ignored (its filters
 //   carry Home's range). Live widgets registered elsewhere default to false (DW_UNRANGED).
+//   filters (default: all of them): the Home filters the widget's data uses. The config drawer offers an
+//   override field only for these (a widget that ignores Tag shows no Tag field); see dwUsesFilter.
 //   ctx = { id, size, params, projectId, filters, range, title, shared(key, fetcher), refresh(), drillCards(opts), openCard(id, boardId?) }
 //   ctx.title: the title the frame shows (params.title, else the type's).
 //   ctx.range: the widget's effective range (its override, else Home's), see dwRangeOf.
@@ -89,6 +91,12 @@ function dwRegister(def) {
 }
 
 const dwDef = (type) => dwTypes.get(type) ?? null;
+
+// Does widget type `type` use Home filter `key` (its registration's `filters`; none declared: every filter)?
+function dwUsesFilter(type, key) {
+  const f = dwTypes.get(type)?.filters;
+  return !Array.isArray(f) || f.includes(key);
+}
 
 // Does widget w's data follow the date range? (its type's `ranged`, a function of its params or a flag)
 function dwRanged(w) {

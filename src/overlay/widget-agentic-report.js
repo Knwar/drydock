@@ -1,16 +1,19 @@
 // ── Dashboard widgets: Agentic report (steering-pack, agent-hourly-rate, perception-gap) ──
 // Classic script; uses app.js / dashboard.js / widget-agentic.js / widget-delivery.js globals read-only
-// (node, mxGet, mxPlural, mxMoney, mxDayKey, mxAddDays, MX_LOCAL_TZ, dwRegister, dwDay, dwDays, dwVs,
-// dwDeltaChip, dwFirstActivity, agFilters, agFigure, agDetail, agDrill, agOpenCard, agLinkBtn, dlRag, dlText).
+// (node, mxGet, mxPlural, mxDayKey, mxAddDays, MX_LOCAL_TZ, dwRegister, dwDay, dwDays, dwVs,
+// dwDeltaChip, dwFirstActivity, agFilters, agFigure, agDetail, agDrill, agOpenCard, agLinkBtn, agWhen, agPeriod,
+// dlRag, dlText, and widget-agentic-cost.js's acMoneyFmt).
 // The "Experimental" head note comes from widget-agentic.js (agExpNote; these types are in AG_WIDGETS).
 //   steering-pack      a one-page pre-read from GET /report (+ /report.md for the copy): overall RAG, decisions
 //                      (what was decided + the rationale: the options weighed), top risks, milestones moved
 //                      (from the daily milestone snapshots, /metrics/history). Unranged: its own period param.
 //                      M = headline RAG + counts; L = + short lists; XL = the full one-pager.
 //   agent-hourly-rate  human-equivalent hours delivered per $ (GET /metrics/estimates); L = per-agent table
-//   perception-gap     median measured / estimated ratio; L = the top 5 misses (drill)
+//                      (spend credited per run agent, each card's hours split by its agents' spend share)
+//   perception-gap     median agent build time ÷ human estimate (agent-hours, not wall-clock); L = the top 5
+//                      misses (drill)
 // Both estimate widgets are gated on coverage: under 30% of done cards with an estimate they show a grey
-// "Add estimates to cards to see this" (with the coverage line) instead of a figure.
+// "Add estimates to cards to see this" with the 30% minimum (and the coverage line) instead of a figure.
 
 const AR_PERIODS = [
   { value: 'week', label: 'Last week' },
@@ -34,6 +37,7 @@ function arPeriod(params) {
   const today = mxDayKey(Date.now(), MX_LOCAL_TZ);
   if (params.period === 'steering') {
     const day = String(params.steeringDate ?? '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(day) && !arIsDay(day)) return { error: `The last steering date (${day}) isn’t a real date: fix it in this widget’s settings` };
     if (!arIsDay(day)) return { error: 'Set the last steering date (YYYY-MM-DD) in this widget’s settings' };
     if (day > today) return { error: `The last steering date (${dwDay(day)}) is in the future` };
     return { from: day, label: 'Since last steering' };
@@ -58,7 +62,7 @@ const arText = async (url) => {
 
 const arPct = (r) => `${Math.round(r * 100)}%`;
 const arNum = (n, digits = 1) => (Math.abs(n) >= 100 ? Math.round(n).toLocaleString('en-US') : n.toFixed(digits).replace(/\.0+$/, ''));
-const arHours = (h) => `${arNum(h, h < 1 ? 2 : 1)} h`;
+const arHours = (h) => (h > 0 && h < 0.01 ? '<0.01 h' : `${arNum(h, h < 1 ? 2 : 1)} h`);
 
 // "based on N of M done cards with estimates" (+ the %).
 function arCoverage(e) {
@@ -71,7 +75,7 @@ function arCoverage(e) {
 // Under the coverage minimum: a grey note instead of the figure (the coverage line says how far off).
 function arGatedBody(el, e) {
   const box = node('div', 'ar-gated');
-  box.append(node('span', 'ar-gated-value', '—'), node('span', 'ar-gated-text', AR_GATED));
+  box.append(node('span', 'ar-gated-value', '—'), node('span', 'ar-gated-text', AR_GATED), node('span', 'ar-gated-min', `Shown once ${arPct(AR_COVERAGE_MIN)} or more of the done cards have an estimate`));
   el.append(box, arCoverage(e));
 }
 
@@ -90,8 +94,8 @@ function arChip(d, ctx, subject, polarity, fmt, cur, prev, kind) {
 }
 
 // No done cards → the standard empty state; under the coverage minimum → gated (returns true).
-function arGate(el, e) {
-  if (!e.done) return { empty: 'No cards done in this period: estimates are compared on done cards' };
+function arGate(el, e, ctx) {
+  if (!e.done) return { empty: `No cards done ${agWhen(ctx)}: estimates are compared on done cards` };
   if ((e.coverage.pct ?? 0) < AR_COVERAGE_MIN) {
     arGatedBody(el, e);
     return true;
@@ -102,17 +106,21 @@ function arGate(el, e) {
 // ── agent-hourly-rate: "How much work does a dollar buy?" ──
 const AR_RATE_RULE =
   'Human-equivalent hours per dollar: the estimates (how long a human engineer would take) of the done cards with recorded AI spend, over that spend. Up is good: each dollar buys more work.';
+const AR_PER_HOUR_RULE =
+  '$ per human-equivalent hour: the AI spend on the estimated done cards ÷ their estimated human hours (the inverse of hours per $). Cards without recorded spend are left out of both.';
 
 function arRateRender(el, d, ctx) {
   const e = d.e;
-  const gate = arGate(el, e);
+  const gate = arGate(el, e, ctx);
   if (gate) return gate === true ? undefined : gate;
   const h = e.hourlyRate;
   const prev = e.previous?.hourlyRate;
+  // one money format for the widget at every size (the L table's spends count even at S / M)
+  const money = acMoneyFmt([h.cost, h.dollarsPerHour, ...h.byAgent.map((a) => a.cost)]);
   const fig = agFigure(
     h.hoursPerDollar === null ? '—' : arHours(h.hoursPerDollar),
     h.hoursPerDollar === null ? 'no recorded spend on the estimated cards' : 'human-equivalent work per $1',
-    arChip(d, ctx, 'Hours per dollar', 1, (m) => arHours(m), h.hoursPerDollar, prev?.hoursPerDollar ?? null),
+    arChip(d, ctx, 'Hours per dollar', 1, (m) => `${arNum(m, m < 1 ? 2 : 1)} h/$`, h.hoursPerDollar, prev?.hoursPerDollar ?? null),
   );
   fig.title = AR_RATE_RULE;
   el.append(fig, arCoverage(e));
@@ -122,9 +130,11 @@ function arRateRender(el, d, ctx) {
   const figs = node('div', 'ag-figs');
   figs.append(
     agFigure(arHours(h.estimateHours), `estimated over ${mxPlural(h.cards, 'card')}`, null, 'ag-fig-sm'),
-    agFigure(mxMoney(h.cost), 'AI spend on them', null, 'ag-fig-sm'),
-    agFigure(h.dollarsPerHour === null ? '—' : mxMoney(h.dollarsPerHour), 'per human-equivalent hour', null, 'ag-fig-sm'),
+    agFigure(money(h.cost), 'AI spend on them', null, 'ag-fig-sm'),
+    agFigure(h.dollarsPerHour === null ? '—' : money(h.dollarsPerHour), 'AI spend per estimated human hour', null, 'ag-fig-sm'),
   );
+  figs.lastChild.title = AR_PER_HOUR_RULE;
+  figs.lastChild.classList.add('ar-help');
   det.append(figs);
   if (h.noSpend) det.append(node('p', 'ag-note', `${mxPlural(h.noSpend, 'estimated card')} had no recorded spend (left out of the rate)`));
 
@@ -132,14 +142,26 @@ function arRateRender(el, d, ctx) {
     const table = node('table', 'ag-table ar-agents');
     const thead = node('thead');
     const hr = node('tr');
-    for (const t of ['Agent', 'Cards', 'Hours', 'Spend', 'Hours / $']) hr.append(node('th', '', t));
+    // the basis (byAgentBasis): spend per run agent; each card's estimate hours split by its agents' spend share
+    const heads = [
+      ['Agent', 'The agent credited with the runs'],
+      ['Cards', 'Estimated done cards this agent ran on'],
+      ['Hours', 'Estimate hours, each card’s split across the agents that ran it by their share of its spend'],
+      ['Spend', 'The AI spend of the runs this agent ran'],
+      ['Hours / $', 'Hours ÷ spend'],
+    ];
+    for (const [t, tip] of heads) {
+      const th = node('th', 'ar-help', t);
+      th.title = tip;
+      hr.append(th);
+    }
     thead.append(hr);
     const tbody = node('tbody');
     for (const a of h.byAgent) {
       const tr = node('tr');
-      const name = node('td', 'ag-td-name', a.agent ?? 'Unassigned');
-      name.title = a.agent ?? 'Cards with no assigned agent';
-      tr.append(name, node('td', '', String(a.cards)), node('td', '', arNum(a.estimateHours)), node('td', '', mxMoney(a.cost)), node('td', '', a.hoursPerDollar === null ? '—' : arNum(a.hoursPerDollar, a.hoursPerDollar < 1 ? 2 : 1)));
+      const name = node('td', 'ag-td-name', a.agent ?? 'No agent');
+      name.title = a.agent ?? 'Runs with no credited agent: their spend, and the share of their cards’ hours it buys';
+      tr.append(name, node('td', '', String(a.cards)), node('td', '', arNum(a.estimateHours)), node('td', '', money(a.cost)), node('td', '', a.hoursPerDollar === null ? '—' : arNum(a.hoursPerDollar, a.hoursPerDollar < 1 ? 2 : 1)));
       tbody.append(tr);
     }
     table.append(thead, tbody);
@@ -149,24 +171,33 @@ function arRateRender(el, d, ctx) {
 }
 
 // ── perception-gap: "Are our estimates realistic?" ──
-const AR_GAP_RULE =
-  'Median of measured ÷ estimated: each done card’s cycle time over its estimate. A ratio above 1× means the work took longer than estimated (slower); below 1× it was faster. 1× is spot on.';
+// The measure (perception.measure 'build_time'), written out, with the cards it counts differently.
+function arGapRule(p) {
+  const notes = [
+    p.fallbacks ? `${mxPlural(p.fallbacks, 'card')} had no recorded run time and ${p.fallbacks === 1 ? 'is' : 'are'} measured on ${p.fallbacks === 1 ? 'its' : 'their'} time in the in_progress lane instead.` : '',
+    p.tooShort ? `${mxPlural(p.tooShort, 'card')} had under a minute of build time: too short to compare, left out.` : '',
+  ].filter(Boolean);
+  return [
+    'Agent build time ÷ human estimate, the median over the estimated done cards. Build time is agent-hours: the summed run time of every recorded agent run on the card (not wall-clock: overlapping runs add up; queue and review waits don’t count). Below 1× the agents took less time than a human was estimated to; above 1×, more. 1× is spot on.',
+    ...notes,
+  ].join('\n');
+}
 
-const arRatio = (r) => `${r >= 10 ? Math.round(r) : r.toFixed(r >= 1 ? 1 : 2).replace(/\.?0+$/, '')}×`;
+const arRatio = (r) => (r < 0.01 ? '<0.01×' : `${r >= 10 ? Math.round(r) : r.toFixed(r >= 1 ? 1 : 2).replace(/\.?0+$/, '')}×`);
 const arRatioWord = (r) => (r > 1 ? 'slower than estimated' : r < 1 ? 'faster than estimated' : 'as estimated');
 
 function arGapRender(el, d, ctx) {
   const e = d.e;
-  const gate = arGate(el, e);
+  const gate = arGate(el, e, ctx);
   if (gate) return gate === true ? undefined : gate;
   const p = e.perception;
   const m = p.medianRatio;
   const fig = agFigure(
     m === null ? '—' : arRatio(m),
-    m === null ? 'no measured cycle time yet' : `median measured ÷ estimated · ${arRatioWord(m)}`,
-    arChip(d, ctx, 'Median measured ÷ estimated', 0, (x) => arNum(x, x < 10 ? 2 : 0), m, e.previous?.perception?.medianRatio ?? null, 'pts'),
+    m === null ? 'no agent build time recorded yet' : `agent build time ÷ human estimate · ${arRatioWord(m)}`,
+    arChip(d, ctx, 'Median agent build time ÷ human estimate', 0, (x) => `${arNum(x, x < 10 ? 2 : 0)}×`, m, e.previous?.perception?.medianRatio ?? null, 'pts'),
   );
-  fig.title = AR_GAP_RULE;
+  fig.title = arGapRule(p);
   fig.classList.add('ar-help');
   el.append(fig, arCoverage(e));
   if (ctx.size === 'S') return;
@@ -195,16 +226,19 @@ function arGapRender(el, d, ctx) {
   if (ctx.size === 'L' && p.topMisses.length) {
     const head = node('div', 'ag-k-row');
     head.append(node('span', 'ag-k', `top ${p.topMisses.length === 1 ? 'miss' : `${p.topMisses.length} misses`}`));
-    const open = agLinkBtn('Open list', 'Open these cards in a list', () => agDrill(ctx, p.topMisses, 'ESTIMATE MISSES', mxPlural(p.topMisses.length, 'card'), open));
+    const open = agLinkBtn('Open list', 'Open these cards in a list', () =>
+      agDrill(ctx, p.topMisses, 'ESTIMATE MISSES', mxPlural(p.topMisses.length, 'card'), open, { range: agPeriod(ctx, e.range), order: 'Biggest miss first' }),
+    );
     head.append(open);
     const list = node('ul', 'ag-list');
     for (const c of p.topMisses) {
       const li = node('li');
       const btn = node('button', 'ag-item');
       btn.type = 'button';
-      btn.title = `${c.title}: estimated ${arHours(c.estimateHours)}, took ${arHours(c.cycleHours)} (${arRatio(c.ratio)}, ${arRatioWord(c.ratio)}). Open the card`;
+      const lane = c.buildSource === 'in_progress' ? ' (its in_progress lane time: no run time recorded)' : '';
+      btn.title = `${c.title}: a human estimate of ${arHours(c.estimateHours)}, ${arHours(c.buildHours)} of agent build time${lane} (${arRatio(c.ratio)}, ${arRatioWord(c.ratio)}). Open the card`;
       btn.onclick = () => agOpenCard(ctx, c.id);
-      btn.append(node('span', 'ag-item-title', c.title), node('span', `ag-item-v${c.ratio > 1 ? ' ag-over' : ''}`, `${arHours(c.estimateHours)} → ${arHours(c.cycleHours)} · ${arRatio(c.ratio)}`));
+      btn.append(node('span', 'ag-item-title', c.title), node('span', `ag-item-v${c.ratio > 1 ? ' ag-over' : ''}`, `${arHours(c.estimateHours)} → ${arHours(c.buildHours)} · ${arRatio(c.ratio)}`));
       li.append(btn);
       list.append(li);
     }
@@ -246,8 +280,12 @@ async function arSteeringLoad(ctx) {
   const page = new URLSearchParams({ project: f.project, tz: MX_LOCAL_TZ });
   if (period.days) page.set('days', String(period.days));
   else page.set('from', period.from);
+  // the full report reads the same work type (report.html has no tag / agent / phase filter)
+  if (f.workType) page.set('workType', f.workType);
   const mdUrl = `/report.md?${new URLSearchParams(Object.entries(q).filter(([, v]) => v))}`;
-  return { period, r, md, mdUrl, moves: hist ? arMoves(hist, period.from) : null, reportHref: `/report.html?${page}` };
+  // Home filters the pack can't apply (GET /report takes the work type only): named in the widget
+  const unused = [f.phase && 'Phase', f.tag && 'Tag', f.agent && 'Agent'].filter(Boolean);
+  return { period, r, md, mdUrl, unused, moves: hist ? arMoves(hist, period.from) : null, reportHref: `/report.html?${page}` };
 }
 
 /** Copy without the async Clipboard API: a hidden textarea + execCommand. */
@@ -315,6 +353,8 @@ function arActions(d) {
   return row;
 }
 
+// who decided: the human at the keyboard is "you" (the API records them as 'user')
+const arWho = (by) => (by === 'user' ? 'you' : by);
 const arRiskSort = (risks) => [...risks].sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
 const arSigned = (n) => (n === 0 ? '±0 d' : `${n > 0 ? '+' : '−'}${Math.abs(n)} d`);
 
@@ -342,6 +382,11 @@ function arSteeringRender(el, d, ctx) {
   head.append(rag, node('span', 'ar-period', `${d.period.label} · ${dwDays(r.range.from, r.range.to)}`));
   el.append(head);
   if (ctx.size !== 'M') el.append(node('p', 'ag-note', dlText(r.overall.reason).replace(/^./, (c) => c.toUpperCase())));
+  if (d.unused?.length) {
+    const note = node('p', 'ag-note ar-unused', `${d.unused.join(', ')} ${d.unused.length === 1 ? 'filter' : 'filters'} not applied: the steering pack covers the whole board`);
+    note.title = 'The steering pack follows the board and the work type only; Home’s phase, tag and agent filters don’t narrow it.';
+    el.append(note);
+  }
 
   // counts
   const figs = node('div', 'ag-figs ar-counts');
@@ -349,13 +394,16 @@ function arSteeringRender(el, d, ctx) {
     agFigure(String(decisions.length), decisions.length === 1 ? 'decision made' : 'decisions made', null, 'ag-fig-sm'),
     agFigure(String(risks.length), risks.length === 1 ? 'open risk' : 'open risks', null, 'ag-fig-sm'),
     agFigure(d.moves === null ? '—' : String(d.moves.length), d.moves === null ? 'milestone moves unknown' : d.moves.length === 1 ? 'milestone moved' : 'milestones moved', null, 'ag-fig-sm'),
-    agFigure(String(r.shipped.total), 'cards shipped', null, 'ag-fig-sm'),
+    agFigure(String(r.shipped.total), r.shipped.total === 1 ? 'card shipped' : 'cards shipped', null, 'ag-fig-sm'),
   );
   el.append(figs, arActions(d));
   if (ctx.size === 'M') return;
 
   const det = agDetail();
   det.classList.add('ar-pack');
+  // the sections sit in two columns when the widget is wide enough (CSS), so L / XL fit their height
+  const grid = node('div', 'ar-grid');
+  det.append(grid);
   const limit = xl ? 5 : 3;
 
   // phases: the active ones (XL: every phase not done), RAG + reason
@@ -371,7 +419,7 @@ function arSteeringRender(el, d, ctx) {
       ul.append(li);
     }
     sec.append(ul);
-    det.append(sec);
+    grid.append(sec);
   }
 
   // decisions: what was decided; XL adds the rationale (the options weighed) and who decided
@@ -385,13 +433,13 @@ function arSteeringRender(el, d, ctx) {
       if (xl) {
         li.append(node('span', 'ar-row-note ar-row-decision', x.decision));
         if (x.rationale) li.append(node('span', 'ar-row-note', x.rationale));
-        if (x.decided_by || x.status === 'superseded') li.append(node('span', 'ar-row-note', [x.decided_by && `Decided by ${x.decided_by}`, x.status === 'superseded' && 'since superseded'].filter(Boolean).join(' · ')));
+        if (x.decided_by || x.status === 'superseded') li.append(node('span', 'ar-row-note', [x.decided_by && `Decided by ${arWho(x.decided_by)}`, x.status === 'superseded' && 'since superseded'].filter(Boolean).join(' · ')));
       } else li.title = `${x.decision}${x.rationale ? `\n${x.rationale}` : ''}`;
       ul.append(li);
     }
     if (!xl && decisions.length > limit) ul.append(node('li', 'ar-more', `+${decisions.length - limit} more in the full report`));
     sec.append(ul);
-    det.append(sec);
+    grid.append(sec);
   }
 
   // top risks by score
@@ -405,14 +453,14 @@ function arSteeringRender(el, d, ctx) {
       score.title = `Score ${x.score} = likelihood ${x.likelihood} × impact ${x.impact}`;
       li.append(score, node('span', 'ar-row-title', x.title), node('span', 'ar-row-meta', x.status));
       if (xl) {
-        const meta = [x.owner && `Owner ${x.owner}`, x.mitigation && `Mitigation: ${x.mitigation}`].filter(Boolean).join(' · ');
+        const meta = [x.owner && `Owner ${arWho(x.owner)}`, x.mitigation && `Mitigation: ${x.mitigation}`].filter(Boolean).join(' · ');
         if (meta) li.append(node('span', 'ar-row-note', meta));
       }
       ul.append(li);
     }
     if (risks.length > limit) ul.append(node('li', 'ar-more', `+${risks.length - limit} more in the full report`));
     sec.append(ul);
-    det.append(sec);
+    grid.append(sec);
   }
 
   // milestones moved
@@ -430,7 +478,7 @@ function arSteeringRender(el, d, ctx) {
     }
     if (!xl && moves.length > limit) ul.append(node('li', 'ar-more', `+${moves.length - limit} more`));
     sec.append(ul);
-    det.append(sec);
+    grid.append(sec);
   }
   el.append(det);
 }
@@ -447,6 +495,7 @@ dwRegister({
   title: 'Steering pack',
   sizes: ['M', 'L', 'XL'],
   ranged: false, // its own report period (a param), not Home's range
+  filters: ['workType'], // GET /report narrows by work type only
   params: [
     { key: 'period', label: 'Period', type: 'select', options: AR_PERIODS, default: 'week' },
     { key: 'steeringDate', label: 'Last steering date (YYYY-MM-DD, for “Since last steering date”)', type: 'text' },

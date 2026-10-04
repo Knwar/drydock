@@ -1184,12 +1184,14 @@ const fbAnyActive = (ctx, fields) => fbActiveLabels(ctx, fields).length > 0;
 // A drill-down of cards (dashboard / Home counts): title, board, lane, agent; Open / Open all in Kanban.
 // phase: the drill's own phase (a phase's cards), named in the subtitle when the filters have none.
 // source: what "Open all" says the highlight came from ("Home · Now building"; Home's default: Home).
-function fbDrillCards(ctx, host, { kicker, title, cards, range, phase = null, source }) {
+// order: a label ("Largest first") for the cards' own order, offered as the first (default) sort.
+function fbDrillCards(ctx, host, { kicker, title, cards, range, phase = null, source, order = null }) {
   const now = Date.now();
-  const rows = cards.map((c) => {
+  const rows = cards.map((c, i) => {
     const since = c.lane_since ?? c.updated_at ?? now;
     const done = c.lane === 'done';
     return {
+      i,
       id: c.id,
       title: c.title,
       board: c.board,
@@ -1210,9 +1212,12 @@ function fbDrillCards(ctx, host, { kicker, title, cards, range, phase = null, so
     source: source ?? (ctx === hctx ? 'Home' : undefined),
     stat: allDone ? '' : 'time in lane',
     rows,
-    sorts: allDone
-      ? [['value', 'Most recently done', (a, b) => b.value - a.value], ['board', 'Board', (a, b) => mxByBoard(a, b, ctx.meta)]]
-      : [['value', 'Longest in lane', (a, b) => b.value - a.value], ['board', 'Board', (a, b) => mxByBoard(a, b, ctx.meta)]],
+    sorts: [
+      ...(order ? [['order', order, (a, b) => a.i - b.i]] : []),
+      ...(allDone
+        ? [['value', 'Most recently done', (a, b) => b.value - a.value], ['board', 'Board', (a, b) => mxByBoard(a, b, ctx.meta)]]
+        : [['value', 'Longest in lane', (a, b) => b.value - a.value], ['board', 'Board', (a, b) => mxByBoard(a, b, ctx.meta)]]),
+    ],
   });
 }
 
