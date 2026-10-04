@@ -1689,6 +1689,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       // a workspace id expands to its verticals inside the loader
       const filter: AgentHistoryOptions = { projectIds: [project], agent, tz, now };
+      const workType = workTypeParam(q);
+      if (workType) filter.workType = workType;
       const from = q.get('from');
       const to = q.get('to');
       if (from) filter.from = metrics.parseTime(from, tz, 'from');

@@ -158,6 +158,31 @@ describe('daemon GET /agents/:name/history', () => {
     assert.equal(r.totals.cost, 0);
   });
 
+  it('workType: only cards (and their runs) of that type; none = unclassified; previous filtered too', async () => {
+    db!.prepare('UPDATE tasks SET work_type = ? WHERE id = ?').run('defect', prev);
+    try {
+      const d = await get(hist(ADA, 'workType=defect'));
+      assert.deepEqual(d.cards.map((c: any) => c.id), [prev]);
+      assert.deepEqual(d.runs.map((r: any) => r.task_id), [prev]);
+      assert.deepEqual([d.totals.cardsDone, d.totals.cost], [1, 1]);
+      const n = await get(hist(ADA, 'workType=none'));
+      assert.deepEqual(n.cards.map((c: any) => c.id), [cur]);
+      assert.deepEqual([n.totals.cardsDone, n.totals.cost], [1, 2]);
+      const f = await get(hist(ADA, 'workType=feature'));
+      assert.deepEqual([f.cards.length, f.runs.length, f.totals.cost], [0, 0, 0]);
+      // the compare window carries the filter: Defect in C is empty, its previous period (P) holds prev
+      const c = await get(hist(ADA, `${win(C)}&compare=previous&workType=defect`));
+      assert.deepEqual([c.totals.cardsDone, c.previous.cardsDone, c.previous.cost], [0, 1, 1]);
+      const direct = agentHistory(db!, { projectIds: [pid], agent: ADA, tz: 'UTC', workType: 'defect' });
+      assert.deepEqual(d.totals, direct.totals);
+      const bad = await status(hist(ADA, 'workType=bogus'));
+      assert.equal(bad.status, 400);
+      assert.match(bad.body.error, /invalid workType/);
+    } finally {
+      db!.prepare('UPDATE tasks SET work_type = NULL WHERE id = ?').run(prev);
+    }
+  });
+
   it('unknown project 404, missing project 400, bad params 400', async () => {
     assert.equal((await status(`/agents/Bob/history?project=nope`)).status, 404);
     assert.equal((await status(`/agents/Bob/history`)).status, 400);

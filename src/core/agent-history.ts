@@ -47,6 +47,8 @@
  *  - blockers: every agent-raised blocked interval overlapping the window,
  *    blocked_ms clipped to [from, to]; bucketed by max(start, from).
  * Weekly buckets are ISO weeks (Monday start) in `tz`, zero-filled over the window.
+ * workType (optional) keeps only the cards of that type ('none' = unclassified) and the runs
+ * on them, after attribution (a run on a deleted card has no type: it never matches).
  */
 import { memberName } from './board.js';
 import { getPrices, loadCostRows, priceRows } from './cost.js';
@@ -65,7 +67,7 @@ import {
   type DerivedCard,
 } from './metrics.js';
 import { cardQuality, qualityStats, type CardQuality } from './quality.js';
-import type { AgentHistory, AgentHistoryCard, AgentHistoryRun, AgentHistoryTotals, Lane } from './types.js';
+import type { AgentHistory, AgentHistoryCard, AgentHistoryRun, AgentHistoryTotals, Lane, WorkType } from './types.js';
 
 export interface AgentHistoryOptions {
   /** Boards in scope; a workspace id expands to itself + its verticals. */
@@ -76,6 +78,8 @@ export interface AgentHistoryOptions {
   to?: number;
   /** Week buckets' time zone (default: the process's local zone). */
   tz?: string;
+  /** Only cards of this work type, and runs on them ('none' = unclassified). */
+  workType?: WorkType | 'none';
   now?: number;
 }
 
@@ -207,7 +211,15 @@ export function agentHistory(db: DB, opts: AgentHistoryOptions): AgentHistoryDet
     const x = byId.get(r.task_id);
     return (x ? holderAt(x, r.created_at) : null) ?? r.agent;
   };
-  const allRuns = priced.filter((r) => creditedTo(r) === agent);
+  // the Type filter: cards of that work type ('none' = unclassified); a deleted card has none to match
+  const typeOk = (taskId: string): boolean => {
+    if (opts.workType === undefined) return true;
+    const x = byId.get(taskId);
+    if (!x) return false;
+    const t = x.h.card.work_type ?? null;
+    return opts.workType === 'none' ? t === null : t === opts.workType;
+  };
+  const allRuns = priced.filter((r) => creditedTo(r) === agent && typeOk(r.task_id));
   const runsByCard = new Map<string, typeof allRuns>();
   for (const r of allRuns) {
     if (!runsByCard.has(r.task_id)) runsByCard.set(r.task_id, []);
@@ -249,6 +261,7 @@ export function agentHistory(db: DB, opts: AgentHistoryOptions): AgentHistoryDet
 
   const facts: CardFacts[] = [];
   for (const x of ds) {
+    if (!typeOk(x.m.id)) continue;
     const steps = holderSteps(x);
     // consecutive assigns to the same agent (a re-dispatch) extend one tenure
     const tenures: Tenure[] = [];
