@@ -122,7 +122,7 @@ export interface AgenticMetrics {
     pct: number | null;
     weekly: (Week & { done: number; autonomous: number; pct: number | null })[];
     /** Done cards in the window that had a block or redirect, newest done first, at most NEEDS_HUMAN_CAP. */
-    needsHuman: { id: string; title: string }[];
+    needsHuman: { id: string; title: string; doneAt: number }[];
   };
   stops: {
     agent: number;
@@ -140,7 +140,7 @@ export interface AgenticMetrics {
     over: number;
     pctOver: number | null;
     median: number | null;
-    top: { id: string; title: string; lines: number }[];
+    top: { id: string; title: string; lines: number; doneAt: number }[];
     /** Done cards without line data (excluded above). */
     noData: number;
   };
@@ -275,7 +275,7 @@ export function agenticFromInput(input: AgenticInput, opts: AgenticOptions): Age
   // batch
   const sized = done.flatMap((x) => {
     const lines = input.lines.get(x.m.id);
-    return lines === undefined ? [] : [{ id: x.m.id, title: x.m.title, lines }];
+    return lines === undefined ? [] : [{ id: x.m.id, title: x.m.title, lines, doneAt: x.m.doneAt! }];
   });
   const sortedLines = sized.map((s) => s.lines).sort((a, b) => a - b);
   const over = sized.filter((s) => s.lines > threshold).length;
@@ -332,7 +332,7 @@ export function agenticFromInput(input: AgenticInput, opts: AgenticOptions): Age
       needsHuman: needsHuman
         .sort((a, b) => b.m.doneAt! - a.m.doneAt! || a.m.id.localeCompare(b.m.id))
         .slice(0, NEEDS_HUMAN_CAP)
-        .map((x) => ({ id: x.m.id, title: x.m.title })),
+        .map((x) => ({ id: x.m.id, title: x.m.title, doneAt: x.m.doneAt! })),
     },
     stops: {
       agent: counts.agent,

@@ -217,9 +217,20 @@ try {
   await page.click('.dw-widget[data-widget-id="autonomy-index-L"] .ag-human .ag-link');
   await page.waitForFunction(() => document.querySelector('.mx-drill .mx-kicker')?.textContent === 'NEEDED A HUMAN', null, { timeout: 10000 });
   const hDrill = await page.$eval('.mx-drill', (p) => p.querySelectorAll('.mx-drill-row').length);
+  // rows carry each card's done time (lane_since = doneAt), not one shared "done today"
+  const hDays = await page.$$eval('.mx-drill .mx-drill-row .mx-drill-meta', (els) => new Set(els.map((e) => e.textContent.match(/done [A-Z][a-z]{2} \d+/)?.[0])).size);
+  ok(hDays > 1, 'autonomy-index drill: rows show their own done dates', hDays);
   if (OUT) await page.screenshot({ path: `${OUT}/drill-autonomy.png` });
   ok(nHuman > 0 && hDrill === nHuman, 'autonomy-index L drill: "N needed a human" opens those N cards', { human, hDrill });
   await page.keyboard.press('Escape');
+
+  // ---- a late-registering script: the Experimental note is applied to widgets already on screen ----
+  const late = await page.evaluate(() => {
+    document.querySelectorAll('.ag-exp').forEach((e) => e.remove());
+    agExpNote(document);
+    return [...document.querySelectorAll('.dw-widget')].every((f) => f.querySelector(':scope > .dw-head .ag-exp'));
+  });
+  ok(late, 'Experimental note: applied to widgets already on screen (agExpNote(document) at registration)');
 
   // ---- 8 weeks: the previous 8 weeks start before the seeded history → pre-history, grey ----
   await page.goto(`${base}/?project=${seed.ws}&view=home&range=8w`);

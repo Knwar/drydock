@@ -13,6 +13,7 @@
 
 const AG_ICONS = { ok: '✓', warn: '!', bad: '✕', none: '–' };
 const AG_DEFAULT_BATCH = 200;
+const AG_MAX_BATCH = 100_000;
 const AG_WIDGETS = ['autonomy-index', 'agent-stops', 'batch-size', 'spec-adherence', 'governance-posture'];
 
 // Home's filters (the widget's ctx.filters: scope / phase / tag / agent / workType / from / to as epoch ms).
@@ -142,7 +143,7 @@ function agPairBars(weeks, pre, { tall = false } = {}) {
   return svg;
 }
 
-// Done-card ids → drill rows (the card list's fields when the card is known to Home).
+// Done cards ({ id, title, doneAt }) → drill rows (the card list's fields when the card is known to Home).
 async function agDrill(ctx, items, kicker, title, btn) {
   if (btn) btn.disabled = true;
   try {
@@ -150,7 +151,8 @@ async function agDrill(ctx, items, kicker, title, btn) {
     const project = agFilters(ctx).project;
     const cards = items.map((it) => {
       const c = meta?.cards.get(it.id);
-      return { ...(c ?? {}), id: it.id, title: it.title, board: c?.board ?? project, lane: c?.lane ?? 'done' };
+      // lane_since: when it was done (in the read's window), never the card list's latest move
+      return { ...(c ?? {}), id: it.id, title: it.title, board: c?.board ?? project, lane: c?.lane ?? 'done', lane_since: it.doneAt };
     });
     await ctx.drillCards({ kicker, title, cards });
   } catch (e) {
@@ -251,9 +253,12 @@ function agStopsRender(el, d, ctx) {
 }
 
 // ── batch-size: "Are changes small enough to review?" ──
+// the param as a whole line count in 1..AG_MAX_BATCH; unset or not a number → the default
 const agThreshold = (ctx) => {
-  const n = Math.round(Number(ctx.params.threshold));
-  return Number.isFinite(n) && n >= 1 ? n : AG_DEFAULT_BATCH;
+  const raw = ctx.params.threshold;
+  const n = Math.round(Number(raw));
+  if (raw === undefined || raw === null || raw === '' || !Number.isFinite(n)) return AG_DEFAULT_BATCH;
+  return Math.min(AG_MAX_BATCH, Math.max(1, n));
 };
 const agBatchRule = (t) => `Thresholds: Green under 20% · Amber 20–40% · Red over 40% of done cards changing more than ${t} lines (added + removed). Large changes are harder to review.`;
 
@@ -407,14 +412,17 @@ const agRender = (fn, cls) => (el, data, ctx) => {
 };
 
 // "Experimental" in every agentic widget's head (all states: loading, error, empty), next to the title
-dwAfterRender((root) => {
+function agExpNote(root) {
   for (const head of root.querySelectorAll(AG_WIDGETS.map((t) => `.dw-widget[data-widget-type="${t}"] > .dw-head`).join(','))) {
     if (head.querySelector('.ag-exp')) continue;
     const tag = node('span', 'ag-exp', 'Experimental');
     tag.title = 'Experimental metric: built only on what kankan already records; see each figure’s tooltip for its caveats.';
     head.querySelector('.dw-title')?.after(tag);
   }
-});
+}
+dwAfterRender(agExpNote);
+// this script may register after the layout has rendered: note the widgets already on screen once
+agExpNote(document);
 
 const AG_DEFS = [
   { type: 'autonomy-index', title: 'How autonomous are the agents?', render: agAutonomyRender, cls: 'ag-autonomy' },
@@ -424,7 +432,7 @@ const AG_DEFS = [
     title: 'Are changes small enough to review?',
     render: agBatchRender,
     cls: 'ag-batch',
-    params: [{ key: 'threshold', label: 'Line threshold', type: 'number', default: AG_DEFAULT_BATCH, min: 1 }],
+    params: [{ key: 'threshold', label: 'Line threshold', type: 'number', default: AG_DEFAULT_BATCH, min: 1, max: AG_MAX_BATCH }],
     load: (ctx) => agLoad(ctx, agThreshold(ctx)),
   },
   { type: 'spec-adherence', title: 'Do agents build to spec?', render: agSpecRender, cls: 'ag-spec' },

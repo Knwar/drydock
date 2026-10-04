@@ -134,18 +134,42 @@ describe('agentic metrics (pure)', () => {
     );
     // the cards that needed a human, newest done first
     assert.deepEqual(r.autonomy.needsHuman, [
-      { id: 'redirected', title: 'redirected' },
-      { id: 'blocked', title: 'blocked' },
+      { id: 'redirected', title: 'redirected', doneAt: WEEK2 + 3 },
+      { id: 'blocked', title: 'blocked', doneAt: MON + 21 },
     ]);
   });
 
-  it('autonomy.needsHuman: capped, newest first; empty with no human stops', () => {
-    const many = Array.from({ length: NEEDS_HUMAN_CAP + 5 }, (_, i) => shipped(`b${String(i).padStart(3, '0')}`, MON + 100 + i * 10, [ev('block', MON + 50 + i)]));
-    const r = agenticFromInput(input([...many, shipped('clean')]), opts);
+  it('autonomy.needsHuman: newest done first whatever the input order, ties by id, capped', () => {
+    const name = (i: number) => `b${String(i).padStart(3, '0')}`;
+    const many = Array.from({ length: NEEDS_HUMAN_CAP + 5 }, (_, i) => shipped(name(i), MON + 100 + i * 10, [ev('block', MON + 50 + i)]));
+    // a fixed shuffle (seeded LCG Fisher-Yates), so the order comes from doneAt, not the input
+    let s = 7;
+    const rnd = () => (s = (s * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+    const shuffled = [...many, shipped('clean')];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(rnd() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    assert.notDeepEqual(shuffled.map((h) => h.card.id), [...many, shipped('clean')].map((h) => h.card.id));
+    const r = agenticFromInput(input(shuffled), opts);
     assert.equal(r.autonomy.done, NEEDS_HUMAN_CAP + 6);
     assert.equal(r.autonomy.needsHuman.length, NEEDS_HUMAN_CAP);
-    assert.equal(r.autonomy.needsHuman[0].id, `b${String(NEEDS_HUMAN_CAP + 4).padStart(3, '0')}`);
+    assert.deepEqual(
+      r.autonomy.needsHuman.map((c) => c.id),
+      Array.from({ length: NEEDS_HUMAN_CAP }, (_, k) => name(NEEDS_HUMAN_CAP + 4 - k)),
+    );
+    assert.ok(r.autonomy.needsHuman.every((c, k, xs) => k === 0 || xs[k - 1].doneAt >= c.doneAt));
     assert.ok(!r.autonomy.needsHuman.some((c) => c.id === 'clean'));
+    // the tie-break: cards done at the same moment list by id, whatever the input order
+    const tied = ['t3', 't1', 't2'].map((id) => shipped(id, MON + 500, [ev('redirect', MON + 3)]));
+    assert.deepEqual(
+      agenticFromInput(input(tied), opts).autonomy.needsHuman.map((c) => [c.id, c.doneAt]),
+      [
+        ['t1', MON + 501],
+        ['t2', MON + 501],
+        ['t3', MON + 501],
+      ],
+    );
     assert.deepEqual(agenticFromInput(input([shipped('clean')]), opts).autonomy.needsHuman, []);
   });
 
@@ -206,11 +230,11 @@ describe('agentic metrics (pure)', () => {
       pctOver: 0.5,
       median: 200, // nearest rank over [10, 50, 200, 201, 500, 1000]
       top: [
-        { id: 'f', title: 'f', lines: 1000 },
-        { id: 'b', title: 'b', lines: 500 },
-        { id: 'c', title: 'c', lines: 201 },
-        { id: 'd', title: 'd', lines: 200 },
-        { id: 'e', title: 'e', lines: 50 },
+        { id: 'f', title: 'f', lines: 1000, doneAt: MON + 11 },
+        { id: 'b', title: 'b', lines: 500, doneAt: MON + 11 },
+        { id: 'c', title: 'c', lines: 201, doneAt: MON + 11 },
+        { id: 'd', title: 'd', lines: 200, doneAt: MON + 11 },
+        { id: 'e', title: 'e', lines: 50, doneAt: MON + 11 },
       ],
       noData: 1,
     });
@@ -412,10 +436,14 @@ describe('agenticMetrics (DB loader)', () => {
     assert.deepEqual([r.autonomy.done, r.autonomy.autonomous], [3, 2]);
     assert.deepEqual([r.stops.agent, r.stops.human], [1, 0]);
     assert.deepEqual([r.batch.cards, r.batch.over, r.batch.noData], [2, 1, 1]);
-    assert.deepEqual(r.batch.top, [
-      { id: a, title: 'A', lines: 300 },
-      { id: b, title: 'B', lines: 10 },
-    ]);
+    assert.deepEqual(
+      r.batch.top.map(({ doneAt: _, ...t }) => t),
+      [
+        { id: a, title: 'A', lines: 300 },
+        { id: b, title: 'B', lines: 10 },
+      ],
+    );
+    assert.ok(r.batch.top.every((t) => Number.isFinite(t.doneAt) && t.doneAt >= MON && t.doneAt <= END));
     const p1 = r.specAdherence.byPhase.find((p) => p.phase_id === phase.id)!;
     assert.deepEqual([p1.title, p1.criteria, p1.firstPassRate], ['P1', { total: 2, checked: 2 }, 1]);
     assert.deepEqual([r.specAdherence.adherent, r.specAdherence.done], [1, 3]);
