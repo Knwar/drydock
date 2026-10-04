@@ -79,7 +79,9 @@ const post = (p, body) => api(p, { method: 'POST', headers: { 'content-type': 'a
 const LANES = ['backlog', 'queued', 'in_progress', 'in_review', 'done'];
 const BOARDS = ['ws', 'web', 'api', 'mobile'];
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const shortDay = (d) => `${d.getDate()} ${MON[d.getMonth()]}`;
+// a range as the filter bar and the delta chips write it (fbDays / dwDays): "Sep 7 – Oct 3", "Sep 7 – 21"
+const md = (d) => `${MON[d.getMonth()]} ${d.getDate()}`;
+const rangeDays = (a, b) => (a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear() ? `${md(a)} – ${b.getDate()}` : `${md(a)} – ${md(b)}`);
 
 // a backlog card on api (tag db, phase API v1) waiting on an unfinished card: Up next readiness
 const apiCards0 = await api(`/board?project=${seed.api}`);
@@ -149,11 +151,11 @@ function reqWatch(pg = page) {
 }
 const paths = (list) => list.map((u) => new URL(u).pathname);
 const LIVE_READS = ['/home', '/workspace/summary', '/workspace/cards'];
-// Monday of the week (n - 1) weeks back, local midnight: a rolling n-week range's start (mxWindow)
+// A rolling n-week range's start (mxWindow): exactly 7×n days ending today, local midnight
 function weeksFrom(n) {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - ((d.getDay() + 6) % 7) - 7 * (n - 1));
+  d.setDate(d.getDate() - (7 * n - 1));
   return d.getTime();
 }
 const from2w = weeksFrom(2);
@@ -240,7 +242,7 @@ ok((await page.$eval(`${DT}[data-id="${seed.web}"] .dt-lane[data-lane="done"] .d
   };
   await embed(`range=custom&from=${localDay(day(10))}&to=${localDay(day(3))}`);
   await expectTiles(DT, { from: day(10).getTime(), to: day(2).getTime() }, allBoards, 'embed custom range (done counts)');
-  ok((await page.$eval(`${DT}[data-id="${seed.web}"] .dt-lane[data-lane="done"] .dt-lane-l`, (e) => e.textContent)) === `done ${shortDay(day(10))}–${shortDay(day(3))}`, 'embed custom: done lane names the range');
+  ok((await page.$eval(`${DT}[data-id="${seed.web}"] .dt-lane[data-lane="done"] .dt-lane-l`, (e) => e.textContent)) === `done ${rangeDays(day(10), day(3)).replace(' – ', '–')}`, 'embed custom: done lane names the range');
   await shot('dash-3-custom-range');
 }
 await embed('tag=api&range=2w');
@@ -752,6 +754,127 @@ await page.unroute('**/home?*', slow);
   const mxf = await fits('#mx-filters');
   ok(!mxf.overflow && !mxf.out.length, '700px: Metrics filter bar wraps inside the viewport', mxf);
   await page.setViewportSize({ width: 1440, height: 1000 });
+}
+
+// ---- rolling ranges: "last N weeks" = exactly 7×N days ending today, on any weekday; the server's
+// previous period is the 7×N days before; weekly charts mark the cut first ISO week partial ----
+{
+  const tab = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  await tab.goto(`${base}/?project=${seed.ws}&view=kanban`);
+  await tab.waitForFunction(() => typeof mxWindow === 'function');
+  const spans = [];
+  for (let i = 0; i < 7; i++) {
+    const at = new Date();
+    at.setDate(at.getDate() - i);
+    at.setHours(12, 0, 0, 0);
+    const r = await tab.evaluate((t) => {
+      const real = Date.now;
+      Date.now = () => t; // mxWindow reads the clock through Date.now
+      try {
+        const today = mxDayKey(t, MX_LOCAL_TZ);
+        const n = (w) => Math.round((mxUtc(today) - mxUtc(mxWindow({ range: w, tz: MX_LOCAL_TZ }).from)) / 86_400_000) + 1;
+        return { dow: new Date(t).getDay(), w2: n('2w'), w4: n('4w'), w8: n('8w') };
+      } finally {
+        Date.now = real;
+      }
+    }, at.getTime());
+    spans.push(r);
+  }
+  ok(spans.every((r) => r.w2 === 14 && r.w4 === 28 && r.w8 === 56), 'mxWindow: 2w / 4w / 8w are 14 / 28 / 56 days ending today on every weekday', spans);
+  await tab.close();
+  const flow = await api(`/metrics/flow?project=${seed.ws}&tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}&from=${from4w}&compare=previous`);
+  const prevFrom = new Date(from4w);
+  prevFrom.setDate(prevFrom.getDate() - 28);
+  ok(flow.previousWindow?.to === from4w - 1 && flow.previousWindow?.from === prevFrom.getTime(), "server's previous period for 4w = the 28 days before (client and server agree)", { pw: flow.previousWindow, want: { from: prevFrom.getTime(), to: from4w - 1 } });
+  const wk = flow.throughput.weekly;
+  const fromDow = new Date(from4w).getDay();
+  ok(wk.length > 0 && (fromDow === 1 ? wk[0].start === localDay(new Date(from4w)) : wk[0].start < localDay(new Date(from4w))), 'weekly buckets: a 4w window starting mid-week opens on a cut (partial) ISO week', { first: wk[0]?.start, from: localDay(new Date(from4w)) });
+  await page.goto(`${base}/?project=${seed.ws}&view=home`);
+  await settledHome();
+  await page.click(`${W('tabs')} .dw-tab:text-is("Flow")`);
+  await page.waitForSelector(`${W('throughput-trend')} svg title`, { state: 'attached', timeout: 15000 });
+  const titles = await page.$$eval(`${W('throughput-trend')} svg title`, (ts) => ts.map((t) => t.textContent));
+  ok(fromDow === 1 ? !titles[0].includes('partial') : titles[0].includes('(partial week)'), 'throughput-trend (4w): the cut first ISO week is marked partial (left out of the average)', titles[0]);
+  await page.click(`${W('tabs')} .dw-tab:text-is("Needs you")`);
+}
+
+// ---- the decisions KPI: every card filter (Phase, Tag, Agent, Type), focusable, opens its drill ----
+{
+  const reqs = reqWatch();
+  await page.goto(`${base}/?project=${seed.ws}&view=home&tag=ui&agent=Ada`);
+  await settledHome();
+  reqs.stop();
+  const waits = reqs.filter((u) => new URL(u).pathname === '/metrics/wait').map((u) => new URL(u).searchParams);
+  const kpiWaits = waits.filter((q) => q.get('tag') === 'ui');
+  ok(kpiWaits.length === 2 && kpiWaits.every((q) => q.get('agent') === 'Ada'), "decisions KPI: both /metrics/wait reads carry Home's tag and agent", waits.map(String));
+  const ui = await api(`/metrics/wait?project=${seed.ws}&tag=ui&agent=Ada`);
+  const all = await api(`/metrics/wait?project=${seed.ws}`);
+  const ids = (r) => [...r.waiting.blockers.map((x) => x.task_id), ...r.waiting.needsYou.map((x) => x.task_id)];
+  ok(ids(ui).every((id) => { const c = cards.find((x) => x.id === id); return c && c.tag === 'ui'; }) && ids(ui).length <= ids(all).length, '/metrics/wait?tag&agent: only waits on matching cards', { ui: ids(ui), all: ids(all) });
+  const K = `${W('kpi')}:has(.dw-title:text-is("What needs a human?"))`;
+  const main = await page.$(`${K} button.kpi-main`);
+  ok(!!main, 'decisions KPI: the headline is a button (focusable)');
+  const hint = await main?.getAttribute('title');
+  ok(/Tag/.test(hint ?? '') && /Agent/.test(hint ?? '') && /Type/.test(hint ?? ''), 'decisions KPI: its tooltip says Tag, Agent and Type apply', hint);
+  const n = Number(await page.$eval(`${K} .kpi-value`, (e) => e.textContent));
+  await main.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#home-view .mx-drill', { timeout: 10000 });
+  ok((await page.$eval('.mx-drill .mx-kicker', (e) => e.textContent)) === 'WHAT NEEDS A HUMAN' && (await page.$$('.mx-drill-row')).length === n, 'decisions KPI: Enter opens its drill, one row per item', { n, rows: (await page.$$('.mx-drill-row')).length });
+  await page.keyboard.press('Escape');
+  const kpis = await page.$$eval(`${W('kpi')} .kpi-main`, (es) => es.map((e) => e.tagName));
+  ok(kpis.length >= 2 && kpis.every((t) => t === 'BUTTON'), 'every KPI headline shown is a button (an empty-state KPI has none)', kpis);
+  ok(!!(await page.$(`${W('kpi')} .dw-title:text-is("Last 7 days vs 4-wk average")`)) && !(await page.$(`${W('kpi')} .dw-title:text-is("Is delivery speeding up?")`)), 'throughput KPI retitled "Last 7 days vs 4-wk average"');
+}
+
+// ---- drill-downs from Home: the banner names Home and the widget; the subtitle names the drill's phase ----
+{
+  await page.goto(`${base}/?project=${seed.ws}&view=home`);
+  await settledHome();
+  await page.click(`${W('now-building')} .wnb-more`);
+  await page.waitForSelector('#home-view .mx-drill');
+  // one board → "Open all N in Kanban" (this board: in place); several → "Open N in <board>" (another board: a reload with ?from=)
+  await page.click('.mx-drill-foot .mx-btn');
+  await page.waitForSelector('.mx-hl-chip', { timeout: 15000 });
+  const banner = await page.$eval('.mx-hl-chip span', (e) => e.textContent);
+  ok(/ highlighted from Home · Now building$/.test(banner), 'Open all from a Home widget: banner "from Home · <widget title>"', banner);
+  await page.evaluate(() => clearKanbanHighlight());
+  await page.goto(`${base}/?project=${seed.ws}&view=home`);
+  await settledHome();
+  await page.click(`${W('tabs')} .dw-tab:text-is("Delivery")`);
+  await page.waitForSelector(`${W('phase-health')} button.dl-ph-row`, { timeout: 15000 });
+  const title = await page.$eval(`${W('phase-health')} button.dl-ph-row .dl-name`, (e) => e.textContent);
+  await page.click(`${W('phase-health')} button.dl-ph-row`);
+  await page.waitForSelector('#home-view .mx-drill');
+  const sub = await page.$eval('.mx-drill-sub', (e) => e.textContent);
+  ok(sub.includes(title) && !sub.includes('all phases'), "phase drill: the subtitle names the drill's phase, not \"all phases\"", { sub, title });
+  await page.keyboard.press('Escape');
+  await page.click(`${W('tabs')} .dw-tab:text-is("Needs you")`);
+}
+
+// ---- Esc closes the expanded filter bar (the custom-range popover first) ----
+{
+  await openBar();
+  await page.focus(hsel('Tag'));
+  await page.keyboard.press('Escape');
+  ok(!(await page.$('#home-fb-bar')) && (await page.evaluate(() => document.activeElement.dataset.fb)) === 'chip', 'Esc closes the expanded filter bar, focus back on the chip');
+  await openBar();
+  await page.click(`${H} .mx-range .mx-chip`);
+  await page.waitForSelector(`${H} .mx-pop`);
+  await page.keyboard.press('Escape');
+  ok(!(await page.$(`${H} .mx-pop`)) && !!(await page.$('#home-fb-bar')), 'Esc with the custom range open: closes the popover only');
+  await page.keyboard.press('Escape');
+  ok(!(await page.$('#home-fb-bar')), 'a second Esc closes the bar');
+  await openBar();
+  await page.click('#home-name');
+  await page.keyboard.press('Escape');
+  ok(!(await page.$('#home-fb-bar')), 'Esc closes the bar with focus elsewhere on Home');
+  // the filter bar's dates are written like the chips: "Sep 7 – Oct 3"
+  await openBar();
+  const now = new Date();
+  const from = new Date(from4w);
+  ok((await page.$eval(`${H} .mx-range .mx-chip`, (e) => e.textContent)) === rangeDays(from, now), 'filter bar range reads like the chips ("Sep 7 – Oct 3")', await page.$eval(`${H} .mx-range .mx-chip`, (e) => e.textContent));
+  await page.keyboard.press('Escape');
 }
 
 // ---- Kanban: highlight source label (call + cross-board URL), Esc on the card modal ----

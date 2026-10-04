@@ -345,6 +345,28 @@ describe('wait-time DB readers', () => {
     assert.throws(() => waitMetrics(db, { projectIds: [ws.id], from: now + 1, to: now }, { tz: 'UTC', now }), MetricsParamError);
   });
 
+  it('filters needs_you and blockers by the card\'s tag and agent (card-less waits drop out)', (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: T });
+    const { db, ws, v, a, b } = setup(t);
+    db.prepare('UPDATE tasks SET tag = ?, assigned_agent = ? WHERE id = ?').run('ui', 'Ada', a.id);
+    db.prepare('UPDATE tasks SET tag = ? WHERE id = ?').run('api', b.id);
+    const s = wired(db);
+    const now = Date.now();
+    s.record(ws.id, ping('needs you', now - 5 * MIN, a.id));
+    s.record(v.id, ping('needs you', now - 3 * MIN));
+    raiseBlocker(db, a.id, 'why');
+    raiseBlocker(db, b.id, 'which');
+    const ids = (f: { tag?: string; agent?: string }) => ({
+      needs: loadNeedsYou(db, { projectIds: [ws.id], ...f }).map((n) => n.task_id),
+      blockers: loadBlockers(db, { projectIds: [ws.id], ...f }).map((x) => x.task_id),
+    });
+    assert.deepEqual(ids({ tag: 'ui' }), { needs: [a.id], blockers: [a.id] });
+    assert.deepEqual(ids({ tag: 'api' }), { needs: [], blockers: [b.id] });
+    assert.deepEqual(ids({ agent: 'Ada' }), { needs: [a.id], blockers: [a.id] });
+    assert.deepEqual(ids({ tag: 'ui', agent: 'Bo' }), { needs: [], blockers: [] });
+    assert.equal(waitMetrics(db, { projectIds: [ws.id], tag: 'ui', agent: 'Ada' }, { tz: 'UTC', now }).waiting.count, 2);
+  });
+
   it('deleteProject drops a board\'s waits; mergeVerticals moves them (ending the open one)', (t) => {
     const { db, ws, v } = setup(t);
     const s = wired(db);

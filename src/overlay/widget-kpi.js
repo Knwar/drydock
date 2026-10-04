@@ -218,15 +218,21 @@ function kpiBudgetRender(el, d, ctx) {
 }
 
 // ── decisions: "What needs a human?" ──
+// Every card filter applies (Phase, Tag, Agent, Type): /metrics/wait filters server-side; /attention
+// (every card of the scope) here, its tags from the shared /workspace/cards read (only with a Tag filter).
+const KPI_DECISIONS_HINT = 'List what needs a human (Home’s Phase, Tag, Agent and Type filters apply)';
 async function kpiDecisionsLoad(ctx) {
   const f = kpiFilters(ctx);
+  const card = { phase: f.phase, tag: f.tag, agent: f.agent, workType: f.workType };
   // live (range-free) reads for the list + count; a separate ranged compare read only for the chip
-  const [att, wait, ranged, since] = await Promise.all([
+  const [att, wait, ranged, since, all] = await Promise.all([
     kpiGet(ctx, '/attention', { project: f.project }),
-    kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType }),
-    kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType, from: f.from, to: f.to, compare: 'previous' }),
+    kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, ...card }),
+    kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, ...card, from: f.from, to: f.to, compare: 'previous' }),
     dwFirstActivity(ctx).catch(() => null),
+    f.tag ? dwCards(ctx) : null,
   ]);
+  const tagOf = new Map((all?.cards ?? []).map((c) => [c.id, c.tag ?? null]));
   const seen = new Set();
   const items = [];
   const add = (it) => {
@@ -234,11 +240,12 @@ async function kpiDecisionsLoad(ctx) {
     if (it.id) seen.add(it.id);
     items.push(it);
   };
-  // the Type filter, applied here (/attention returns every type): 'none' = unclassified
+  // the card filters, applied here (/attention returns every card): Type 'none' = unclassified
   const typeOk = (a) => !f.workType || (f.workType === 'none' ? !a.work_type : a.work_type === f.workType);
+  const cardOk = (a) => typeOk(a) && (!f.tag || tagOf.get(a.card_id) === f.tag) && (!f.agent || a.agent === f.agent);
   // decisions: blockers (raised, failed twice, unmerged, sync conflicts) + sessions waiting on you; the
   // stall heuristic ("Agent quiet … — may be stuck") is a guess, not a decision: counted apart
-  const scoped = att.filter((a) => a.severity === 'blocker' && (!f.phase || a.phase_id === f.phase) && typeOk(a));
+  const scoped = att.filter((a) => a.severity === 'blocker' && (!f.phase || a.phase_id === f.phase) && cardOk(a));
   for (const a of scoped) if (a.kind !== 'stalled') add({ id: a.card_id, board: f.project, title: a.title, since: a.since });
   for (const x of wait.waiting.blockers) add({ id: x.task_id, board: x.project_id, title: x.title, since: x.since });
   for (const n of wait.waiting.needsYou) add({ id: n.task_id, board: n.project_id, title: n.reason ? `Session waiting: ${n.reason}` : 'A session is waiting on you', since: n.since });
@@ -247,14 +254,31 @@ async function kpiDecisionsLoad(ctx) {
   return { items, stuck, ranged, since };
 }
 
+async function kpiDrillDecisions(ctx, d, btn) {
+  btn.disabled = true;
+  try {
+    const meta = await homeMeta();
+    const cards = d.items.map((it) => {
+      const c = it.id ? meta?.cards.get(it.id) : null;
+      return { ...(c ?? {}), id: it.id ?? undefined, title: it.title, board: c?.board ?? it.board, lane: c?.lane ?? '', lane_since: it.since, blocked: c?.blocked };
+    });
+    await ctx.drillCards({ kicker: 'WHAT NEEDS A HUMAN', title: `${cards.length} waiting on you`, cards });
+  } catch (e) {
+    console.error('kpi decisions drill', e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function kpiDecisionsRender(el, d, ctx) {
   const now = Date.now();
   const n = d.items.length;
   // needs-you waits + blocker waits overlapping the range vs the previous period; down is good
   const w = d.ranged;
   const waits = (r) => (r ? r.needsYou.count + r.blocked.count : null);
+  const main = kpiMain(String(n), 'waiting on you', n ? `oldest ${mxWait(now - d.items[0].since)}` : 'no blockers, no sessions waiting', () => kpiDrillDecisions(ctx, d, main), KPI_DECISIONS_HINT);
   el.append(
-    kpiMain(String(n), 'waiting on you', n ? `oldest ${mxWait(now - d.items[0].since)}` : 'no blockers, no sessions waiting'),
+    main,
     kpiDeltaRow(kpiPrevDelta(w, ctx, d.since, `Waits this period ${waits(w)}`, -1, String, waits(w), waits(w.previous)), 'waits this period'),
     n ? kpiStatus('warn', 'Needs you') : kpiStatus('ok', 'All clear'),
   );
@@ -280,7 +304,7 @@ function kpiDecisionsRender(el, d, ctx) {
   el.append(list);
 }
 
-// ── throughput: "Is delivery speeding up?" (a trend: up is good) ──
+// ── throughput: "Last 7 days vs 4-wk average" (a trend: up is good; not throughput-trend's weekly chart) ──
 // One /metrics/flow read over the last 8 rolling 7-day windows ending now (no partial ISO week).
 // Windows ending before the board's first activity (flow.firstActivityAt) are pre-history: left
 // out of the sparkline, and the prior average counts only full windows (starting at or after it).
@@ -349,7 +373,7 @@ const KPI_METRICS = {
   schedule: { q: 'Will the active phase hit its date?', load: kpiScheduleLoad, render: kpiScheduleRender },
   budget: { q: 'Is spend within budget?', load: kpiBudgetLoad, render: kpiBudgetRender },
   decisions: { q: 'What needs a human?', load: kpiDecisionsLoad, render: kpiDecisionsRender },
-  throughput: { q: 'Is delivery speeding up?', load: kpiThroughputLoad, render: kpiThroughputRender },
+  throughput: { q: 'Last 7 days vs 4-wk average', load: kpiThroughputLoad, render: kpiThroughputRender },
 };
 
 dwRegister({

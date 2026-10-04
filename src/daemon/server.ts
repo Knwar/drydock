@@ -1649,6 +1649,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const filter: waitTime.WaitFilter = { projectIds: [project] };
       const phase = q.get('phase');
       if (phase) filter.phaseId = phase;
+      const tag = q.get('tag');
+      if (tag) filter.tag = tag;
+      const agent = q.get('agent');
+      if (agent) filter.agent = agent;
       const workType = workTypeParam(q);
       if (workType) filter.workType = workType;
       const from = q.get('from');
@@ -2309,7 +2313,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const project = url.searchParams.get('project');
     const root = project && projectRoot(project);
     if (!root) return json(res, 404, { error: 'unknown project' });
-    if (pathname === '/git/status') return json(res, 200, await gitStatus(root));
+    if (pathname === '/git/status') {
+      // quiet=1 (the rail's change-count badge): a non-git root is no changes, not an error the
+      // browser would log on every board load
+      if (!url.searchParams.get('quiet')) return json(res, 200, await gitStatus(root));
+      return json(res, 200, await gitStatus(root).catch(() => ({ branch: null, base: null, files: [], remote: null })));
+    }
     const file = url.searchParams.get('file');
     if (!file) return json(res, 400, { error: 'file required' });
     res.writeHead(200, { 'content-type': 'text/plain' });

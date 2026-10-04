@@ -99,9 +99,11 @@ body.embed .home-edit, body.de-editing .home-edit { display: none; }
   line-height: 16px;
   opacity: 0.8;
 }
-/* the row's first widget makes room under the label: its head (or a headless body) starts lower */
-.de-editing .dw-row > .dw-slot:first-child > .dw-widget:first-child > .dw-head { padding-top: 32px; }
-.de-editing .dw-row > .dw-slot:first-child > .dw-widget:first-child > .dw-head.hidden + .dw-body { padding-top: 32px; }
+/* the label and handle overlay the row's top edge (centred on the frames' top border, half in the gap
+   above): the widgets' content keeps its place, nothing is pushed down */
+.de-row-bar { padding-top: 0; margin-bottom: calc(-1 * var(--dw-gap)); }
+.de-row-bar > .de-row-label { margin-top: -8px; }
+.de-row-bar > .de-btn { margin-top: -10px; }
 .de-row-bar .de-btn { width: 20px; height: 20px; }
 .de-row-bar:hover .de-row-label, .de-row-bar:focus-within .de-row-label, .de-row-bar.de-selected .de-row-label { opacity: 1; }
 .de-row-bar:is(:hover, :focus-within, .de-selected) .de-btn, .de-row-bar:has(+ .dw-row:hover) .de-btn { opacity: 1; }
