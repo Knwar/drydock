@@ -247,9 +247,8 @@ function deliveryLead(workspace: boolean): DashboardLayout {
       title: 'Delivery',
       ids: 6,
       rows: () => [
-        line(4, ['forecast', 'M', 6], ['milestones', 'M', 6]),
-        line(5, ['phase-health', 'L', 12]),
-        line(4, ['scope-change', 'M', 6], ['planned-delivered', 'M', 6]),
+        line(5, ['phase-health', 'L', 8], ['forecast', 'M', 4]),
+        line(4, ['milestones', 'M', 4], ['scope-change', 'M', 4], ['planned-delivered', 'M', 4]),
       ],
     },
     { title: 'Flow', ids: 6, rows: () => [line(5, ['throughput-trend', 'L', 8], ['wip', 'M', 4]), line(5, ['cycle-breakdown', 'L', 12])] },
@@ -257,7 +256,7 @@ function deliveryLead(workspace: boolean): DashboardLayout {
     {
       title: 'Quality and risk',
       ids: 4,
-      rows: () => [line(4, ['quality', 'M', 6], ['speed-stability', 'M', 6]), line(5, ['top-risks', 'L', 12]), line(4, ['rag-trend', 'M', 12])],
+      rows: () => [line(4, ['quality', 'M', 6], ['speed-stability', 'M', 6]), line(5, ['top-risks', 'L', 8], ['rag-trend', 'M', 4])],
     },
   ]);
   const section = b.section('Overview', top, kpis, ...ws, tabs.row, sendRow(b));

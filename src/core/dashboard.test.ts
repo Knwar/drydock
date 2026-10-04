@@ -109,10 +109,10 @@ describe('builtin tab groups', () => {
     it(`Delivery lead (${v}): the delivery lead's tabs`, () => {
       assert.deepEqual(shape(dl.layout), {
         'Needs you': ['4: up-next M/6 + review-queue M/6', '4: escalation M/6 + gate-readiness M/6'],
-        Delivery: ['4: forecast M/6 + milestones M/6', '5: phase-health L/12', '4: scope-change M/6 + planned-delivered M/6'],
+        Delivery: ['5: phase-health L/8 + forecast M/4', '4: milestones M/4 + scope-change M/4 + planned-delivered M/4'],
         Flow: ['5: throughput-trend L/8 + wip M/4', '5: cycle-breakdown L/12'],
         Spend: ['4: ai-spend M/6 + investment-mix M/6', '5: budget-burn L/12'],
-        'Quality and risk': ['4: quality M/6 + speed-stability M/6', '5: top-risks L/12', '4: rag-trend M/12'],
+        'Quality and risk': ['4: quality M/6 + speed-stability M/6', '5: top-risks L/8 + rag-trend M/4'],
       });
       const top = dl.layout.sections[0].rows[0].slots.flatMap((s) => s.widgets.map((w) => w.type));
       const inTabs = tabWidgets(dl.layout).map((w) => w.type);
@@ -158,6 +158,14 @@ describe('builtin tab groups', () => {
           }
         }
       }
+    });
+
+    it(`no tab holds more than 10 units of rows, so the tabs row fits it without scrolling (${v})`, () => {
+      for (const t of [dl, ex, ao])
+        for (const tab of tabsOf(t.layout)) {
+          const h = tab.rows.reduce((sum, r) => sum + r.height, 0);
+          assert.ok(h <= 10, `${t.name} / ${tab.title}: ${h}`);
+        }
     });
 
     it(`the tabs row fits its tallest tab, capped at 12 (${v})`, () => {
