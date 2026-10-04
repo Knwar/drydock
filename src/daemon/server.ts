@@ -16,6 +16,7 @@ import * as metrics from '../core/metrics.js';
 import * as waitTime from '../core/wait-time.js';
 import * as quality from '../core/quality.js';
 import * as agentic from '../core/agentic.js';
+import * as estimates from '../core/estimates.js';
 import * as forecast from '../core/forecast.js';
 import * as milestones from '../core/milestones.js';
 import * as schedule from '../core/schedule.js';
@@ -1785,6 +1786,39 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
   }
 
+  // ── estimates vs actuals: hourly rate, coverage, perception gap (core/estimates.ts) ──
+  if (method === 'GET' && pathname === '/metrics/estimates') {
+    const q = url.searchParams;
+    const project = q.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
+    try {
+      const filter = costFilterParam(q, project, tz); // the flow filters: phase, tag, agent, workType, from / to
+      const now = Date.now();
+      return json(
+        res,
+        200,
+        withCompare(
+          q,
+          filter,
+          (f) => estimates.estimateMetrics(db, f, { tz, now }),
+          (r) => ({
+            done: r.done,
+            coverage: { pct: r.coverage.pct },
+            hourlyRate: { hoursPerDollar: r.hourlyRate.hoursPerDollar, dollarsPerHour: r.hourlyRate.dollarsPerHour },
+            perception: { medianRatio: r.perception.medianRatio },
+          }),
+          { tz, now },
+        ),
+      );
+    } catch (err) {
+      const status = err instanceof metrics.MetricsParamError ? 400 : 500;
+      return json(res, status, { error: (err as Error).message });
+    }
+  }
+
   // ── agent history (core/agent-history.ts): a team member's cards, runs and totals; off-roster names give an empty history ──
   const agentHistoryMatch = pathname.match(/^\/agents\/([^/]+)\/history$/);
   if (method === 'GET' && agentHistoryMatch) {
@@ -2213,6 +2247,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       depends_on: b.depends_on,
       phase_id: b.phase_id,
       work_type: b.work_type,
+      estimate_hours: b.estimate_hours,
     });
     announce(task);
     return json(res, 200, { task_id: task.id });

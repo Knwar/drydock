@@ -4033,6 +4033,7 @@ async function refreshCardModal() {
   const meta = [
     task.tag && `${team(task.tag).name} team`,
     { workType: task.work_type ?? '' },
+    { estimate: task.estimate_hours ?? null },
     LANE_NAME(task.lane),
     task.assigned_agent && { agent: task.assigned_agent },
     task.skill && `✦ ${task.skill}`,
@@ -4046,11 +4047,17 @@ async function refreshCardModal() {
     if (act.ms) meta.push(fmtDur(act.ms));
   }
   const metaEl = document.getElementById('card-meta');
-  const wtFocused = document.activeElement?.closest?.('.cm-wt') && metaEl.contains(document.activeElement);
+  const wtFocused = document.activeElement?.closest?.('.cm-wt-sel') && metaEl.contains(document.activeElement);
+  // a live update while the estimate is being typed keeps the draft and the caret
+  const estInput = metaEl.querySelector('.cm-est-in');
+  const estDraft = estInput && document.activeElement === estInput ? estInput.value : null;
+  // removing the focused input blurs it, and Chrome then fires `change`: that must not save the draft
+  if (estDraft !== null) estInput.onchange = estInput.onblur = null;
   metaEl.replaceChildren(
     ...meta.map((m) => {
       if (typeof m === 'string') return node('span', '', m);
       if ('workType' in m) return cardWorkTypeEl(task.id, m.workType);
+      if ('estimate' in m) return cardEstimateEl(task.id, m.estimate);
       const member = teamByName.get(m.agent);
       if (!member) return node('span', '', `● ${m.agent}`);
       const chip = node('span', 'cm-agent');
@@ -4059,6 +4066,13 @@ async function refreshCardModal() {
     }),
   );
   if (wtFocused) metaEl.querySelector('.cm-wt select')?.focus(); // a live update mid-choice keeps focus
+  if (estDraft !== null) {
+    const el = metaEl.querySelector('.cm-est-in');
+    if (el) {
+      el.value = estDraft;
+      el.focus();
+    }
+  }
   const blockedBox = document.getElementById('card-blocked');
   blockedBox.classList.toggle('hidden', !task.blocked_at);
   if (task.blocked_at) {
@@ -4088,7 +4102,7 @@ async function refreshCardModal() {
 // a failure shows inline next to it (the live card update re-renders on success). The PATCH in
 // flight lives in cardWtPending, so a select redrawn meanwhile shows its value, disabled, and
 // the outcome lands on whichever select is on screen for the card when it completes.
-const cardWtCurrent = (id) => (openCardId === id ? document.querySelector('#card-meta .cm-wt-wrap') : null);
+const cardWtCurrent = (id) => (openCardId === id ? document.querySelector('#card-meta .cm-wt-sel')?.closest('.cm-wt-wrap') ?? null : null);
 function cardWtPaint(wrap, value, pending, error) {
   const field = wrap.querySelector('.cm-wt');
   const sel = wrap.querySelector('select');
@@ -4141,6 +4155,64 @@ function cardWorkTypeEl(id, value) {
   wrap.append(field, err);
   const pending = cardWtPending.has(id);
   cardWtPaint(wrap, pending ? cardWtPending.get(id) : value, pending, cardWtError?.id === id ? cardWtError.msg : '');
+  return wrap;
+}
+
+// The meta line's "Est. human hours": a number input (empty = no estimate) that PATCHes
+// estimate_hours on Enter or on change (blur); a bad value or a failed save shows inline next to
+// it. `state.saved` is the last value sent, so Enter, change and blur save once. Unparseable text
+// (validity.badInput, e.g. "1e": the input then reads "") is an error, never a clear.
+async function cardEstimateSave(id, input, err, state) {
+  if (input.validity.badInput) {
+    err.textContent = 'Enter hours > 0 and ≤ 1000, or leave it empty';
+    return;
+  }
+  const raw = input.value.trim();
+  const next = raw === '' ? null : Number(raw);
+  if (next !== null && !(Number.isFinite(next) && next > 0 && next <= 1000)) {
+    err.textContent = 'Enter hours > 0 and ≤ 1000, or leave it empty';
+    return;
+  }
+  if (next === state.saved) {
+    err.textContent = '';
+    return;
+  }
+  const prev = state.saved;
+  state.saved = next;
+  input.disabled = true;
+  let msg = null;
+  try {
+    const res = await fetch(`/task/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ estimate_hours: next }),
+    });
+    if (!res.ok) msg = (await res.json().catch(() => null))?.error ?? `HTTP ${res.status}`;
+  } catch {
+    msg = 'Daemon unreachable';
+  }
+  input.disabled = false;
+  if (msg) state.saved = prev;
+  err.textContent = msg ? `Couldn't save the estimate: ${msg}` : '';
+  if (msg) input.focus();
+}
+function cardEstimateEl(id, value) {
+  const wrap = node('span', 'cm-est-wrap');
+  const field = node('label', 'cm-est');
+  field.append(node('span', 'cm-est-k', 'Est. human hours'));
+  const input = node('input', 'cm-est-in');
+  Object.assign(input, { type: 'number', min: '0', max: '1000', step: 'any', placeholder: '—', value: value ?? '' });
+  input.setAttribute('aria-label', 'Estimated human hours');
+  const err = node('span', 'cm-est-err');
+  err.setAttribute('role', 'alert');
+  const state = { saved: value };
+  input.onchange = () => cardEstimateSave(id, input, err, state);
+  input.onblur = () => cardEstimateSave(id, input, err, state); // a draft kept across a re-render fires no change
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') cardEstimateSave(id, input, err, state); // also a draft kept across a re-render (no change event)
+  };
+  field.append(input);
+  wrap.append(field, err);
   return wrap;
 }
 

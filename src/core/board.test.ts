@@ -2843,6 +2843,31 @@ describe('mergeVerticals', () => {
   });
 });
 
+describe('estimate_hours', () => {
+  it('round-trips on create and update; null clears it; absent leaves it', () => {
+    const { db, project } = setup();
+    const a = createTask(db, project.id, 'A', { estimate_hours: 6 });
+    assert.equal(a.estimate_hours, 6);
+    assert.equal(getTask(db, a.id).estimate_hours, 6);
+    assert.equal(createTask(db, project.id, 'B').estimate_hours, null);
+    assert.equal(updateTask(db, a.id, { estimate_hours: 0.5 }).estimate_hours, 0.5);
+    assert.equal(updateTask(db, a.id, { requirements: 'x' }).estimate_hours, 0.5);
+    assert.equal(updateTask(db, a.id, { estimate_hours: 1000 }).estimate_hours, 1000);
+    assert.equal(updateTask(db, a.id, { estimate_hours: null }).estimate_hours, null);
+  });
+
+  it('rejects anything but a number > 0 and <= 1000 and writes nothing', () => {
+    const { db, project } = setup();
+    for (const bad of [0, -1, 1000.5, Number.NaN, Number.POSITIVE_INFINITY, '6', true])
+      assert.throws(() => createTask(db, project.id, 'A', { estimate_hours: bad as never }), /invalid estimate_hours/, String(bad));
+    assert.equal(getBoard(db, project.id).length, 0);
+    const b = createTask(db, project.id, 'B', { estimate_hours: 3 });
+    assert.throws(() => updateTask(db, b.id, { estimate_hours: 0 }), /invalid estimate_hours: 0 \(expected a number > 0 and <= 1000, or null\)/);
+    assert.throws(() => updateTask(db, b.id, { estimate_hours: '4' }), /invalid estimate_hours/);
+    assert.equal(getTask(db, b.id).estimate_hours, 3);
+  });
+});
+
 describe('work_type', () => {
   it('round-trips on create and update; null clears it', () => {
     const { db, project } = setup();

@@ -29,6 +29,7 @@ export function migrate(db: DB): void {
   if (!cols.includes('blocked_reason')) db.exec('ALTER TABLE tasks ADD COLUMN blocked_reason TEXT');
   if (!cols.includes('work_type'))
     db.exec("ALTER TABLE tasks ADD COLUMN work_type TEXT CHECK (work_type IN ('feature','defect','debt','risk'))");
+  if (!cols.includes('estimate_hours')) db.exec('ALTER TABLE tasks ADD COLUMN estimate_hours REAL');
   // Index lives here, not schema.sql: on a legacy DB schema.sql runs before the phase_id ALTER above.
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_phase ON tasks(phase_id)');
   // Workspace verticals: parent_id on projects created before it existed.

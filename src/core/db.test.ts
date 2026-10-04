@@ -184,6 +184,30 @@ describe('migrate', () => {
     assert.throws(() => db.prepare("UPDATE tasks SET work_type = 'bogus' WHERE id = 't1'").run(), /CHECK/);
   });
 
+  it('adds tasks.estimate_hours (REAL, nullable) once to an old-schema db; existing rows read NULL', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'kankan-db-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, 'board.db');
+    const old = new Database(path);
+    old.exec(LEGACY_TASKS_DDL); // no estimate_hours
+    old.prepare('INSERT INTO tasks (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run('t1', 'p1', 'Old card', 1, 1);
+    old.close();
+
+    for (let i = 0; i < 2; i++) openDb(path).close();
+
+    const db = openDb(path);
+    t.after(() => db.close());
+    const cols = (db.pragma('table_info(tasks)') as { name: string; type: string }[]).filter((c) => c.name === 'estimate_hours');
+    assert.deepEqual(cols.map((c) => c.type), ['REAL']);
+    assert.equal((db.prepare('SELECT estimate_hours FROM tasks WHERE id = ?').get('t1') as { estimate_hours: number | null }).estimate_hours, null);
+    db.prepare("UPDATE tasks SET estimate_hours = 2.5 WHERE id = 't1'").run();
+    assert.equal((db.prepare('SELECT estimate_hours FROM tasks WHERE id = ?').get('t1') as { estimate_hours: number }).estimate_hours, 2.5);
+    // a fresh db has it from schema.sql
+    const fresh = openDb();
+    t.after(() => fresh.close());
+    assert.ok((fresh.pragma('table_info(tasks)') as { name: string }[]).some((c) => c.name === 'estimate_hours'));
+  });
+
   it('fresh db: has tasks.work_type (CHECKed) and the snapshot/usage tables with their keys', (t) => {
     const db = openDb();
     t.after(() => db.close());
