@@ -511,8 +511,10 @@ export function agenticMetrics(db: DB, filter: MetricsFilter, opts: { tz: string
 //        (plan-graph longestChain). With no chain of 2+ cards there is no critical path, and
 //        it falls back to the phase's in-flight cards (queued / in_progress / in_review),
 //        flagged `approximation: true`. On a workspace (no phase filter) every vertical's
-//        active phase is judged the same way and the blocked time is summed: `phases` holds
-//        each one, `scope` says which ('board' or 'workspace+verticals').
+//        active phase is judged the same way; verticals run in parallel, so the headline slip
+//        is the MAX over the phases (that phase's days, cards, basis and `phase`), and
+//        blockedDaysTotal is their sum. `phases` holds each one, `scope` says which ('board'
+//        or 'workspace+verticals').
 //      - queue: needs_you sessions + open blockers in scope now, oldest first.
 //  - costAnomaly: the board's TOTAL daily spend (all phases summed) over [from - 14 days, to]
 //    (local days in tz); per-phase series ride along as context. A day in [from, to] is flagged
@@ -672,8 +674,7 @@ export interface SlipCard {
 
 export interface Slip {
   phase: { id: string; title: string } | null;
-  /** critical_path / in_flight per phase; 'mixed' when combined phases differ. */
-  basis: 'critical_path' | 'in_flight' | 'mixed' | null;
+  basis: 'critical_path' | 'in_flight' | null;
   /** True when no critical path exists and in-flight cards stand in for it. */
   approximation: boolean;
   cards: { id: string; title: string; blockedMs: number }[];
@@ -682,28 +683,30 @@ export interface Slip {
   reason: string | null;
 }
 
-/** Slip across boards: one Slip per active phase, combined (blocked time summed). */
+/**
+ * Slip across boards: one Slip per active phase, combined. Verticals run in parallel, so their
+ * delays don't add up: the headline (days, blockedMs, phase, basis, cards, reason) is the phase
+ * with the most blocked time; blockedDaysTotal is the sum over all of them.
+ */
 export interface CombinedSlip extends Slip {
+  /** Σ blocked days over every phase (context: the headline `days` is the max). */
+  blockedDaysTotal: number;
   /** 'board': the board's own active phase; 'workspace+verticals': the workspace's and its verticals' active phases. */
   scope: 'board' | 'workspace+verticals';
   /** Each phase's own slip, with its board. */
   phases: (Slip & { project_id: string })[];
 }
 
-/** Combine per-phase slips: blocked time and cards summed; the first phase leads (it's the requested board's). */
+/** Combine per-phase slips: the phase with the most blocked time sets the headline (ties: the first,
+ *  i.e. the requested board's); the sum is blockedDaysTotal. */
 export function combineSlips(parts: (Slip & { project_id: string })[], scope: CombinedSlip['scope']): CombinedSlip {
   const real = parts.filter((p) => p.phase !== null);
-  if (!real.length) return { ...slipDays(null, [], [], 0), scope, phases: [] };
-  const bases = new Set(real.map((p) => p.basis));
-  const blockedMs = real.reduce((a, p) => a + p.blockedMs, 0);
+  if (!real.length) return { ...slipDays(null, [], [], 0), scope, phases: [], blockedDaysTotal: 0 };
+  const top = real.reduce((m, p) => (p.blockedMs > m.blockedMs ? p : m), real[0]);
+  const { project_id: _, ...headline } = top;
   return {
-    phase: real[0].phase,
-    basis: bases.size === 1 ? real[0].basis : 'mixed',
-    approximation: real.some((p) => p.approximation),
-    cards: real.flatMap((p) => p.cards),
-    blockedMs,
-    days: blockedMs / 86_400_000,
-    reason: real.find((p) => p.reason)?.reason ?? null,
+    ...headline,
+    blockedDaysTotal: real.reduce((a, p) => a + p.blockedMs, 0) / 86_400_000,
     scope,
     phases: real,
   };

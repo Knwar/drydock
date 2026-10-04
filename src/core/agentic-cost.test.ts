@@ -327,18 +327,25 @@ describe('usageRunway', () => {
 describe('combineSlips', () => {
   const phase = (id: string) => ({ id, title: id });
   const card = (id: string, lane: string, depends_on: string[] = []) => ({ id, title: id, lane, depends_on });
-  it('sums blocked time over the phases; basis mixed when they differ; the first phase leads', () => {
+  it('parallel phases: the headline is the max, the sum is blockedDaysTotal', () => {
     const ws = { ...slipDays(phase('W'), [card('a', 'done'), card('b', 'queued', ['a'])], [{ task_id: 'b', from: 0, to: DAY }], DAY), project_id: 'ws' };
-    const v = { ...slipDays(phase('V'), [card('c', 'in_progress')], [{ task_id: 'c', from: 0, to: DAY / 2 }], DAY), project_id: 'v' };
+    const v = { ...slipDays(phase('V'), [card('c', 'in_progress')], [{ task_id: 'c', from: 0, to: 2 * DAY }], 2 * DAY), project_id: 'v' };
     const s = combineSlips([ws, v], 'workspace+verticals');
-    assert.deepEqual([s.scope, s.phase?.id, s.basis, s.approximation, s.days], ['workspace+verticals', 'W', 'mixed', true, 1.5]);
+    // V (2d) sets the headline: its phase, basis, cards; W's 1d only adds to the total
+    assert.deepEqual([s.scope, s.phase?.id, s.basis, s.approximation, s.days, s.blockedDaysTotal], ['workspace+verticals', 'V', 'in_flight', true, 2, 3]);
+    assert.deepEqual(s.cards.map((c) => c.id), ['c']);
     assert.deepEqual(s.phases.map((p) => [p.project_id, p.days]), [
       ['ws', 1],
-      ['v', 0.5],
+      ['v', 2],
     ]);
-    assert.deepEqual(s.cards.map((c) => c.id), ['a', 'b', 'c']);
+    assert.ok(!('project_id' in s), 'the headline carries no project_id of its own');
+  });
+  it('two verticals blocked 3 days each: slip 3 days, blockedDaysTotal 6', () => {
+    const blocked3 = (id: string) => ({ ...slipDays(phase(id), [card(id, 'in_progress')], [{ task_id: id, from: 0, to: 3 * DAY }], 3 * DAY), project_id: id });
+    const s = combineSlips([{ ...slipDays(phase('WS'), [], [], 3 * DAY), project_id: 'ws' }, blocked3('web'), blocked3('api')], 'workspace+verticals');
+    assert.deepEqual([s.days, s.blockedDaysTotal, s.phase?.id], [3, 6, 'web']); // a tie keeps the first
     const none = combineSlips([], 'board');
-    assert.deepEqual([none.phase, none.reason, none.phases, none.scope], [null, 'no active phase', [], 'board']);
+    assert.deepEqual([none.phase, none.reason, none.phases, none.scope, none.blockedDaysTotal], [null, 'no active phase', [], 'board', 0]);
   });
 });
 
@@ -456,8 +463,10 @@ describe('agenticCostMetrics (DB)', () => {
       [ws.id, 'WS phase'],
       [web.id, 'Web phase'],
     ]);
-    assert.equal(slip.phase?.title, 'WS phase');
+    // the vertical's 1 day is the max (the workspace phase has none): it sets the headline
+    assert.equal(slip.phase?.title, 'Web phase');
     assert.ok(Math.abs(slip.days - 1) < 1e-3, `${slip.days}`);
+    assert.ok(Math.abs(slip.blockedDaysTotal - 1) < 1e-3, `${slip.blockedDaysTotal}`);
     // the vertical on its own: its phase only
     const own = agenticCostMetrics(db, { projectIds: [web.id] }, { tz: 'UTC', now, project: web.id }).decisionLatencyCost.slip!;
     assert.deepEqual([own.scope, own.phases.length, own.phase?.title], ['board', 1, 'Web phase']);

@@ -87,7 +87,7 @@ describe('estimatesFrom', () => {
       hoursPerDollar: 4,
       dollarsPerHour: 0.25,
       byAgent: [{ agent: null, cards: 3, estimateHours: 16, cost: 4, hoursPerDollar: 4 }],
-      byAgentBasis: { hours: 'assignee', cost: 'run_agent' },
+      byAgentBasis: { hours: 'spend_share', cost: 'run_agent' },
     });
     assert.equal(r.perception.measure, 'build_time');
     assert.deepEqual(
@@ -119,7 +119,7 @@ describe('estimatesFrom', () => {
         hoursPerDollar: null,
         dollarsPerHour: null,
         byAgent: [],
-        byAgentBasis: { hours: 'assignee', cost: 'run_agent' },
+        byAgentBasis: { hours: 'spend_share', cost: 'run_agent' },
       },
       perception: { measure: 'build_time', cards: [], medianRatio: null, topMisses: [], tooShort: 0, fallbacks: 0 },
     });
@@ -128,13 +128,14 @@ describe('estimatesFrom', () => {
     assert.deepEqual([none.done, none.coverage.pct, none.hourlyRate.hoursPerDollar, none.perception.medianRatio], [1, 0, null, null]);
   });
 
-  it('byAgent with runs: spend per run agent, hours per assignee (a card that changed hands)', () => {
-    const ds = deriveCards([card('a', T0, 4, 'ada-id'), card('b', T0, 2, 'Bram')], END);
+  it('byAgent with runs: spend per run agent, each card\'s hours split by spend share', () => {
+    const ds = deriveCards([card('a', T0, 4, 'Ada'), card('b', T0, 2, 'Bram'), card('n', T0, 2, 'Ada')], END);
     const r = estimatesFrom(
       ds,
       new Map([
         ['a', 6],
         ['b', 2],
+        ['n', 9], // estimated, no spend: out of byAgent, as out of the overall rate
       ]),
       new Map([
         ['a', 3],
@@ -142,22 +143,54 @@ describe('estimatesFrom', () => {
       ]),
       {
         ...opts,
-        // a was built partly by Bram before it moved to Ada
+        // a was built by Ada ($2) and Bram ($1): its 6h split 4h / 2h
         runs: [
           { task_id: 'a', agent: 'Ada', cost: 2 },
           { task_id: 'a', agent: 'Bram', cost: 1 },
           { task_id: 'b', agent: 'Bram', cost: 1 },
           { task_id: 'zzz', agent: 'Ada', cost: 50 }, // not an estimated, spent card: ignored
         ],
-        agentName: (label) => (label === 'ada-id' ? 'Ada' : label), // assignee labels map to member names
       },
     );
     assert.deepEqual(r.hourlyRate.byAgent, [
-      { agent: 'Ada', cards: 1, estimateHours: 6, cost: 2, hoursPerDollar: 3 },
-      { agent: 'Bram', cards: 1, estimateHours: 2, cost: 2, hoursPerDollar: 1 },
+      { agent: 'Ada', cards: 1, estimateHours: 4, cost: 2, hoursPerDollar: 2 },
+      { agent: 'Bram', cards: 2, estimateHours: 4, cost: 2, hoursPerDollar: 2 },
     ]);
-    // the spend parts add up to the overall spend
-    assert.equal(r.hourlyRate.byAgent.reduce((s, a) => s + a.cost, 0), r.hourlyRate.cost);
+    assert.deepEqual(r.hourlyRate.byAgentBasis, { hours: 'spend_share', cost: 'run_agent' });
+    // every row has a finite rate; the rows add up to the overall hours and spend
+    assert.ok(r.hourlyRate.byAgent.every((x) => x.hoursPerDollar !== null && Number.isFinite(x.hoursPerDollar)));
+    const sum = (k: 'estimateHours' | 'cost') => r.hourlyRate.byAgent.reduce((t, x) => t + x[k], 0);
+    assert.ok(Math.abs(sum('estimateHours') - r.hourlyRate.estimateHours) < 1e-6);
+    assert.ok(Math.abs(sum('cost') - r.hourlyRate.cost) < 1e-6);
+  });
+
+  it('byAgent: uneven shares still add up exactly to the overall figures', () => {
+    const ds = deriveCards([card('a', T0, 4), card('b', T0, 2)], END);
+    const r = estimatesFrom(
+      ds,
+      new Map([
+        ['a', 7],
+        ['b', 5],
+      ]),
+      new Map([
+        ['a', 3],
+        ['b', 7],
+      ]),
+      {
+        ...opts,
+        runs: [
+          { task_id: 'a', agent: 'x', cost: 1 },
+          { task_id: 'a', agent: 'y', cost: 2 },
+          { task_id: 'b', agent: 'y', cost: 3 },
+          { task_id: 'b', agent: 'z', cost: 4 },
+        ],
+      },
+    );
+    assert.equal(r.hourlyRate.byAgent.length, 3);
+    assert.ok(r.hourlyRate.byAgent.every((x) => x.estimateHours > 0 && x.cost > 0 && Number.isFinite(x.hoursPerDollar!)));
+    const sum = (k: 'estimateHours' | 'cost') => r.hourlyRate.byAgent.reduce((t, x) => t + x[k], 0);
+    assert.ok(Math.abs(sum('estimateHours') - 12) < 1e-5 && Math.abs(sum('estimateHours') - r.hourlyRate.estimateHours) < 1e-5);
+    assert.ok(Math.abs(sum('cost') - 10) < 1e-6 && Math.abs(sum('cost') - r.hourlyRate.cost) < 1e-6);
   });
 
   it('build time: falls back to in_progress time (flagged); under a minute is too short', () => {
@@ -180,7 +213,7 @@ describe('estimatesFrom', () => {
     assert.deepEqual(r.perception.topMisses.map((p) => p.id).sort(), ['f', 'r']);
   });
 
-  it('byAgent: the rate per assigned agent over cards with spend, most hours first', () => {
+  it('byAgent without runs: a card\'s spend counts to its assignee, most hours first', () => {
     const ds = deriveCards(
       [card('a', T0, 4, 'Ada'), card('b', T0, 2, 'Bram'), card('c', T0, 6, 'Ada'), card('d', T0, 3, 'Bram'), card('e', T0, 1)],
       END,
@@ -214,6 +247,8 @@ describe('estimatesFrom', () => {
   it('no build time at all (no runs, no in_progress time) has no ratio and is not a miss', () => {
     const r = estimatesFrom(deriveCards([card('z', T0, 0)], END), new Map([['z', 3]]), new Map(), opts);
     assert.deepEqual([r.perception.cards[0].ratio, r.perception.medianRatio, r.perception.topMisses, r.perception.tooShort], [null, null, [], 1]);
+    // no runs and no in_progress time: 'none', counted only as tooShort, not as a fallback
+    assert.deepEqual([r.perception.cards[0].buildSource, r.perception.fallbacks], ['none', 0]);
   });
 
   it('rejects a bad range', () => {
@@ -242,12 +277,12 @@ describe('estimateMetrics (DB)', () => {
     assert.equal(r.perception.cards[0].id, a.id);
     // build time from the runs (2 x 1.5h); spend per run agent
     assert.deepEqual([r.perception.cards[0].buildHours, r.perception.cards[0].buildSource, r.perception.cards[0].ratio], [3, 'runs', 0.5]);
+    // spend per run agent ($3 each), the card's 6h split by that share
     assert.deepEqual(
       r.hourlyRate.byAgent.map((x) => [x.agent, x.estimateHours, x.cost]),
       [
-        [null, 6, 0], // the unassigned card's hours
-        ['builder', 0, 3],
-        ['reviewer', 0, 3],
+        ['builder', 3, 3],
+        ['reviewer', 3, 3],
       ],
     );
     db.close();

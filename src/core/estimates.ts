@@ -10,13 +10,17 @@
  *    hoursPerDollar = Σ estimate_hours / Σ spend, dollarsPerHour = Σ spend / Σ estimate_hours
  *    ("$ per human-equivalent hour").
  *    byAgent (byAgentBasis): spend is credited per RUN to the agent that ran it (the run's
- *    credited agent, as cost.ts's byAgent counts it) and estimate hours to the card's ASSIGNEE
- *    (its team member's name, so it lines up with the run agents). The rows can therefore have
- *    hours without spend or spend without hours when a card changed hands.
+ *    credited agent, as cost.ts's byAgent counts it), and each card's estimate hours are split
+ *    across its run agents by their share of the card's spend: hours_i = estimate x cost_i /
+ *    card cost. So every row has hours and spend (a finite rate), and the rows sum to the
+ *    overall hours and spend. Cards without spend stay out, as in the overall rate.
  *  - perception (measure 'build_time'): each estimated done card's agent build time vs its
  *    estimate: ratio = agent build time ÷ human estimate (< 1: the agent was faster).
- *    Build time is Σ card_activity.ms; a card without recorded run time falls back to its time
- *    in the in_progress lane (`buildSource: 'in_progress'`, counted in `fallbacks`). cycleHours
+ *    Build time is agent-hours: Σ card_activity.ms over every recorded run of the card (builder
+ *    runs and any other role's, e.g. reviewer), summed, not wall-clock (overlapping runs add up).
+ *    A card without recorded run time falls back to its time in the in_progress lane
+ *    (`buildSource: 'in_progress'`, counted in `fallbacks`); a card with neither has
+ *    `buildSource: 'none'` and counts only in tooShort. cycleHours
  *    (wall-clock cycle time, queue / review / waiting included) rides along as context only.
  *    Times under a minute are too short to compare: no ratio, counted in `tooShort`.
  *    medianRatio is the true median over the cards with a ratio; the top 5 misses are the
@@ -37,7 +41,7 @@ export interface EstimatePoint {
   estimateHours: number;
   /** Agent build time (hours): Σ card_activity.ms, else the in_progress lane time (see buildSource). */
   buildHours: number;
-  buildSource: 'runs' | 'in_progress';
+  buildSource: 'runs' | 'in_progress' | 'none';
   /** Wall-clock cycle time (hours): context only, not the ratio's basis. */
   cycleHours: number;
   cost: number;
@@ -69,9 +73,9 @@ export interface EstimateMetrics {
     cost: number;
     hoursPerDollar: number | null;
     dollarsPerHour: number | null;
-    /** The rate per agent (null = none), most hours first: hours by assignee, spend by run agent. */
+    /** The rate per run agent (null = none), most hours first: spend by run agent, each card's hours split by spend share. */
     byAgent: AgentRate[];
-    byAgentBasis: { hours: 'assignee'; cost: 'run_agent' };
+    byAgentBasis: { hours: 'spend_share'; cost: 'run_agent' };
   };
   perception: {
     /** What the ratio measures: agent build time ÷ human estimate. */
@@ -102,8 +106,8 @@ function median(values: number[]): number | null {
 
 /**
  * Pure: the figures from derived cards, their estimates, their spend and build time. `runs` (each
- * run's agent and cost) drives byAgent's spend; without it a card's spend counts to its assignee.
- * `agentName` maps an assignee label to the name runs are credited under (default: as is).
+ * run's agent and cost) drives byAgent; without it a card's spend counts to its assignee, whose
+ * label `agentName` maps to the name runs are credited under (default: as is).
  */
 export function estimatesFrom(
   ds: DerivedCard[],
@@ -127,8 +131,8 @@ export function estimatesFrom(
     .map((x) => {
       const estimateHours = estimates.get(x.m.id)!;
       const runMs = opts.buildMs?.get(x.m.id) ?? 0;
-      const buildSource = runMs > 0 ? ('runs' as const) : ('in_progress' as const);
       const ms = runMs > 0 ? runMs : x.m.timeInLaneMs.in_progress;
+      const buildSource = runMs > 0 ? ('runs' as const) : ms > 0 ? ('in_progress' as const) : ('none' as const);
       return {
         id: x.m.id,
         title: x.m.title,
@@ -146,25 +150,34 @@ export function estimatesFrom(
   const hours = spent.reduce((s, p) => s + p.estimateHours, 0);
   const cost = spent.reduce((s, p) => s + p.cost, 0);
 
-  // byAgent: hours to the assignee, spend per run to the agent that ran it
+  // byAgent: spend per run agent; each card's estimate hours split by the agents' share of its spend
+  // (without `runs`, a card's whole spend counts to its assignee, mapped through agentName)
   const name = (label: string | null) => (label === null ? null : (opts.agentName?.(label) ?? label));
-  const assignee = new Map(done.map((x) => [x.m.id, name(x.m.agent)]));
+  const assignee = new Map(done.map((x) => [x.m.id, x.m.agent]));
   const spentIds = new Set(spent.map((p) => p.id));
-  const agents = new Map<string | null, AgentRate>();
-  const row = (agent: string | null) => {
-    let a = agents.get(agent);
-    if (!a) agents.set(agent, (a = { agent, cards: 0, estimateHours: 0, cost: 0, hoursPerDollar: null }));
-    return a;
-  };
-  for (const p of spent) {
-    const a = row(assignee.get(p.id) ?? null);
-    a.cards++;
-    a.estimateHours += p.estimateHours;
+  const runs = opts.runs ?? spent.map((p) => ({ task_id: p.id, agent: name(assignee.get(p.id) ?? null), cost: p.cost }));
+  const perCard = new Map<string, Map<string | null, number>>();
+  for (const r of runs) {
+    if (!spentIds.has(r.task_id) || !(r.cost > 0)) continue;
+    const m = perCard.get(r.task_id) ?? new Map<string | null, number>();
+    m.set(r.agent, (m.get(r.agent) ?? 0) + r.cost);
+    perCard.set(r.task_id, m);
   }
-  const runs = opts.runs ?? spent.map((p) => ({ task_id: p.id, agent: assignee.get(p.id) ?? null, cost: p.cost }));
-  for (const r of runs) if (spentIds.has(r.task_id)) row(r.agent).cost += r.cost;
+  const agents = new Map<string | null, AgentRate>();
+  for (const p of spent) {
+    const m = perCard.get(p.id);
+    if (!m) continue;
+    const cardCost = [...m.values()].reduce((a, v) => a + v, 0);
+    for (const [agent, c] of m) {
+      let a = agents.get(agent);
+      if (!a) agents.set(agent, (a = { agent, cards: 0, estimateHours: 0, cost: 0, hoursPerDollar: null }));
+      a.cards++;
+      a.estimateHours += (p.estimateHours * c) / cardCost;
+      a.cost += c;
+    }
+  }
   const byAgent = [...agents.values()]
-    .map((a) => ({ ...a, cost: round6(a.cost), hoursPerDollar: a.cost > 0 ? round6(a.estimateHours / a.cost) : null }))
+    .map((a) => ({ ...a, estimateHours: round6(a.estimateHours), cost: round6(a.cost), hoursPerDollar: a.cost > 0 ? round6(a.estimateHours / a.cost) : null }))
     .sort((a, b) => b.estimateHours - a.estimateHours || b.cost - a.cost || (a.agent ?? '\uffff').localeCompare(b.agent ?? '\uffff'));
 
   const rated = points.filter((p) => p.ratio !== null);
@@ -181,7 +194,7 @@ export function estimatesFrom(
       hoursPerDollar: cost > 0 ? round6(hours / cost) : null,
       dollarsPerHour: hours > 0 ? round6(cost / hours) : null,
       byAgent,
-      byAgentBasis: { hours: 'assignee', cost: 'run_agent' },
+      byAgentBasis: { hours: 'spend_share', cost: 'run_agent' },
     },
     perception: {
       measure: 'build_time',
