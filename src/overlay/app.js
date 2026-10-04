@@ -185,8 +185,10 @@ document.addEventListener('click', (e) => {
 });
 
 // ── state ───────────────────────────────────────────────────────────
+let boardInits = 0; // board socket init messages so far: the first is the page's connect, later ones reconnects
 function applyEvent(msg) {
   if (msg.type === 'init') {
+    boardInits++;
     cards.clear();
     for (const card of msg.board) cards.set(card.id, card);
     phases = msg.phases ?? [];
@@ -748,12 +750,24 @@ function fbNoRange(params) {
   for (const k of ['range', 'from', 'to']) q.delete(k);
   return q.toString();
 }
+// The card filters in params (phase / tag / agent / workType) as a predicate over /workspace/cards'
+// cards, matching as the server's cardWhere does (the scope and the range are the reader's).
+function fbCardFilter(params) {
+  const q = new URLSearchParams(params);
+  const [phase, tag, agent, wt] = ['phase', 'tag', 'agent', 'workType'].map((k) => q.get(k));
+  return (c) => (!phase || c.phase_id === phase) && (!tag || c.tag === tag) && (!agent || c.agent === agent) && (!wt || (wt === 'none' ? c.work_type == null : c.work_type === wt));
+}
 // One read for the filter options and the matching cards (GET /workspace/cards): a meta
 // like fbLoadMeta's, its cards already filtered (key: the filters they match, see fbParams).
+// Home's: the scope-only read its widgets share (dwCardsRead: one per refresh cycle), filtered here.
 async function fbLoadCards(project, ctx) {
   const key = fbParams(ctx, true, !ctx.widgetRange);
   const params = fbParams(ctx, false, !ctx.widgetRange);
-  const r = await mxGet(`/workspace/cards?project=${encodeURIComponent(project)}${params ? `&${params}` : ''}`);
+  let r;
+  if (ctx === hctx && typeof dwCardsRead === 'function') {
+    const all = await dwCardsRead(project, new URLSearchParams(params).get('scope'));
+    r = { ...all, cards: all.cards.filter(fbCardFilter(params)) };
+  } else r = await mxGet(`/workspace/cards?project=${encodeURIComponent(project)}${params ? `&${params}` : ''}`);
   const boards = fbBoards(r.boards);
   const phases = new Map(boards.map((b) => [b.id, []]));
   for (const p of r.phases) phases.get(p.board)?.push(p);
@@ -5498,8 +5512,9 @@ function dashTile(b, isMain) {
 // ── Home: default landing — now building, verticals, agents, up next, send ──
 // One read (GET /home) re-fetched on live board messages; status messages are
 // applied in place first. Every user-controlled string goes in via node().
-const home = { data: null, key: '', loadSeq: 0, failed: false, sessions: new Map() };
-// status is applied in place (applyHomeStatus), never refetched; init = board socket (re)connected
+const home = { data: null, key: '', loadSeq: 0, failed: false, sessions: new Map(), project: null };
+// status is applied in place (applyHomeStatus), never refetched; init = board socket (re)connected (the
+// page's first init doesn't refetch when Home's open already read /home: see onHomeMessage)
 const HOME_REFETCH = ['init', 'card', 'card_removed', 'phases', 'event', 'verticals', 'autopilot'];
 // Home's filters (shared filter bar). lockScope: Home on a vertical covers that board only.
 // widgetRange: the date range reaches the widgets only (ctx.filters: agent history, KPIs);
@@ -5575,6 +5590,7 @@ function homeReloadMeta() {
     if (activeView !== 'home') return;
     renderHome();
     if (typeof dwRetitle === 'function') dwRetitle(); // widgets' override chips name phases / boards now
+    if (typeof dwRepaint === 'function') dwRepaint(['now-building']); // its phase chips read the meta
   });
 }
 async function homeMeta() {
@@ -5631,6 +5647,7 @@ async function homeDrillNow() {
 async function loadHome() {
   const project = currentProject();
   if (!project) return;
+  home.project = project; // the board this load reads (the first init skips its refetch, see onHomeMessage)
   const seq = ++home.loadSeq;
   const key = fbParams(hctx, true, false);
   const params = fbParams(hctx, false, false);
@@ -5666,12 +5683,13 @@ async function loadHome() {
   if (!key) setTeamCache(data.agents); // unfiltered /home carries the roster: keeps chips fresh after outside edits
   if (activeView !== 'home') return;
   hctx.metaDirty = true; // the cards may have moved: reload now while filtered (fresh options + drill lists)
+  renderHome();
+  if (typeof dwRefresh === 'function') dwRefresh(data); // the dashboard's widgets reload with this /home
+  // after dwRefresh: the meta's /workspace/cards read lands in this refresh cycle, shared with the widgets
   if (hctx.needMeta || homeFiltered()) {
     hctx.needMeta = false;
     homeReloadMeta();
   }
-  renderHome();
-  if (typeof dwRefresh === 'function') dwRefresh(data); // the dashboard's widgets reload with this /home
   loadSuggestions();
   // in a workspace, the other boards' traffic arrives on the all-projects socket
   if (data.verticals.length) {
@@ -5687,7 +5705,13 @@ async function loadHome() {
 function onHomeMessage(msg) {
   if (msg.type === 'status') applyHomeStatus(msg);
   if (msg.type === 'init' && home.key) loadTeamCache(); // (re)connected while filtered: the roster isn't on /home
-  if (HOME_REFETCH.includes(msg.type)) scheduleDashboardRefetch();
+  // The page's first init brings only the board's cards / phases: when Home's open already read /home for
+  // this board, repaint what reads them (the header's phase line, Now building's phase chips), no second
+  // read. A reconnect refetches (anything missed while disconnected), as does an init Home still waits on.
+  if (msg.type === 'init' && boardInits === 1 && home.project === currentProject() && !home.failed) {
+    renderHome();
+    if (typeof dwRepaint === 'function') dwRepaint(['now-building']);
+  } else if (HOME_REFETCH.includes(msg.type)) scheduleDashboardRefetch();
   if (typeof dwOnMessage === 'function') dwOnMessage(msg); // widgets' onStatus; layout → refetch it
 }
 

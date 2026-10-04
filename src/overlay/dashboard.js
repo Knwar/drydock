@@ -272,6 +272,28 @@ function dwShared(cache, key, fetcher) {
   return cache.get(key);
 }
 
+// The /workspace/cards read Home's widgets and its filter meta (fbLoadCards) share: scope only, one
+// fetch per refresh cycle under one key, its URL. Readers apply their own card filters (fbCardFilter).
+const dwCardsUrl = (project, scope) => `/workspace/cards?project=${encodeURIComponent(project)}${scope ? `&scope=${encodeURIComponent(scope)}` : ''}`;
+function dwCards(ctx) {
+  const url = dwCardsUrl(ctx.projectId, new URLSearchParams(ctx.filters).get('scope'));
+  return ctx.shared(url, () => mxGet(url));
+}
+// Home's meta read (no widget ctx): the current cycle's entry, the same key a widget without overrides uses.
+function dwCardsRead(project, scope) {
+  const url = dwCardsUrl(project, scope);
+  return dwShared(dw.cache, url, () => mxGet(url));
+}
+
+// Repaint the painted widgets of these types from their last data, no fetch (their render reads
+// state that landed since: the board's cards / phases, Home's card meta).
+function dwRepaint(types) {
+  for (const inst of dw.instances) {
+    const last = dw.last.get(inst.w.id);
+    if (types.includes(inst.w.type) && inst.painted && inst.frame.isConnected && last?.sig === dwSig(inst.w)) dwPaint(inst, last.data);
+  }
+}
+
 // Home opened: (re)load the layout; its widgets wait for Home's /home read.
 function dwOpen() {
   dw.homeWait = dwDeferred();
