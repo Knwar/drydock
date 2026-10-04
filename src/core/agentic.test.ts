@@ -18,7 +18,7 @@ import {
 } from './board.js';
 import { createDecision } from './decisions.js';
 import { openDb, type DB } from './db.js';
-import { agenticFromInput, agenticMetrics, riskyPattern, type AgenticInput, type ToolEvent } from './agentic.js';
+import { agenticFromInput, agenticMetrics, NEEDS_HUMAN_CAP, riskyPattern, type AgenticInput, type ToolEvent } from './agentic.js';
 import { withPrevious } from './compare.js';
 import { deriveCards, MetricsParamError, type MetricsCard, type MetricsEvent } from './metrics.js';
 
@@ -132,6 +132,21 @@ describe('agentic metrics (pure)', () => {
         ['2026-W24', 2, 1, 0.5],
       ],
     );
+    // the cards that needed a human, newest done first
+    assert.deepEqual(r.autonomy.needsHuman, [
+      { id: 'redirected', title: 'redirected' },
+      { id: 'blocked', title: 'blocked' },
+    ]);
+  });
+
+  it('autonomy.needsHuman: capped, newest first; empty with no human stops', () => {
+    const many = Array.from({ length: NEEDS_HUMAN_CAP + 5 }, (_, i) => shipped(`b${String(i).padStart(3, '0')}`, MON + 100 + i * 10, [ev('block', MON + 50 + i)]));
+    const r = agenticFromInput(input([...many, shipped('clean')]), opts);
+    assert.equal(r.autonomy.done, NEEDS_HUMAN_CAP + 6);
+    assert.equal(r.autonomy.needsHuman.length, NEEDS_HUMAN_CAP);
+    assert.equal(r.autonomy.needsHuman[0].id, `b${String(NEEDS_HUMAN_CAP + 4).padStart(3, '0')}`);
+    assert.ok(!r.autonomy.needsHuman.some((c) => c.id === 'clean'));
+    assert.deepEqual(agenticFromInput(input([shipped('clean')]), opts).autonomy.needsHuman, []);
   });
 
   it('stops: blockers vs redirects + reopens, review-fail rework excluded, in window only', () => {

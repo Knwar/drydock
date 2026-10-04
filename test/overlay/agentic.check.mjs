@@ -2,7 +2,7 @@
 // governance-posture; card a1e4b9cb): each renders at S / M / L with no NaN / undefined / null, its
 // size tier's parts and the "Experimental" head note; chips whose previous period predates the board's
 // first activity are grey ("No full previous period") and pre-history weeks are drawn grey; the
-// batch-size drill opens. Self-contained: starts its own daemon on a scratch DB + port, seeds ~8 weeks
+// autonomy-index ("needed a human") and batch-size drills open. Self-contained: starts its own daemon on a scratch DB + port, seeds ~8 weeks
 // of data (metrics-seed.mjs) plus the agentic extras below (redirects, line data, acceptance criteria,
 // tool events, decision links), drives Chrome, then kills the daemon and removes the DB.
 // Not part of `npm test` (needs Chrome + playwright-core). Run from the repo root:
@@ -209,6 +209,16 @@ try {
   const drill = await page.$eval('.mx-drill', (p) => ({ kicker: p.querySelector('.mx-kicker')?.textContent, rows: p.querySelectorAll('.mx-drill-row').length }));
   if (OUT) await page.screenshot({ path: `${OUT}/drill-batch.png` });
   ok(drill.kicker === 'LARGEST CHANGES' && drill.rows === n, 'batch-size drill: opens the largest cards', { drill, n });
+  await page.keyboard.press('Escape');
+
+  // ---- drill: autonomy-index L "N needed a human" opens those cards ----
+  const human = await page.$eval('.dw-widget[data-widget-id="autonomy-index-L"] .ag-human .ag-link', (b) => b.textContent);
+  const nHuman = Number(human.match(/^(\d+) needed a human$/)?.[1]);
+  await page.click('.dw-widget[data-widget-id="autonomy-index-L"] .ag-human .ag-link');
+  await page.waitForFunction(() => document.querySelector('.mx-drill .mx-kicker')?.textContent === 'NEEDED A HUMAN', null, { timeout: 10000 });
+  const hDrill = await page.$eval('.mx-drill', (p) => p.querySelectorAll('.mx-drill-row').length);
+  if (OUT) await page.screenshot({ path: `${OUT}/drill-autonomy.png` });
+  ok(nHuman > 0 && hDrill === nHuman, 'autonomy-index L drill: "N needed a human" opens those N cards', { human, hDrill });
   await page.keyboard.press('Escape');
 
   // ---- 8 weeks: the previous 8 weeks start before the seeded history → pre-history, grey ----

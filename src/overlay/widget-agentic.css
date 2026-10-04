@@ -144,3 +144,25 @@
 @container dw-head (max-width: 420px) {
   .ag-exp { flex-basis: 100%; margin-top: -4px; }
 }
+
+/* autonomy L: "N autonomous · M needed a human", the latter opening the drill */
+.ag-human { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; min-width: 0; }
+.ag-human .ag-link { font-size: 12.5px; }
+
+/* batch-size's long title: up to two lines in a narrow head, never truncated on one */
+@container dw-head (max-width: 420px) {
+  .dw-widget[data-widget-type='batch-size'] .dw-title {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+}
+
+/* governance L in a narrow body: drop the per-pattern breakdown (the status line keeps the count) and
+   the long risky caveat (the status tooltip carries it), so the body fits without scrolling */
+.ag-gov { container: ag-gov / inline-size; }
+@container ag-gov (max-width: 420px) {
+  .ag-patterns, .ag-caveat { display: none; }
+}

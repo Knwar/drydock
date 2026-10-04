@@ -199,8 +199,15 @@ function agAutonomyRender(el, d, ctx) {
 
   if (ctx.size === 'L') {
     const human = a.done - a.autonomous;
-    const row = node('div', 'ag-k-row');
-    row.append(node('span', 'ag-v', `${a.autonomous} autonomous · ${human} needed a human`));
+    const row = node('div', 'ag-human');
+    row.append(node('span', 'ag-v', `${a.autonomous} autonomous ·`));
+    // the drill: the cards that had a blocker or a redirect (the server lists the newest, capped)
+    const list = a.needsHuman;
+    if (list.length) {
+      const title = list.length < human ? `newest ${list.length} of ${human} cards` : mxPlural(list.length, 'card');
+      const open = agLinkBtn(`${human} needed a human`, 'Open the cards that needed a human (a blocker raised or a redirect)', () => agDrill(ctx, list, 'NEEDED A HUMAN', title, open));
+      row.append(open);
+    } else row.append(node('span', 'ag-v', `${human} needed a human`));
     det.append(row);
   }
   el.append(det);
@@ -293,7 +300,7 @@ function agBatchRender(el, d, ctx) {
       const li = node('li');
       const btn = node('button', 'ag-item');
       btn.type = 'button';
-      btn.title = 'Open the card';
+      btn.title = `${c.title}: open the card`;
       btn.onclick = () => agOpenCard(ctx, c.id);
       btn.append(node('span', 'ag-item-title', c.title), node('span', `ag-item-v${c.lines > b.threshold ? ' ag-over' : ''}`, agLines(c.lines)));
       li.append(btn);
@@ -388,7 +395,7 @@ function agGovRender(el, d, ctx) {
     det.append(list);
   }
   det.append(node('p', 'ag-note', g.toolEvents.note));
-  if (ctx.size === 'L' && risky.caveat) det.append(node('p', 'ag-note', risky.caveat));
+  if (ctx.size === 'L' && risky.caveat) det.append(node('p', 'ag-note ag-caveat', risky.caveat)); // also in the status tooltip
   el.append(det);
 }
 
