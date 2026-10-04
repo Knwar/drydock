@@ -90,6 +90,8 @@ export interface SchedulePhase extends ScheduleResult {
   history: 'board' | 'workspace' | null;
   /** 95% forecast finish day (YYYY-MM-DD); null/absent = no forecast. */
   p95?: string | null;
+  /** The day (YYYY-MM-DD, in the tz) a done phase was last marked done (its latest phase_done event); null otherwise. */
+  done_date: string | null;
   milestones: Listed<Milestone>[];
 }
 
@@ -142,6 +144,19 @@ export function schedule(db: DB, projectId: string, opts: { tz: string; now: num
         )
         .all(ws, ws) as { id: string; total: number; remaining: number }[]
     ).map((r) => [r.id, r]),
+  );
+  // a done phase's done day: its latest phase_done event (a reopened + re-closed phase counts its last close)
+  const doneAt = new Map(
+    (
+      db
+        .prepare(
+          `SELECT json_extract(e.payload, '$.phase_id') AS phase_id, MAX(e.created_at) AS at
+             FROM task_events e JOIN projects pr ON pr.id = e.project_id
+            WHERE e.type = 'phase_done' AND (e.project_id = ? OR pr.parent_id = ?)
+            GROUP BY phase_id`,
+        )
+        .all(ws, ws) as { phase_id: string | null; at: number }[]
+    ).map((r) => [r.phase_id, r.at]),
   );
   const total = (id: string) => counts.get(id)?.total ?? 0;
   const left = (id: string) => counts.get(id)?.remaining ?? 0;
@@ -225,6 +240,7 @@ export function schedule(db: DB, projectId: string, opts: { tz: string; now: num
         history: used,
         ...result,
         p95,
+        done_date: p.status === 'done' && doneAt.has(p.id) ? dayKey(doneAt.get(p.id)!, opts.tz) : null,
         milestones: milestones.filter((m) => m.phase_id === p.id),
       };
     }),

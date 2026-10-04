@@ -273,11 +273,14 @@ function kpiDecisionsRender(el, d, ctx) {
   // needs-you waits + blocker waits overlapping the range vs the previous period; down is good
   const w = d.ranged;
   const waits = (r) => (r ? r.needsYou.count + r.blocked.count : null);
-  const main = kpiMain(String(n), 'waiting on you', n ? `oldest ${mxWait(now - d.items[0].since)}` : 'no blockers, no sessions waiting', () => kpiDrillDecisions(ctx, d, main), KPI_DECISIONS_HINT);
+  const oldest = n ? `oldest ${mxWait(now - d.items[0].since)}` : null;
+  // S: the age joins the status line (one line less: the tile fits its row with the chip wrapped)
+  const S = ctx.size === 'S';
+  const main = kpiMain(String(n), 'waiting on you', S ? null : (oldest ?? 'no blockers, no sessions waiting'), () => kpiDrillDecisions(ctx, d, main), KPI_DECISIONS_HINT);
   el.append(
     main,
     kpiDeltaRow(kpiPrevDelta(w, ctx, d.since, `Waits this period ${waits(w)}`, -1, String, waits(w), waits(w.previous)), 'waits this period'),
-    n ? kpiStatus('warn', 'Needs you') : kpiStatus('ok', 'All clear'),
+    n ? kpiStatus('warn', S ? `Needs you · ${oldest}` : 'Needs you') : kpiStatus('ok', 'All clear'),
   );
   if (d.stuck?.length) {
     const s = node('div', 'kpi-stuck', `${d.stuck.length} possibly stuck`);

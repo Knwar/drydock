@@ -2,7 +2,7 @@
 // it the same way (dwAgentState), a builder whose own card is in review is never "Reviewing" (Awaiting
 // review, or Working with other live work), no card filter (Type, Tag, Scope, Phase, Agent) idles a busy
 // agent, and Active agents' "Open in Kanban" / Up next's "View all" land on the right board with a labelled
-// highlight (same board: setKanbanHighlight; another board: ?cards=…&from=…).
+// highlight (same board: setKanbanHighlight; another board: ?cards=…&hlfrom=…).
 // Self-contained: starts its own daemon on a scratch DB + port (a fake `claude` first on PATH, terminals
 // off), seeds a workspace over HTTP, drives Chrome, then kills the daemon and removes the scratch dir.
 // Not part of `npm test` (needs Chrome + playwright-core). Run from the repo root:
@@ -235,7 +235,7 @@ try {
   const same = await openKanban().catch((e) => `error: ${e.message}`);
   ok(/^\d+ cards? highlighted from Active agents$/.test(same), 'same board: banner "N cards highlighted from Active agents"', same);
   await page.evaluate(() => clearKanbanHighlight());
-  // another board: Home on the workspace, Ada's cards are on web → ?project=web&cards=…&from=…
+  // another board: Home on the workspace, Ada's cards are on web → ?project=web&cards=…&hlfrom=…
   await page.goto(`${base}/?project=${ws}&view=home`);
   await page.waitForSelector(`${W('active-agents')} .aa-row`, { timeout: 15000 });
   const cross = await openKanban().catch((e) => `error: ${e.message}`);

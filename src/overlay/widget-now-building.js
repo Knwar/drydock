@@ -196,7 +196,7 @@ dwRegister({
         const more = node('button', 'wnb-more', `+${rest.length - max} more`);
         more.type = 'button';
         more.setAttribute('aria-label', `${now.length} in flight: list them all`);
-        more.onclick = () => homeDrillNow();
+        more.onclick = () => homeDrillNow(ctx.title);
         list.append(more);
       }
       root.append(list);

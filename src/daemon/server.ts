@@ -1504,7 +1504,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const tag = url.searchParams.get('tag') || undefined;
     const agent = url.searchParams.get('agent') || undefined;
     if (!tag && !agent) return json(res, 200, items);
-    const ids = metrics.matchingCardIds(db, { projectIds: [project], tag, agent });
+    const onCards = [...new Set(items.flatMap((a) => (a.card_id ? [a.card_id] : [])))];
+    const ids = metrics.matchingCardIds(db, { projectIds: [project], tag, agent }, onCards);
     return json(res, 200, items.filter((a) => a.card_id && ids.has(a.card_id)));
   }
 

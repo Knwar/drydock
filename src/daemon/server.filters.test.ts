@@ -202,6 +202,19 @@ describe('daemon dashboard / Home filters', () => {
     assert.equal((await fetch(`${base}/home?project=${web}&to=bad`)).status, 400);
   });
 
+  it('/attention tag / agent: only the items on matching cards (the match checks just those cards)', async () => {
+    const att = (project: string, q = '') => get(`/attention?project=${project}${q}`).then((l: any[]) => l.map((a) => a.card_id));
+    assert.deepEqual(await att(api), [c.apiProg]);
+    assert.deepEqual(await att(api, '&tag=db'), [c.apiProg], 'apiDone / apiBack match the tag but aren\'t attention items');
+    assert.deepEqual(await att(api, '&agent=Bob'), [c.apiProg]);
+    assert.deepEqual(await att(api, '&tag=ui'), []);
+    assert.deepEqual(await att(api, '&tag=db&agent=Ada'), []);
+    assert.deepEqual(await att(ws, '&tag=ui'), [c.wsBack]);
+    assert.deepEqual(await att(ws, '&tag=db'), []);
+    assert.deepEqual(await att(web, '&tag=ui'), [], 'no attention item on web: nothing to match');
+    assert.equal((await fetch(`${base}/attention`)).status, 400);
+  });
+
   it('/workspace/cards: the matching cards across the workspace + the whole workspace\'s options', async () => {
     const all = await get(`/workspace/cards?project=${ws}`);
     assert.equal(all.workspace_id, ws);

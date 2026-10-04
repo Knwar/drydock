@@ -215,7 +215,7 @@ function dlTargetCell(p) {
   const cell = node('span', 'dl-cell dl-c-target');
   cell.dataset.k = 'p85 vs target';
   if (p.phase_status === 'done' || p.status === 'complete') {
-    cell.append(node('span', 'dl-dim', p.phase_status === 'done' ? 'Done' : 'All cards done'));
+    cell.append(node('span', 'dl-dim', p.phase_status === 'done' ? (p.done_date ? `Done ${dlDay(p.done_date)}` : 'Done') : 'All cards done'));
     return cell;
   }
   cell.append(node('span', 'dl-v', p.p85 ? dlDay(p.p85) : '—'));
@@ -376,7 +376,8 @@ async function dlMilestonesLoad(ctx) {
     const past = m.date < s.today;
     // a past milestone whose phase isn't done: missed (no phase: nothing to judge it by, just passed)
     const missed = past && !!ph && ph.phase_status !== 'done' && ph.status !== 'complete';
-    return { id: m.id, title: m.title, date: m.date, phase: ph?.title ?? null, base: b ?? null, moved: b ? dlDiff(b.milestone_date, m.date) : null, past, missed };
+    const doneDate = ph?.phase_status === 'done' ? (ph.done_date ?? null) : null;
+    return { id: m.id, title: m.title, date: m.date, phase: ph?.title ?? null, doneDate, base: b ?? null, moved: b ? dlDiff(b.milestone_date, m.date) : null, past, missed };
   });
   const upcoming = rows.filter((r) => !r.past).sort((a, b) => a.date.localeCompare(b.date));
   const past = rows.filter((r) => r.past).sort((a, b) => b.date.localeCompare(a.date));
@@ -414,7 +415,7 @@ function dlMilestoneRow(r, today) {
   date.append(node('span', 'dl-v', dlDay(r.date)), when);
   const t = node('span', 'dl-ms-title');
   t.append(node('span', 'dl-name', r.title));
-  if (r.phase) t.append(node('span', 'dl-sub', r.phase));
+  if (r.phase) t.append(node('span', 'dl-sub', r.doneDate ? `${r.phase} · done ${dlDay(r.doneDate)}` : r.phase));
   li.append(date, t, dlMovedCell(r));
   return li;
 }

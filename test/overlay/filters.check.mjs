@@ -726,7 +726,11 @@ await page.unroute('**/home?*', slow);
   await page.goto(`${base}/?project=${seed.ws}&view=home&range=8w`);
   await settledHome();
   ok((await page.evaluate(() => hctx.f.range)) === '8w', '?range=8w wins over the stored range');
-  await page.evaluate(() => sessionStorage.removeItem('kankan.home.range'));
+  // stored per project: another board's Home keeps its own (default) range
+  await page.goto(`${base}/?project=${seed.api}&view=home`);
+  await settledHome();
+  ok((await page.evaluate(() => hctx.f.range)) === '4w' && !param('range'), 'the stored range is per project: another board opens on its default', page.url());
+  await page.evaluate((id) => sessionStorage.removeItem(`kankan.home.range.${id}`), seed.ws);
 }
 
 // ---- 700px: the open filter bars fit the viewport ----
@@ -849,7 +853,7 @@ await page.unroute('**/home?*', slow);
   await settledHome();
   await page.click(`${W('now-building')} .wnb-more`);
   await page.waitForSelector('#home-view .mx-drill');
-  // one board → "Open all N in Kanban" (this board: in place); several → "Open N in <board>" (another board: a reload with ?from=)
+  // one board → "Open all N in Kanban" (this board: in place); several → "Open N in <board>" (another board: a reload with ?hlfrom=)
   await page.click('.mx-drill-foot .mx-btn');
   await page.waitForSelector('.mx-hl-chip', { timeout: 15000 });
   const banner = await page.$eval('.mx-hl-chip span', (e) => e.textContent);
@@ -910,9 +914,19 @@ await page.unroute('**/home?*', slow);
   await page.evaluate((ids) => setKanbanHighlight(ids), ids);
   ok((await page.$eval('.mx-hl-chip span', (e) => e.textContent)) === '2 cards highlighted from Metrics', 'no label: banner "from Metrics"');
   await page.evaluate(() => clearKanbanHighlight());
+  await page.goto(`${base}/?project=${seed.ws}&view=kanban&cards=${ids.join(',')}&hlfrom=Active%20agents&from=2026-01-01`);
+  await page.waitForSelector('.mx-hl-chip', { timeout: 15000 });
+  ok((await page.$eval('.mx-hl-chip span', (e) => e.textContent)) === '2 cards highlighted from Active agents' && !param('cards') && !param('hlfrom') && param('from') === '2026-01-01', '?cards=…&hlfrom=…: banner names the source, both stripped; a range `from` stays', page.url());
+  await page.evaluate(() => clearKanbanHighlight());
+  // an older link's ?from=<label> beside ?cards still names the source (and is stripped)
   await page.goto(`${base}/?project=${seed.ws}&view=kanban&cards=${ids.join(',')}&from=Active%20agents`);
   await page.waitForSelector('.mx-hl-chip', { timeout: 15000 });
-  ok((await page.$eval('.mx-hl-chip span', (e) => e.textContent)) === '2 cards highlighted from Active agents' && !param('cards') && !param('from'), '?cards=…&from=…: banner names the source, both params stripped', page.url());
+  ok((await page.$eval('.mx-hl-chip span', (e) => e.textContent)) === '2 cards highlighted from Active agents' && !param('cards') && !param('from'), 'legacy ?cards=…&from=…: banner names the source, both params stripped', page.url());
+  await page.evaluate(() => clearKanbanHighlight());
+  // the source label is capped at 80 characters
+  await page.goto(`${base}/?project=${seed.ws}&view=kanban&cards=${ids.join(',')}&hlfrom=${'x'.repeat(200)}`);
+  await page.waitForSelector('.mx-hl-chip', { timeout: 15000 });
+  ok((await page.$eval('.mx-hl-chip span', (e) => e.textContent)) === `2 cards highlighted from ${'x'.repeat(80)}`, '?hlfrom: the label is capped at 80 characters');
   await page.evaluate(() => clearKanbanHighlight());
   // Esc closes the card modal; focus returns to the opener
   await page.evaluate((id) => {
@@ -932,6 +946,80 @@ await page.unroute('**/home?*', slow);
     'Esc closes the card modal, focus back on its opener',
   );
   await page.evaluate(() => document.getElementById('card-opener-probe').remove());
+}
+
+// ---- a board-socket reconnect refetches /home (the first init doesn't: anything missed while away) ----
+{
+  const tab = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  // keep the page's sockets reachable, so the board socket can be dropped like a network blip
+  await tab.addInitScript(() => {
+    const WS = window.WebSocket;
+    window.__sockets = [];
+    window.WebSocket = class extends WS {
+      constructor(...a) {
+        super(...a);
+        window.__sockets.push(this);
+      }
+    };
+  });
+  await tab.goto(`${base}/?project=${seed.ws}&view=home`);
+  await tab.waitForFunction(() => typeof home !== 'undefined' && home.data && boardInits === 1 && document.querySelector('.dw-widget') && !document.querySelector('.dw-skel'), null, { timeout: 15000 });
+  await tab.waitForTimeout(800);
+  const reqs = reqWatch(tab);
+  await tab.evaluate(() => window.__sockets.find((s) => /\/ws\?project=/.test(s.url)).close());
+  await tab.waitForFunction(() => boardInits >= 2, null, { timeout: 15000 }); // reconnected (2 s retry)
+  await tab.waitForFunction(() => document.querySelector('.conn.online'), null, { timeout: 5000 });
+  for (let i = 0; i < 40 && !paths(reqs).includes('/home'); i++) await tab.waitForTimeout(100); // the debounced refetch
+  reqs.stop();
+  ok(paths(reqs).includes('/home'), 'board socket reconnect: Home refetches /home', paths(reqs));
+  await tab.close();
+}
+
+// ---- review-queue under a tag filter: only the matching cards in review ----
+{
+  // a tagged card in review, so the filtered list is never empty; the tag also narrows the queue
+  // whenever a card in review lacks it
+  const tag = 'ui';
+  // off the board first: its live refetches on the new card would be cut off mid-flight by the goto below
+  await page.goto('about:blank');
+  const probe = (await post('/task', { project_id: seed.ws, title: 'Review-queue probe', tag, requirements: 'spec' })).task_id;
+  await post(`/task/${probe}/move`, { lane: 'in_review' });
+  const inReview = [...cards.filter((c) => c.lane === 'in_review'), { title: 'Review-queue probe', tag }];
+  const want = inReview.filter((c) => c.tag === tag);
+  await page.goto(`${base}/?project=${seed.ws}&view=home&tag=${tag}`);
+  await settledHome();
+  await page.click(`${W('tabs')} .dw-tab:text-is("Needs you")`);
+  const RQ = W('review-queue');
+  await page.waitForFunction((sel) => { const f = document.querySelector(sel); return f && !f.querySelector('.dw-skel') && (f.querySelector('.fw-value') || f.classList.contains('is-empty')); }, RQ, { timeout: 15000 });
+  const n = await page.$eval(RQ, (f) => f.querySelector('.fw-value')?.textContent ?? '0');
+  const shown = await texts(`${RQ} .fw-item-title`);
+  const titles = want.map((c) => c.title);
+  ok(want.length > 0 && Number(n) === want.length && shown.every((t) => titles.includes(t)) && shown.length === Math.min(4, want.length), `review-queue, tag ${tag}: only the matching cards in review (${want.length} of ${inReview.length})`, { n, shown, want: titles });
+}
+
+// ---- Kanban: the hidden-phase toggle shows / hides the cards outside the active phase ----
+{
+  const later = (await post('/phase', { project_id: seed.web, title: 'Later' })).phase_id; // planned
+  const probe = (await post('/task', { project_id: seed.web, title: 'Hidden-phase probe', phase_id: later })).task_id;
+  await page.goto(`${base}/?project=${seed.web}&view=kanban`);
+  const BL = '.lane[data-lane="backlog"]';
+  await page.waitForSelector(`${BL} .lane-hidden`, { timeout: 15000 });
+  const state = () =>
+    page.evaluate(
+      ([bl, id]) => {
+        const b = document.querySelector(`${bl} .lane-hidden`);
+        return { text: b?.textContent ?? null, pressed: b?.getAttribute('aria-pressed') ?? null, shown: !!document.querySelector(`.card[data-id="${id}"]`) };
+      },
+      [BL, probe],
+    );
+  const s0 = await state();
+  ok(!s0.shown && /^\d+ cards? in planned phases? hidden · Show$/.test(s0.text) && s0.pressed === 'false', 'Kanban: a planned phase\'s card is hidden, the lane says so ("… hidden · Show")', s0);
+  await page.click(`${BL} .lane-hidden`);
+  const s1 = await state();
+  ok(s1.shown && /shown · Hide$/.test(s1.text) && s1.pressed === 'true' && (await page.evaluate(() => document.activeElement?.classList.contains('lane-hidden'))), 'Kanban: Show reveals it ("… shown · Hide", pressed, focus kept)', s1);
+  await page.click(`${BL} .lane-hidden`);
+  const s2 = await state();
+  ok(!s2.shown && /hidden · Show$/.test(s2.text) && s2.pressed === 'false', 'Kanban: Hide hides it again', s2);
 }
 
 ok(errors.length === 0, 'no page errors', errors);

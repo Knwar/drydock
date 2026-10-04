@@ -112,7 +112,7 @@ dwRegister({
   title: 'Verticals',
   sizes: ['M', 'L'],
   load: wlHome,
-  render(el, d) {
+  render(el, d, ctx) {
     if (!d.verticals.length) return { empty: 'This board has no verticals' };
     const { list } = wlShell(el, 'wl-verticals');
     const shown = d.verticals.filter((v) => v.shown !== false); // the server's call (scope; a phase → its board)
@@ -141,7 +141,7 @@ dwRegister({
         if (!EMBED) {
           b.type = 'button';
           b.title = `List the ${LANE_LABELS[lane]} cards`;
-          b.onclick = () => homeDrillLane(v.project, lane);
+          b.onclick = () => homeDrillLane(v.project, lane, ctx.title);
         }
         lanes.append(b);
       }
