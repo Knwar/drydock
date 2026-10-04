@@ -47,64 +47,28 @@ function kpiMain(value, unit, label, onClick, hint) {
   return el;
 }
 
-// Window length in days (null = all time: no comparison), from previousWindow (whole calendar days,
-// `to` inclusive; window.to is "now" for a rolling range, so it would round to the wrong N).
-const kpiDays = (r) => {
-  const pw = r?.previousWindow;
-  return pw ? Math.max(1, Math.round((pw.to + 1 - pw.from) / 86_400_000)) : null;
-};
-
-// The standard delta chip ("▲ +3 · +50% vs prev 14 d"), as the agent panel's: colour by polarity
-// (pol 1 = up is good, -1 = down is good), grey when there's nothing to compare, ±0 when the change
-// rounds to zero at the display precision (diff formats a magnitude). o: { label, pol, diff, cur, prev,
-// has (a comparison exists), vs / vsLong (visible / announced comparison label), none (the no-comparison text) }.
-function kpiDelta(o) {
-  const chip = node('span', 'kpi-delta');
-  chip.setAttribute('role', 'img'); // its aria-label (with the better / worse verdict) is what's announced
-  const a = o.cur;
-  const b = o.prev;
-  if (!o.has || a === null || a === undefined || b === null || b === undefined) {
-    chip.classList.add('kpi-d-flat');
-    chip.append(node('span', 'kpi-d-chg', o.has ? '—' : (o.none ?? 'No previous period')));
-    if (o.has) chip.append(node('span', 'kpi-d-vs', o.vs));
-    chip.setAttribute('aria-label', o.has ? `${o.label}: no comparison ${o.vsLong}` : `${o.label}: ${(o.none ?? 'No previous period').toLowerCase()}`);
-    return chip;
-  }
-  const shown = o.diff(Math.abs(a - b));
-  const d = Number(shown.replace(/[^\d.]/g, '')) === 0 ? 0 : a - b;
-  if (d === 0) {
-    chip.classList.add('kpi-d-flat');
-    chip.append(node('span', 'kpi-d-chg', '±0'), node('span', 'kpi-d-vs', o.vs));
-    chip.setAttribute('aria-label', `${o.label} unchanged ${o.vsLong}`);
-    return chip;
-  }
-  const tone = o.pol === 0 ? 'flat' : d * o.pol > 0 ? 'good' : 'bad';
-  chip.classList.add(`kpi-d-${tone}`);
-  const sign = d > 0 ? '+' : '−';
-  const pct = b !== 0 ? `${sign}${Math.abs(Math.round((d / Math.abs(b)) * 100))}%` : null;
-  const arrow = node('span', 'kpi-d-arrow', d > 0 ? '▲' : '▼');
-  arrow.setAttribute('aria-hidden', 'true');
-  const val = `${sign}${shown}`;
-  const chg = node('span', 'kpi-d-chg');
-  chg.append(arrow, node('span', 'kpi-d-val', pct ? `${val} · ${pct}` : val));
-  chip.append(chg, node('span', 'kpi-d-vs', o.vs));
-  const verdict = tone === 'good' ? ', better' : tone === 'bad' ? ', worse' : '';
-  chip.setAttribute('aria-label', `${o.label} ${d > 0 ? 'up' : 'down'} ${val}${pct ? ` (${pct})` : ''} ${o.vsLong}${verdict}`);
-  return chip;
+// A period-over-period chip (dwDeltaChip) for a compare=previous read r: labelled with the range's
+// name ("vs previous 4 weeks"; a custom range "vs prev 14 d"), the exact dates as its tooltip, grey for
+// all time and "No full previous period" when the previous window starts before the board's first
+// activity (since).
+function kpiPrevDelta(r, ctx, since, subject, polarity, fmt, cur, prev) {
+  const vs = dwVs(ctx.range, r.previousWindow, r.window);
+  return dwDeltaChip({ cur, prev, polarity, fmt, subject, ...vs, has: !!r.previous && !!r.previousWindow, since, previousWindow: r.previousWindow });
 }
 
-// A period-over-period chip for a compare=previous read r: "vs prev N d", or grey for all time.
-function kpiPrevDelta(r, label, pol, diff, cur, prev) {
-  const days = kpiDays(r);
-  return kpiDelta({ label, pol, diff, cur, prev, has: !!r.previous && days !== null, vs: `vs prev ${days} d`, vsLong: `vs previous ${days} days` });
-}
-
-// A row under the headline holding a chip (and an optional quiet caption before it; dropped at S).
-function kpiDeltaRow(chip, caption, ctx) {
+// A row under the headline holding a chip, its subject inline before it ("range spend ▲ +$293 …") at every size.
+function kpiDeltaRow(chip, caption) {
   const row = node('div', 'kpi-delta-row');
-  if (caption && ctx?.size !== 'S') row.append(node('span', 'kpi-delta-cap', caption));
+  if (caption) row.append(node('span', 'kpi-delta-cap', caption));
   row.append(chip);
   return row;
+}
+
+// A small-caps key with a date part kept in the tiles' date case: "WEEKLY COST · Oct 1 – Oct 26".
+function kpiKey(text, dates) {
+  const k = node('span', 'kpi-k', `${text} · `);
+  k.append(node('span', 'kpi-k-date', dates));
+  return k;
 }
 
 // Metrics opened on a tab (openMetrics reads ?tab; leaving Home clears only Home's own keys).
@@ -135,15 +99,18 @@ async function kpiScheduleLoad(ctx) {
   // p85 slip vs the phase's first snapshot (its baseline); null until there are two snapshot days
   const hist = await kpiGet(ctx, '/metrics/history', { project: f.project, phase: phase.id });
   const dl = hist.deltas;
-  return { phase, next, today: s.today, slip: dl && dl.from !== dl.to ? (dl.slipDays.p85 ?? null) : null };
+  const snap = (day) => hist.phases.find((x) => x.phase_id === phase.id && x.date === day) ?? null;
+  const slip = dl && dl.from !== dl.to ? (dl.slipDays.p85 ?? null) : null;
+  return { phase, next, today: s.today, slip, slipFrom: slip === null ? null : snap(dl.from)?.p85, slipTo: slip === null ? null : snap(dl.to)?.p85 };
 }
 
 function kpiScheduleRender(el, d, ctx) {
   const p = d.phase;
   const [kind, text] = KPI_SCHEDULE[p.status] ?? KPI_SCHEDULE.unknown;
   el.append(kpiMain(p.p85 ? kpiDay(p.p85) : '—', 'p85', `target ${kpiDay(p.target_date)} · ${p.title}`, () => kpiOpenMetrics('forecast'), 'Open the forecast in Metrics'));
-  if (d.slip !== null) el.append(kpiDeltaRow(kpiSlip(d.slip)));
+  if (d.slip !== null) el.append(kpiDeltaRow(kpiSlip(d.slip, d.slipFrom, d.slipTo), d.slip > 0 ? 'slipped' : d.slip < 0 ? 'pulled in' : null));
   el.append(kpiStatus(kind, text));
+  if (p.status === 'on_track') el.append(node('div', 'kpi-sub', 'still ahead of target'));
   if (ctx.size === 'S') return;
   const det = node('div', 'kpi-detail');
   const pct = node('div', 'kpi-pcts');
@@ -152,7 +119,8 @@ function kpiScheduleRender(el, d, ctx) {
     cell.append(node('span', 'kpi-k', k), node('span', 'kpi-v', v ? kpiDay(v) : '—'));
     pct.append(cell);
   }
-  det.append(pct, node('div', 'kpi-reason', p.reason));
+  // the server's sentence carries ISO days: shown in the tiles' date format ("Oct 24")
+  det.append(pct, node('div', 'kpi-reason', String(p.reason ?? '').replace(/\b\d{4}-\d{2}-\d{2}\b/g, (day) => kpiDay(day))));
   if (ctx.size === 'L') {
     const m = node('div', 'kpi-milestone');
     m.append(node('span', 'kpi-k', 'Next milestone'));
@@ -165,24 +133,28 @@ function kpiScheduleRender(el, d, ctx) {
   el.append(det);
 }
 
-// "▲ +3 d vs baseline" (later is bad), "▼ −2 d vs baseline" (earlier is good), "±0 on baseline".
-function kpiSlip(days) {
-  const chip = node('span', 'kpi-delta');
+// "slipped ▲ +3 d vs baseline" (later is bad), "pulled in ▼ −2 d vs baseline" (earlier is good), "±0 on
+// baseline"; the dwDeltaChip look. Tooltip: "forecast p85 moved from Oct 16 to Oct 24" (from / to: the
+// baseline's and the latest snapshot's p85 days).
+function kpiSlip(days, from, to) {
+  const chip = node('span', 'dw-delta');
   chip.setAttribute('role', 'img');
+  if (from && to) chip.title = `forecast p85 moved from ${kpiDay(from)} to ${kpiDay(to)}`;
   if (days === 0) {
-    chip.classList.add('kpi-d-flat');
-    chip.append(node('span', 'kpi-d-chg', '±0'), node('span', 'kpi-d-vs', 'on baseline'));
+    chip.classList.add('dw-d-flat');
+    chip.append(node('span', 'dw-d-chg', '±0'), node('span', 'dw-d-vs', 'on baseline'));
     chip.setAttribute('aria-label', 'p85 forecast on the phase baseline');
     return chip;
   }
-  chip.classList.add(days > 0 ? 'kpi-d-bad' : 'kpi-d-good');
+  chip.classList.add(days > 0 ? 'dw-d-bad' : 'dw-d-good');
   const val = `${days > 0 ? '+' : '−'}${Math.abs(days)} d`;
-  const arrow = node('span', 'kpi-d-arrow', days > 0 ? '▲' : '▼');
+  const arrow = node('span', 'dw-d-arrow', days > 0 ? '▲' : '▼');
   arrow.setAttribute('aria-hidden', 'true');
-  const chg = node('span', 'kpi-d-chg');
-  chg.append(arrow, node('span', 'kpi-d-val', val));
-  chip.append(chg, node('span', 'kpi-d-vs', 'vs baseline'));
-  chip.setAttribute('aria-label', `p85 forecast ${mxPlural(Math.abs(days), 'day')} ${days > 0 ? 'later' : 'earlier'} than the phase baseline, ${days > 0 ? 'worse' : 'better'}`);
+  const chg = node('span', 'dw-d-chg');
+  chg.append(arrow, node('span', 'dw-d-val', val));
+  chip.append(chg, node('span', 'dw-d-vs', 'vs baseline'));
+  const moved = from && to ? ` (from ${kpiDay(from)} to ${kpiDay(to)})` : '';
+  chip.setAttribute('aria-label', `p85 forecast ${days > 0 ? 'slipped' : 'pulled in'} ${mxPlural(Math.abs(days), 'day')} vs the phase baseline${moved}, ${days > 0 ? 'worse' : 'better'}`);
   return chip;
 }
 
@@ -197,20 +169,24 @@ async function kpiBudgetLoad(ctx) {
   if (!id) return { empty: 'No active phase to track' };
   // phase-level: no tag / agent (the budget covers the whole phase, all-time); from / to shape the weekly
   // series and the range spend (totals), compared with the previous period
-  const cost = await kpiGet(ctx, '/metrics/cost', { project: f.project, tz: MX_LOCAL_TZ, phase: id, from: f.from, to: f.to, limit: 1, compare: 'previous' });
+  const [cost, since] = await Promise.all([
+    kpiGet(ctx, '/metrics/cost', { project: f.project, tz: MX_LOCAL_TZ, phase: id, from: f.from, to: f.to, limit: 1, compare: 'previous' }),
+    dwFirstActivity(ctx).catch(() => null),
+  ]);
   const b = cost.budgets.find((x) => x.phase_id === id);
   if (!b || b.budget === null) return { empty: 'Set a budget on the active phase to track spend' };
-  return { b, weekly: cost.weekly.slice(-8), cost };
+  return { b, weekly: cost.weekly.slice(-8), cost, since };
 }
 
 function kpiBudgetRender(el, d, ctx) {
   const b = d.b;
   const [kind, text] = b.overBudget ? ['bad', 'Over budget'] : b.projectedOverBudget ? ['warn', 'Projected over'] : ['ok', 'Within budget'];
-  const label = `${b.title} spend to date (all-time) · ${b.projected === null ? 'no projection yet' : `projected ${mxMoney(b.projected)}`}`;
+  const label = `${b.title} · ${b.projected === null ? 'no projection yet' : `projected ${mxMoney(b.projected)}`}`;
   const c = d.cost;
+  // the headline is all-time (phase to date); the chip compares the range's spend, and says so at every size
   el.append(
-    kpiMain(mxMoney(b.actual), `of ${mxMoney(b.budget)}`, label, () => kpiOpenMetrics('overview'), 'Open cost in Metrics'),
-    kpiDeltaRow(kpiPrevDelta(c, 'Phase spend', -1, mxMoney, c.totals.cost, c.previous?.totals.cost), c.window ? `${mxMoney(c.totals.cost)} phase spend in range` : null, ctx),
+    kpiMain(mxMoney(b.actual), `of ${mxMoney(b.budget)} · phase to date`, label, () => kpiOpenMetrics('overview'), 'Open cost in Metrics'),
+    kpiDeltaRow(kpiPrevDelta(c, ctx, d.since, `Range spend ${mxMoney(c.totals.cost)}`, -1, mxMoney, c.totals.cost, c.previous?.totals.cost), 'range spend'),
     kpiStatus(kind, text),
   );
   if (ctx.size === 'S') return;
@@ -235,7 +211,7 @@ function kpiBudgetRender(el, d, ctx) {
   if (ctx.size === 'L' && d.weekly.length >= 2) {
     const spark = node('div', 'kpi-spark');
     const range = `${kpiDay(d.weekly[0].start)} – ${kpiDay(mxAddDays(d.weekly[d.weekly.length - 1].start, 6))}`;
-    spark.append(node('span', 'kpi-k', `weekly cost · ${range}`), mxSparkline(d.weekly.map((w) => w.cost)));
+    spark.append(kpiKey('weekly cost', range), mxSparkline(d.weekly.map((w) => w.cost)));
     det.append(spark);
   }
   el.append(det);
@@ -245,10 +221,11 @@ function kpiBudgetRender(el, d, ctx) {
 async function kpiDecisionsLoad(ctx) {
   const f = kpiFilters(ctx);
   // live (range-free) reads for the list + count; a separate ranged compare read only for the chip
-  const [att, wait, ranged] = await Promise.all([
+  const [att, wait, ranged, since] = await Promise.all([
     kpiGet(ctx, '/attention', { project: f.project }),
     kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType }),
     kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType, from: f.from, to: f.to, compare: 'previous' }),
+    dwFirstActivity(ctx).catch(() => null),
   ]);
   const seen = new Set();
   const items = [];
@@ -259,11 +236,15 @@ async function kpiDecisionsLoad(ctx) {
   };
   // the Type filter, applied here (/attention returns every type): 'none' = unclassified
   const typeOk = (a) => !f.workType || (f.workType === 'none' ? !a.work_type : a.work_type === f.workType);
-  for (const a of att) if (a.severity === 'blocker' && (!f.phase || a.phase_id === f.phase) && typeOk(a)) add({ id: a.card_id, board: f.project, title: a.title, since: a.since });
+  // decisions: blockers (raised, failed twice, unmerged, sync conflicts) + sessions waiting on you; the
+  // stall heuristic ("Agent quiet … — may be stuck") is a guess, not a decision: counted apart
+  const scoped = att.filter((a) => a.severity === 'blocker' && (!f.phase || a.phase_id === f.phase) && typeOk(a));
+  for (const a of scoped) if (a.kind !== 'stalled') add({ id: a.card_id, board: f.project, title: a.title, since: a.since });
   for (const x of wait.waiting.blockers) add({ id: x.task_id, board: x.project_id, title: x.title, since: x.since });
   for (const n of wait.waiting.needsYou) add({ id: n.task_id, board: n.project_id, title: n.reason ? `Session waiting: ${n.reason}` : 'A session is waiting on you', since: n.since });
   items.sort((a, b) => a.since - b.since); // oldest first
-  return { items, ranged };
+  const stuck = scoped.filter((a) => a.kind === 'stalled' && !seen.has(a.card_id)).map((a) => ({ title: a.title, reason: a.reason }));
+  return { items, stuck, ranged, since };
 }
 
 function kpiDecisionsRender(el, d, ctx) {
@@ -274,9 +255,14 @@ function kpiDecisionsRender(el, d, ctx) {
   const waits = (r) => (r ? r.needsYou.count + r.blocked.count : null);
   el.append(
     kpiMain(String(n), 'waiting on you', n ? `oldest ${mxWait(now - d.items[0].since)}` : 'no blockers, no sessions waiting'),
-    kpiDeltaRow(kpiPrevDelta(w, 'Waits in range', -1, String, waits(w), waits(w.previous)), w.window ? `${waits(w)} waits in range` : null, ctx),
+    kpiDeltaRow(kpiPrevDelta(w, ctx, d.since, `Waits this period ${waits(w)}`, -1, String, waits(w), waits(w.previous)), 'waits this period'),
     n ? kpiStatus('warn', 'Needs you') : kpiStatus('ok', 'All clear'),
   );
+  if (d.stuck?.length) {
+    const s = node('div', 'kpi-stuck', `${d.stuck.length} possibly stuck`);
+    s.title = d.stuck.map((x) => `${x.title}: ${x.reason}`).join('\n');
+    el.append(s);
+  }
   if (ctx.size === 'S' || !n) return;
   const list = node('ul', 'kpi-list');
   for (const it of d.items.slice(0, ctx.size === 'L' ? 6 : 3)) {
@@ -326,7 +312,7 @@ async function kpiDrillRecent(ctx, d, btn) {
       const c = meta?.cards.get(p.id);
       return { ...(c ?? {}), id: p.id, title: p.title, board: c?.board ?? d.project, lane: 'done', lane_since: p.doneAt };
     });
-    await ctx.drillCards({ kicker: 'THROUGHPUT · LAST 7 DAYS', title: `${mxPlural(cards.length, 'card')} done`, cards, range: `since ${mxLongDay(mxDayKey(d.now - KPI_WEEK_MS, MX_LOCAL_TZ))}` });
+    await ctx.drillCards({ kicker: 'THROUGHPUT · LAST 7 DAYS', title: `${mxPlural(cards.length, 'card')} done`, cards, range: `since ${kpiDay(mxDayKey(d.now - KPI_WEEK_MS, MX_LOCAL_TZ))}` });
   } catch (e) {
     console.error('kpi throughput drill', e);
   } finally {
@@ -341,15 +327,15 @@ function kpiThroughputRender(el, d, ctx) {
   const vs = prior.length ? `prior ${prior.length}-wk avg ${mxNum(Math.round(avg * 10) / 10)}` : 'prior avg —';
   const main = kpiMain(String(last), 'done · last 7 days', vs, () => kpiDrillRecent(ctx, d, main), 'List the cards done in the last 7 days');
   // its own windows (not Home's range): the last 7 days vs the average of the full prior weeks; up is good
-  const chip = kpiDelta({
-    label: 'Cards done in the last 7 days',
-    pol: 1,
-    diff: (x) => mxNum(Math.round(x * 10) / 10),
+  const chip = dwDeltaChip({
+    subject: 'Cards done in the last 7 days',
+    polarity: 1,
+    fmt: (x) => mxNum(Math.round(x * 10) / 10),
     cur: last,
     prev: avg,
     has: prior.length > 0,
-    vs: `vs prior ${prior.length}-wk avg`,
-    vsLong: `vs the prior ${prior.length}-week average`,
+    label: `vs prior ${prior.length}-wk avg`,
+    labelLong: `vs the prior ${prior.length}-week average`,
     none: 'No full prior week yet',
   });
   el.append(main, kpiDeltaRow(chip));
@@ -370,6 +356,8 @@ dwRegister({
   type: 'kpi',
   title: (params) => KPI_METRICS[params.metric]?.q ?? '',
   sizes: ['S', 'M', 'L'],
+  // schedule (forecast vs target) and throughput (its own rolling 7-day windows) ignore the range
+  ranged: (params) => ['budget', 'decisions'].includes(params.metric ?? 'schedule'),
   params: [
     {
       key: 'metric',

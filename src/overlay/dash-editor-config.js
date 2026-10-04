@@ -146,8 +146,11 @@ function decCommit(next, label, coalesce) {
     dec.applying = false;
   }
   if (dec.id) {
-    dec.json = decJsonOf(decWidget());
+    const w = decWidget();
+    dec.json = decJsonOf(w);
     decRefresh();
+    // a param that decides whether the widget is ranged (a KPI's metric): show / hide its Range field
+    if (w && !!dec.body?.querySelector('[data-dec-field="v-range"]') !== dwRanged(w)) decRender();
   }
   return ok;
 }
@@ -426,7 +429,8 @@ function decFilterSection(w) {
     decVarSelect(wid, 'phase', 'Phase', phaseOpts, v.phase ?? '', decHomePhase(), (val) => `Phase: ${val ? (fbPhaseById(m, val)?.title ?? val) : 'inherited'}`),
   );
 
-  fields.push(decRangeField(w));
+  // a widget whose data doesn't follow the range (dashboard.js dwRanged) has no Range to override
+  if (dwRanged(w)) fields.push(decRangeField(w));
 
   // agent: the team (+ agents seen on the board's cards)
   const agents = [...new Set([...(typeof teamByName !== 'undefined' ? teamByName.keys() : []), ...(m?.agents ?? [])])].sort((a, b) => a.localeCompare(b));

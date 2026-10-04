@@ -5,8 +5,13 @@
 // Widget contract (widget-*.js files call dwRegister):
 //   dwRegister({ type, title: string | (params) => string, sizes: ['S','M','L','XL'] subset, load?(ctx) → Promise<data>,
 //                render(el, data, ctx) → void | { empty: 'reason' }, onStatus?(msg, el, ctx),
-//                params?: [{ key, label, type: 'select'|'text'|'number'|'toggle', options?: [{ value, label }], default?, min?, max? }] })
-//   ctx = { id, size, params, projectId, filters, shared(key, fetcher), refresh(), drillCards(opts), openCard(id, boardId?) }
+//                params?: [{ key, label, type: 'select'|'text'|'number'|'toggle', options?: [{ value, label }], default?, min?, max? }],
+//                ranged?: boolean | (params) => boolean })
+//   ranged (default true): the widget's data follows the date range. false: the editor hides its Range
+//   field, its override chip never names a range, and a stored range override is ignored (its filters
+//   carry Home's range). Live widgets registered elsewhere default to false (DW_UNRANGED).
+//   ctx = { id, size, params, projectId, filters, range, shared(key, fetcher), refresh(), drillCards(opts), openCard(id, boardId?) }
+//   ctx.range: the widget's effective range (its override, else Home's), see dwRangeOf.
 // shared() dedupes one fetch per refresh cycle; the 'home' key is pre-seeded with
 // Home's own GET /home read (same filters), so widgets reading it cost no extra request.
 // A widget's params.vars ({ phase?, tag?, agent?, workType?, scope?, from?, to?, range? }) override Home's
@@ -22,15 +27,27 @@
 //        .dw-widget[data-widget-id][data-widget-type], tab panels / tab buttons [data-tab-id]
 //
 // Shared helpers for widgets:
-//   dwDeltaChip({ cur, prev, polarity, fmt, label, subject, has?, labelLong?, none? }) → the standard delta
-//     chip element ("▲ +3 · +50% vs prev 14 d"), as kpiDelta / aaDelta: arrow, signed value, %, the
+//   dwDeltaChip({ cur, prev, polarity, fmt, label, subject, has?, labelLong?, none?, title?, since?, previousWindow?, kind? })
+//     → the standard delta chip element ("▲ +3 · +50% vs previous 4 weeks"): arrow, signed value, %, the
 //     explicit comparison label; colour by polarity (1 = up is good, -1 = down is good, 0 = neutral);
 //     has: a previous period exists (default prev != null); widgets pass has: !!resp.previous, so a
 //     previous period whose value is null still reads as one. has false → grey "No previous period"
 //     (or none), no label; has true but cur or prev null → grey "—" + label ("<subject>: no comparison …");
-//     ±0 when the change rounds to zero at fmt's display precision. fmt(magnitude) → string (unsigned).
-//     label: the visible comparison ("vs prev 14 d"); labelLong: the announced one (default label);
-//     subject: what's measured ("Cards done"). role=img; its aria-label carries the better / worse verdict.
+//     ±0 when the change rounds to zero at fmt's display precision.
+//     fmt(magnitude, cur) → string (unsigned), in cur's unit ("2.4 d ▼ −1.2 d", never "−28 h").
+//     The % is left out for kind: 'pts' (a change in points is already relative: "−7 pts") and when
+//     |prev| < 1 (a tiny base makes a meaningless %): the absolute change only.
+//     since (epoch ms, e.g. dwFirstActivity) + previousWindow ({ from, to }): a previous period starting
+//     before since (before the board had any activity) is partial → grey "No full previous period", no label.
+//     label: the visible comparison ("vs previous 4 weeks", see dwVs); labelLong: the announced one
+//     (default label); title: the chip's tooltip (the exact dates); subject: what's measured ("Cards
+//     done"). role=img; its aria-label carries the better / worse verdict.
+//   dwVs(range, previousWindow, window?) → { label, labelLong, title } for a ranged chip: a rolling range is
+//     named ("vs previous 4 weeks"), a custom one counted ("vs prev 14 d"); the title holds the exact
+//     dates ("Sep 14 – 27 vs Aug 31 – Sep 13"). Empty strings for all time (no previousWindow).
+//   dwFirstActivity(ctx) → Promise<epoch ms | null>: the board's first activity (/metrics/flow's
+//     firstActivityAt, unfiltered), one read per refresh cycle.
+//   dwDay(ms) → "Oct 24"; dwDays(from, to) → "Sep 14 – 27" / "Aug 30 – Sep 12" (local dates).
 //   dwPrevDays(previousWindow) → the comparison window's length in whole days, Math.round((to+1-from)/DAY)
 //     (at least 1), or null when there's no previousWindow (all time: no comparison). Use previousWindow,
 //     not window: window.to is "now" for a rolling range.
@@ -49,14 +66,25 @@ const dw = {
   homeWait: null, // Home's first /home read, awaited by the opening cycle
 };
 
+// Live widgets (registered in other files) that show the present whatever the range: unranged
+// unless their registration says otherwise.
+const DW_UNRANGED = ['now-building', 'up-next', 'verticals', 'workspace-boards', 'send-to-agent'];
+
 function dwRegister(def) {
   if (!def || typeof def.type !== 'string' || typeof def.render !== 'function') throw new Error('dwRegister: type and render are required');
-  dwTypes.set(def.type, { title: '', sizes: DW_SIZES, params: [], ...def });
+  dwTypes.set(def.type, { title: '', sizes: DW_SIZES, params: [], ranged: !DW_UNRANGED.includes(def.type), ...def });
   // late registration: this type's widgets already on screen render for real now
   for (const inst of dw.instances) if (inst.w.type === def.type && inst.frame.isConnected) dwLoad(inst, dw.cache);
 }
 
 const dwDef = (type) => dwTypes.get(type) ?? null;
+
+// Does widget w's data follow the date range? (its type's `ranged`, a function of its params or a flag)
+function dwRanged(w) {
+  const def = dwTypes.get(w?.type);
+  if (!def) return true;
+  return typeof def.ranged === 'function' ? !!def.ranged(w.params ?? {}) : def.ranged !== false;
+}
 
 const dwAfterRenderFns = [];
 function dwAfterRender(fn) {
@@ -77,9 +105,46 @@ const DW_DAY = 86_400_000;
 
 const dwPrevDays = (pw) => (pw ? Math.max(1, Math.round((pw.to + 1 - pw.from) / DW_DAY)) : null);
 
-function dwDeltaChip({ cur, prev, polarity = 0, fmt, label, subject, has = prev != null, labelLong = label, none }) {
+const dwDay = (ms) => {
+  const d = new Date(ms);
+  return `${MX_MONTHS[d.getMonth()]} ${d.getDate()}`;
+};
+function dwDays(from, to) {
+  const a = new Date(from);
+  const b = new Date(to);
+  if (a.toDateString() === b.toDateString()) return dwDay(from);
+  return a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear() ? `${dwDay(from)} – ${b.getDate()}` : `${dwDay(from)} – ${dwDay(to)}`;
+}
+
+function dwVs(range, pw, win) {
+  if (!pw) return { label: '', labelLong: '', title: '' };
+  const prevDates = dwDays(pw.from, pw.to);
+  const title = win ? `${dwDays(win.from, win.to)} vs ${prevDates}` : `vs ${prevDates}`;
+  if (range?.name) return { label: `vs previous ${range.name}`, labelLong: `vs the previous ${range.name}, ${prevDates}`, title };
+  const n = dwPrevDays(pw);
+  return { label: `vs prev ${n} d`, labelLong: `vs the previous ${n} days, ${prevDates}`, title };
+}
+
+// The board's first activity: unfiltered (scope only) and from / to don't change it. Its URL is the
+// throughput KPI's when Home has no filters (the same 8-week read), so they share one fetch.
+function dwFirstActivity(ctx) {
+  const project = new URLSearchParams(ctx.filters).get('scope') || ctx.projectId;
+  const from = Math.floor((Date.now() - 56 * DW_DAY) / 60_000) * 60_000;
+  const url = `/metrics/flow?${new URLSearchParams({ project, tz: MX_LOCAL_TZ, from: String(from) })}`;
+  return ctx.shared(url, () => mxGet(url)).then((r) => r.firstActivityAt ?? null);
+}
+
+function dwDeltaChip({ cur, prev, polarity = 0, fmt, label, subject, has = prev != null, labelLong = label, none, title, since, previousWindow, kind }) {
   const chip = node('span', 'dw-delta');
   chip.setAttribute('role', 'img'); // its aria-label (with the better / worse verdict) is what's announced
+  if (title) chip.title = title;
+  if (has && since != null && previousWindow && previousWindow.from < since) {
+    // the previous period starts before the board's first activity: comparing against it would flatter / alarm
+    chip.classList.add('dw-d-flat');
+    chip.append(node('span', 'dw-d-chg', 'No full previous period'));
+    chip.setAttribute('aria-label', `${subject}: no full previous period ${labelLong}`);
+    return chip;
+  }
   const noneText = none ?? 'No previous period';
   if (!has || cur == null || prev == null) {
     chip.classList.add('dw-d-flat');
@@ -89,7 +154,7 @@ function dwDeltaChip({ cur, prev, polarity = 0, fmt, label, subject, has = prev 
     return chip;
   }
   // a change that rounds to zero at the display precision ("0 m", "$0.00", "0 pts") is no change
-  const shown = fmt(Math.abs(cur - prev));
+  const shown = fmt(Math.abs(cur - prev), cur);
   const d = Number(shown.replace(/[^\d.]/g, '')) === 0 ? 0 : cur - prev;
   if (d === 0) {
     chip.classList.add('dw-d-flat');
@@ -100,7 +165,7 @@ function dwDeltaChip({ cur, prev, polarity = 0, fmt, label, subject, has = prev 
   const tone = polarity === 0 ? 'flat' : d * polarity > 0 ? 'good' : 'bad';
   chip.classList.add(`dw-d-${tone}`);
   const sign = d > 0 ? '+' : '−';
-  const pct = prev !== 0 ? `${sign}${Math.abs(Math.round((d / Math.abs(prev)) * 100))}%` : null;
+  const pct = kind !== 'pts' && Math.abs(prev) >= 1 ? `${sign}${Math.abs(Math.round((d / Math.abs(prev)) * 100))}%` : null;
   const arrow = node('span', 'dw-d-arrow', d > 0 ? '▲' : '▼');
   arrow.setAttribute('aria-hidden', 'true');
   const val = `${sign}${shown}`;
@@ -430,6 +495,9 @@ function dwWidget(w) {
     get filters() {
       return dwFilters(w);
     },
+    get range() {
+      return dwRangeOf(w);
+    },
     // an overriding widget's reads are keyed by its own filters (never Home's pre-seeded 'home');
     // the live reads ignore the range, so they're keyed without it (a range-only override shares Home's)
     shared: (key, fetcher) => {
@@ -460,12 +528,14 @@ function dwWidget(w) {
   return inst;
 }
 
-// A widget's own filter overrides (params.vars), only the keys that are set.
+// A widget's own filter overrides (params.vars), only the keys that are set (an unranged widget's
+// range / from / to never apply: its data doesn't follow the range).
 function dwVars(w) {
   const v = w.params?.vars;
   if (!v || typeof v !== 'object') return null;
   const out = {};
-  for (const k of ['scope', 'phase', 'tag', 'agent', 'workType', 'range', 'from', 'to']) if (v[k] != null && v[k] !== '') out[k] = String(v[k]);
+  const keys = dwRanged(w) ? ['scope', 'phase', 'tag', 'agent', 'workType', 'range', 'from', 'to'] : ['scope', 'phase', 'tag', 'agent', 'workType'];
+  for (const k of keys) if (v[k] != null && v[k] !== '') out[k] = String(v[k]);
   return Object.keys(out).length ? out : null;
 }
 // The widget's filters as query params: Home's (hctx) with its params.vars merged over them.
@@ -476,6 +546,15 @@ function dwFilters(w) {
   if ((v.from || v.to) && !v.range) f.range = 'custom';
   return fbParams({ ...hctx, f });
 }
+// The widget's effective range, as dwFilters resolves it: { id: '2w' | '4w' | '8w' | 'all' | 'custom',
+// weeks (a rolling range's, else null), name ("4 weeks"; null for custom and all time) }.
+function dwRangeOf(w) {
+  const v = dwVars(w);
+  const id = v?.range ?? (v?.from || v?.to ? 'custom' : hctx.f.range) ?? 'all';
+  const weeks = MX_RANGES.find(([x]) => x === id)?.[2] ?? null;
+  return { id, weeks, name: weeks ? `${weeks} week${weeks === 1 ? '' : 's'}` : null };
+}
+
 // "Phase: Launch · Range: 4 wks": the overrides in words, one part per key (quiet, text only).
 function dwVarsParts(w) {
   const v = dwVars(w);
