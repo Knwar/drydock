@@ -369,6 +369,10 @@ describe('wait-time DB readers', () => {
     assert.deepEqual([...matchingCardIds(db, { projectIds: [ws.id], tag: 'ui' })], [a.id]);
     assert.deepEqual([...matchingCardIds(db, { projectIds: [ws.id], tag: 'api' })], [b.id]);
     assert.deepEqual([...matchingCardIds(db, { projectIds: [ws.id], agent: 'Ada' })], [a.id]);
+    // among: only those cards are checked
+    assert.deepEqual([...matchingCardIds(db, { projectIds: [ws.id], tag: 'ui' }, [a.id, b.id])], [a.id]);
+    assert.deepEqual([...matchingCardIds(db, { projectIds: [ws.id], tag: 'ui' }, [b.id])], []);
+    assert.deepEqual([...matchingCardIds(db, { projectIds: [ws.id], tag: 'ui' }, [])], []);
   });
 
   it('deleteProject drops a board\'s waits; mergeVerticals moves them (ending the open one)', (t) => {

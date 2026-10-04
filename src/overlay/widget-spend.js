@@ -374,7 +374,8 @@ function spMixRender(el, d, ctx) {
 // ── budget-burn: "Will we finish within budget?" ──
 async function spBurnLoad(ctx) {
   const f = spFilters(ctx);
-  const cost = await spCost(ctx, f);
+  // unranged (budgets are all-time per phase): no from / to, so its key never follows the range
+  const cost = await spGet(ctx, '/metrics/cost', spQuery(f, { from: '', to: '', limit: 1 }));
   const phases = cost.budgets;
   if (!phases.length) return { empty: f.phase ? 'The filtered phase isn’t on this board' : 'No phases yet: budgets are set per phase' };
   if (!phases.some((p) => p.budget !== null)) return { empty: 'No phase has a budget yet: set one in the phase’s details' };
@@ -385,13 +386,17 @@ async function spBurnLoad(ctx) {
 const spBurnStatus = (b) => (b.overBudget ? ['bad', 'Over'] : b.projectedOverBudget ? ['warn', 'Projected over'] : ['ok', 'Within']);
 
 // A bullet bar: the budget as a band + marker, projected (estimate at completion) as a wide faint bar,
-// actual as a narrow solid bar on top. One scale per phase (its largest figure).
+// actual as a narrow solid bar on top. One scale per phase (its largest figure), capped at
+// SP_BULLET_CAP × the budget so an overrun doesn't shrink the budget to a sliver: bars past the cap
+// stop at the end. Actual over budget gets an overflow mark (▸) at its bar's end.
+const SP_BULLET_CAP = 1.5;
 function spBullet(b, kind) {
-  const max = Math.max(b.budget, b.actual, b.projected ?? 0) * 1.06 || 1;
+  const top = Math.max(b.budget, b.actual, b.projected ?? 0);
+  const max = (b.budget > 0 ? Math.min(top, b.budget * SP_BULLET_CAP) : top) * 1.06 || 1;
   const p = (v) => `${Math.min(100, (v / max) * 100).toFixed(2)}%`;
   const svg = svgEl('svg', { class: 'sp-bullet', width: '100%', height: 18 });
   svg.setAttribute('role', 'img');
-  svg.setAttribute('aria-label', `${b.title}: actual ${mxMoney(b.actual)}${b.projected === null ? '' : `, projected ${mxMoney(b.projected)}`}, budget ${mxMoney(b.budget)}`);
+  svg.setAttribute('aria-label', `${b.title}: actual ${mxMoney(b.actual)}${b.projected === null ? '' : `, projected ${mxMoney(b.projected)}`}, budget ${mxMoney(b.budget)}${b.actual > b.budget ? ' (over budget)' : ''}`);
   svg.append(
     svgEl('rect', { class: 'sp-bl-track', x: 0, y: 2, width: '100%', height: 14, rx: 3 }),
     svgEl('rect', { class: 'sp-bl-band', x: 0, y: 2, width: p(b.budget), height: 14, rx: 3 }),
@@ -401,6 +406,13 @@ function spBullet(b, kind) {
     svgEl('rect', { class: `sp-bl-act sp-bl-${kind}`, x: 0, y: 7, width: p(b.actual), height: 4, rx: 1 }),
     svgEl('rect', { class: 'sp-bl-cap', x: p(b.budget), y: 0, width: 2, height: 18, transform: 'translate(-1 0)' }),
   );
+  if (b.actual > b.budget) {
+    // the mark sits at the actual bar's end (the right edge when the cap clipped it), pointing on
+    const at = Math.min(b.actual, max);
+    const mark = svgEl('svg', { class: 'sp-bl-over', x: p(at), y: 0, width: 1, height: 18, overflow: 'visible' });
+    mark.append(svgEl('polygon', { points: at === b.actual ? '1,3 7,9 1,15' : '-6,3 0,9 -6,15' }));
+    svg.append(mark);
+  }
   return svg;
 }
 

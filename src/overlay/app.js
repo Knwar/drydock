@@ -3307,7 +3307,7 @@ function mxOpenAll(ids, board, source = 'Metrics') {
   if (board === projectId) {
     setView('kanban');
     setKanbanHighlight(ids, source);
-  } else location.search = `?project=${encodeURIComponent(board)}&cards=${encodeURIComponent(ids.join(','))}&view=kanban${source === 'Metrics' ? '' : `&from=${encodeURIComponent(source)}`}`;
+  } else location.search = `?project=${encodeURIComponent(board)}&cards=${encodeURIComponent(ids.join(','))}&view=kanban${source === 'Metrics' ? '' : `&hlfrom=${encodeURIComponent(source)}`}`;
 }
 
 // ctx: whose meta names the boards (Metrics' mx, the dashboard's, Home's); host: the view it covers.
@@ -3458,15 +3458,20 @@ function renderHighlightChip() {
 const anyDialogOpen = () =>
   !!openCardId || svModal || !$('settings-modal').classList.contains('hidden') || !!document.querySelector('[aria-modal="true"]');
 // One-shot ?cards=<id,id,…> (from another board's Metrics drill-down), once the board init has arrived.
+// ?hlfrom=<label>: the banner's source ("from <label>", at most 80 characters); default Metrics. An
+// older link's ?from=<label> is read only beside ?cards (elsewhere `from` is the custom range's start).
+const HL_FROM_MAX = 80;
 function highlightCardsFromUrl() {
   const url = new URL(location.href);
   const raw = url.searchParams.get('cards');
   if (raw === null) return;
-  const from = url.searchParams.get('from'); // the banner's source label ("from <label>"); default Metrics
+  const legacy = !url.searchParams.has('hlfrom');
+  const from = (legacy ? url.searchParams.get('from') : url.searchParams.get('hlfrom')) ?? '';
   url.searchParams.delete('cards');
-  url.searchParams.delete('from');
+  url.searchParams.delete('hlfrom');
+  if (legacy) url.searchParams.delete('from');
   history.replaceState(null, '', url);
-  setKanbanHighlight(raw.split(',').filter(Boolean), from || 'Metrics');
+  setKanbanHighlight(raw.split(',').filter(Boolean), from.slice(0, HL_FROM_MAX) || 'Metrics');
 }
 document.addEventListener(
   'keydown',
@@ -5649,14 +5654,14 @@ tick.add(() => {
   for (const el of homeView.querySelectorAll('[data-since]')) el.textContent = fmtElapsed(Number(el.dataset.since));
 });
 
-// Home's range survives leaving Home (this tab's session storage); a range in the URL wins.
-const HOME_RANGE_KEY = 'kankan.home.range';
+// Home's range survives leaving Home (this tab's session storage, per project); a range in the URL wins.
+const homeRangeKey = () => `kankan.home.range.${currentProject()}`;
 function homeSaveRange() {
   if (EMBED) return;
   const { range, from, to } = hctx.f;
   try {
-    if (range === HOME_DEFAULT_RANGE) sessionStorage.removeItem(HOME_RANGE_KEY);
-    else sessionStorage.setItem(HOME_RANGE_KEY, JSON.stringify({ range, from, to }));
+    if (range === HOME_DEFAULT_RANGE) sessionStorage.removeItem(homeRangeKey());
+    else sessionStorage.setItem(homeRangeKey(), JSON.stringify({ range, from, to }));
   } catch {
     /* storage unavailable: the range just doesn't persist */
   }
@@ -5664,7 +5669,7 @@ function homeSaveRange() {
 function homeStoredRange() {
   if (EMBED) return null;
   try {
-    const saved = JSON.parse(sessionStorage.getItem(HOME_RANGE_KEY) ?? 'null');
+    const saved = JSON.parse(sessionStorage.getItem(homeRangeKey()) ?? 'null');
     if (!saved || typeof saved.range !== 'string') return null;
     const { range, from, to } = fbReadUrl(new URLSearchParams({ range: saved.range, from: saved.from ?? '', to: saved.to ?? '' }), HOME_DEFAULT_RANGE);
     return range === HOME_DEFAULT_RANGE || (range === 'custom' && !from) ? null : { range, from, to };
@@ -5735,7 +5740,9 @@ function renderHomeFilters(force) {
 }
 // Now building: /home's, read under the filters (the server applies them).
 const homeNowItems = () => home.data.now_building;
-async function homeDrillLane(project, lane) {
+// title: the calling widget's (ctx.title): "Open all" names it ("Home · Verticals")
+const homeDrillSource = (title) => (title ? `Home · ${title}` : 'Home');
+async function homeDrillLane(project, lane, title) {
   await homeMeta();
   if (activeView !== 'home') return;
   const list = fbCards(hctx, (c) => c.board === project.id && c.lane === lane);
@@ -5743,15 +5750,15 @@ async function homeDrillLane(project, lane) {
     kicker: `${homeBoardName(project)} · ${LANE_LABELS[lane]}`.toUpperCase(),
     title: lane === 'done' ? `${mxPlural(list.length, 'card')} done` : `${mxPlural(list.length, 'card')} in ${LANE_LABELS[lane]}`,
     cards: list,
-    source: 'Home · Verticals', // its one caller: the Verticals widget's lane counts
+    source: homeDrillSource(title), // its one caller: the Verticals widget's lane counts
   });
 }
-async function homeDrillNow() {
+async function homeDrillNow(title) {
   await homeMeta();
   if (activeView !== 'home' || !home.data) return;
   const items = homeNowItems();
   const list = items.map((it) => ({ ...(hctx.meta?.cards.get(it.id) ?? {}), id: it.id, title: it.title, board: it.board.id, lane: it.lane, agent: it.agent, lane_since: it.since, blocked: it.blocked }));
-  fbDrillCards(hctx, homeView, { kicker: 'NOW BUILDING', title: `${mxPlural(list.length, 'card')} in flight`, cards: list, source: 'Home · Now building' });
+  fbDrillCards(hctx, homeView, { kicker: 'NOW BUILDING', title: `${mxPlural(list.length, 'card')} in flight`, cards: list, source: homeDrillSource(title) });
 }
 
 // /home under Home's filters, without the range (live state); key: the filters it was read with.
@@ -9881,7 +9888,8 @@ function planReveal(ids) {
       e.preventDefault();
       return removeSelectedEdge();
     }
-    if (e.key !== 'Escape') return;
+    // the card modal (open, or just closed by this Esc: its handler runs first) owns Esc
+    if (e.key !== 'Escape' || openCardId || e.defaultPrevented) return;
     if (plan.link) return endPlanLink();
     if (plan.selEdge) {
       plan.selEdge = null;

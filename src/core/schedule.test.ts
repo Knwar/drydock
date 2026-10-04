@@ -162,6 +162,8 @@ describe('schedule()', () => {
     setPhaseTarget(db, finished.id, '2026-09-01');
     setPhaseTarget(db, empty.id, '2027-01-01');
     updatePhase(db, closed.id, { status: 'done' });
+    // backdate its close: done_date is the phase_done event's day
+    db.prepare("UPDATE task_events SET created_at = ? WHERE type = 'phase_done'").run(Date.UTC(2026, 8, 15, 12));
     const m = createMilestone(db, { project_id: p.id, title: 'Beta', date: '2026-11-01', phase_id: far.id });
     createMilestone(db, { project_id: p.id, title: 'Loose', date: '2026-12-01' });
 
@@ -176,7 +178,8 @@ describe('schedule()', () => {
       assert.ok(x.p50! <= x.p85! && x.p85! <= x.p95!, `${x.title}: p50 <= p85 <= p95`);
     }
     assert.deepEqual([by.none.status, by.none.p50, by.none.remaining, by.none.p95], ['unknown', null, 3, null]);
-    assert.deepEqual([by.closed.status, by.closed.p50], ['done', null]);
+    assert.deepEqual([by.closed.status, by.closed.p50, by.closed.done_date], ['done', null, '2026-09-15']);
+    assert.equal(by.finished.done_date, null, 'only a done phase has a done date');
     assert.deepEqual([by.finished.status, by.finished.p50], ['complete', null]);
     assert.deepEqual([by.empty.status, by.empty.reason, by.empty.p50], ['unknown', 'No cards yet', null]);
     assert.deepEqual(v.milestones.map((x) => x.title), ['Beta', 'Loose']);

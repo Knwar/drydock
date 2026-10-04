@@ -10,10 +10,13 @@
 //   ranged (default true): the widget's data follows the date range. false: the editor hides its Range
 //   field, its override chip never names a range, and a stored range override is ignored (its filters
 //   carry Home's range). Live widgets registered elsewhere default to false (DW_UNRANGED).
-//   ctx = { id, size, params, projectId, filters, range, shared(key, fetcher), refresh(), drillCards(opts), openCard(id, boardId?) }
+//   ctx = { id, size, params, projectId, filters, range, title, shared(key, fetcher), refresh(), drillCards(opts), openCard(id, boardId?) }
+//   ctx.title: the title the frame shows (params.title, else the type's).
 //   ctx.range: the widget's effective range (its override, else Home's), see dwRangeOf.
 // shared() dedupes one fetch per refresh cycle; the 'home' key is pre-seeded with
 // Home's own GET /home read (same filters), so widgets reading it cost no extra request.
+// A key names its data whatever the asking widget's size: a loader that reads differently by size
+// keys each read by its own URL (never a fixed key over a size-dependent fetch).
 // A widget's params.vars ({ phase?, tag?, agent?, workType?, scope?, from?, to?, range? }) override Home's
 // filters for that widget alone: its ctx.filters differ, so its shared() keys do too.
 // The renderer owns every widget's loading / error / empty / stale states.
@@ -209,7 +212,7 @@ function dwKanbanTarget(items, prefer = null) {
   return target ? { ...target, rest: items.length - target.ids.length } : null;
 }
 // Open the target's Kanban with its cards highlighted, the banner naming label ("from <label>"): this
-// board in place (setKanbanHighlight), another one via ?cards=…&from=… (highlightCardsFromUrl).
+// board in place (setKanbanHighlight), another one via ?cards=…&hlfrom=… (highlightCardsFromUrl).
 function dwOpenKanban(target, label) {
   if (target.board.id === projectId) {
     setView('kanban');
@@ -217,7 +220,7 @@ function dwOpenKanban(target, label) {
     return;
   }
   const e = encodeURIComponent;
-  location.search = `?project=${e(target.board.id)}&cards=${e(target.ids.join(','))}&from=${e(label)}&view=kanban`;
+  location.search = `?project=${e(target.board.id)}&cards=${e(target.ids.join(','))}&hlfrom=${e(label)}&view=kanban`;
 }
 
 // board id → SessionView: /home's verticals carry them; standalone Home reads its own
@@ -628,6 +631,9 @@ function dwWidget(w) {
     get range() {
       return dwRangeOf(w);
     },
+    get title() {
+      return inst.title.textContent;
+    },
     // an overriding widget's reads are keyed by its own filters (never Home's pre-seeded 'home');
     // the live reads ignore the range, so they're keyed without it (a range-only override shares Home's)
     shared: (key, fetcher) => {
@@ -652,11 +658,31 @@ function dwWidget(w) {
   dwFrameTitle(inst);
   dwFadeRO?.observe(body);
   body.addEventListener('scroll', () => dwFadeCheck(body), { passive: true });
+  body.addEventListener('pointerover', (e) => dwEllipsisTip(e.target, body));
   // content patched in place (onStatus, a refresh paint): check again, at most once per frame
   inst.fadeMO = new MutationObserver(() => dwFadeSoon(body));
   inst.fadeMO.observe(body, { childList: true, subtree: true, characterData: true });
   dw.instances.push(inst);
   return inst;
+}
+
+// A text cut short with an ellipsis shows in full as its tooltip (measured on hover, like the title;
+// a tooltip the element or an ancestor already has is kept, after the text).
+function dwEllipsisTip(el, body) {
+  if (!(el instanceof HTMLElement) || el === body || el.children.length) return;
+  if (el.title && !el.dataset.dwTip) return; // its own tooltip
+  const cut = el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow === 'ellipsis';
+  if (!cut) {
+    if (el.dataset.dwTip) {
+      el.removeAttribute('title');
+      delete el.dataset.dwTip;
+    }
+    return;
+  }
+  const own = el.parentElement?.closest('[title]');
+  const hint = own && body.contains(own) ? own.title : '';
+  el.title = `${el.textContent.trim()}${hint ? `\n${hint}` : ''}`;
+  el.dataset.dwTip = '1';
 }
 
 // A widget's own filter overrides (params.vars), only the keys that are set (an unranged widget's
@@ -855,8 +881,9 @@ async function dwLoad(inst, cache) {
   dwPaint(inst, data);
 }
 
-// what a widget's data depends on: its type and params (a retitle keeps the data)
-const dwSig = (w) => `${w.type}|${JSON.stringify({ ...w.params, title: undefined })}`;
+// what a widget's data depends on: its type, size (a loader may read more at a larger size, e.g.
+// investment-mix L's previous mix) and params (a retitle keeps the data)
+const dwSig = (w) => `${w.type}|${w.size}|${JSON.stringify({ ...w.params, title: undefined })}`;
 
 function dwPrune() {
   for (const i of dw.instances) if (!i.frame.isConnected) dwFadeStop(i);

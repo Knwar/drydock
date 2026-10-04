@@ -368,7 +368,8 @@ function aaOpenPanel(agentId, data, ctx, el) {
     kb.disabled = !h.cards.length;
     // Where the highlight lands: the board of the agent's current card when it holds any of these
     // cards, else the board holding the most of them (dwKanbanTarget). Never an empty highlight.
-    // the note reflects the current card at render; the click re-resolves it (it may have moved since)
+    // the note follows the current card (a repaint re-renders it when its board changes); the click
+    // re-resolves it too
     const target = dwKanbanTarget(h.cards, nowBoard);
     kb.onclick = () => {
       const at = dwKanbanTarget(h.cards, nowBoard);
@@ -447,6 +448,7 @@ function aaOpenPanel(agentId, data, ctx, el) {
     agentName = a.name;
     const r = aaInfo(d, a);
     const card = r.card;
+    const wasBoard = nowBoard;
     nowBoard = card?.board.id ?? null;
 
     const head = node('div', 'aa-p-head');
@@ -536,6 +538,8 @@ function aaOpenPanel(agentId, data, ctx, el) {
     // the history follows the range: a new range refetches, a status ping doesn't
     const url = aaHistoryUrl(a.name, ctx);
     if (url !== hs.url) loadHistory(url);
+    // the current card moved to another board: the "Opens <board>" note follows (as the click does)
+    else if (nowBoard !== wasBoard && hs.status === 'ok') renderHist();
     return x;
   };
 

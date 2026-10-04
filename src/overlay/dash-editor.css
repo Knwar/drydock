@@ -113,6 +113,11 @@ body.embed .home-edit, body.de-editing .home-edit { display: none; }
 /* the canvas's scrollbar (beside the settings drawer) in the dark theme */
 body.de-editing #home-body { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.2) transparent; }
 body.de-editing #home-body:hover { scrollbar-color: rgba(255, 255, 255, 0.32) transparent; }
+/* Safari (no scrollbar-color): the same look via ::-webkit-scrollbar (Chrome uses the standard properties above) */
+body.de-editing #home-body::-webkit-scrollbar { width: 8px; height: 8px; }
+body.de-editing #home-body::-webkit-scrollbar-track { background: transparent; }
+body.de-editing #home-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 999px; }
+body.de-editing #home-body:hover::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.32); }
 
 /* sections */
 .de-editing .dw-sec-head { position: relative; min-height: 14px; }
