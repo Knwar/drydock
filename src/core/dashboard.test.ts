@@ -160,6 +160,14 @@ describe('builtin tab groups', () => {
       }
     });
 
+    it(`the tabs row fits its tallest tab, capped at 12 (${v})`, () => {
+      for (const t of [dl, ex, ao]) {
+        const row = t.layout.sections[0].rows.find((r) => r.slots.some((s) => s.widgets.some((w) => w.type === 'tabs')))!;
+        const tallest = Math.max(...tabsOf(t.layout).map((tab) => tab.rows.reduce((h, r) => h + r.height, 0)));
+        assert.ok(row.height >= Math.min(12, tallest) && row.height <= 12, `${t.name}: height ${row.height}, tallest tab ${tallest}`);
+      }
+    });
+
     it(`no tab repeats a KPI metric from the template's top KPI row (${v})`, () => {
       for (const t of [dl, ex, ao]) {
         const top = new Set(topWidgets(t.layout).filter((w) => w.type === 'kpi').map((w) => w.params.metric));

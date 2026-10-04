@@ -192,7 +192,7 @@ interface TabPlan {
 /**
  * The tab group. Pass every tab in its old order: each tab, the group and everything built after
  * keep their ids (the retired kpi / placeholder ids are skipped, not reused). The tabs' contents
- * get new ids from `fill()`, called once the rest of the template is built.
+ * get new ids from `fill()`, called once the rest of the template is built; it also sizes the row.
  */
 function tabsRow(b: Builder, plans: TabPlan[]): { row: DashRow; fill: () => void } {
   const live: { tab: ReturnType<Builder['tab']>; plan: TabPlan; upNext?: DashSlot }[] = [];
@@ -210,8 +210,11 @@ function tabsRow(b: Builder, plans: TabPlan[]): { row: DashRow; fill: () => void
     live.push({ tab: b.tab(plan.title), plan, upNext });
   }
   const row = b.row(5, b.slot(12, b.w('tabs', 'L', { tabs: live.map((t) => t.tab) })));
+  // fill sets the row's height: the tallest tab's rows + 1 for the tab strip and gaps (max 12)
   const fill = () => {
     for (const t of live) t.tab.rows.push(...t.plan.rows!(t.upNext));
+    const tallest = Math.max(...live.map((t) => t.tab.rows.reduce((h, r) => h + r.height, 0)));
+    row.height = Math.min(12, tallest + 1);
   };
   return { row, fill };
 }
