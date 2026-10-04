@@ -88,6 +88,8 @@ export interface SchedulePhase extends ScheduleResult {
   queued: number;
   /** Whose throughput the forecast used: the phase's board, its workspace (fallback), or null (no forecast). */
   history: 'board' | 'workspace' | null;
+  /** 95% forecast finish day (YYYY-MM-DD); null/absent = no forecast. */
+  p95?: string | null;
   milestones: Listed<Milestone>[];
 }
 
