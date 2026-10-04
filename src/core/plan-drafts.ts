@@ -7,6 +7,7 @@ import {
   getActivePhase,
   getTask,
   getWorkspace,
+  logPhaseChange,
   moveTask,
   now,
   relocateCardHistory,
@@ -612,21 +613,25 @@ export function commitDraft(db: DB, id: string, expectedVersion: number): Commit
         setSubtasks(db, card.id, (n.subtasks ?? []).map((text) => ({ text, done: done.get(text) ?? false })));
       }
       if (fields.includes('board')) {
+        const toPhase = phaseFor(n);
         const { max } = db.prepare('SELECT MAX(position) AS max FROM tasks WHERE project_id = ?').get(n.board_id) as {
           max: number | null;
         };
         db.prepare('UPDATE tasks SET project_id = ?, phase_id = ?, position = ?, updated_at = ? WHERE id = ?').run(
           n.board_id,
-          phaseFor(n),
+          toPhase,
           (max ?? 0) + 1,
           now(),
           card.id,
         );
         relocateCardHistory(db, card.id, n.board_id);
+        logPhaseChange(db, n.board_id, card.id, card.phase_id, toPhase);
         moved.push({ id: card.id, from: card.project_id, to: n.board_id });
         boards.add(card.project_id).add(n.board_id);
       } else if (fields.includes('phase')) {
-        db.prepare('UPDATE tasks SET phase_id = ?, updated_at = ? WHERE id = ?').run(phaseFor(n), now(), card.id);
+        const toPhase = phaseFor(n);
+        db.prepare('UPDATE tasks SET phase_id = ?, updated_at = ? WHERE id = ?').run(toPhase, now(), card.id);
+        logPhaseChange(db, card.project_id, card.id, card.phase_id, toPhase);
         boards.add(n.board_id);
       }
     }

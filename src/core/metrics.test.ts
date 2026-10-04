@@ -13,10 +13,12 @@ import {
   raiseBlocker,
   recordActivity,
   recordReview,
+  updateTask,
 } from './board.js';
 import { openDb } from './db.js';
 import {
   cardMetrics,
+  burnMetrics,
   computeBurn,
   computeFlow,
   computeSummary,
@@ -169,6 +171,27 @@ describe('deriveLaneHistory / cardMetrics', () => {
     assert.equal(m.blockedMs, 20 + 5 + 10);
     assert.equal(m.blocked, false);
     assert.equal(h.partial, false);
+  });
+
+  it('a bare reassign keeps an open blocker open; assignCard\'s assign closes it', () => {
+    const c = card({ lane: 'in_progress', assigned_agent: 'Bob', blocked_at: 20, blocked_reason: 'stuck' });
+    const events = [
+      ev('create', 0),
+      move('backlog', 'in_progress', 10),
+      ev('block', 20, { reason: 'stuck' }),
+      ev('reassign', 35, { from: 'Ada', to: 'Bob' }), // updateTask: blocked_at stays set
+    ];
+    const h = deriveLaneHistory(c, events);
+    assert.deepEqual(h.blocked, [{ from: 20, to: null, reason: 'stuck' }]);
+    const m = cardMetrics({ card: c, events }, 100);
+    assert.equal(m.blockedMs, 80);
+    assert.equal(m.blocked, true);
+    // assignCard logs reassign then assign: the assign closes it
+    const c2 = card({ lane: 'in_progress', assigned_agent: 'Cy' });
+    const events2 = [...events, ev('reassign', 50, { from: 'Bob', to: 'Cy' }), ev('assign', 50)];
+    const h2 = deriveLaneHistory(c2, events2);
+    assert.deepEqual(h2.blocked, [{ from: 20, to: 50, reason: 'stuck' }]);
+    assert.equal(cardMetrics({ card: c2, events: events2 }, 100).blocked, false);
   });
 
   it('an open blocker counts up to now', () => {
@@ -651,6 +674,79 @@ describe('aggregations', () => {
     // no cards: a flat zero series from the phase's creation
     const empty = computeBurn(phase, [], { tz: 'UTC', now: T0 + 2 * DAY });
     assert.deepEqual(empty.series.map((s) => s.scope), [0, 0]);
+  });
+
+  it('burn scope from phase_change events: cards moved in and out mid-range count exactly', () => {
+    const phase = { id: 'ph', title: 'P', status: 'active', created_at: T0, updated_at: T0 };
+    const pc = (from: string | null, to: string | null, at: number) => ev('phase_change', at, { from, to });
+    // in from creation, moved out on day 2
+    const out = hist({ id: 'out', phase_id: 'other' }, [ev('create', T0 + 1, { phase_id: 'ph' }), pc('ph', 'other', T0 + 2 * DAY + 5)]);
+    // created elsewhere, moved in on day 1 (exact, not approximated)
+    const into = hist({ id: 'in', phase_id: 'ph' }, [ev('create', T0 + 2, { phase_id: null }), pc(null, 'ph', T0 + DAY + 5)]);
+    // in from creation, out on day 1, back on day 3
+    const back = hist({ id: 'back', phase_id: 'ph' }, [
+      ev('create', T0 + 3, { phase_id: 'ph' }),
+      pc('ph', null, T0 + DAY + 1),
+      pc(null, 'ph', T0 + 3 * DAY + 1),
+    ]);
+    const steady = hist({ id: 'steady', phase_id: 'ph' }, [ev('create', T0 + 4, { phase_id: 'ph' })]);
+    const burn = computeBurn(phase, [out, into, back, steady], { tz: 'UTC', now: T0 + 3 * DAY + 3_600_000 });
+    assert.equal(burn.approximated, 0);
+    assert.deepEqual(
+      burn.series.map((s) => [s.date, s.scope]),
+      [
+        ['2026-09-07', 3], // out, back, steady
+        ['2026-09-08', 3], // + in, - back
+        ['2026-09-09', 2], // - out
+        ['2026-09-10', 3], // + back
+      ],
+    );
+    assert.equal(burn.scope, 3);
+    // a card that left and was finished elsewhere doesn't stretch a done phase's range
+    const doneElsewhere = hist({ id: 'gone', lane: 'done', phase_id: 'other' }, [
+      ev('create', T0 + 1, { phase_id: 'ph' }),
+      pc('ph', 'other', T0 + DAY + 1),
+      move('backlog', 'done', T0 + 5 * DAY),
+    ]);
+    const finished = hist({ id: 'fin', lane: 'done', phase_id: 'ph' }, [
+      ev('create', T0 + 2, { phase_id: 'ph' }),
+      move('backlog', 'done', T0 + DAY + 2),
+    ]);
+    const closed = computeBurn({ ...phase, status: 'done', updated_at: T0 + DAY + 3 }, [doneElsewhere, finished], {
+      tz: 'UTC',
+      now: T0 + 30 * DAY,
+    });
+    assert.equal(closed.range.to, T0 + DAY + 3);
+    assert.deepEqual(closed.series.map((s) => [s.scope, s.done]), [[2, 0], [1, 1]]);
+    // a change whose `from` disagrees with the derived phase (an unlogged earlier move): approximated
+    const legacy = hist({ id: 'legacy', phase_id: 'x' }, [ev('create', T0 - DAY, { phase_id: null }), pc('ph', 'x', T0 + DAY + 5)]);
+    const b2 = computeBurn(phase, [legacy], { tz: 'UTC', now: T0 + 2 * DAY });
+    assert.equal(b2.approximated, 1);
+    assert.deepEqual(b2.series.map((s) => s.scope), [1, 0, 0]); // entered at the phase's creation, left on day 1
+  });
+
+  it('burnMetrics loads cards that left the phase (exact) alongside its current cards', (t) => {
+    const db = openDb();
+    t.after(() => db.close());
+    const project = getOrCreateProject(db, '/tmp/burn-left', 'Burn');
+    const p1 = createPhase(db, project.id, 'P1');
+    const p2 = createPhase(db, project.id, 'P2');
+    const stays = createTask(db, project.id, 'stays', { phase_id: p1.id });
+    const leaves = createTask(db, project.id, 'leaves', { phase_id: p1.id });
+    updateTask(db, leaves.id, { phase_id: p2.id });
+    // pin times: phase + cards on day 0, the move out on day 2
+    db.prepare('UPDATE phases SET created_at = ?, updated_at = ?').run(T0, T0);
+    db.prepare('UPDATE tasks SET created_at = ?, updated_at = ?').run(T0 + 1, T0 + 1);
+    db.prepare(`UPDATE task_events SET created_at = ? WHERE type = 'create'`).run(T0 + 1);
+    db.prepare(`UPDATE task_events SET created_at = ? WHERE type = 'phase_change'`).run(T0 + 2 * DAY + 1);
+    const phase = { id: p1.id, title: 'P1', status: 'active', created_at: T0, updated_at: T0 };
+    const burn = burnMetrics(db, phase, [project.id], { tz: 'UTC', now: T0 + 3 * DAY });
+    assert.deepEqual(burn.series.map((s) => s.scope), [2, 2, 1, 1]);
+    assert.equal(burn.approximated, 0);
+    // the destination phase: enters exactly on day 2
+    const into = burnMetrics(db, { ...phase, id: p2.id, title: 'P2' }, [project.id], { tz: 'UTC', now: T0 + 3 * DAY });
+    assert.deepEqual(into.series.map((s) => s.scope), [0, 0, 1, 1]);
+    assert.equal(stays.phase_id, p1.id);
   });
 
   it('summary: last 4 weeks, cycle p50/p85, WIP at the end, oldest in-flight', () => {

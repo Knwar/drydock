@@ -6,6 +6,7 @@ import { buildWhere } from './sql-util.js';
 import {
   LANES,
   PHASE_STATUSES,
+  WORK_TYPES,
   type AgentBoardEntry,
   type AgentStat,
   type AttentionItem,
@@ -41,7 +42,11 @@ import {
   type WorkspaceAttentionItem,
   type WorkspaceSummary,
   type WorkspaceView,
+  type WorkType,
 } from './types.js';
+
+/** A read shape plus the card's work type (tasks.work_type, null = unclassified). */
+export type WithWorkType<T> = T & { work_type: WorkType | null };
 
 export function now(): number {
   return Date.now();
@@ -53,6 +58,32 @@ export function shortId(): string {
 
 function assertLane(lane: string): asserts lane is Lane {
   if (!LANES.includes(lane as Lane)) throw new Error(`invalid lane: ${lane}`);
+}
+
+/** A card's work type: one of WORK_TYPES, or null/undefined (unclassified). */
+function assertWorkType(v: unknown): asserts v is WorkType | null | undefined {
+  if (v != null && !WORK_TYPES.includes(v as WorkType))
+    throw new Error(`invalid work_type: ${String(v)} (expected ${WORK_TYPES.join(', ')} or null)`);
+}
+
+/** Log a card's phase change as a phase_change {from, to} event; a no-op logs nothing.
+ *  Callers that write tasks.phase_id themselves (e.g. plan commits) log through this. */
+export function logPhaseChange(db: DB, projectId: string, taskId: string, from: string | null, to: string | null): void {
+  if (from === to) return;
+  appendEvent(db, { project_id: projectId, task_id: taskId, type: 'phase_change', payload: { from, to } });
+}
+
+/** Move cards to phase `to`, one phase_change event per card that actually changes. Returns how many changed. */
+function setCardsPhase(db: DB, cards: Pick<Task, 'id' | 'project_id' | 'phase_id'>[], to: string | null): number {
+  const update = db.prepare('UPDATE tasks SET phase_id = ? WHERE id = ?');
+  let changed = 0;
+  for (const c of cards) {
+    if (c.phase_id === to) continue;
+    update.run(to, c.id);
+    logPhaseChange(db, c.project_id, c.id, c.phase_id, to);
+    changed++;
+  }
+  return changed;
 }
 
 export function getTask(db: DB, taskId: string): Task {
@@ -256,9 +287,12 @@ export function placePhaselessCards(db: DB, projectId: string): number {
       .prepare(`SELECT * FROM phases WHERE project_id = ? AND status = 'planned' ORDER BY position LIMIT 1`)
       .get(projectId)) as Phase | undefined;
   if (!home) return 0;
-  return db
-    .prepare(`UPDATE tasks SET phase_id = ? WHERE project_id = ? AND phase_id IS NULL AND lane != 'done'`)
-    .run(home.id, projectId).changes;
+  return db.transaction(() => {
+    const cards = db
+      .prepare(`SELECT id, project_id, phase_id FROM tasks WHERE project_id = ? AND phase_id IS NULL AND lane != 'done'`)
+      .all(projectId) as Pick<Task, 'id' | 'project_id' | 'phase_id'>[];
+    return setCardsPhase(db, cards, home.id);
+  })();
 }
 
 /**
@@ -371,6 +405,7 @@ export function splitIntoVerticals(
         c.id,
       );
       relocateCardHistory(db, c.id, target);
+      logPhaseChange(db, target, c.id, c.phase_id, phaseId);
       moved[c.id] = target;
     }
 
@@ -476,11 +511,12 @@ export function mergeVerticals(
       }
     } else {
       // open cards join into's active phase; done cards drop their (deleted) phase
-      db.prepare(`UPDATE tasks SET phase_id = ? WHERE project_id = ? AND lane != 'done'`).run(
-        intoActive?.id ?? null,
-        fromId,
-      );
-      db.prepare(`UPDATE tasks SET phase_id = NULL WHERE project_id = ? AND lane = 'done'`).run(fromId);
+      const fromCards = db
+        .prepare('SELECT id, project_id, phase_id, lane FROM tasks WHERE project_id = ? ORDER BY position, rowid')
+        .all(fromId) as Pick<Task, 'id' | 'project_id' | 'phase_id' | 'lane'>[];
+      // (into's active phase, else its first planned one: where placePhaselessCards would put them, in one step)
+      setCardsPhase(db, fromCards.filter((c) => c.lane !== 'done'), (intoActive ?? getNextPhase(db, intoId))?.id ?? null);
+      setCardsPhase(db, fromCards.filter((c) => c.lane === 'done'), null);
       db.prepare(
         `DELETE FROM governance_links WHERE target_type = 'phase' AND target_id IN (SELECT id FROM phases WHERE project_id = ?)`,
       ).run(fromId);
@@ -638,8 +674,9 @@ export function createTask(
   db: DB,
   projectId: string,
   title: string,
-  opts: { tag?: string; requirements?: string; depends_on?: string[]; phase_id?: string } = {},
+  opts: { tag?: string; requirements?: string; depends_on?: string[]; phase_id?: string; work_type?: WorkType | null } = {},
 ): Task {
+  assertWorkType(opts.work_type);
   const ts = now();
   const max = db
     .prepare('SELECT MAX(position) AS max FROM tasks WHERE project_id = ?')
@@ -660,15 +697,15 @@ export function createTask(
     subtasks: null,
     blocked_at: null,
     blocked_reason: null,
-    work_type: null,
+    work_type: opts.work_type ?? null,
     review_rounds: 0,
     position: (max.max ?? 0) + 1,
     created_at: ts,
     updated_at: ts,
   };
   db.prepare(
-    `INSERT INTO tasks (id, project_id, phase_id, title, lane, requirements, tag, depends_on, position, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO tasks (id, project_id, phase_id, title, lane, requirements, tag, depends_on, work_type, position, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     task.id,
     task.project_id,
@@ -678,6 +715,7 @@ export function createTask(
     task.requirements,
     task.tag,
     task.depends_on,
+    task.work_type,
     task.position,
     task.created_at,
     task.updated_at,
@@ -698,15 +736,31 @@ const UPDATABLE = [
   'assigned_agent',
   'worktree_path',
   'branch',
+  'phase_id',
+  'work_type',
 ] as const;
 type UpdatableField = (typeof UPDATABLE)[number];
 
+/**
+ * Patch a card's editable fields. A phase change logs phase_change {from, to};
+ * a change of an existing assignee to another one logs reassign {from, to}
+ * (the first assignment is assignCard's 'assign' event). No-ops log nothing.
+ */
 export function updateTask(
   db: DB,
   taskId: string,
   patch: Partial<Record<UpdatableField, string | string[] | null>>,
 ): Task {
-  getTask(db, taskId); // existence check
+  if ('work_type' in patch) assertWorkType(patch.work_type);
+  const before = getTask(db, taskId); // existence check
+  if ('phase_id' in patch && patch.phase_id != null) {
+    const ph = patch.phase_id;
+    if (typeof ph !== 'string') throw new Error('invalid phase_id: expected a phase id string or null');
+    const owner = db.prepare('SELECT project_id FROM phases WHERE id = ?').get(ph) as { project_id: string } | undefined;
+    if (!owner) throw new Error(`invalid phase_id: no such phase: ${ph}`);
+    if (owner.project_id !== before.project_id)
+      throw new Error(`invalid phase_id: phase ${ph} belongs to another board`);
+  }
   const sets: string[] = [];
   const values: (string | null)[] = [];
   for (const field of UPDATABLE) {
@@ -716,11 +770,24 @@ export function updateTask(
     values.push(Array.isArray(raw) ? JSON.stringify(raw) : (raw ?? null));
   }
   if (sets.length === 0) throw new Error('empty patch');
-  db.prepare(`UPDATE tasks SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).run(
-    ...values,
-    now(),
-    taskId,
-  );
+  db.transaction(() => {
+    db.prepare(`UPDATE tasks SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).run(
+      ...values,
+      now(),
+      taskId,
+    );
+    const after = getTask(db, taskId);
+    logPhaseChange(db, before.project_id, taskId, before.phase_id, after.phase_id);
+    // reassign {from, to}: the agent column is the NEW assignee (like assign's), not the actor
+    if (before.assigned_agent !== null && after.assigned_agent !== null && before.assigned_agent !== after.assigned_agent)
+      appendEvent(db, {
+        project_id: before.project_id,
+        task_id: taskId,
+        type: 'reassign',
+        payload: { from: before.assigned_agent, to: after.assigned_agent },
+        agent: after.assigned_agent,
+      });
+  })();
   return getTask(db, taskId);
 }
 
@@ -1169,16 +1236,16 @@ export function laneSince(db: DB, taskId: string): number | null {
   return row.t;
 }
 
-const CARD_COLUMNS = `id, title, lane, tag, skill, assigned_agent AS agent, review_rounds AS rounds, updated_at, phase_id, blocked_at, blocked_reason, subtasks, ${LANE_SINCE_SQL} AS lane_since`;
+const CARD_COLUMNS = `id, title, lane, tag, skill, assigned_agent AS agent, review_rounds AS rounds, updated_at, phase_id, blocked_at, blocked_reason, subtasks, work_type, ${LANE_SINCE_SQL} AS lane_since`;
 
-type CardRow = Omit<CardSummary, 'subs' | 'blocked'> & { subtasks: string | null; blocked_at: number | null };
+type CardRow = Omit<WithWorkType<CardSummary>, 'subs' | 'blocked'> & { subtasks: string | null; blocked_at: number | null };
 
-function toSummary(row: CardRow): CardSummary {
+function toSummary(row: CardRow): WithWorkType<CardSummary> {
   const { subtasks, blocked_at, ...card } = row;
   return { ...card, blocked: !!blocked_at, subs: progressOf(subtasks) };
 }
 
-export function getBoard(db: DB, projectId: string): CardSummary[] {
+export function getBoard(db: DB, projectId: string): WithWorkType<CardSummary>[] {
   return (
     db
       .prepare(`SELECT ${CARD_COLUMNS} FROM tasks WHERE project_id = ? ORDER BY lane, position`)
@@ -1281,7 +1348,7 @@ export function suggestCardPlacement(
   });
 }
 
-export function getActiveCards(db: DB, projectId: string): CardSummary[] {
+export function getActiveCards(db: DB, projectId: string): WithWorkType<CardSummary>[] {
   return (
     db
       .prepare(
@@ -1531,16 +1598,16 @@ export function humanSpan(ms: number): string {
  * Cards that need a human decision, ranked. Pure reads over tasks/reviews/
  * task_events. One row per card — the most severe applicable reason wins.
  */
-export function getAttention(db: DB, projectId: string): AttentionItem[] {
+export function getAttention(db: DB, projectId: string): WithWorkType<AttentionItem>[] {
   const nowTs = now();
   const tasks = db
     .prepare(
-      `SELECT id, title, lane, requirements, subtasks, depends_on, assigned_agent, phase_id, created_at, blocked_at, blocked_reason
+      `SELECT id, title, lane, requirements, subtasks, depends_on, assigned_agent, phase_id, work_type, created_at, blocked_at, blocked_reason
        FROM tasks WHERE project_id = ? AND lane != 'done'`,
     )
     .all(projectId) as Pick<
     Task,
-    'id' | 'title' | 'lane' | 'requirements' | 'subtasks' | 'depends_on' | 'assigned_agent' | 'phase_id' | 'created_at' | 'blocked_at' | 'blocked_reason'
+    'id' | 'title' | 'lane' | 'requirements' | 'subtasks' | 'depends_on' | 'assigned_agent' | 'phase_id' | 'work_type' | 'created_at' | 'blocked_at' | 'blocked_reason'
   >[];
 
   // impact: how many open cards depend on each card
@@ -1558,7 +1625,7 @@ export function getAttention(db: DB, projectId: string): AttentionItem[] {
     `SELECT MAX(created_at) AS t FROM task_events WHERE task_id = ? AND type = 'move' AND payload LIKE '%"to":"in_review"%'`,
   );
 
-  const items: AttentionItem[] = [];
+  const items: WithWorkType<AttentionItem>[] = [];
 
   for (const t of tasks) {
     const base = {
@@ -1567,6 +1634,7 @@ export function getAttention(db: DB, projectId: string): AttentionItem[] {
       blocking: blocking.get(t.id) ?? 0,
       agent: t.assigned_agent,
       phase_id: t.phase_id,
+      work_type: t.work_type,
     };
     const fails = (failCount.get(t.id) as { c: number }).c;
     const latest = latestReview.get(t.id) as { verdict: string; created_at: number } | undefined;
@@ -1656,6 +1724,7 @@ export function getAttention(db: DB, projectId: string): AttentionItem[] {
       blocking: blocking.get(link.local_id) ?? 0,
       agent: card.assigned_agent,
       phase_id: card.phase_id,
+      work_type: card.work_type,
     });
   }
 
@@ -1677,7 +1746,7 @@ export function getAttention(db: DB, projectId: string): AttentionItem[] {
 /** When a done card entered done: its latest move there, else its last update. */
 const DONE_AT_SQL = `COALESCE((SELECT MAX(e.created_at) FROM task_events e WHERE e.task_id = tasks.id AND e.type = 'move' AND json_extract(e.payload, '$.to') = 'done'), tasks.updated_at)`;
 
-/** SQL over `tasks` for a filter's card-level parts (phase, tag, agent, the done range). Scope is per board: see inScope. */
+/** SQL over `tasks` for a filter's card-level parts (phase, tag, agent, work type, the done range). Scope is per board: see inScope. */
 function cardWhere(f: CardFilter): { sql: string; params: (string | number)[] } {
   const where = ['1'];
   const params: (string | number)[] = [];
@@ -1686,6 +1755,12 @@ function cardWhere(f: CardFilter): { sql: string; params: (string | number)[] } 
       where.push(`tasks.${col} = ?`);
       params.push(v);
     }
+  }
+  if (f.workType === 'none') where.push('tasks.work_type IS NULL');
+  else if (f.workType) {
+    assertWorkType(f.workType);
+    where.push('tasks.work_type = ?');
+    params.push(f.workType);
   }
   if (f.from != null) {
     where.push(`(tasks.lane != 'done' OR ${DONE_AT_SQL} >= ?)`);
@@ -1699,7 +1774,8 @@ function cardWhere(f: CardFilter): { sql: string; params: (string | number)[] } 
 }
 
 /** Any card-level filter (the counts then differ from the plain ones). */
-const cardFiltered = (f: CardFilter) => !!(f.phase || f.tag || f.agent || f.from != null || f.to != null);
+const cardFiltered = (f: CardFilter) =>
+  !!(f.phase || f.tag || f.agent || f.workType || f.from != null || f.to != null);
 
 /** Is a board in the filter's scope? None or the workspace id → every board. */
 const inScope = (f: CardFilter, workspaceId: string, boardId: string) =>
@@ -1715,7 +1791,9 @@ export function boardShown(db: DB, f: CardFilter, workspaceId: string, boardId: 
 }
 
 // ── workspace summary: one cross-board read for the whole workspace ──
-function boardSummary(db: DB, p: Project, f: CardFilter = {}, shown = true): BoardSummary {
+type BoardSummaryWT = BoardSummary & { active: WithWorkType<BoardSummary['active'][number]>[] };
+
+function boardSummary(db: DB, p: Project, f: CardFilter = {}, shown = true): BoardSummaryWT {
   const w = cardWhere(f);
   const lanes = Object.fromEntries(LANES.map((l) => [l, 0])) as Record<Lane, number>;
   const counts = db
@@ -1725,11 +1803,13 @@ function boardSummary(db: DB, p: Project, f: CardFilter = {}, shown = true): Boa
   const active = (
     db
       .prepare(
-        `SELECT id, title, lane, assigned_agent, blocked_at, ${LANE_SINCE_SQL} AS lane_since FROM tasks
+        `SELECT id, title, lane, assigned_agent, blocked_at, work_type, ${LANE_SINCE_SQL} AS lane_since FROM tasks
          WHERE project_id = ? AND lane IN ('in_progress', 'in_review') AND ${w.sql}
          ORDER BY CASE lane WHEN 'in_progress' THEN 0 ELSE 1 END, position`,
       )
-      .all(p.id, ...w.params) as (Pick<Task, 'id' | 'title' | 'lane' | 'assigned_agent' | 'blocked_at'> & { lane_since: number })[]
+      .all(p.id, ...w.params) as (Pick<Task, 'id' | 'title' | 'lane' | 'assigned_agent' | 'blocked_at' | 'work_type'> & {
+      lane_since: number;
+    })[]
   ).map((t) => ({
     id: t.id,
     title: t.title,
@@ -1737,18 +1817,19 @@ function boardSummary(db: DB, p: Project, f: CardFilter = {}, shown = true): Boa
     agent: t.assigned_agent,
     blocked: t.blocked_at != null,
     lane_since: t.lane_since,
+    work_type: t.work_type,
   }));
   const { n: blocked } = db
     .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE project_id = ? AND blocked_at IS NOT NULL AND lane != 'done'`)
     .get(p.id) as { n: number };
   // the phase: the filter's (when it's this board's), else the active one. Its progress is the
-  // whole phase's under the tag / agent filters (the date range doesn't apply)
+  // whole phase's under the tag / agent / work type filters (the date range doesn't apply)
   const ap = (
     f.phase
       ? db.prepare(`SELECT id, title FROM phases WHERE id = ? AND project_id = ?`).get(f.phase, p.id)
       : db.prepare(`SELECT id, title FROM phases WHERE project_id = ? AND status = 'active' ORDER BY position LIMIT 1`).get(p.id)
   ) as Pick<Phase, 'id' | 'title'> | undefined;
-  const pw = cardWhere({ tag: f.tag, agent: f.agent });
+  const pw = cardWhere({ tag: f.tag, agent: f.agent, workType: f.workType });
   const prog = ap
     ? (db
         .prepare(`SELECT COUNT(*) AS total, SUM(lane = 'done') AS done FROM tasks WHERE phase_id = ? AND ${pw.sql}`)
@@ -1774,23 +1855,29 @@ function boardSummary(db: DB, p: Project, f: CardFilter = {}, shown = true): Boa
 // Rank for a board with no attention items: one past the least severe rank, so empty boards sort last.
 const NO_ATTENTION_RANK = Object.keys(SEV_RANK).length;
 
-export function getWorkspaceSummary(db: DB, projectId: string, f: CardFilter = {}): WorkspaceSummary {
+type WorkspaceSummaryWT = WorkspaceSummary & {
+  boards: BoardSummaryWT[];
+  attention: WithWorkType<WorkspaceAttentionItem>[];
+};
+
+export function getWorkspaceSummary(db: DB, projectId: string, f: CardFilter = {}): WorkspaceSummaryWT {
   // one read transaction: every board is read from the same consistent snapshot
-  return db.transaction((): WorkspaceSummary => {
+  return db.transaction((): WorkspaceSummaryWT => {
     const { workspace, verticals } = getWorkspace(db, projectId);
     const projects = [workspace, ...verticals];
     const shown = new Map(projects.map((p) => [p.id, boardShown(db, f, workspace.id, p.id)]));
     const tagOf = db.prepare('SELECT tag FROM tasks WHERE id = ?');
-    // Needs you under the filters: the shown boards' items whose card matches phase / agent / tag
-    const keep = (i: AttentionItem) =>
+    // Needs you under the filters: the shown boards' items whose card matches phase / agent / work type / tag
+    const keep = (i: WithWorkType<AttentionItem>) =>
       (!f.phase || i.phase_id === f.phase) &&
       (!f.agent || i.agent === f.agent) &&
+      (!f.workType || i.work_type === (f.workType === 'none' ? null : f.workType)) &&
       (!f.tag || (tagOf.get(i.card_id) as { tag: string | null } | undefined)?.tag === f.tag);
     const perBoard = projects.map((p) =>
       shown.get(p.id)
         ? getAttention(db, p.id)
             .filter(keep)
-            .map((i): WorkspaceAttentionItem => ({ ...i, project_id: p.id, project_name: p.name }))
+            .map((i): WithWorkType<WorkspaceAttentionItem> => ({ ...i, project_id: p.id, project_name: p.name }))
         : [],
     );
     const worst = (items: WorkspaceAttentionItem[]) =>
@@ -1890,7 +1977,12 @@ function waitingOn(db: DB, dependsOn: string | null): WaitingOn[] {
  * Filters: only the shown boards (scope; a phase → its board), their cards matching
  * phase / tag / agent; a phase filter picks that phase's backlog instead of the active one.
  */
-export function getUpNext(db: DB, projectId: string, n = 3, f: CardFilter = {}): UpNext {
+export function getUpNext(
+  db: DB,
+  projectId: string,
+  n = 3,
+  f: CardFilter = {},
+): UpNext & { items: WithWorkType<UpNextItem>[] } {
   const workspaceId = getWorkspace(db, projectId).workspace.id;
   const boards = homeScope(db, projectId).filter((p) => boardShown(db, f, workspaceId, p.id));
   const w = cardWhere(f);
@@ -1905,13 +1997,14 @@ export function getUpNext(db: DB, projectId: string, n = 3, f: CardFilter = {}):
   const rounds = Math.max(0, ...perBoard.map((b) => b.backlog.length));
   for (let i = 0; i < rounds; i++)
     for (const b of perBoard) if (b.backlog[i]) ordered.push({ task: b.backlog[i], board: b.board });
-  const items = ordered.slice(0, n).map(({ task, board }): UpNextItem => {
+  const items = ordered.slice(0, n).map(({ task, board }): WithWorkType<UpNextItem> => {
     const waiting = waitingOn(db, task.depends_on);
     return {
       id: task.id,
       title: task.title,
       lane: task.lane,
       tag: task.tag,
+      work_type: task.work_type,
       board: { id: board.id, name: board.name },
       ready: waiting.length === 0,
       waiting_on: waiting,
@@ -1922,7 +2015,7 @@ export function getUpNext(db: DB, projectId: string, n = 3, f: CardFilter = {}):
 
 /** in_progress then in_review cards across the scope (lane, then board order, then position);
  *  under filters, the in-scope boards' cards matching phase / tag / agent. */
-export function getNowBuilding(db: DB, projectId: string, f: CardFilter = {}): NowBuildingItem[] {
+export function getNowBuilding(db: DB, projectId: string, f: CardFilter = {}): WithWorkType<NowBuildingItem>[] {
   const workspaceId = getWorkspace(db, projectId).workspace.id;
   const boards = homeScope(db, projectId).filter((p) => inScope(f, workspaceId, p.id));
   const w = cardWhere(f);
@@ -1931,7 +2024,7 @@ export function getNowBuilding(db: DB, projectId: string, f: CardFilter = {}): N
   const enteredAt = db.prepare(
     `SELECT MAX(created_at) AS t FROM task_events WHERE task_id = ? AND type = 'move' AND json_extract(payload, '$.to') = ?`,
   );
-  const items: NowBuildingItem[] = [];
+  const items: WithWorkType<NowBuildingItem>[] = [];
   for (const lane of ['in_progress', 'in_review'] as const) {
     for (const p of boards) {
       for (const t of stmt.all(p.id, lane, ...w.params) as Task[]) {
@@ -1947,6 +2040,7 @@ export function getNowBuilding(db: DB, projectId: string, f: CardFilter = {}): N
           next_criterion: subs.find((s) => !s.done)?.text ?? null,
           since: entered.t ?? t.updated_at,
           blocked: t.blocked_at != null,
+          work_type: t.work_type,
         });
       }
     }
@@ -1956,13 +2050,13 @@ export function getNowBuilding(db: DB, projectId: string, f: CardFilter = {}): N
 
 /** Every team member with their activity (card_activity.agent = member name)
  *  summed across the scope; members without activity get zeros. Filters: an agent →
- *  just them; a phase, tag or narrower scope → the members with a matching card. */
+ *  just them; a phase, tag, work type or narrower scope → the members with a matching card. */
 export function getAgentBoard(db: DB, projectId: string, f: CardFilter = {}): AgentBoardEntry[] {
   const scope = homeScope(db, projectId);
   const workspaceId = getWorkspace(db, projectId).workspace.id;
   const inView = scope.filter((p) => inScope(f, workspaceId, p.id));
   let names: Set<string> | null = null;
-  if (f.phase || f.tag || inView.length < scope.length) {
+  if (f.phase || f.tag || f.workType || inView.length < scope.length) {
     const w = cardWhere({ ...f, agent: null });
     names = new Set();
     for (const p of inView) {
@@ -2013,20 +2107,26 @@ const CARD_SINCE_SQL = `COALESCE(${LANE_SINCE_SQL}, CASE WHEN tasks.lane = 'done
  * covers its verticals, a vertical id itself); the options (boards, phases, tags, agents
  * incl. the team) cover the whole workspace, unfiltered.
  */
-export function getWorkspaceCards(db: DB, projectId: string, filter: CardFilter = {}): WorkspaceCards {
-  return db.transaction((): WorkspaceCards => {
+export function getWorkspaceCards(
+  db: DB,
+  projectId: string,
+  filter: CardFilter = {},
+): WorkspaceCards & { cards: WithWorkType<WorkspaceCard>[] } {
+  return db.transaction((): WorkspaceCards & { cards: WithWorkType<WorkspaceCard>[] } => {
     const { workspace, verticals } = getWorkspace(db, projectId);
     const f = { ...filter, scope: filter.scope ?? projectId };
     const boards = [workspace, ...verticals];
     const w = cardWhere(f);
     const cardStmt = db.prepare(
-      `SELECT id, title, lane, phase_id, tag, assigned_agent AS agent, blocked_at, ${CARD_SINCE_SQL} AS lane_since
+      `SELECT id, title, lane, phase_id, tag, assigned_agent AS agent, blocked_at, work_type, ${CARD_SINCE_SQL} AS lane_since
        FROM tasks WHERE project_id = ? AND ${w.sql} ORDER BY lane, position`,
     );
-    const cards: WorkspaceCard[] = [];
+    const cards: WithWorkType<WorkspaceCard>[] = [];
     for (const b of boards) {
       if (!inScope(f, workspace.id, b.id)) continue;
-      for (const r of cardStmt.all(b.id, ...w.params) as (Omit<WorkspaceCard, 'board' | 'blocked'> & { blocked_at: number | null })[]) {
+      for (const r of cardStmt.all(b.id, ...w.params) as (Omit<WithWorkType<WorkspaceCard>, 'board' | 'blocked'> & {
+        blocked_at: number | null;
+      })[]) {
         const { blocked_at, ...c } = r;
         cards.push({ ...c, board: b.id, blocked: blocked_at != null });
       }

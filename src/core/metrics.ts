@@ -15,6 +15,11 @@
  *  - review   {verdict, round, findings}
  *  - delete   {id, title}              task_id is NULL and the card's own
  *                                       events are deleted with it
+ *  - phase_change {from, to}           the card's phase_id changed (burn scope)
+ *  - reassign {from, to}               assignee changed (agent = the new one);
+ *                                       does NOT close a blocker: only assign does
+ *                                       (assignCard logs reassign + assign and is
+ *                                       the only path that clears blocked_at)
  *
  * Rules the derivation applies:
  *  - Event order: (created_at, rowid). rowid is the true insertion order within
@@ -623,9 +628,58 @@ export interface BurnMetrics {
   series: { date: string; scope: number; done: number; remaining: number }[];
   scope: number;
   done: number;
-  /** Cards whose scope-entry time is a guess (they joined the phase after creation; no event records when). */
+  /** Cards whose scope-entry (or exit) time is a guess: no phase_change event records when it happened. */
   approximated: number;
   partial: number;
+}
+
+/**
+ * When a card was in `phaseId`, as [from, to) spans (to null = still in it).
+ * Exact from its phase_change {from, to} events: it starts in its create
+ * event's phase (else the first change's `from`) and follows each change.
+ * Without phase_change events (or where the log disagrees with itself / the
+ * card's current phase) the switch's time is unknown: it is placed at
+ * max(the previous known time, the phase's creation), clamped to the next
+ * known time, and the card counts as approximated.
+ */
+function phaseSpans(
+  x: DerivedCard,
+  phaseId: string,
+  phaseCreatedAt: number,
+): { spans: { from: number; to: number | null }[]; approximated: boolean } {
+  const createdAt = x.m.createdAt;
+  const changes = x.h.events.filter((e) => e.type === 'phase_change').map((e) => ({ e, p: parsePayload(e.payload) }));
+  const create = x.h.events.find((e) => e.type === 'create');
+  const phaseOf = (v: unknown) => (typeof v === 'string' ? v : null);
+  const spans: { from: number; to: number | null }[] = [];
+  let approximated = false;
+  // no create event and no changes: the starting phase is unknown (null → an approximated entry)
+  let cur: string | null = create
+    ? phaseOf(parsePayload(create.payload).phase_id)
+    : changes.length
+      ? phaseOf(changes[0].p.from)
+      : null;
+  let at = createdAt;
+  const enter = (to: string | null, t: number) => {
+    if (cur !== phaseId && to === phaseId) spans.push({ from: t, to: null });
+    if (cur === phaseId && to !== phaseId) spans[spans.length - 1].to = t;
+    cur = to;
+  };
+  // an untracked switch somewhere in [at, bound]: earliest plausible time
+  const guess = (to: string | null, bound: number) => {
+    if (cur === to) return;
+    approximated = true;
+    enter(to, Math.min(bound, Math.max(at, phaseCreatedAt)));
+  };
+  if (cur === phaseId) spans.push({ from: createdAt, to: null });
+  for (const { e, p } of changes) {
+    const t = Math.max(e.created_at, at);
+    guess(phaseOf(p.from), t);
+    enter(phaseOf(p.to), t);
+    at = t;
+  }
+  guess(x.h.card.phase_id, Infinity);
+  return { spans, approximated };
 }
 
 /**
@@ -633,14 +687,15 @@ export interface BurnMetrics {
  * its first card if earlier, to now; a done phase ends at max(its last update,
  * last card done)).
  *
- * Approximations (the event log has no phase-change event):
- *  - Scope is the phase's CURRENT cards. A card whose create event carried this
- *    phase enters scope at creation. Any other card (placed, moved or
- *    committed into the phase later) enters at max(its creation, the phase's
- *    creation), counted in `approximated`.
- *  - Removals are invisible: a card moved to another phase leaves no trace
- *    here, and a deleted card's history is deleted with it. So past scope only
- *    ever counts cards that are still in the phase.
+ * Scope on a day is the cards in the phase at the day's end, from their
+ * phase_change events: a card moved in counts from its move, a card moved out
+ * stops counting at its move (see phaseSpans). Fallback when a card has no
+ * phase_change events (history from before they were logged):
+ *  - A card whose create event carried this phase entered scope at creation.
+ *    Any other card (placed, moved or committed into the phase later) enters
+ *    at max(its creation, the phase's creation), counted in `approximated`.
+ *  - A card that left without an event leaves no trace, and a deleted card's
+ *    history is deleted with it.
  *  - Done follows the lane history, so a reopened card drops out of `done`
  *    again for the days it was not done.
  */
@@ -648,14 +703,17 @@ export function computeBurn(phase: BurnPhase, histories: CardHistory[], opts: Om
   const { tz, now } = opts;
   const ds = deriveCards(histories, now);
   let approximated = 0;
-  const joined = ds.map((x) => {
-    const create = x.h.events.find((e) => e.type === 'create');
-    if (create && parsePayload(create.payload).phase_id === phase.id) return x.m.createdAt;
-    approximated++;
-    return Math.max(x.m.createdAt, phase.created_at);
+  const spans = ds.map((x) => {
+    const r = phaseSpans(x, phase.id, phase.created_at);
+    if (r.approximated) approximated++;
+    return r.spans;
   });
-  const from = joined.reduce((min, t) => Math.min(min, t), phase.created_at);
-  const lastDone = ds.reduce((max, x) => Math.max(max, x.m.doneAt ?? 0), 0);
+  const from = spans.flat().reduce((min, s) => Math.min(min, s.from), phase.created_at);
+  // only a done that happened while the card was in the phase (one finished elsewhere doesn't stretch the range)
+  const lastDone = ds.reduce((max, x, i) => {
+    const t = x.m.doneAt;
+    return t !== null && spans[i].some((s) => s.from <= t && (s.to === null || s.to > t)) ? Math.max(max, t) : max;
+  }, 0);
   const to = Math.max(from, phase.status === 'done' ? Math.min(now, Math.max(phase.updated_at, lastDone)) : now);
   checkRange(from, to);
   const days = daysBetween(from, to, tz);
@@ -665,7 +723,7 @@ export function computeBurn(phase: BurnPhase, histories: CardHistory[], opts: Om
     let scope = 0;
     let done = 0;
     ds.forEach((x, i) => {
-      if (joined[i] > t) return;
+      if (!spans[i].some((s) => s.from <= t && (s.to === null || s.to > t))) return;
       scope++;
       if (laneAt(x.d.intervals, t) === 'done') done++;
     });
@@ -768,8 +826,11 @@ export function parseTime(raw: string, tz: string, edge: 'from' | 'to'): number 
 
 // ---------- DB reader ----------
 
+/** Internal load filter: also cards that have a phase_change event out of `leftPhaseId`. */
+type LoadFilter = MetricsFilter & { leftPhaseId?: string };
+
 /** SQL WHERE (over tasks aliased `t`) for the non-date parts of a filter. */
-function filterWhere(filter: MetricsFilter): { sql: string; params: (string | number)[] } {
+function filterWhere(filter: LoadFilter): { sql: string; params: (string | number)[] } {
   const where: string[] = [];
   const params: (string | number)[] = [];
   if (filter.projectIds) {
@@ -781,6 +842,14 @@ function filterWhere(filter: MetricsFilter): { sql: string; params: (string | nu
   if (filter.phaseId !== undefined) {
     where.push('t.phase_id = ?');
     params.push(filter.phaseId);
+  }
+  if (filter.leftPhaseId !== undefined) {
+    // driven from the phase_change rows (evaluated once), then tasks looked up by id: no per-task scan
+    where.push(
+      `t.id IN (SELECT pe.task_id FROM task_events pe WHERE pe.type = 'phase_change'
+        AND json_valid(pe.payload) AND json_extract(pe.payload, '$.from') = ?)`,
+    );
+    params.push(filter.leftPhaseId);
   }
   if (filter.tag !== undefined) {
     where.push('t.tag = ?');
@@ -808,7 +877,7 @@ function filterWhere(filter: MetricsFilter): { sql: string; params: (string | nu
 }
 
 /** The SQL part of the load: cards matching `filter` (coarse date prefilter only) + their events. */
-function loadRaw(db: DB, filter: MetricsFilter): CardHistory[] {
+function loadRaw(db: DB, filter: LoadFilter): CardHistory[] {
   const { sql, params } = filterWhere(filter);
   const cards = db
     .prepare(
@@ -865,6 +934,10 @@ export function summaryMetrics(db: DB, filter: MetricsFilter, opts: { tz: string
   return summaryFromDerived(loadDerived(db, { ...filter, from }, opts.now), { ...opts, from, to: filter.to });
 }
 
+/** The phase's current cards (on the given boards) plus every card that left it (a phase_change from it, any board). */
 export function burnMetrics(db: DB, phase: BurnPhase, projectIds: string[], opts: { tz: string; now: number }): BurnMetrics {
-  return computeBurn(phase, loadRaw(db, { projectIds, phaseId: phase.id }), opts);
+  const current = loadRaw(db, { projectIds, phaseId: phase.id });
+  const seen = new Set(current.map((h) => h.card.id));
+  const left = loadRaw(db, { leftPhaseId: phase.id }).filter((h) => !seen.has(h.card.id));
+  return computeBurn(phase, [...current, ...left], opts);
 }
