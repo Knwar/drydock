@@ -19,7 +19,7 @@
  *    MIN_RUNS) to keep runs x that under WORK_BUDGET.
  */
 import type { DB } from './db.js';
-import { addDays, dayKey, deriveCards, loadCardHistories, MetricsParamError, startOfDay } from './metrics.js';
+import { addDays, dayKey, deriveCards, loadCardHistories, MetricsParamError, startOfDay, type MetricsFilter } from './metrics.js';
 
 export const DEFAULT_WEEKS = 6;
 export const DEFAULT_RUNS = 10_000;
@@ -241,11 +241,15 @@ export type ForecastTarget =
 /** Load the scope, count the target's not-done cards, and forecast them. */
 export function forecast(
   db: DB,
-  scope: { projectId: string; tag?: string },
+  scope: { projectId: string; tag?: string; workType?: MetricsFilter['workType'] },
   target: ForecastTarget,
   opts: ForecastOptions,
 ): Forecast {
-  const filter = { projectIds: [scope.projectId], ...(scope.tag ? { tag: scope.tag } : {}) };
+  const filter: MetricsFilter = {
+    projectIds: [scope.projectId],
+    ...(scope.tag ? { tag: scope.tag } : {}),
+    ...(scope.workType ? { workType: scope.workType } : {}),
+  };
   const cards = deriveCards(loadCardHistories(db, filter), opts.now).map((d) => d.m);
   const inPlan = target.kind === 'plan' ? new Set(target.cardIds) : null;
   const inTarget = (c: (typeof cards)[number]) =>

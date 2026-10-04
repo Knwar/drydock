@@ -27,7 +27,7 @@ import { openDb } from '../core/db.js';
 import { cardLines } from '../core/lines.js';
 import { cachedCodeVersion, readCodeVersion } from './code-version.js';
 import { parseCompare, withPrevious, type WindowedFilter, type WithPrevious } from '../core/compare.js';
-import { WORK_TYPES, type CardFilter, type PlanDraft, type Project, type Task, type WorkType } from '../core/types.js';
+import { WORK_TYPES, type CardFilter, type PlanDraft, type Project, type Task, type TimeWindow, type WorkType } from '../core/types.js';
 import { looksLikeClaude, NUDGE_PROMPT, resetsAtMs, shouldNudge, type NudgeInput } from './autopilot.js';
 import { Broadcaster } from './broadcast.js';
 import { Dispatcher } from './dispatcher.js';
@@ -703,20 +703,26 @@ function workTypeParam(q: URLSearchParams): WorkType | 'none' | undefined {
 /**
  * Run `compute` over `filter`. With a `compare` param (previous | <from>,<to>) the result also
  * carries `previous` (its headline fields, via `pick`), `window` and `previousWindow`; an all-time
- * filter gives previous: null. Without the param the result is returned untouched. A bad compare
- * value → MetricsParamError (a 400).
+ * filter gives previous: null. 'previous' is `opts.previous` if given, else metrics.previousPeriod
+ * (calendar-day aligned when the window's edges are day boundaries in tz). Without the param the
+ * result is returned untouched. A bad compare value → MetricsParamError (a 400).
  */
 function withCompare<F extends WindowedFilter, T, P>(
   q: URLSearchParams,
   filter: F,
   compute: (f: F) => T,
   pick: (r: T) => P,
-  opts: { tz: string; now: number },
+  opts: { tz: string; now: number; previous?: TimeWindow },
 ): T | WithPrevious<T, P> {
   const raw = q.get('compare');
   if (raw === null) return compute(filter);
-  const win = parseCompare(raw, filter, opts);
-  if (!win && raw !== 'previous') throw new metrics.MetricsParamError(`invalid compare: ${raw} (expected previous or <from>,<to>)`);
+  let win: TimeWindow | null = null;
+  if (raw !== 'previous') {
+    win = parseCompare(raw, filter, opts);
+    if (!win) throw new metrics.MetricsParamError(`invalid compare: ${raw} (expected previous or <from>,<to>)`);
+  } else if (filter.from != null) {
+    win = opts.previous ?? metrics.previousPeriod(filter.from, filter.to ?? undefined, opts.tz, opts.now);
+  }
   return withPrevious(filter, compute, pick, { now: opts.now, compare: filter.from == null ? null : win });
 }
 
@@ -1544,7 +1550,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         if (!phase) return json(res, 404, { error: 'unknown phase' });
         const boards = [project, ...board.listVerticals(db, project).map((v) => v.id)];
         if (!boards.includes(phase.project_id)) return json(res, 400, { error: 'phase is not on this project' });
-        return json(res, 200, metrics.burnMetrics(db, phase, [project], { tz, now }));
+        return json(res, 200, metrics.burnMetrics(db, phase, [project], { tz, now, workType: workTypeParam(q) }));
       }
       // a workspace id expands to its verticals inside the loader
       const filter: metrics.MetricsFilter = { projectIds: [project] };
@@ -1581,14 +1587,24 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
           }), opts),
         );
       }
+      // compare runs over the summary's ACTUAL range (from clamped to the last 4 ISO weeks);
+      // when that clamp applies, previous is the 4 ISO weeks (28 local days) before it
+      let sumFilter = filter;
+      let previous: TimeWindow | undefined;
+      if (q.has('compare')) {
+        const fourWeeks = metrics.lastFourWeeksStart(filter.to ?? now, tz);
+        sumFilter = { ...filter, from: Math.max(filter.from ?? -Infinity, fourWeeks) };
+        if (sumFilter.from === fourWeeks)
+          previous = { from: metrics.startOfDay(metrics.addDays(metrics.dayKey(fourWeeks, tz), -28), tz), to: fourWeeks - 1 };
+      }
       return json(
         res,
         200,
-        withCompare(q, filter, (f) => metrics.summaryMetrics(db, f, opts), (r) => ({
+        withCompare(q, sumFilter, (f) => metrics.summaryMetrics(db, f, opts), (r) => ({
           throughput: r.throughput.reduce((n, w) => n + w.count, 0),
           cycleTime: { p50: r.cycleTime.p50, p85: r.cycleTime.p85 },
           wip: r.wip,
-        }), opts),
+        }), { ...opts, previous }),
       );
     } catch (err) {
       // bad params → 400; anything else is ours → 500 (route()'s outer catch would say 400)
@@ -1661,7 +1677,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         target = { kind: 'phase', phaseId };
       }
       const tag = q.get('tag') || undefined;
-      return json(res, 200, forecast.forecast(db, { projectId: project, tag }, target, { tz, now: Date.now(), weeks, seed }));
+      const workType = workTypeParam(q);
+      return json(res, 200, forecast.forecast(db, { projectId: project, tag, workType }, target, { tz, now: Date.now(), weeks, seed }));
     } catch (err) {
       const status = err instanceof metrics.MetricsParamError ? 400 : 500;
       return json(res, status, { error: (err as Error).message });
@@ -1671,6 +1688,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // ── schedule (core/schedule.ts): every phase (incl. the verticals') vs its target date, + milestones ──
   if (method === 'GET' && pathname === '/metrics/schedule') {
     const q = url.searchParams;
+    if (q.get('workType')) return json(res, 400, { error: "workType isn't supported on /metrics/schedule" });
     const project = q.get('project');
     if (!project) return json(res, 400, { error: 'project required' });
     if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
@@ -1706,7 +1724,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       if (pathname === '/report') {
         // compare: the current window is the report's (default: the last 7 days), never all time
         if (q.has('compare')) range.from ??= report.defaultRange(range.to ?? now, tz).from;
-        return json(res, 200, withCompare(q, range, load, (r) => r.metrics, { tz, now }));
+        // previous: the window-dependent headline numbers only (no live waiting-now, budgets, caveats, notes)
+        return json(
+          res,
+          200,
+          withCompare(q, range, load, ({ metrics: m }) => ({
+            throughput: m.throughput,
+            cycle_time: m.cycle_time,
+            first_pass: m.first_pass,
+            waiting_on_you: { total_ms: m.waiting_on_you.total_ms, count: m.waiting_on_you.count },
+            cost: { total_usd: m.cost.total_usd, runs: m.cost.runs },
+          }), { tz, now }),
+        );
       }
       const r = load(range);
       res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' });
@@ -1753,7 +1782,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
           q,
           filter,
           (f) => cost.costMetrics(db, f, { tz, now, limit, plans }),
-          (r) => ({ totals: r.totals, medianCardCost: r.medianCardCost }),
+          (r) => ({ totals: r.totals }), // medianCardCost is all-time: no previous
           { tz, now },
         ),
       );
@@ -1764,6 +1793,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   }
   if (method === 'GET' && pathname === '/metrics/usage-burn') {
     const q = url.searchParams;
+    if (q.get('workType')) return json(res, 400, { error: "workType isn't supported on /metrics/usage-burn" });
     const project = q.get('project');
     const phaseId = q.get('phase');
     const tz = q.get('tz') || metrics.localTimeZone();

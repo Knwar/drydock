@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { openDb, type DB } from '../core/db.js';
+import { addDays, dayKey, lastFourWeeksStart, startOfDay } from '../core/metrics.js';
 import { startDaemon, type TestDaemon } from './test-daemon.js';
 
 // Period-over-period compare, the workType filter + breakdowns, flow's firstActivityAt and
@@ -112,6 +113,10 @@ describe('daemon compare + workType', () => {
     // ... and debt still in progress
     cur3 = await create('cur3', T0 + 2 * D, { work_type: 'debt' });
     await move(cur3, 'in_progress', T0 + 3 * D);
+    // ... and a feature that spent $4, then was deleted (its runs still count)
+    const gone = await create('gone', T0 + 2 * D, { work_type: 'feature' });
+    await spend(gone, 4 * M, T0 + 4 * D);
+    await ok('DELETE', `/task/${gone}`);
 
     needsYou(T0 - 3 * D, 10 * 60_000);
     needsYou(T0 - 2 * D, 20 * 60_000);
@@ -143,6 +148,7 @@ describe('daemon compare + workType', () => {
   it('summary: throughput sum, cycle p50/p85, WIP', async () => {
     const r = await get(`/metrics/summary?project=${pid}&tz=UTC&${win(C)}&compare=previous`);
     assert.deepEqual(r.window, C);
+    assert.deepEqual(r.previousWindow, P);
     assert.deepEqual(r.previous, {
       throughput: 1,
       cycleTime: { p50: D, p85: D },
@@ -153,6 +159,28 @@ describe('daemon compare + workType', () => {
     assert.equal(prev.throughput.reduce((n: number, w: any) => n + w.count, 0), 1);
   });
 
+  it('summary: compare runs over the actual (4 ISO week) range; previous is the 4 weeks before', async () => {
+    const sum = (r: any) => r.throughput.reduce((n: number, w: any) => n + w.count, 0);
+    const check = async (q: string, to: number) => {
+      const r = await get(`/metrics/summary?project=${pid}&tz=UTC&${q}&compare=previous`);
+      const start = lastFourWeeksStart(to, 'UTC');
+      assert.equal(r.range.from, start, q);
+      assert.deepEqual(r.window, { from: start, to }, q);
+      assert.deepEqual(r.previousWindow, { from: start - 28 * D, to: start - 1 }, q);
+      const prev = await get(`/metrics/summary?project=${pid}&tz=UTC&from=${start - 28 * D}&to=${start - 1}`);
+      assert.equal(r.previous.throughput, sum(prev), q);
+      assert.deepEqual(r.previous.cycleTime, { p50: prev.cycleTime.p50, p85: prev.cycleTime.p85 }, q);
+      return r;
+    };
+    const old = await check(`from=${T0 - 60 * D}&to=${C.to}`, C.to); // from older than 4 weeks: clamped
+    assert.equal(sum(old), 3);
+    await check(`to=${C.to}`, C.to); // only to: still the 4-week range
+    // no from / to at all: the 4 weeks to now (summary is never all time)
+    const now = await get(`/metrics/summary?project=${pid}&tz=UTC&compare=previous`);
+    assert.ok(now.previous && now.window.from === now.range.from);
+    assert.equal(now.previousWindow.to, now.window.from - 1);
+  });
+
   it('quality: firstPassRate, avgRounds, rework', async () => {
     const r = await get(`/metrics/quality?project=${pid}&tz=UTC&${win(C)}&compare=previous`);
     assert.deepEqual([r.totals.firstPassRate, r.totals.avgRounds, r.totals.rework], [1, 1, 0]);
@@ -160,20 +188,25 @@ describe('daemon compare + workType', () => {
     assert.deepEqual(r.previousWindow, P);
   });
 
-  it('cost: totals + medianCardCost; byWorkType incl. none', async () => {
+  it('cost: previous totals; byWorkType incl. none and deleted', async () => {
     const r = await get(`/metrics/cost?project=${pid}&tz=UTC&${win(C)}&compare=previous`);
-    assert.deepEqual(r.totals, { cost: 5, tokens: 5 * M, runs: 2, cards: 2 });
-    assert.deepEqual(r.previous, { totals: { cost: 1, tokens: M, runs: 1, cards: 1 }, medianCardCost: 2 });
+    assert.deepEqual(r.totals, { cost: 9, tokens: 9 * M, runs: 3, cards: 3 });
+    assert.deepEqual(r.previous, { totals: { cost: 1, tokens: M, runs: 1, cards: 1 } }, 'no all-time medianCardCost');
     assert.deepEqual(r.byWorkType, [
       { workType: 'feature', cost: 2, cards: 1 },
       { workType: 'defect', cost: 3, cards: 1 },
       { workType: 'debt', cost: 0, cards: 0 },
       { workType: 'risk', cost: 0, cards: 0 },
       { workType: 'none', cost: 0, cards: 0 },
+      { workType: 'deleted', cost: 4, cards: 1 },
     ]);
+    assert.equal(r.byWorkType.reduce((n: number, x: any) => n + x.cost, 0), r.totals.cost, 'sums to totals');
     const all = await get(`/metrics/cost?project=${pid}&tz=UTC`);
     assert.deepEqual(all.byWorkType.find((x: any) => x.workType === 'none'), { workType: 'none', cost: 1, cards: 1 });
     assert.ok(!('previous' in all));
+    // workType=none is unclassified EXISTING cards: the deleted card's runs are not in it
+    assert.deepEqual((await get(`/metrics/cost?project=${pid}&tz=UTC&workType=none`)).totals, { cost: 1, tokens: M, runs: 1, cards: 1 });
+    assert.equal((await get(`/metrics/cost?project=${pid}&tz=UTC&workType=feature`)).totals.cost, 2);
   });
 
   it('wait: needsYou + blocked count/totalMs/p50', async () => {
@@ -190,22 +223,39 @@ describe('daemon compare + workType', () => {
     const prev = await get(`/report?project=${pid}&tz=UTC&${win(P)}`);
     assert.equal(r.metrics.throughput, 2);
     assert.equal(r.previous.throughput, 1);
-    assert.deepEqual(r.previous, prev.metrics);
+    const m = prev.metrics;
+    assert.deepEqual(r.previous, {
+      throughput: m.throughput,
+      cycle_time: m.cycle_time,
+      first_pass: m.first_pass,
+      waiting_on_you: { total_ms: m.waiting_on_you.total_ms, count: m.waiting_on_you.count },
+      cost: { total_usd: m.cost.total_usd, runs: m.cost.runs },
+    });
+    assert.deepEqual(r.previous.waiting_on_you, { total_ms: 30 * 60_000, count: 2 });
     assert.deepEqual(r.previousWindow, P);
-    const def = await get(`/report?project=${pid}&tz=UTC&compare=previous`);
-    assert.ok(def.previous, 'the default 7-day range is a window, not all time');
-    assert.equal(def.window.from, def.range.from);
-    assert.equal(def.previousWindow.to, def.window.from - 1);
+    // default range: previous = the 7 calendar days before it, in the request tz (DST-safe)
+    for (const tz of ['UTC', 'America/New_York']) {
+      const def = await get(`/report?project=${pid}&tz=${encodeURIComponent(tz)}&compare=previous`);
+      assert.ok(def.previous, 'the default 7-day range is a window, not all time');
+      assert.equal(def.window.from, def.range.from);
+      const fromDay = dayKey(def.range.from, tz);
+      assert.equal(def.previousWindow.from, startOfDay(addDays(fromDay, -7), tz), tz);
+      assert.equal(def.previousWindow.to, def.window.from - 1, tz);
+      assert.equal(dayKey(def.previousWindow.from, tz), addDays(fromDay, -7), tz);
+    }
     assert.ok(!('previous' in (await get(`/report?project=${pid}&tz=UTC`))));
   });
 
   it('all time → previous null; invalid compare → 400', async () => {
-    for (const path of ['/metrics/flow', '/metrics/summary', '/metrics/quality', '/metrics/cost', '/metrics/wait']) {
+    for (const path of ['/metrics/flow', '/metrics/quality', '/metrics/cost', '/metrics/wait']) {
       const r = await get(`${path}?project=${pid}&tz=UTC&compare=previous`);
       assert.equal(r.previous, null, path);
       assert.equal(r.window, null, path);
       assert.equal(r.previousWindow, null, path);
       assert.equal((await get(`${path}?project=${pid}&tz=UTC&compare=${P.from},${P.to}`)).previous, null, `${path} explicit`);
+      assert.equal((await get(`${path}?project=${pid}&tz=UTC&to=${C.to}&compare=previous`)).previous, null, `${path} only to`);
+    }
+    for (const path of ['/metrics/flow', '/metrics/summary', '/metrics/quality', '/metrics/cost', '/metrics/wait']) {
       for (const bad of ['bogus', `${P.to},${P.from}`, '', '1,2,3', 'x,y']) {
         const res = await status(`${path}?project=${pid}&tz=UTC&${win(C)}&compare=${bad}`);
         assert.equal(res.status, 400, `${path} compare=${bad}`);
@@ -227,11 +277,36 @@ describe('daemon compare + workType', () => {
     const ws = await get(`/workspace/cards?project=${pid}&workType=feature`);
     assert.ok(JSON.stringify(ws).includes(cur1) && !JSON.stringify(ws).includes(cur2));
     assert.ok(JSON.stringify(await get(`/workspace/cards?project=${pid}&workType=none`)).includes(prev1));
-    for (const path of ['/metrics/flow', '/metrics/summary', '/metrics/quality', '/metrics/cost', '/workspace/summary', '/workspace/cards', '/home']) {
+    for (const path of ['/metrics/flow', '/metrics/summary', '/metrics/quality', '/metrics/cost', '/metrics/forecast', '/workspace/summary', '/workspace/cards', '/home']) {
       const res = await status(`${path}?project=${pid}&tz=UTC&workType=chore`);
       assert.equal(res.status, 400, path);
       assert.match(res.body.error, /invalid workType/);
     }
+    for (const path of ['/metrics/schedule', '/metrics/usage-burn']) {
+      const res = await status(`${path}?project=${pid}&tz=UTC&workType=feature`);
+      assert.equal(res.status, 400, path);
+      assert.equal(res.body.error, `workType isn't supported on ${path}`);
+    }
+    // wait + report don't filter by it yet, but don't reject it either
+    for (const path of ['/metrics/wait', '/report']) assert.equal((await status(`${path}?project=${pid}&tz=UTC&workType=feature`)).status, 200, path);
+  });
+
+  it('workType applies to forecast and burn', async () => {
+    const fc = (q: string) => get(`/metrics/forecast?project=${pid}&tz=UTC&${q}`);
+    assert.equal((await fc('workType=debt')).remaining, 1);
+    assert.equal((await fc('workType=feature')).remaining, 0);
+    assert.equal((await fc('workType=feature')).samples.done, 1);
+    assert.equal((await fc('workType=none')).samples.done, 1);
+    const phase = (await ok('POST', '/phase', { project_id: pid, title: 'Burn' })).phase_id;
+    const x = (await ok('POST', '/task', { project_id: pid, title: 'bx', phase_id: phase, work_type: 'feature' })).task_id;
+    await ok('POST', '/task', { project_id: pid, title: 'by', phase_id: phase, work_type: 'risk' });
+    await ok('POST', `/task/${x}/move`, { lane: 'done' });
+    const burn = (q: string) => get(`/metrics/burn?project=${pid}&tz=UTC&phase=${phase}${q}`);
+    const [all, feat, risk] = [await burn(''), await burn('&workType=feature'), await burn('&workType=risk')];
+    assert.deepEqual([all.scope, all.done], [2, 1]);
+    assert.deepEqual([feat.scope, feat.done], [1, 1]);
+    assert.deepEqual([risk.scope, risk.done], [1, 0]);
+    assert.equal((await status(`/metrics/burn?project=${pid}&tz=UTC&phase=${phase}&workType=chore`)).status, 400);
   });
 
   it('flow: throughputByWorkType incl. none; firstActivityAt', async () => {
@@ -241,7 +316,7 @@ describe('daemon compare + workType', () => {
     assert.deepEqual(p.throughputByWorkType, { feature: 0, defect: 0, debt: 0, risk: 0, none: 1 });
     assert.equal(c.firstActivityAt, T0 - 6 * D, 'scope-wide, not the window');
     assert.equal((await get(`/metrics/flow?project=${pid}&tz=UTC&workType=feature`)).firstActivityAt, T0 + D);
-    assert.equal((await get(`/metrics/flow?project=${pid}&tz=UTC&workType=risk`)).firstActivityAt, null);
+    assert.equal((await get(`/metrics/flow?project=${pid}&tz=UTC&tag=nope`)).firstActivityAt, null, 'empty scope');
   });
 
   it('task work_type: POST/PATCH accept + validate; task JSON carries it', async () => {

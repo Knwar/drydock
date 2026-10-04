@@ -453,6 +453,24 @@ export function daysBetween(from: number, to: number, tz: string): string[] {
 /** Longest range the series are built for (a guard against from=0). */
 export const MAX_RANGE_DAYS = 3660;
 
+/**
+ * The comparison window before [from, to] (to missing = now). When `from` starts a local day in
+ * `tz` and `to` ends one (or is missing: "through today"), it is the same number of calendar
+ * days immediately before, on day boundaries (DST-safe). Otherwise the equal-length ms window.
+ */
+export function previousPeriod(from: number, to: number | undefined, tz: string, now: number): { from: number; to: number } {
+  const end = to ?? now;
+  const fromDay = dayKey(from, tz);
+  const startsDay = startOfDay(fromDay, tz) === from;
+  const endsDay = to === undefined || startOfDay(addDays(dayKey(end, tz), 1), tz) - 1 === end;
+  if (startsDay && endsDay && from <= end) {
+    // calendar days spanned; rounding absorbs a DST hour (no day enumeration: from may be far back)
+    const n = Math.round((startOfDay(addDays(dayKey(end, tz), 1), tz) - from) / 86_400_000);
+    return { from: startOfDay(addDays(fromDay, -n), tz), to: from - 1 };
+  }
+  return { from: from - 1 - (end - from), to: from - 1 };
+}
+
 /** Validate a range cheaply (no day enumeration), before any loading. */
 export function checkRange(from: number, to: number): void {
   if (from > to) throw new MetricsParamError('from must be <= to');
@@ -949,20 +967,13 @@ export function flowMetrics(db: DB, filter: MetricsFilter, opts: { tz: string; n
   return { ...flow, throughputByWorkType: byType, firstActivityAt: firstActivityAt(db, filter) };
 }
 
-/** Earliest card create or move-to-done event of the cards matching `filter`'s non-date parts. */
+/**
+ * Earliest activity of the cards matching `filter`'s non-date parts: their earliest created_at
+ * (the create event is logged at the same instant, and a card's done move always comes later).
+ */
 function firstActivityAt(db: DB, filter: MetricsFilter): number | null {
   const { sql, params } = filterWhere({ ...filter, from: undefined, to: undefined });
-  const row = db
-    .prepare(
-      `SELECT MIN(at) AS at FROM (
-         SELECT t.created_at AS at FROM tasks t ${sql}
-         UNION ALL
-         SELECT e.created_at AS at FROM task_events e JOIN tasks t ON t.id = e.task_id ${sql ? `${sql} AND` : 'WHERE'}
-           (e.type = 'create' OR (e.type = 'move' AND json_valid(e.payload) AND json_extract(e.payload, '$.to') = 'done'))
-       )`,
-    )
-    .get(...params, ...params) as { at: number | null };
-  return row.at;
+  return (db.prepare(`SELECT MIN(t.created_at) AS at FROM tasks t ${sql}`).get(...params) as { at: number | null }).at;
 }
 
 export function summaryMetrics(db: DB, filter: MetricsFilter, opts: { tz: string; now: number }): MetricsSummary {
@@ -972,9 +983,15 @@ export function summaryMetrics(db: DB, filter: MetricsFilter, opts: { tz: string
 }
 
 /** The phase's current cards (on the given boards) plus every card that left it (a phase_change from it, any board). */
-export function burnMetrics(db: DB, phase: BurnPhase, projectIds: string[], opts: { tz: string; now: number }): BurnMetrics {
-  const current = loadRaw(db, { projectIds, phaseId: phase.id });
+export function burnMetrics(
+  db: DB,
+  phase: BurnPhase,
+  projectIds: string[],
+  opts: { tz: string; now: number; workType?: MetricsFilter['workType'] },
+): BurnMetrics {
+  const { workType, ...rest } = opts;
+  const current = loadRaw(db, { projectIds, phaseId: phase.id, workType });
   const seen = new Set(current.map((h) => h.card.id));
-  const left = loadRaw(db, { leftPhaseId: phase.id }).filter((h) => !seen.has(h.card.id));
-  return computeBurn(phase, [...current, ...left], opts);
+  const left = loadRaw(db, { leftPhaseId: phase.id, workType }).filter((h) => !seen.has(h.card.id));
+  return computeBurn(phase, [...current, ...left], rest);
 }

@@ -412,8 +412,11 @@ export interface CostMetrics {
   byAgent: { agent: string | null; cost: number; runs: number; cards: number }[];
   byBoard: { project_id: string; name: string | null; cost: number; runs: number; cards: number }[];
   byPlan: { id: string; title: string; cost: number; cards: number }[];
-  /** Every work type, then 'none' (unclassified, or a deleted card), zero-filled. */
-  byWorkType: { workType: WorkType | 'none'; cost: number; cards: number }[];
+  /**
+   * Every work type, then 'none' (unclassified existing cards), then 'deleted' (runs on deleted
+   * cards, whose type is gone), zero-filled: sums to totals. workType=none never matches 'deleted'.
+   */
+  byWorkType: { workType: WorkType | 'none' | 'deleted'; cost: number; cards: number }[];
   byCard: { id: string; title: string | null; phase_id: string | null; project_id: string; lane: string | null; cost: number; tokens: number; runs: number; estimated: boolean; deleted: boolean }[];
   /** Cards with any cost in the window (byCard holds the top `limit` of them). */
   cardCount: number;
@@ -443,8 +446,8 @@ const addTo = (b: Bucket, r: PricedRow) => {
   b.cards.add(r.task_id);
 };
 
-/** A run's card work type; 'none' when unclassified or the card is deleted. */
-const workTypeOf = (r: CostRow): WorkType | 'none' => r.card?.work_type ?? 'none';
+/** A run's card work type: 'none' when unclassified, 'deleted' when the card is gone. */
+const workTypeOf = (r: CostRow): WorkType | 'none' | 'deleted' => (r.card === null ? 'deleted' : (r.card.work_type ?? 'none'));
 
 /**
  * Aggregate priced, all-time rows. `filter.tag` / `filter.agent` (the run's
@@ -620,7 +623,7 @@ export function aggregateCost(pricing: Pricing, table: PriceTable, filter: Metri
         return { id: p.id, title: p.title, cost: round(ids.reduce((s, id) => s + cardCost.get(id)!, 0)), cards: ids.length };
       }),
     ),
-    byWorkType: [...WORK_TYPES, 'none' as const].map((workType) => {
+    byWorkType: [...WORK_TYPES, 'none' as const, 'deleted' as const].map((workType) => {
       const b = workTypes.get(workType);
       return { workType, cost: round(b?.cost ?? 0), cards: b?.cards.size ?? 0 };
     }),
