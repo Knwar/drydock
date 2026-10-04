@@ -182,13 +182,44 @@
 .ds-inline-tab { position: absolute; z-index: 4; box-sizing: border-box; }
 .dw-tab.ds-renaming { visibility: hidden; }
 
-/* tabs: + beside the core's tab and widget handles, over the strip's end */
-.ds-tab-add { position: absolute; top: 8px; right: 64px; z-index: 2; }
-.de-editing .dw-tabs-strip { padding-right: 92px; }
-.dw-widget:hover > .ds-tab-add, .dw-widget:focus-within > .ds-tab-add { opacity: 1; }
+/* tabs: a round, dashed accent + just right of the last tab (placed by JS on the frame, outside
+   the tablist; JS also sets the strip's right margin from the measured handles); unlike the
+   square ⋮ handles it stays faintly visible */
+.ds-tab-add {
+  position: absolute;
+  top: 8px;
+  left: 16px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  border-radius: 50%;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+.dw-widget:hover > .ds-tab-add, .ds-tab-add:hover, .ds-tab-add:focus-visible {
+  opacity: 1;
+  border-style: solid;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.ds-tab-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* a refused edit, shown as well as announced */
+/* swapped for an inline input: hidden for real (without relying on a global [hidden] rule) */
+.ds-tab-add[hidden], .ds-add-section-btn[hidden], .dw-sec-head > .dw-sec-toggle[hidden] { display: none !important; }
+
+/* a refused edit or a delete (with Undo), shown as well as announced */
 .ds-toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   position: fixed;
   left: 50%;
   bottom: 64px;
@@ -203,11 +234,29 @@
   color: #e5c07b;
   font-size: 12px;
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s linear 0.15s;
 }
-.ds-toast.show { opacity: 1; transform: translate(-50%, 0); }
+.ds-toast.show { opacity: 1; visibility: visible; transform: translate(-50%, 0); transition-delay: 0s; }
+.ds-toast.ds-toast-undo { border-color: rgba(255, 255, 255, 0.14); color: var(--text); }
+.ds-toast.ds-toast-undo.show { pointer-events: auto; }
+.ds-toast-msg { min-width: 0; }
+.ds-toast-btn {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  border-radius: 6px;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ds-toast-btn:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.ds-toast-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .ds-ins::before, .ds-ins-btn, .ds-add-end-btn, .ds-add-section-btn, .ds-div::before, .ds-toast { transition: none; }
+  .ds-ins::before, .ds-ins-btn, .ds-add-end-btn, .ds-add-section-btn, .ds-div::before, .ds-toast, .ds-tab-add { transition: none; }
 }
