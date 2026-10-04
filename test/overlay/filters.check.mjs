@@ -252,6 +252,13 @@ const W = (t) => `.dw-widget[data-widget-type="${t}"]`;
 const HT = `${W('workspace-boards')} .dash-tile`;
 const hsel = (label) => `${H} label.mx-field:has(> span:text-is("${label}")) select`;
 // /home for the current filters landed, the widgets painted (no skeletons), the reads done
+// A live refetch scheduled on open (the socket's init; debounced, ≤ REFETCH_MAX_WAIT_MS 1.5 s) lands
+// later as a /home read: wait it out before counting reads (dash.refetchFirst is cleared when it fires).
+async function refetchSettled() {
+  await page.waitForTimeout(1600);
+  await page.waitForFunction(() => dash.refetchFirst == null, null, { timeout: 5000 });
+  await settledHome();
+}
 async function settledHome() {
   await page.waitForFunction(
     () => typeof hctx !== 'undefined' && hctx.meta && home.data && home.key === fbParams(hctx, true, false) && document.querySelector('.dw-widget') && !document.querySelector('.dw-skel') && !document.querySelector(`${'#home-filters'} .fb-bar .mx-dim`),
@@ -276,6 +283,8 @@ async function openBar() {
 }
 const chipText = () => page.$eval(`${H} .fb-chip`, (e) => e.textContent);
 const chipV = async () => (await page.$(`${H} .fb-chip-v`)) && page.$eval(`${H} .fb-chip-v`, (e) => e.textContent);
+// the chip names the range and counts the other filters; its tooltip names them all
+const chipTitle = () => page.$eval(`${H} .fb-chip`, (e) => e.title);
 
 // ---- a fresh Home: 4 weeks, unfiltered ----
 let homeReqs = reqWatch();
@@ -292,7 +301,7 @@ const kd0 = await docKeydownListeners();
   await expectTiles(HT, {}, allBoards, 'Home unfiltered: board tiles');
   ok((await page.evaluate(() => hctx.f.range)) === '4w', 'fresh Home: range is 4 weeks');
   ok(!keysIn().length, 'fresh Home: the default 4w writes no range key to the URL', page.url());
-  ok((await chipText()) === 'Filters▾' && !(await page.$(`${H} .fb-clear`)), 'fresh Home: plain "Filters" chip (no range label, no filtered badge), no Clear', await chipText());
+  ok((await chipText()) === 'Filterslast 4 weeks▾' && !(await page.$(`${H} .fb-clear`)), 'fresh Home: the chip names the range ("last 4 weeks"), no Clear', await chipText());
   ok(!(await page.$(`${H} .fb-chip.on`)), 'fresh Home: chip not marked filtered');
   // the range reaches the range-aware reads: the KPI budget's /metrics/cost and (below) the agent history
   const cost = homeReqs.filter((u) => new URL(u).pathname === '/metrics/cost').map((u) => new URL(u).searchParams.get('from'));
@@ -373,7 +382,7 @@ const pickRange = (id) => page.$eval(`${H} .mx-seg-btn[data-fb="range-${id}"]`, 
   await page.click(`${H} .fb-clear`);
   await quiet();
   ok((await page.evaluate(() => hctx.f.range)) === '4w' && !keysIn().length && param('view') === 'home', 'Clear: back to 4w, URL clean', page.url());
-  ok((await chipText()).startsWith('Filters') && !(await chipV()) && !(await page.$(`${H} .fb-clear`)), 'Clear: chip back to "Filters"');
+  ok((await chipText()).startsWith('Filters') && (await chipV()) === 'last 4 weeks' && !(await page.$(`${H} .fb-clear`)), 'Clear: chip back to "Filters · last 4 weeks"', await chipV());
 }
 // a range-only widget override shares Home's (range-free) live read; another filter doesn't
 {
@@ -401,7 +410,7 @@ await page.selectOption(hsel('Tag'), 'ui');
 await settledHome();
 await expectTiles(HT, { tag: 'ui' }, allBoards, 'Home tag ui');
 ok(param('view') === 'home' && param('tag') === 'ui' && keysIn().join() === 'tag', 'tag ui: URL-backed (view=home&tag=ui)', page.url());
-ok((await chipV()) === 'ui' && !!(await page.$(`${H} .fb-clear`)), 'chip names "ui", Clear shown');
+ok((await chipV()) === 'last 4 weeks · 1 filter' && (await chipTitle()) === 'last 4 weeks · ui' && !!(await page.$(`${H} .fb-clear`)), 'chip: "last 4 weeks · 1 filter" (tooltip names "ui"), Clear shown', [await chipV(), await chipTitle()]);
 {
   const inflight = (await texts(`${HT} .dt-card-title`)).sort();
   const wantIn = cards.filter((c) => ['in_progress', 'in_review'].includes(c.lane) && c.tag === 'ui').map((c) => c.title);
@@ -411,7 +420,7 @@ ok((await chipV()) === 'ui' && !!(await page.$(`${H} .fb-clear`)), 'chip names "
 await page.selectOption(hsel('Agent'), 'Ada');
 await settledHome();
 await expectTiles(HT, { tag: 'ui', agent: 'Ada' }, allBoards, 'Home tag ui + agent Ada');
-ok((await chipV()) === 'ui · Ada', 'chip: "ui · Ada"');
+ok((await chipV()) === 'last 4 weeks · 2 filters' && (await chipTitle()) === 'last 4 weeks · ui · Ada', 'chip: "last 4 weeks · 2 filters" (tooltip: ui · Ada)', [await chipV(), await chipTitle()]);
 await page.selectOption(hsel('Tag'), '');
 await page.selectOption(hsel('Agent'), '');
 await page.selectOption(hsel('Phase'), seed.phases.webCheckout);
@@ -429,7 +438,7 @@ await settledHome();
   ok(prefixOf(s.now, homeApi.now_building.map((x) => x.title)), "scope api: Now building = the server's api Home", { got: s.now, want: homeApi.now_building.map((x) => x.title) });
   ok(prefixOf(s.up, homeApi.up_next.items.map((x) => x.title)), "scope api: Up next = the server's api Home (same pick order)", { got: s.up, want: homeApi.up_next.items.map((x) => x.title) });
   ok((await page.$eval(`${W('up-next')} .home-link`, (e) => e.textContent)) === `View all ${homeApi.up_next.total_pending} in Kanban →`, "scope api: total pending = the server's", homeApi.up_next.total_pending);
-  ok((await chipV()) === 'api', 'chip: "api"');
+  ok((await chipV()) === 'last 4 weeks · 1 filter' && (await chipTitle()) === 'last 4 weeks · api', 'chip: 1 filter (tooltip: api)', [await chipV(), await chipTitle()]);
   await shot('home-5-scope-api');
 }
 // tag db within api: queued db cards first, then the backlog (the waiter waits on an in-progress card)
@@ -448,7 +457,7 @@ await settledHome();
   const nb = cards.filter((c) => ['in_progress', 'in_review'].includes(c.lane) && match(f, c)).map((c) => c.title).sort();
   const s = await liveSnap();
   ok(s.now.every((t) => nb.includes(t)) && (nb.length === 0) === (s.now.length === 0), 'scope api + tag db: Now building', { got: s.now, nb });
-  ok((await chipV()) === 'api · db', 'Home chip: "api · db"');
+  ok((await chipV()) === 'last 4 weeks · 2 filters' && (await chipTitle()) === 'last 4 weeks · api · db', 'Home chip: 2 filters (tooltip: api · db)', [await chipV(), await chipTitle()]);
 }
 // agent filter: just them
 await page.selectOption(hsel('Tag'), '');
@@ -503,7 +512,7 @@ ok(!(await page.$('.mx-drill')), 'switching views closes an open drill');
 ok(!keysIn().length && param('view') !== 'home', 'leaving Home clears its filters from the URL', page.url());
 await page.click('#rail-home');
 await settledHome();
-ok(!(await chipV()) && (await page.evaluate(() => hctx.f.range)) === '4w', 'back on Home: no filters, 4w');
+ok((await chipV()) === 'last 4 weeks' && (await page.evaluate(() => hctx.f.range)) === '4w', 'back on Home: no filters, 4w', await chipV());
 // Metrics starts clean after Home had filters
 await openBar();
 await page.selectOption(hsel('Tag'), 'ui');
@@ -513,7 +522,7 @@ await page.waitForTimeout(500);
 ok(param('view') === 'metrics' && !param('tag'), "Home → Metrics: Home's tag does not leak into Metrics", page.url());
 await page.click('#rail-home');
 await settledHome();
-ok(!param('tag') && !(await chipV()), 'Metrics → Home: clean');
+ok(!param('tag') && (await chipV()) === 'last 4 weeks', 'Metrics → Home: clean', await chipV());
 const kd1 = await docKeydownListeners();
 ok(kd1 === kd0, 'no keydown listeners leaked (panels / drills opened and closed, views switched)', { kd0, kd1 });
 
@@ -530,7 +539,7 @@ await settledHome();
   const now = (await liveSnap()).now;
   ok(want.length ? prefixOf(now, want) : now.length === 0, 'vertical Home + agent: Now building', { now, want });
   ok(keysIn().join() === 'agent', 'vertical Home: the locked scope stays out of the URL', page.url());
-  ok((await chipV()) === 'Inder', 'chip: "Inder"');
+  ok((await chipV()) === 'last 4 weeks · 1 filter' && (await chipTitle()) === 'last 4 weeks · Inder', 'chip: 1 filter (tooltip: Inder)', [await chipV(), await chipTitle()]);
   await shot('home-7-vertical');
 }
 
@@ -553,6 +562,7 @@ const dataReqs = (pg) => {
 const reqLog = dataReqs(page);
 await page.goto(`${base}/?project=${seed.ws}&view=home&tag=api`);
 await settledHome();
+await refetchSettled();
 await openBar();
 await page.waitForSelector(`${H} .fb-bar select[data-fb="agent"]`);
 await page.focus(`${H} select[data-fb="agent"]`);
@@ -631,6 +641,7 @@ const slow = async (r) => {
 };
 await page.goto(`${base}/?project=${seed.ws}&view=home&tag=ui`);
 await settledHome();
+await refetchSettled();
 await page.route('**/home?*', slow);
 {
   const reqs = reqWatch();
@@ -696,6 +707,87 @@ await page.unroute('**/home?*', slow);
   const day = await tab.evaluate(() => new Date().getDate());
   ok(!attn.includes('Loading') && !grid.startsWith('Loading') && tiles === 4 && day !== at.getDate(), 'midnight (2w across Sunday → Monday, embed): tiles + Needs you stay, no "Loading…"', { attn: attn.slice(0, 40), grid: grid.slice(0, 40), tiles, day });
   await tab.close();
+}
+
+// ---- Home's range persists across views (sessionStorage); a range in the URL wins ----
+{
+  await page.goto(`${base}/?project=${seed.ws}&view=home`);
+  await settledHome();
+  await openBar();
+  await page.click(`${H} .mx-seg-btn[data-fb="range-2w"]`);
+  await quiet();
+  await page.click('#rail-metrics');
+  await page.waitForTimeout(500);
+  await page.click('#rail-home');
+  await settledHome();
+  ok((await page.evaluate(() => hctx.f.range)) === '2w' && param('range') === '2w', 'Home 2w → Metrics → Home: still 2w (and in the URL)', page.url());
+  await page.goto(`${base}/?project=${seed.ws}&view=home&range=8w`);
+  await settledHome();
+  ok((await page.evaluate(() => hctx.f.range)) === '8w', '?range=8w wins over the stored range');
+  await page.evaluate(() => sessionStorage.removeItem('kankan.home.range'));
+}
+
+// ---- 700px: the open filter bars fit the viewport ----
+{
+  // controls past the viewport's edges + the page's horizontal overflow
+  const fits = (sel) =>
+    page.$eval(sel, (bar) => {
+      const vw = document.documentElement.clientWidth;
+      const out = [...bar.querySelectorAll('button, select, input, label')]
+        .filter((e) => e.getClientRects().length)
+        .filter((e) => {
+          const r = e.getBoundingClientRect();
+          return r.left < -0.5 || r.right > vw + 0.5;
+        })
+        .map((e) => e.dataset.fb ?? e.textContent.slice(0, 20));
+      return { out, overflow: document.documentElement.scrollWidth > vw || bar.scrollWidth > bar.clientWidth + 1 };
+    });
+  await page.setViewportSize({ width: 700, height: 1000 });
+  await page.goto(`${base}/?project=${seed.ws}&view=home`);
+  await settledHome();
+  await openBar();
+  const home = await fits(`${H} .fb-bar`);
+  ok(!home.overflow && !home.out.length, '700px: Home filter bar wraps inside the viewport', home);
+  await shot('home-700-open');
+  await page.goto(`${base}/?project=${seed.ws}&view=metrics`);
+  await page.waitForSelector('#mx-filters label.mx-field', { timeout: 15000 });
+  const mxf = await fits('#mx-filters');
+  ok(!mxf.overflow && !mxf.out.length, '700px: Metrics filter bar wraps inside the viewport', mxf);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+}
+
+// ---- Kanban: highlight source label (call + cross-board URL), Esc on the card modal ----
+{
+  await page.goto(`${base}/?project=${seed.ws}&view=kanban`);
+  await page.waitForSelector('#board .card, .card', { timeout: 15000 });
+  const ids = await page.evaluate(() => [...cards.keys()].slice(0, 2));
+  await page.evaluate((ids) => setKanbanHighlight(ids, 'X'), ids);
+  ok((await page.$eval('.mx-hl-chip span', (e) => e.textContent)) === '2 cards highlighted from X', 'setKanbanHighlight(ids, "X"): banner "from X"');
+  await page.evaluate((ids) => setKanbanHighlight(ids), ids);
+  ok((await page.$eval('.mx-hl-chip span', (e) => e.textContent)) === '2 cards highlighted from Metrics', 'no label: banner "from Metrics"');
+  await page.evaluate(() => clearKanbanHighlight());
+  await page.goto(`${base}/?project=${seed.ws}&view=kanban&cards=${ids.join(',')}&from=Active%20agents`);
+  await page.waitForSelector('.mx-hl-chip', { timeout: 15000 });
+  ok((await page.$eval('.mx-hl-chip span', (e) => e.textContent)) === '2 cards highlighted from Active agents' && !param('cards') && !param('from'), '?cards=…&from=…: banner names the source, both params stripped', page.url());
+  await page.evaluate(() => clearKanbanHighlight());
+  // Esc closes the card modal; focus returns to the opener
+  await page.evaluate((id) => {
+    const b = document.createElement('button');
+    b.id = 'card-opener-probe';
+    b.textContent = 'open';
+    b.onclick = () => openCardModal(id);
+    document.body.append(b);
+  }, ids[0]);
+  await page.focus('#card-opener-probe');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => !document.getElementById('card-modal').classList.contains('hidden'));
+  await page.waitForFunction((id) => document.getElementById('card-title').textContent === cards.get(id)?.title, ids[0], { timeout: 10000 }); // the modal's /task read landed
+  await page.keyboard.press('Escape');
+  ok(
+    (await page.evaluate(() => document.getElementById('card-modal').classList.contains('hidden') && document.activeElement.id)) === 'card-opener-probe',
+    'Esc closes the card modal, focus back on its opener',
+  );
+  await page.evaluate(() => document.getElementById('card-opener-probe').remove());
 }
 
 ok(errors.length === 0, 'no page errors', errors);

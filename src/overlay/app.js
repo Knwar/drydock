@@ -863,8 +863,15 @@ function fbActiveLabels(ctx, fields) {
   if (f.tag) out.push(f.tag);
   if (f.agent) out.push(f.agent);
   if (f.workType) out.push(fbWorkTypeLabel(f.workType));
-  if (fields.includes('range') && f.range !== ctx.rangeDefault) out.push(f.range === 'custom' ? fbWindowLabel(ctx) : f.range === 'all' ? 'all time' : `done in ${f.range}`);
+  if (fields.includes('range') && f.range !== ctx.rangeDefault) out.push(fbRangeLabel(ctx));
   return out;
+}
+// The date range in words: "last 4 weeks", "all time", "7 Sep – 3 Oct".
+function fbRangeLabel(ctx) {
+  const r = ctx.f.range;
+  if (r === 'custom') return fbWindowLabel(ctx);
+  const weeks = MX_RANGES.find(([id]) => id === r)?.[2];
+  return weeks ? `last ${mxPlural(weeks, 'week')}` : 'all time';
 }
 
 // The full bar. opts: fields (which controls), onChange(patch), rangeId (the range button's id, if any).
@@ -984,7 +991,8 @@ function drawFilterBar(host, ctx, opts) {
   host.replaceChildren(...items);
 }
 
-// The compact form: a "Filters" chip naming the active filters (+ Clear); clicking it expands the bar.
+// The compact form: a "Filters" chip naming the range and counting the active filters (+ Clear);
+// clicking it expands the bar.
 // opts.barId: the bar's id (the chip's aria-controls). Keyboard focus survives the redraw
 // (Clear, once gone, hands it to the chip).
 function filterChip(host, ctx, opts) {
@@ -1001,12 +1009,18 @@ function filterChipSoft(host, ctx, opts) {
 }
 function drawFilterChip(host, ctx, opts) {
   const active = fbActiveLabels(ctx, opts.fields);
+  // collapsed, the chip still names the range, then counts the other filters (named in its tooltip):
+  // "last 4 weeks · 2 filters"
+  const range = opts.fields.includes('range') ? fbRangeLabel(ctx) : null;
+  const filters = fbActiveLabels(ctx, opts.fields.filter((k) => k !== 'range'));
+  const summary = [range, filters.length && mxPlural(filters.length, 'filter')].filter(Boolean).join(' · ');
   const chip = fbKey(node('button', `fb-chip${active.length ? ' on' : ''}`), 'chip');
   chip.type = 'button';
   chip.setAttribute('aria-expanded', String(!!ctx.open));
   if (opts.barId) chip.setAttribute('aria-controls', opts.barId);
+  if (filters.length) chip.title = [range, ...filters].filter(Boolean).join(' · ');
   chip.append(node('span', 'fb-chip-k', 'Filters'));
-  if (active.length) chip.append(node('span', 'fb-chip-v', active.join(' · ')));
+  if (summary) chip.append(node('span', 'fb-chip-v', summary));
   const caret = node('span', 'fb-caret', ctx.open ? '▴' : '▾');
   caret.setAttribute('aria-hidden', 'true');
   chip.append(caret);
@@ -3288,7 +3302,10 @@ function mxOpenDrill({ kicker, title, sub, stat, rows, sorts, total, unit = 'car
 // ── Kanban highlight: Metrics' "Open all N in Kanban" ────────────────
 const kanbanHighlight = new Set();
 let kanbanHighlightChip = null; // "N highlighted · Clear", while the highlight is on
-function setKanbanHighlight(ids) {
+let kanbanHighlightSource = 'Metrics'; // where the highlight came from, as the banner names it
+// sourceLabel: the view or widget that asked ("N cards highlighted from <label>"); default Metrics.
+function setKanbanHighlight(ids, sourceLabel = 'Metrics') {
+  kanbanHighlightSource = sourceLabel || 'Metrics';
   kanbanHighlight.clear();
   for (const id of ids) if (cards.has(id)) kanbanHighlight.add(id);
   renderBoard();
@@ -3309,7 +3326,7 @@ function renderHighlightChip() {
   const clear = node('button', '', 'Clear highlight');
   clear.type = 'button';
   clear.onclick = clearKanbanHighlight;
-  chip.append(node('span', '', `${mxPlural(kanbanHighlight.size, 'card')} highlighted from Metrics`), clear);
+  chip.append(node('span', '', `${mxPlural(kanbanHighlight.size, 'card')} highlighted from ${kanbanHighlightSource}`), clear);
   document.body.append(chip);
   kanbanHighlightChip = chip;
 }
@@ -3321,9 +3338,11 @@ function highlightCardsFromUrl() {
   const url = new URL(location.href);
   const raw = url.searchParams.get('cards');
   if (raw === null) return;
+  const from = url.searchParams.get('from'); // the banner's source label ("from <label>"); default Metrics
   url.searchParams.delete('cards');
+  url.searchParams.delete('from');
   history.replaceState(null, '', url);
-  setKanbanHighlight(raw.split(',').filter(Boolean));
+  setKanbanHighlight(raw.split(',').filter(Boolean), from || 'Metrics');
 }
 document.addEventListener(
   'keydown',
@@ -3708,10 +3727,10 @@ function cardEl(card) {
   if (kanbanHighlight.has(card.id)) el.classList.add('mx-hl');
   const meta = [
     card.blocked && `<span class="blocked-pill" title="${esc(card.blocked_reason ?? '')}">✋ blocked</span>`,
-    card.tag && `<span class="tag">${esc(team(card.tag).name)}</span>`,
+    card.tag && `<span class="tag" title="${esc(team(card.tag).name)}">${esc(team(card.tag).name)}</span>`,
     Object.hasOwn(WORK_TYPE_LABEL, card.work_type ?? '') && `<span class="wt wt-${card.work_type}">${WORK_TYPE_LABEL[card.work_type]}</span>`,
-    card.agent && `<span class="agent">${esc(card.agent)}</span>`,
-    card.skill && `<span class="skill">✦ ${esc(card.skill)}</span>`,
+    card.agent && `<span class="agent" title="${esc(card.agent)}">${esc(card.agent)}</span>`,
+    card.skill && `<span class="skill" title="${esc(card.skill)}">✦ ${esc(card.skill)}</span>`,
     card.rounds > 0 && `<span class="rounds${card.rounds >= 2 ? ' cap' : ''}">R${card.rounds}</span>`,
     card.subs && `<span class="subs">${card.subs.done}/${card.subs.total}</span>`,
   ].filter(Boolean).join('');
@@ -3843,17 +3862,36 @@ function openCardFromUrl() {
   if (cards.has(id)) openCardModal(id); // only this board's cards; anything else is dropped
 }
 
+let cardModalOpener = null; // the element that had focus when the modal opened: focus goes back to it
 async function openCardModal(cardId) {
+  const modal = document.getElementById('card-modal');
+  if (modal.classList.contains('hidden')) {
+    const a = document.activeElement;
+    cardModalOpener = a && a !== document.body && !modal.contains(a) ? a : null;
+  }
   openCardId = cardId;
   cardWtError = null;
-  document.getElementById('card-modal').classList.remove('hidden');
+  modal.classList.remove('hidden');
+  document.getElementById('card-close').focus({ preventScroll: true });
   await refreshCardModal();
 }
 
 function closeCardModal() {
   openCardId = null;
-  document.getElementById('card-modal').classList.add('hidden');
+  const modal = document.getElementById('card-modal');
+  const wasOpen = !modal.classList.contains('hidden');
+  modal.classList.add('hidden');
+  const opener = cardModalOpener;
+  cardModalOpener = null;
+  if (wasOpen && opener?.isConnected && (!document.activeElement || document.activeElement === document.body || modal.contains(document.activeElement))) opener.focus({ preventScroll: true });
 }
+// Esc closes the card modal, unless a dialog opened over it (settings, a vertical dialog, a drill…) owns Esc.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !openCardId || e.defaultPrevented) return;
+  if (svModal || !$('settings-modal').classList.contains('hidden') || document.querySelector('[aria-modal="true"]')) return;
+  e.preventDefault();
+  closeCardModal();
+});
 
 async function refreshCardModal() {
   if (!openCardId) return;
@@ -5486,9 +5524,38 @@ tick.add(() => {
   for (const el of homeView.querySelectorAll('[data-since]')) el.textContent = fmtElapsed(Number(el.dataset.since));
 });
 
+// Home's range survives leaving Home (this tab's session storage); a range in the URL wins.
+const HOME_RANGE_KEY = 'kankan.home.range';
+function homeSaveRange() {
+  if (EMBED) return;
+  const { range, from, to } = hctx.f;
+  try {
+    if (range === HOME_DEFAULT_RANGE) sessionStorage.removeItem(HOME_RANGE_KEY);
+    else sessionStorage.setItem(HOME_RANGE_KEY, JSON.stringify({ range, from, to }));
+  } catch {
+    /* storage unavailable: the range just doesn't persist */
+  }
+}
+function homeStoredRange() {
+  if (EMBED) return null;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(HOME_RANGE_KEY) ?? 'null');
+    if (!saved || typeof saved.range !== 'string') return null;
+    const { range, from, to } = fbReadUrl(new URLSearchParams({ range: saved.range, from: saved.from ?? '', to: saved.to ?? '' }), HOME_DEFAULT_RANGE);
+    return range === HOME_DEFAULT_RANGE || (range === 'custom' && !from) ? null : { range, from, to };
+  } catch {
+    return null;
+  }
+}
+
 function openHome() {
-  hctx.f = { ...fbReadUrl(new URLSearchParams(location.search), HOME_DEFAULT_RANGE), tz: MX_LOCAL_TZ };
+  const q = new URLSearchParams(location.search);
+  hctx.f = { ...fbReadUrl(q, HOME_DEFAULT_RANGE), tz: MX_LOCAL_TZ };
+  const stored = q.has('range') ? null : homeStoredRange();
+  if (stored) Object.assign(hctx.f, stored);
+  else if (q.has('range')) homeSaveRange(); // the URL's range is the one to come back to
   if (hctx.lockScope) hctx.f.scope = hctx.lockScope;
+  if (stored) fbSyncUrl('home', hctx); // the restored range in the URL, as if just picked
   hctx.customOpen = false;
   hctx.open = false; // the chip starts collapsed
   hctx.needMeta = !EMBED || homeFiltered(); // loaded once /home lands (loadHome)
@@ -5519,6 +5586,7 @@ function homeSetFilter(patch) {
   hctx.f = { ...hctx.f, ...patch, tz: MX_LOCAL_TZ };
   if (hctx.lockScope) hctx.f.scope = hctx.lockScope;
   fbSyncUrl('home', hctx);
+  homeSaveRange();
   // only the range changed: /home (live state) stands, so no refetch and no "Loading…";
   // just the widgets reading the range (agent history, KPIs) reload
   if (home.data && home.key === liveKey && fbParams(hctx, true, false) === liveKey && typeof dwRangeRefresh === 'function') {

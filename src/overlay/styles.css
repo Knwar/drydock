@@ -297,11 +297,15 @@ main {
 
 .card .meta {
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
   font-size: 10px;
   color: var(--dim);
   align-items: center;
 }
+/* chips wrap as whole chips; one too long for the card truncates (its title carries the full text) */
+.card .meta > * { flex: 0 1 auto; min-width: 0; max-width: 100%; box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .card .meta .tag {
   border: 1px solid currentColor;
@@ -1761,7 +1765,9 @@ body.reduce-motion .home-dot { animation: none !important; }
 .home-send-foot { display: flex; align-items: center; gap: 10px; }
 
 @media (max-width: 800px) {
-  .home-head { flex-direction: column; gap: 4px; }
+  /* stays a wrapping row: the title takes its own line, the chip the next, the open bar the full width below */
+  .home-head { gap: 4px 12px; }
+  .home-title { flex-basis: 100%; }
 }
 .home-qerr { flex: 0 1 auto; min-width: 0; max-width: 45%; font-size: 11.5px; color: #e06c75; overflow-wrap: anywhere; text-align: right; }
 
@@ -2459,7 +2465,15 @@ body.embed #planner-view { border-radius: 0; }
 .fb-caret { flex: none; font-size: 10px; opacity: 0.7; }
 .fb-clear { height: 28px; padding: 0 8px; border: none; border-radius: 999px; background: transparent; color: var(--dim); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 .fb-clear:hover { color: var(--text); }
-.fb-bar { flex-basis: 100%; min-width: 0; }
+.fb-bar { flex-basis: 100%; min-width: 0; max-width: 100%; order: 1; } /* order: below the header row, so its actions (Edit dashboard) keep their place */
+.fb-bar .mx-field { min-width: 0; max-width: 100%; }
+.fb-bar .mx-select { min-width: 0; text-overflow: ellipsis; }
+@media (max-width: 800px) {
+  .fb-bar { gap: 8px; }
+  .fb-bar .mx-grow { display: none; } /* wrapped lines start at the left edge */
+  .fb-bar .mx-pop { right: auto; left: 0; max-width: calc(100vw - 32px); box-sizing: border-box; }
+  .fb-chip { max-width: 100%; }
+}
 .fb-bar button, .fb-bar select, .fb-bar input { font-family: inherit; }
 .fb-bar button { cursor: pointer; }
 .fb-chip:focus-visible, .fb-clear:focus-visible, .fb-bar button:focus-visible, .fb-bar select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
