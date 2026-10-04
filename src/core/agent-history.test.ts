@@ -19,7 +19,8 @@ const M = 1_000_000;
  *  C: assigned_agent Bob, no assign events (legacy); a run with no agent label; in progress in W25.
  *  X: on another board (out of scope), Ada's run.
  */
-function seed(): DB {
+/** An empty scope (boards p and q, phase ph1, members Ada a1 and Bob b1, $2/M input) plus row writers. */
+function base() {
   const db = openDb();
   setPrices(
     db,
@@ -52,6 +53,16 @@ function seed(): DB {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
       )
       .run(project, t, agent, role, input, lines[0], lines[1], H, JSON.stringify({ m: { input, output: 0, cache_read: 0, cache_creation: 0 } }), at);
+  /** A card created at t0 (backlog), with its create event. */
+  const card = (id: string, lane: string, assigned: string | null, t0: number, rounds = 0) => {
+    task.run(id, 'p', null, `Card ${id}`, lane, assigned, rounds, t0, t0);
+    e(id, 'create', t0, { title: `Card ${id}` });
+  };
+  return { db, task, e, move, run, card };
+}
+
+function seed(): DB {
+  const { db, task, e, move, run } = base();
 
   // A
   task.run('A', 'p', 'ph1', 'Card A', 'done', 'Ada', 2, MON, MON + 7 * H);
@@ -159,6 +170,8 @@ describe('agentHistory', () => {
     assert.equal(b.last_worked_at, MON + 8 * DAY);
     assert.equal(b.blockers, 1); // raised by the 'builder' label while Ada held it
     assert.equal(b.blocked_ms, 2 * H);
+    assert.equal(b.rounds, 0); // B's only review came under Bob
+    assert.equal(b.first_pass, null); // Bob held it at its final review
     near(b.cost, 2);
     assert.equal(b.lines_added, 0); // Bob's run carries B's lines
 
@@ -248,5 +261,169 @@ describe('agentHistory', () => {
       ['X'],
     );
     near(ada.totals.cost, 10);
+  });
+
+  it('reassign events hand the card to payload.to, whoever the actor was', () => {
+    const { db, e, move, run, card } = base();
+    card('R', 'in_progress', 'Bob', MON);
+    e('R', 'assign', MON + H, null, 'Ada');
+    move('R', 'backlog', 'in_progress', MON + H);
+    run('R', 'builder', 'builder', MON + 2 * H, M);
+    e('R', 'reassign', MON + 3 * H, { from: 'Ada', to: 'Bob' }, null); // no actor
+    run('R', 'builder', 'builder', MON + 4 * H, M);
+    card('S', 'in_progress', 'Bob', MON);
+    e('S', 'assign', MON + H, null, 'Ada');
+    e('S', 'reassign', MON + 3 * H, { from: 'a1', to: 'b1' }, 'Ada'); // actor Ada, new holder Bob (by id)
+    run('S', 'builder', 'builder', MON + 3 * H, M); // same ms as the reassign: the new holder
+    card('T', 'in_progress', 'Bob', MON);
+    e('T', 'assign', MON + H, null, 'Ada');
+    e('T', 'reassign', MON + 2 * H, { from: 'Ada' }, 'Bob'); // no `to`: falls back to the event's agent
+    run('T', 'builder', 'builder', MON + 3 * H, M);
+
+    const ada = agentHistory(db, { projectIds: ['p'], agent: 'Ada', tz, now: NOW });
+    const bob = agentHistory(db, { projectIds: ['p'], agent: 'Bob', tz, now: NOW });
+    assert.deepEqual(
+      ada.runs.map((r) => [r.task_id, r.at]),
+      [['R', MON + 2 * H]],
+    );
+    assert.deepEqual(
+      bob.runs.map((r) => [r.task_id, r.at]).sort(),
+      [
+        ['R', MON + 4 * H],
+        ['S', MON + 3 * H],
+        ['T', MON + 3 * H],
+      ],
+    );
+    for (const id of ['R', 'S', 'T']) assert.equal(ada.cards.find((c) => c.id === id)?.outcome, 'reassigned', id);
+    assert.equal(ada.cards.find((c) => c.id === 'R')!.last_worked_at, MON + 3 * H);
+    assert.equal(bob.cards.find((c) => c.id === 'S')!.first_worked_at, MON + 3 * H);
+  });
+
+  it('rounds and first pass are the agent\'s part of the card', () => {
+    const { db, e, move, card } = base();
+    card('F', 'done', 'Bob', MON, 2);
+    e('F', 'assign', MON + H, null, 'Ada');
+    move('F', 'backlog', 'in_progress', MON + H);
+    move('F', 'in_progress', 'in_review', MON + 2 * H);
+    e('F', 'review', MON + 3 * H, { verdict: 'fail', round: 1 });
+    move('F', 'in_review', 'in_progress', MON + 3 * H);
+    e('F', 'assign', MON + 4 * H, null, 'Bob');
+    move('F', 'in_progress', 'in_review', MON + 5 * H);
+    e('F', 'review', MON + 6 * H, { verdict: 'pass', round: 2 });
+    move('F', 'in_review', 'done', MON + 7 * H);
+
+    const ada = agentHistory(db, { projectIds: ['p'], agent: 'Ada', tz, now: NOW });
+    const f = ada.cards[0];
+    assert.equal(f.rounds, 1);
+    assert.equal(f.first_pass, null); // Bob held it at the final review
+    assert.equal(f.outcome, 'reassigned');
+    assert.equal(ada.totals.firstPassRate, null);
+    const bob = agentHistory(db, { projectIds: ['p'], agent: 'Bob', tz, now: NOW });
+    assert.equal(bob.cards[0].rounds, 1);
+    assert.equal(bob.cards[0].first_pass, false); // the card's first review failed
+    assert.equal(bob.totals.firstPassRate, 0);
+    assert.equal(bob.totals.cardsDone, 1);
+  });
+
+  it('redirect ends the tenure; an unlabelled assign holds nobody', () => {
+    const { db, e, move, run, card } = base();
+    card('D', 'backlog', null, MON);
+    e('D', 'assign', MON + H, null, 'Ada');
+    move('D', 'backlog', 'in_progress', MON + H);
+    run('D', 'builder', 'builder', MON + 2 * H, M);
+    e('D', 'redirect', MON + 3 * H, { from: 'in_progress', note: null });
+    run('D', 'builder', 'builder', MON + 4 * H, M); // nobody holds it: stays 'builder'
+    card('N', 'in_progress', null, MON);
+    e('N', 'assign', MON + H, null, null);
+    run('N', 'builder', 'builder', MON + 2 * H, M);
+
+    const ada = agentHistory(db, { projectIds: ['p'], agent: 'Ada', tz, now: NOW });
+    assert.deepEqual(
+      ada.cards.map((c) => [c.id, c.outcome, c.last_worked_at]),
+      [['D', 'redirected', MON + 3 * H]],
+    );
+    assert.deepEqual(
+      ada.runs.map((r) => r.at),
+      [MON + 2 * H],
+    );
+    // the unattributed runs stay with the raw label
+    const builder = agentHistory(db, { projectIds: ['p'], agent: 'builder', tz, now: NOW });
+    assert.deepEqual(
+      builder.runs.map((r) => [r.task_id, r.at]),
+      [
+        ['D', MON + 4 * H],
+        ['N', MON + 2 * H],
+      ],
+    );
+  });
+
+  it('runs on a deleted card count by label only', () => {
+    const { db, run } = base();
+    run('gone', 'Ada', 'builder', MON + H, M);
+    run('gone', 'builder', 'builder', MON + 2 * H, M);
+    const ada = agentHistory(db, { projectIds: ['p'], agent: 'Ada', tz, now: NOW });
+    assert.deepEqual(ada.cards, []);
+    assert.deepEqual(
+      ada.runs.map((r) => [r.task_id, r.at]),
+      [['gone', MON + H]],
+    );
+    near(ada.totals.cost, 2);
+  });
+
+  it('buckets weeks in the given time zone across a DST change', () => {
+    const { db, e, run, card } = base();
+    const ny = 'America/New_York';
+    // US DST starts Sun 2026-03-08; 2026-03-09T03:30Z is Sun 23:30 EDT, still the week of Mon 2026-03-02
+    const t = Date.UTC(2026, 2, 9, 3, 30);
+    card('Z', 'in_progress', 'Ada', Date.UTC(2026, 2, 2, 12));
+    e('Z', 'assign', Date.UTC(2026, 2, 2, 12), null, 'Ada');
+    run('Z', 'Ada', 'builder', t, M);
+    const now = Date.UTC(2026, 2, 12);
+    const from = Date.UTC(2026, 2, 2, 5); // 00:00 EST
+    const local = agentHistory(db, { projectIds: ['p'], agent: 'Ada', from, tz: ny, now });
+    assert.deepEqual(
+      local.weekly.map((w) => [w.week, w.tokens]),
+      [
+        ['2026-03-02', M],
+        ['2026-03-09', 0],
+      ],
+    );
+    const utc = agentHistory(db, { projectIds: ['p'], agent: 'Ada', from, tz, now });
+    assert.deepEqual(
+      utc.weekly.map((w) => [w.week, w.tokens]),
+      [
+        ['2026-03-02', 0],
+        ['2026-03-09', M],
+      ],
+    );
+  });
+
+  it('clamps worked times and blocked time to the window; counts blockers the agent raised', () => {
+    const { db, e, move, card } = base();
+    const W24 = MON + 7 * DAY;
+    card('K', 'in_progress', 'Ada', MON);
+    e('K', 'assign', MON + H, null, 'Ada');
+    move('K', 'backlog', 'in_progress', MON + H);
+    e('K', 'block', W24 - 2 * H, { reason: 'q' }, 'builder');
+    e('K', 'unblock', W24 + 3 * H, { note: 'a' });
+    e('K', 'note', W24 + 5 * H, null, 'Ada');
+    // Ada raises a blocker on Bob's card, with no runs and no tenure of her own
+    card('L', 'in_progress', 'Bob', MON);
+    e('L', 'assign', MON + H, null, 'Bob');
+    e('L', 'block', W24 + H, { reason: 'q' }, 'Ada');
+    e('L', 'unblock', W24 + 2 * H, { note: 'a' });
+
+    const ada = agentHistory(db, { projectIds: ['p'], agent: 'Ada', from: W24, to: W24 + DAY, tz, now: NOW });
+    const k = ada.cards.find((c) => c.id === 'K')!;
+    assert.equal(k.first_worked_at, W24); // clamped from MON+1h
+    assert.equal(k.last_worked_at, W24 + 5 * H);
+    assert.equal(k.blockers, 1);
+    assert.equal(k.blocked_ms, 3 * H); // 5h blocked, 3h of it inside the window
+    const l = ada.cards.find((c) => c.id === 'L')!;
+    assert.equal(l.blockers, 1);
+    assert.equal(l.blocked_ms, H);
+    assert.equal(ada.totals.blockers, 2);
+    const bob = agentHistory(db, { projectIds: ['p'], agent: 'Bob', from: W24, to: W24 + DAY, tz, now: NOW });
+    assert.equal(bob.totals.blockers, 0);
   });
 });

@@ -5,20 +5,44 @@
  * rounds), quality.ts (first pass) and cost.ts (per-run pricing).
  *
  * Attribution. `agent` is a team member name (a member id is accepted too).
- * Each card has a holder timeline from its events: an assign (or reassign)
- * hands the card to that label's member, a redirect clears it; a card with no
- * assign events is held by its assigned_agent for its whole life.
+ * Each card has a holder timeline from its events: an assign hands the card to
+ * its event agent's member; a reassign ({from, to}) to payload.to's member
+ * (else its event agent); a redirect clears it. A label that is not a member
+ * is held as-is; an assign without any label leaves nobody holding the card.
+ * A card with no assign events is held by its assigned_agent for its whole
+ * life. Events at the same ms as a run apply before it (an assign + run at
+ * the same instant credits the new holder).
  *  - Runs (card_activity): credited to the run's agent when that label is a
  *    team member; a subagent-type label ('builder', 'reviewer', ...) or none is
- *    credited to the card's holder at the run's time.
+ *    credited to the card's holder at the run's time, else the raw label. A run
+ *    on a deleted card (no events left) only matches by label.
  *  - Blockers: the block event's agent when it is a member, else the holder.
  *  - Done / first pass: the agent held the card when it reached done / at its
  *    final review (since the last redirect).
- *  - A card counts when the agent has credited runs in the window, or held it
- *    (assigned / reassigned to it, or assigned_agent) at some point in the window.
+ *  - A card counts when, in the window, the agent has credited runs on it, held
+ *    it, or raised a blocker on it.
+ *  - Member renames: updateTeamMember (board.ts) rewrites the agent label in
+ *    card_activity, tasks and task_events, so history already carries the new
+ *    name; no old-name table exists to resolve against. (A reassign payload's
+ *    `to` is not rewritten; nothing writes reassign events today.)
  *
- * Window [from, to] (inclusive, epoch ms; both optional): runs by their time,
- * blockers by their start, done by done time, first pass by final review time.
+ * Per-card fields are the agent's part:
+ *  - rounds: review events while the agent held the card (any time; legacy
+ *    cards without review events fall back to metrics.ts's rounds when the
+ *    agent holds the card now).
+ *  - first_pass: quality.ts's first pass (since the last redirect) when the
+ *    agent held the card at its final review; null otherwise or unreviewed.
+ *  - outcome: done (held at done), reassigned / redirected (how the agent's
+ *    last tenure ended), else the current lane.
+ *
+ * Window [from, to] (inclusive, epoch ms; both optional), applied uniformly:
+ *  - runs (and so cost, tokens, hours, lines) by their time;
+ *  - first/last worked: the agent's tenures and runs clamped to the window;
+ *  - done: done_at is always the card's done time, but the card counts as done
+ *    (cardsDone, cycle time) only when done_at is inside the window;
+ *  - first pass by final review time;
+ *  - blockers: every agent-raised blocked interval overlapping the window,
+ *    blocked_ms clipped to [from, to]; bucketed by max(start, from).
  * Weekly buckets are ISO weeks (Monday start) in `tz`, zero-filled over the window.
  */
 import { memberName } from './board.js';
@@ -90,6 +114,18 @@ interface CardFacts {
   blockers: { at: number; ms: number }[];
 }
 
+function payloadField(p: string | Record<string, unknown> | null, key: string): unknown {
+  let v: unknown = p;
+  if (typeof v === 'string') {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return null;
+    }
+  }
+  return v && typeof v === 'object' ? (v as Record<string, unknown>)[key] : null;
+}
+
 const inWindow = (t: number, from?: number, to?: number) => (from === undefined || t >= from) && (to === undefined || t <= to);
 
 /** Totals over a bucket: its runs and blockers, the cards done in it and the cards whose final review is in it. */
@@ -134,7 +170,12 @@ export function agentHistory(db: DB, opts: AgentHistoryOptions): AgentHistoryDet
     for (const e of sortEvents(x.h.events)) {
       const at = Math.max(e.created_at, prev); // the same clamping as deriveLaneHistory
       prev = at;
-      if (e.type === 'assign' || e.type === 'reassign') steps.push({ at, holder: resolve(e.agent) ?? e.agent ?? null, type: 'assign' });
+      if (e.type === 'assign' || e.type === 'reassign') {
+        // a reassign names the new agent in payload.to; the event's agent may be whoever did it
+        const to = e.type === 'reassign' ? payloadField(e.payload, 'to') : null;
+        const label = typeof to === 'string' && to ? to : (e.agent ?? null);
+        steps.push({ at, holder: resolve(label) ?? label, type: 'assign' });
+      }
       else if (e.type === 'redirect') steps.push({ at, holder: null, type: 'redirect' });
     }
     if (!steps.length && x.h.card.assigned_agent) {
@@ -214,13 +255,19 @@ export function agentHistory(db: DB, opts: AgentHistoryOptions): AgentHistoryDet
         tenures[tenures.length - 1] = { ...tenures[tenures.length - 1], to: s.at, end: s.type === 'redirect' ? 'redirected' : 'reassigned' };
       }
     }
-    const last = tenures[tenures.length - 1];
-    if (last && last.end === null) last.to = x.m.doneAt;
+    const current = tenures[tenures.length - 1];
+    if (current && current.end === null) current.to = x.m.doneAt;
 
     const cardRuns = runsByCard.get(x.m.id) ?? [];
     const windowRuns = cardRuns.filter((r) => inWindow(r.created_at, from, to));
-    const held = tenures.some((t) => (to === undefined || t.from <= to) && (from === undefined || (t.to ?? now) >= from));
-    if (!windowRuns.length && !held) continue;
+    const lo = from ?? -Infinity;
+    const hi = to ?? Infinity;
+    // the agent's tenures, open ones closed at the card's last event (else now), clamped to the window
+    const eventTimes = x.h.events.map((e) => e.created_at);
+    const spans = tenures
+      .map((t) => ({ from: Math.max(t.from, lo), to: Math.min(t.to ?? eventTimes.reduce((m, e) => (e >= t.from ? Math.max(m, e) : m), t.from), hi) }))
+      .filter((t) => t.from <= t.to);
+    const held = tenures.some((t) => t.from <= hi && (t.to ?? now) >= lo);
 
     // Blockers the agent raised: each blocked interval belongs to the block event that opened it.
     const blockEvents: { at: number; agent: string | null }[] = [];
@@ -233,23 +280,27 @@ export function agentHistory(db: DB, opts: AgentHistoryOptions): AgentHistoryDet
     const blockers = x.d.blocked
       .filter((b) => {
         const ev = blockEvents.find((e) => e.at === b.from);
-        return (resolve(ev?.agent) ?? holderAt(x, b.from)) === agent && inWindow(b.from, from, to);
+        return (resolve(ev?.agent) ?? holderAt(x, b.from)) === agent && b.from <= hi && (b.to ?? now) >= lo;
       })
-      .map((b) => ({ at: b.from, ms: Math.max(0, (b.to ?? now) - b.from) }));
+      .map((b) => ({ at: Math.max(b.from, lo), ms: Math.max(0, Math.min(b.to ?? now, hi) - Math.max(b.from, lo)) }));
+    if (!windowRuns.length && !held && !blockers.length) continue;
 
     const q = cardQuality(x);
     const doneCounted = x.m.doneAt !== null && holderAt(x, x.m.doneAt) === agent;
+    const last = tenures[tenures.length - 1];
     const outcome = last && last.end !== null ? last.end : x.m.lane;
-    const eventTimes = x.h.events.map((e) => e.created_at);
-    const ends = tenures.map((t) => t.to ?? Math.max(t.from, ...eventTimes.filter((e) => e >= t.from)));
-    const worked = [...tenures.map((t) => t.from), ...ends, ...cardRuns.map((r) => r.created_at)];
+    const worked = [...spans.flatMap((t) => [t.from, t.to]), ...windowRuns.map((r) => r.created_at), ...blockers.map((b) => b.at)];
     const lines = windowRuns.filter((r) => !extra.get(r.id)?.estimated);
+    const heldAtReview = q.reviewed && holderAt(x, q.finalAt!) === agent;
+    const reviewsHeld = x.d.reviews.filter((r) => holderAt(x, r.at) === agent).length;
+    const rounds =
+      x.d.reviews.length === 0 && x.m.reviewRoundsSource !== 'reviews' && holderAt(x, Infinity) === agent ? x.m.reviewRounds : reviewsHeld;
 
     facts.push({
       q,
       cycleMs: x.m.cycleTimeMs,
       doneCounted,
-      qualityCounted: q.reviewed && holderAt(x, q.finalAt!) === agent,
+      qualityCounted: heldAtReview,
       doneWeek: x.m.doneAt === null ? null : isoWeek(dayKey(x.m.doneAt, tz)).start,
       reviewWeek: q.finalAt === null ? null : isoWeek(dayKey(q.finalAt, tz)).start,
       blockers,
@@ -265,8 +316,8 @@ export function agentHistory(db: DB, opts: AgentHistoryOptions): AgentHistoryDet
         last_worked_at: worked.length ? Math.max(...worked) : null,
         done_at: x.m.doneAt,
         outcome,
-        rounds: x.m.reviewRounds,
-        first_pass: q.reviewed ? q.firstPass : null,
+        rounds,
+        first_pass: heldAtReview ? q.firstPass : null,
         blockers: blockers.length,
         blocked_ms: blockers.reduce((s, b) => s + b.ms, 0),
         cost: windowRuns.reduce((s, r) => s + r.cost, 0),
