@@ -19,7 +19,7 @@ const FW_TYPES = [
   { k: 'debt', name: 'Debt', color: '#d6b878' },
   { k: 'risk', name: 'Risk', color: '#c7a2e3' },
   { k: 'none', name: 'Unclassified', color: '#5b6275' },
-  { k: 'deleted', name: 'Deleted', color: '#a0a7b8' }, // done in range, the card since deleted (no work type left)
+  { k: 'unmatched', name: 'Unmatched', color: '#a0a7b8', hint: 'Done cards not found in the card list, e.g. a filter mismatch' },
 ];
 const FW_WIP_LANES = [
   { k: 'in_progress', name: 'Building' },
@@ -165,9 +165,7 @@ function fwCycleRender(el, d, ctx) {
   const r = d.flow;
   const sb = r.stageBreakdown;
   const n = r.throughput.total;
-  // L: the real cycle p85 (flow.cycleTime.p85) beside the p50 headline
-  const p85 = ctx.size === 'L' ? `p85 ${mxSpan(r.cycleTime.p85)} · ` : '';
-  el.append(fwMain(mxSpan(r.cycleTime.p50), 'p50 cycle', `${p85}${mxPlural(n, 'card')} done · queued → done`));
+  el.append(fwMain(mxSpan(r.cycleTime.p50), 'p50 cycle', `${mxPlural(n, 'card')} done · queued → done`));
   el.append(fwDeltaRow(fwPrevChip(r, 'p50 cycle time', -1, mxSpan, r.cycleTime.p50, r.previous?.cycleTime?.p50 ?? null)));
   el.append(fwStageBlock('p50', sb.p50, ctx));
   const prevSb = r.previous?.stageBreakdown?.p50 ?? null;
@@ -214,10 +212,13 @@ async function fwWipLoad(ctx) {
       const limit = settings[i].wip?.[l.k] ?? null;
       return { ...l, n, limit, over: limit !== null && n > limit };
     });
-    return { id: b.id, name: b.name, lanes };
+    return { id: b.id, name: b.name || 'this board', lanes };
   });
   return { multi, boards };
 }
+
+// "the web board", or "this board" when the board has no name
+const fwBoardRef = (b) => (b.name && b.name !== 'this board' ? `the ${b.name} board` : 'this board');
 
 // "Set WIP limits …": Settings → Board for the board whose limits are shown. The Settings modal edits
 // the board this page is open on, so another board's limits mean opening that board first.
@@ -228,9 +229,9 @@ function fwSettingsHint(text, board) {
     return hint;
   }
   const here = !board || board.id === projectId;
-  const btn = node('button', 'fw-link', here ? text : `Open the ${board.name} board to set its WIP limits`);
+  const btn = node('button', 'fw-link', here ? text : `Open ${fwBoardRef(board)} to set its WIP limits`);
   btn.type = 'button';
-  btn.title = here ? 'Open Settings → Board' : `Go to the ${board.name} board (its Settings → Board holds its limits)`;
+  btn.title = here ? 'Open Settings → Board' : `Go to ${fwBoardRef(board)} (its Settings → Board holds its limits)`;
   btn.onclick = () => (here ? openSettings('board') : (location.search = `?project=${encodeURIComponent(board.id)}`));
   hint.append(btn);
   return hint;
@@ -352,7 +353,7 @@ function fwReviewRender(el, d, ctx) {
 
 // ── throughput-trend: "Is delivery speeding up?" ──
 // Weekly done bars over the range (ISO weeks, the window's cut weeks marked partial), stacked by
-// work type: flow's points joined to the cards' work_type (a point with no card left: Deleted).
+// work type: flow's points joined to the cards' work_type (a point not in the card list: Unmatched).
 // The legend totals come from the same join, so bars and legend always agree.
 async function fwTrendLoad(ctx) {
   const params = ctx.filters;
@@ -370,7 +371,7 @@ async function fwTrendLoad(ctx) {
   for (const p of flow.points) {
     const day = mxDayKey(p.doneAt, tz);
     const w = weeks.find((x) => day >= x.start && day <= x.end);
-    if (w) w.byType[typeOf.get(p.id) ?? 'deleted']++;
+    if (w) w.byType[typeOf.get(p.id) ?? 'unmatched']++;
   }
   return { flow, weeks };
 }
@@ -434,6 +435,7 @@ function fwTrendRender(el, d, ctx) {
     if (!n) continue;
     const it = node('span', 'fw-lg');
     it.append(fwSwatch(ty.color), node('span', '', `${ty.name} ${n}`));
+    if (ty.hint) it.title = ty.hint;
     legend.append(it);
   }
   if (weeks.some((w) => w.partial)) legend.append(node('span', 'fw-lg fw-dim', 'faded: partial week'));
@@ -468,7 +470,7 @@ function fwEscalationRender(el, d, ctx) {
   // both reads share the window; previous exists only when both have it
   const r = { previous: flow.previous && wait.previous, previousWindow: flow.previousWindow };
   el.append(fwDeltaRow(fwPrevChip(r, 'Blockers per card done', -1, fwRatio, cur, prev)));
-  if (d.unfiltered) el.append(node('div', 'fw-foot', 'Blockers ignore tag/agent filters'));
+  if (d.unfiltered) el.append(node('div', 'fw-foot', 'Ignores tag/agent filters'));
   // the current period's is blocked.resolution; previous carries the picked blocked.p50
   const p50 = wait.blocked.resolution.p50;
   const res = node('div', 'fw-resolve');

@@ -70,7 +70,8 @@
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 .fw-stage-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.fw-stage-sum { font-size: 11px; color: var(--dim); white-space: nowrap; }
+.fw-stage-head > .fw-k { flex: none; }
+.fw-stage-sum { min-width: 0; font-size: 11px; color: var(--dim); text-align: right; overflow-wrap: anywhere; }
 .fw-stage-svg { display: block; width: 100%; height: 14px; border-radius: 4px; overflow: hidden; }
 .fw-blocked { display: flex; flex-direction: column; gap: 4px; }
 .fw-blocked-svg { display: block; width: 100%; height: 5px; border-radius: 3px; overflow: hidden; }
