@@ -203,9 +203,27 @@ describe('costAnomaly', () => {
     assert.equal(r.flagged.length, 1);
     assert.equal(r.flagged[0].spend, 5);
   });
+  it('judgedDays: days with enough trailing data; the rule is exposed', () => {
+    const runs = [0, 1, 2, 3].map((d) => ({ phase_id: 'P', cost: 1, created_at: at(10 + d) }));
+    const opts = { from: T0 + 14 * DAY, to: T0 + 16 * DAY - 1, tz: 'UTC' };
+    // day 14 has 4 trailing days of data, day 15 has 5
+    const r = costAnomaly(runs, opts);
+    assert.deepEqual([r.judgedDays, r.trailingDays, r.minDays, r.sigmas], [1, 14, 5, 2]);
+    assert.equal(costAnomaly(runs, { ...opts, to: T0 + 15 * DAY - 1 }).judgedDays, 0);
+  });
+  it('a phase with old history that restarted spending 3 days before the window end is judged', () => {
+    // first spend 60 days before the window, idle since, spending again on the window's last 3 days
+    const runs = [{ phase_id: 'P', cost: 1, created_at: at(-46) }];
+    for (const d of [25, 26, 27]) runs.push({ phase_id: 'P', cost: 2, created_at: at(d) });
+    const r = costAnomaly(runs, { from: T0 + 14 * DAY, to: T0 + 28 * DAY - 1, tz: 'UTC' });
+    // every in-range day has 14 trailing days of real (zero) data: all 14 judged (not "needs history")
+    assert.equal(r.judgedDays, 14);
+    // the first restarted day sits on a flat-zero baseline (not flagged); the next two stand out against it
+    assert.deepEqual(r.flagged.map((f) => f.date), ['2026-06-27', '2026-06-28']);
+  });
   it('no data', () => {
     const r = costAnomaly([], { from: T0, to: T0 + DAY - 1, tz: 'UTC' });
-    assert.deepEqual([r.series, r.flagged], [[], []]);
+    assert.deepEqual([r.series, r.flagged, r.judgedDays], [[], [], 0]);
   });
 });
 
