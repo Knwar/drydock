@@ -178,9 +178,13 @@ function dwRenderLayout(layout) {
   if (layout) dw.layout = layout;
   const root = $('dash-root');
   if (!root || !dw.layout) return;
+  for (const inst of dw.instances) dwFadeStop(inst);
   dw.instances = [];
   const frag = document.createDocumentFragment();
-  for (const sec of dw.layout.sections ?? []) {
+  // empty: view mode says so; edit mode with no sections prompts (the editor adds "+ Add section")
+  if (dw.editing && !dw.layout.sections?.length) frag.append(node('div', 'dw-edit-empty', 'Add a section to start'));
+  else if (!dw.editing && dwIsEmpty(dw.layout)) frag.append(dwEmptyState());
+  else for (const sec of dw.layout.sections ?? []) {
     try {
       frag.append(dwSection(sec));
     } catch (e) {
@@ -191,6 +195,78 @@ function dwRenderLayout(layout) {
   root.replaceChildren(frag);
   for (const inst of [...dw.instances]) dwLoad(inst, dw.cache);
   dwRendered(root);
+}
+
+// No sections, or no widget anywhere: nothing would show.
+function dwIsEmpty(layout) {
+  const sections = layout?.sections ?? [];
+  return !sections.some((sec) => (sec.rows ?? []).some((r) => (r.slots ?? []).some((s) => (s.widgets ?? []).length)));
+}
+
+// View mode, empty layout: say so, offer the editor (≥800px, not embedded: CSS) and the default.
+function dwEmptyState() {
+  const box = node('div', 'dw-empty-state');
+  box.append(node('div', 'dw-empty-title', 'This dashboard is empty'));
+  const actions = node('div', 'dw-empty-actions');
+  if (!EMBED) {
+    const edit = node('button', 'home-btn dw-empty-edit', 'Edit dashboard');
+    edit.type = 'button';
+    edit.onclick = () => typeof deEnter === 'function' && deEnter();
+    actions.append(edit);
+  }
+  const reset = node('button', 'dw-empty-reset', 'Reset to default');
+  reset.type = 'button';
+  reset.onclick = () => dwConfirmReset();
+  actions.append(reset);
+  box.append(actions);
+  return box;
+}
+
+// "Reset to default": confirm, DELETE the stored layout, then load what the board gets now.
+function dwConfirmReset() {
+  if (svModal) return;
+  const board = dw.board;
+  let busy = false;
+  const { dlg, close, mount } = openModal({ labelledBy: 'dw-reset-title', describedBy: 'dw-reset-sub', busy: () => busy, fallbackFocus: () => $('home-edit') });
+  dlg.classList.add('dw-reset-dlg');
+  const title = node('h2', 'sv-title', 'Reset to the default dashboard?');
+  title.id = 'dw-reset-title';
+  const sub = node('p', 'sv-sub', 'This deletes the saved layout for this board, for everyone viewing it.');
+  sub.id = 'dw-reset-sub';
+  const err = node('div', 'sv-error');
+  err.setAttribute('role', 'alert');
+  const foot = node('div', 'sv-foot');
+  const cancel = node('button', 'home-btn', 'Cancel');
+  cancel.type = 'button';
+  cancel.onclick = () => !busy && close();
+  const go = node('button', 'home-btn pl-danger', 'Reset dashboard');
+  go.type = 'button';
+  go.onclick = async () => {
+    if (busy) return;
+    busy = true;
+    go.disabled = cancel.disabled = true;
+    go.textContent = 'Resetting…';
+    try {
+      const res = await fetch(`/project/${encodeURIComponent(board)}/layout`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(res.status === 403 ? 'only allowed from this machine' : body.error || `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      busy = false;
+      go.disabled = cancel.disabled = false;
+      go.textContent = 'Reset dashboard';
+      err.textContent = `Couldn’t reset the dashboard (${e.message}).`;
+      return;
+    }
+    busy = false;
+    close();
+    if (dw.board === board) dwLoadLayout();
+  };
+  foot.append(node('span', 'sv-foot-note'), cancel, go);
+  dlg.append(title, sub, err, foot);
+  mount();
+  cancel.focus();
 }
 
 const dwCollapseKey = (secId) => `dw.collapsed.${dw.board}.${secId}`;
@@ -233,12 +309,15 @@ function dwRows(host, rows, containerId) {
   for (const r of rows) {
     const row = node('div', 'dw-row');
     row.dataset.rowId = r.id;
+    // view mode hides a row with no widgets, and keeps an empty slot's space but not its look (CSS)
+    row.classList.toggle('dw-row-vacant', !(r.slots ?? []).some((s) => (s.widgets ?? []).length));
     if (containerId != null) row.dataset.containerId = containerId;
     row.style.setProperty('--h', String(r.height));
     for (const s of r.slots ?? []) {
       const slot = node('div', 'dw-slot');
       slot.dataset.slotId = s.id;
       slot.style.setProperty('--span', String(s.span));
+      slot.classList.toggle('dw-slot-vacant', !(s.widgets ?? []).length);
       for (const w of s.widgets ?? []) {
         const inst = dwWidget(w);
         created.push(inst);
@@ -272,12 +351,14 @@ function dwWidget(w) {
   frame.dataset.widgetType = w.type;
   const head = node('div', 'dw-head');
   const title = node('span', 'dw-title');
+  // a truncated title shows in full as a tooltip (measured on hover: edit mode's handle narrows it)
+  title.addEventListener('pointerenter', () => (title.title = title.scrollWidth > title.clientWidth ? title.textContent : ''));
   const vars = node('span', 'dw-vars');
   const asof = node('span', 'dw-asof');
   head.append(title, vars, asof);
   const body = node('div', 'dw-body');
   frame.append(head, body);
-  const inst = { w, frame, head, title, vars, asof, body, ctx: null, seq: 0, painted: false };
+  const inst = { w, frame, head, title, vars, asof, body, ctx: null, seq: 0, painted: false, fadeMO: null };
   inst.ctx = {
     id: w.id,
     size: w.size,
@@ -304,6 +385,11 @@ function dwWidget(w) {
     _cache: null,
   };
   dwFrameTitle(inst);
+  dwFadeRO?.observe(body);
+  body.addEventListener('scroll', () => dwFadeCheck(body), { passive: true });
+  // content patched in place (onStatus, a refresh paint): check again, at most once per frame
+  inst.fadeMO = new MutationObserver(() => dwFadeSoon(body));
+  inst.fadeMO.observe(body, { childList: true, subtree: true, characterData: true });
   dw.instances.push(inst);
   return inst;
 }
@@ -335,8 +421,15 @@ function dwVarsLabel(w) {
   if (v.tag) parts.push(`Tag: ${v.tag}`);
   if (v.agent) parts.push(`Agent: ${v.agent}`);
   if (v.from || v.to || v.range === 'custom') parts.push(`Range: ${v.from || '…'} – ${v.to || 'today'}`);
-  else if (v.range) parts.push(`Range: ${MX_RANGES.find(([id]) => id === v.range)?.[1] ?? v.range}`);
+  else if (v.range) parts.push(`Range: ${dwRangeLabel(v.range)}`);
   return parts.join(' · ');
+}
+
+// A rolling range in words, from MX_RANGES' week counts: "Last 4 weeks", "All time".
+function dwRangeLabel(range) {
+  const r = MX_RANGES.find(([id]) => id === range);
+  if (!r) return range;
+  return r[2] == null ? 'All time' : `Last ${r[2]} weeks`;
 }
 
 function dwFrameTitle(inst) {
@@ -368,6 +461,7 @@ function dwState(inst, state) {
   dwInertBody(inst.body);
   for (const s of ['loading', 'error', 'empty', 'stale']) inst.frame.classList.toggle(`is-${s}`, s === state);
   if (state !== 'stale') inst.asof.textContent = '';
+  dwFadeSoon(inst.body); // after this paint's content is in
 }
 
 const dwClock = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -389,6 +483,25 @@ function dwPaint(inst, data) {
   }
   dwInertBody(inst.body);
 }
+
+// A body whose content overflows (and isn't scrolled to its end) gets a subtle bottom fade.
+function dwFadeCheck(body) {
+  const more = body.scrollHeight - body.clientHeight - body.scrollTop > 1;
+  body.classList.toggle('dw-clipped', more);
+}
+function dwFadeSoon(body) {
+  if (body._dwFadeQueued) return;
+  body._dwFadeQueued = true;
+  requestAnimationFrame(() => {
+    body._dwFadeQueued = false;
+    if (body.isConnected) dwFadeCheck(body);
+  });
+}
+function dwFadeStop(inst) {
+  dwFadeRO?.unobserve(inst.body);
+  inst.fadeMO?.disconnect();
+}
+const dwFadeRO = typeof ResizeObserver === 'function' ? new ResizeObserver((entries) => entries.forEach((e) => dwFadeCheck(e.target))) : null;
 
 function dwError(inst, e) {
   inst.painted = false;
@@ -452,6 +565,7 @@ async function dwLoad(inst, cache) {
 const dwSig = (w) => `${w.type}|${JSON.stringify({ ...w.params, title: undefined })}`;
 
 function dwPrune() {
+  for (const i of dw.instances) if (!i.frame.isConnected) dwFadeStop(i);
   dw.instances = dw.instances.filter((i) => i.frame.isConnected);
 }
 
