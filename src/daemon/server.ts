@@ -23,6 +23,7 @@ import * as report from '../core/report.js';
 import * as usageBurn from '../core/usage-burn.js';
 import * as dashboard from '../core/dashboard.js';
 import * as snapshots from '../core/snapshots.js';
+import { agentHistory, type AgentHistoryOptions } from '../core/agent-history.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
 import { cardLines } from '../core/lines.js';
@@ -1662,6 +1663,37 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
           blocked: { count: r.blocked.count, totalMs: r.blocked.totalMs, p50: r.blocked.resolution.p50 },
         }), opts),
       );
+    } catch (err) {
+      const status = err instanceof metrics.MetricsParamError ? 400 : 500;
+      return json(res, status, { error: (err as Error).message });
+    }
+  }
+
+  // ── agent history (core/agent-history.ts): a team member's cards, runs and totals; off-roster names give an empty history ──
+  const agentHistoryMatch = pathname.match(/^\/agents\/([^/]+)\/history$/);
+  if (method === 'GET' && agentHistoryMatch) {
+    const q = url.searchParams;
+    let agent: string;
+    try {
+      agent = decodeURIComponent(agentHistoryMatch[1]);
+    } catch {
+      return json(res, 400, { error: 'invalid agent name' });
+    }
+    const project = q.get('project');
+    if (!project) return json(res, 400, { error: 'project required' });
+    if (!projectRoot(project)) return json(res, 404, { error: 'unknown project' });
+    const tz = q.get('tz') || metrics.localTimeZone();
+    if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
+    const now = Date.now();
+    try {
+      // a workspace id expands to its verticals inside the loader
+      const filter: AgentHistoryOptions = { projectIds: [project], agent, tz, now };
+      const from = q.get('from');
+      const to = q.get('to');
+      if (from) filter.from = metrics.parseTime(from, tz, 'from');
+      if (to) filter.to = metrics.parseTime(to, tz, 'to');
+      // previous carries only the totals, never the cards or runs
+      return json(res, 200, withCompare(q, filter, (f) => agentHistory(db, f), (r) => r.totals, { tz, now }));
     } catch (err) {
       const status = err instanceof metrics.MetricsParamError ? 400 : 500;
       return json(res, status, { error: (err as Error).message });
