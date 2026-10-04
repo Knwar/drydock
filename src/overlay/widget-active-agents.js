@@ -212,12 +212,19 @@ function aaHistoryUrl(name, ctx) {
   return `/agents/${encodeURIComponent(name)}/history?${q}`;
 }
 
-// Window length in days (null = all time: no comparison).
-const aaDays = (w) => (w ? Math.max(1, Math.round((w.to - w.from) / AA_DAY)) : null);
+// Window length in days (null = all time: no comparison). Taken from previousWindow, not window:
+// window.to is "now" for a rolling range, so (to - from) is a fraction of a day short for part of
+// each day and rounds to the wrong N; previousWindow spans whole calendar days (to inclusive), and
+// it is the span the deltas actually compare against.
+const aaDays = (h) => {
+  const pw = h.previousWindow;
+  return pw ? Math.max(1, Math.round((pw.to + 1 - pw.from) / AA_DAY)) : null;
+};
 
 // "▲ +3 · +50% vs prev 14 d": colour by polarity, grey when there's nothing to compare.
 function aaDelta(s, cur, prev, days) {
   const chip = node('span', 'aa-delta');
+  chip.setAttribute('role', 'img'); // its aria-label (with the better / worse verdict) is what's announced
   const a = cur?.[s.key];
   const b = prev?.[s.key];
   if (!prev || a === null || a === undefined || b === null || b === undefined) {
@@ -227,18 +234,26 @@ function aaDelta(s, cur, prev, days) {
     chip.setAttribute('aria-label', prev ? `${s.label}: no comparison vs previous ${days} days` : `${s.label}: no previous period`);
     return chip;
   }
-  const d = a - b;
-  const tone = d === 0 || s.pol === 0 ? 'flat' : d * s.pol > 0 ? 'good' : 'bad';
+  // a change that rounds to zero at the stat's display precision ("0 m", "$0.00", "0 pts") is no change
+  const shown = s.diff(Math.abs(a - b));
+  const d = Number(shown.replace(/[^\d.]/g, '')) === 0 ? 0 : a - b;
+  if (d === 0) {
+    chip.classList.add('aa-d-flat');
+    chip.append(node('span', 'aa-d-chg', '±0'), node('span', 'aa-d-vs', `vs prev ${days} d`));
+    chip.setAttribute('aria-label', `${s.label} unchanged vs previous ${days} days`);
+    return chip;
+  }
+  const tone = s.pol === 0 ? 'flat' : d * s.pol > 0 ? 'good' : 'bad';
   chip.classList.add(`aa-d-${tone}`);
-  const sign = d > 0 ? '+' : d < 0 ? '−' : '±';
+  const sign = d > 0 ? '+' : '−';
   const pct = b !== 0 ? `${sign}${Math.abs(Math.round((d / Math.abs(b)) * 100))}%` : null;
-  const arrow = node('span', 'aa-d-arrow', d > 0 ? '▲' : d < 0 ? '▼' : '–');
+  const arrow = node('span', 'aa-d-arrow', d > 0 ? '▲' : '▼');
   arrow.setAttribute('aria-hidden', 'true');
-  const val = `${sign}${s.diff(Math.abs(d))}`;
+  const val = `${sign}${shown}`;
   const chg = node('span', 'aa-d-chg');
   chg.append(arrow, node('span', 'aa-d-val', pct ? `${val} · ${pct}` : val));
   chip.append(chg, node('span', 'aa-d-vs', `vs prev ${days} d`));
-  const dir = d > 0 ? 'up' : d < 0 ? 'down' : 'unchanged';
+  const dir = d > 0 ? 'up' : 'down';
   const verdict = tone === 'good' ? ', better' : tone === 'bad' ? ', worse' : '';
   chip.setAttribute('aria-label', `${s.label} ${dir} ${val}${pct ? ` (${pct})` : ''} vs previous ${days} days${verdict}`);
   return chip;
@@ -264,11 +279,14 @@ function aaOpenPanel(agentId, data, ctx, el) {
   dlg.classList.add('aa-panel');
   const top = node('div', 'aa-p-part'); // identity + Now: repainted live
   const hist = node('div', 'aa-p-part'); // stats, trend, history: repainted only when the history loads
-  hist.setAttribute('aria-live', 'polite');
-  hist.setAttribute('aria-busy', 'true');
-  dlg.append(top, hist);
+  // a short summary is announced on load (not the whole block): a dedicated, visually hidden region
+  const live = node('div', 'aa-sr');
+  live.setAttribute('role', 'status');
+  live.setAttribute('aria-live', 'polite');
+  dlg.append(top, hist, live);
   let taskFor = null; // `${card id}:${blocked}` whose task (branch, blocker reason) is loaded / loading
   let task = null;
+  let branch = null; // { id, value }: the card's last known branch, kept visible while its task refetches
   let agentName = null;
   const hs = { url: null, seq: 0, status: 'loading', data: null, error: '', shown: AA_HIST_PAGE };
   const isOpen = () => aaPanel.close === close;
@@ -288,16 +306,18 @@ function aaOpenPanel(agentId, data, ctx, el) {
         if (!isOpen() || seq !== hs.seq) return;
         Object.assign(hs, { status: 'ok', data: d });
         renderHist();
+        live.textContent = `Loaded ${mxPlural(d.cards.length, 'card')}`;
       })
       .catch((err) => {
         if (!isOpen() || seq !== hs.seq) return;
         Object.assign(hs, { status: 'error', error: err.message });
         renderHist();
+        live.textContent = 'Couldn’t load the history';
       });
   }
 
   function statsSection(h) {
-    const days = aaDays(h.window);
+    const days = aaDays(h);
     const sec = node('section', 'aa-p-sec');
     const label = node('h3', 'aa-p-label', 'Stats');
     label.append(node('span', 'aa-p-range', days ? ` · last ${days} d` : ' · all time'));
@@ -327,7 +347,9 @@ function aaOpenPanel(agentId, data, ctx, el) {
     fig.setAttribute('role', 'img');
     fig.setAttribute('aria-label', `Cards done per week, oldest first: ${vals.join(', ')}`);
     const cap = node('div', 'aa-p-spark-cap');
-    cap.append(node('span', null, mxPlural(vals.length, 'week')), node('span', null, `peak ${Math.max(...vals)} · this week ${vals[vals.length - 1]}`));
+    // the last bucket is "this week" only when the range runs to today (all time / a rolling range)
+    const endsToday = !h.window || new Date(h.window.to).toDateString() === new Date().toDateString();
+    cap.append(node('span', null, mxPlural(vals.length, 'week')), node('span', null, `peak ${Math.max(...vals)} · ${endsToday ? 'this week' : `week to ${aaDay(h.window.to)}`} ${vals[vals.length - 1]}`));
     fig.append(mxSparkline(vals), cap);
     sec.append(fig);
     return sec;
@@ -369,20 +391,33 @@ function aaOpenPanel(agentId, data, ctx, el) {
     kb.type = 'button';
     kb.dataset.k = 'kanban';
     kb.disabled = !h.cards.length;
+    // Where the highlight lands: this board's Kanban when any of the cards are on it; else the board
+    // holding the most of them (?cards=, like Metrics' "Open all"). Never an empty highlight.
+    const here = h.cards.filter((c) => cards.has(c.id));
+    const byBoard = new Map();
+    for (const c of h.cards) {
+      if (!byBoard.has(c.board.id)) byBoard.set(c.board.id, { board: c.board, ids: [] });
+      byBoard.get(c.board.id).ids.push(c.id);
+    }
+    const target = here.length ? null : [...byBoard.values()].sort((x, y) => y.ids.length - x.ids.length)[0];
+    const shownN = here.length || target?.ids.length || 0;
     kb.onclick = () => {
-      const ids = h.cards.map((c) => c.id);
-      const boards = new Set(h.cards.map((c) => c.board.id));
       close();
-      // every card on one other board (a vertical): that board's Kanban, like Metrics' "Open all"
-      if (!ids.some((id) => cards.has(id)) && boards.size === 1 && !boards.has(projectId)) {
-        location.search = `?project=${encodeURIComponent([...boards][0])}&cards=${encodeURIComponent(ids.join(','))}&view=kanban`;
+      if (target) {
+        location.search = `?project=${encodeURIComponent(target.board.id)}&cards=${encodeURIComponent(target.ids.join(','))}&view=kanban`;
         return;
       }
       setView('kanban');
-      setKanbanHighlight(ids);
+      setKanbanHighlight(here.map((c) => c.id));
     };
     headRow.append(kb);
     sec.append(headRow);
+    const hidden = h.cards.length - shownN;
+    if (h.cards.length && (target || hidden)) {
+      const where = target ? `Opens ${target.board.name}. ` : '';
+      const rest = hidden ? `${mxPlural(hidden, 'card')} on other boards ${hidden === 1 ? 'isn’t' : 'aren’t'} shown there.` : '';
+      sec.append(node('p', 'aa-p-note', `${where}${rest}`.trim()));
+    }
     if (!h.cards.length) {
       sec.append(node('div', 'aa-p-muted', `${agentName} worked no cards in this range.`));
       return sec;
@@ -409,7 +444,6 @@ function aaOpenPanel(agentId, data, ctx, el) {
 
   function renderHist() {
     const hadFocus = hist.contains(document.activeElement) ? document.activeElement.dataset.k : null;
-    hist.setAttribute('aria-busy', String(hs.status === 'loading'));
     if (hs.status === 'loading') {
       const sk = node('section', 'aa-p-sec');
       sk.setAttribute('aria-label', 'Loading history');
@@ -441,7 +475,8 @@ function aaOpenPanel(agentId, data, ctx, el) {
     else focusClose();
   }
 
-  const paint = (d) => {
+  // internal: a repaint from the task fetch itself (a failure then doesn't retry right away)
+  const paint = (d, internal = false) => {
     const a = (d.agents ?? []).find((x) => x.id === agentId);
     if (!a) return close();
     agentName = a.name;
@@ -477,7 +512,8 @@ function aaOpenPanel(agentId, data, ctx, el) {
     if (card) {
       // the card's task (branch, blocker reason): once per card, again when it becomes blocked
       const key = `${card.id}:${card.blocked}`;
-      if (taskFor !== key) {
+      // a failed fetch is retried on the next outside repaint (status ping, refresh): once per repaint
+      if (taskFor !== key || (task?.failed && !internal)) {
         taskFor = key;
         task = null;
         fetch(`/task/${encodeURIComponent(card.id)}`)
@@ -485,21 +521,22 @@ function aaOpenPanel(agentId, data, ctx, el) {
           .then((t) => {
             if (taskFor !== key) return;
             task = t ?? {};
-            if (aaPanel.paint === paint) paint(aaPanel.data);
+            branch = { id: card.id, value: task.branch ?? null };
+            if (aaPanel.paint === paint) paint(aaPanel.data, true);
           })
           .catch(() => {
             if (taskFor !== key) return;
             task = { failed: true };
-            if (aaPanel.paint === paint) paint(aaPanel.data);
+            if (aaPanel.paint === paint) paint(aaPanel.data, true);
           });
       }
       now.append(node('div', 'aa-p-card', card.title));
       const meta = node('div', 'aa-p-meta');
       meta.append(node('span', 'aa-lane', LANE_NAME(card.lane)), node('span', 'aa-sum-sep', '·'), 'in this state for ', aaSince(card.since, 'aa-elapsed'));
       now.append(meta);
-      if (task?.branch) {
+      if (branch?.id === card.id && branch.value) {
         const br = node('div', 'aa-p-branch');
-        br.append(node('span', 'aa-p-branch-k', 'Branch'), node('code', 'aa-p-branch-v', task.branch));
+        br.append(node('span', 'aa-p-branch-k', 'Branch'), node('code', 'aa-p-branch-v', branch.value));
         now.append(br);
       }
       if (a.now) now.append(node('div', 'aa-p-activity', a.now));
