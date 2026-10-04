@@ -65,17 +65,18 @@ body.embed .home-edit, body.de-editing .home-edit { display: none; }
 .de-editing .dw-widget:hover { border-color: rgba(255, 255, 255, 0.16); }
 .de-editing .dw-widget.de-selected { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* rows: a zero-height bar on each row's top edge (no vertical space of its own): its "Row n"
-   label and handle straddle the edge, the bar line itself lets clicks through */
+/* rows: a bar with no vertical space of its own: its "Row n" label and handle sit just inside the
+   row's top-left (inset), clear of the previous row's resize strip (in the gap above) and of the
+   selection outlines (outside the frames); the bar line itself lets clicks through */
 .de-row-bar {
   position: relative;
   z-index: 3;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
   height: 0;
-  margin-bottom: calc(-1 * var(--dw-gap));
-  padding: 0 12px;
+  padding: 6px 8px 0; /* the inset; margin-bottom gives that space back: the row starts at the bar's top */
+  margin-bottom: calc(-1 * var(--dw-gap) - 6px);
   font-size: 10.5px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -84,18 +85,20 @@ body.embed .home-edit, body.de-editing .home-edit { display: none; }
 }
 .de-row-bar > * { pointer-events: auto; }
 .de-row-label {
+  margin-top: 2px; /* centred on the 20px handle */
   padding: 0 6px;
   border-radius: 6px;
-  background: linear-gradient(var(--bg), var(--bg)), #fff; /* the page backdrop: cuts the row's edge */
+  background: #1c2130;
   line-height: 16px;
   opacity: 0.8;
 }
+/* the row's first widget makes room under the label: its head (or a headless body) starts lower */
+.de-editing .dw-row > .dw-slot:first-child > .dw-widget:first-child > .dw-head { padding-top: 32px; }
+.de-editing .dw-row > .dw-slot:first-child > .dw-widget:first-child > .dw-head.hidden + .dw-body { padding-top: 32px; }
 .de-row-bar .de-btn { width: 20px; height: 20px; }
 .de-row-bar:hover .de-row-label, .de-row-bar:focus-within .de-row-label, .de-row-bar.de-selected .de-row-label { opacity: 1; }
 .de-row-bar:is(:hover, :focus-within, .de-selected) .de-btn, .de-row-bar:has(+ .dw-row:hover) .de-btn { opacity: 1; }
 .de-row-bar.de-selected { color: var(--accent); }
-/* a tab panel scrolls (clips): room for its first row's label */
-.de-editing .dw-tabs-panel { padding-top: 9px; }
 .de-editing .dw-row.de-selected { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: 12px; }
 
 /* sections */

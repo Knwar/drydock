@@ -86,8 +86,8 @@
 //
 // Escape hatch: #de-hatch (a "Done" button + the "changed elsewhere" notice) until the toolbar
 // card lands; the toolbar hides it (#de-hatch { display: none }). Esc → deRequestExit() too, only
-// on Home with no dialog / card modal open and nothing else having claimed it; with a selection
-// (and the config drawer closed) the first Esc only clears the selection.
+// on Home with no dialog / card modal open and nothing else having claimed it. Esc peels one layer
+// at a time: submenu → menu → config drawer → selection → leave edit mode.
 
 const DE_HISTORY_CAP = 100;
 const DE_COALESCE_MS = 1000;
@@ -899,7 +899,7 @@ function deHatch(show) {
   $('home-body')?.prepend(hatch);
 }
 
-// the widget config drawer (dash-editor-config.js) is open
+// the widget config drawer (dash-editor-config.js; Esc closes it via decClose) is open
 const deDrawerOpen = () => !!$('dec-drawer') && !$('dec-drawer').hidden;
 
 // a dialog (openModal's, the card modal) owns the keyboard
@@ -910,8 +910,13 @@ document.addEventListener('keydown', (e) => {
   if (activeView !== 'home' || deDialogOpen()) return;
   if (e.target.closest?.('input, textarea, select, [contenteditable], [role="dialog"], dialog')) return;
   e.preventDefault();
-  // a selection (with the config drawer closed) goes first; the next Esc leaves edit mode
-  if (deState.selected && !deDrawerOpen()) {
+  // one layer per Esc (an open menu already returned above): the config drawer, then the
+  // selection, then leaving edit mode
+  if (deDrawerOpen()) {
+    if (typeof decClose === 'function') decClose();
+    return;
+  }
+  if (deState.selected) {
     deSelect(null);
     return void deAnnounce('Selection cleared');
   }
