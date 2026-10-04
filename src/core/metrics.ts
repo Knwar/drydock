@@ -975,7 +975,10 @@ export function stageBreakdown(done: CardMetrics[]): { p50: StageTimes; p85: Sta
 export interface FlowView extends FlowMetrics {
   /** Cards done in the range per work type ('none' = unclassified); sums to throughput.total. */
   throughputByWorkType: Record<WorkType | 'none', number>;
-  /** p50 / p85 time per stage (ms) of the cards done in the range; null with none done. */
+  /**
+   * p50 / p85 time per stage (ms) of the cards done in the range; null with none done.
+   * blocked overlaps lane time: it also counts inside the lane the card was blocked in.
+   */
   stageBreakdown: { p50: StageTimes; p85: StageTimes };
   /** Earliest card create or done event in the filtered scope (from / to ignored); null with no cards. */
   firstActivityAt: number | null;

@@ -22,10 +22,12 @@
 //        .dw-widget[data-widget-id][data-widget-type], tab panels / tab buttons [data-tab-id]
 //
 // Shared helpers for widgets:
-//   dwDeltaChip({ cur, prev, polarity, fmt, label, subject, labelLong?, none? }) → the standard delta
+//   dwDeltaChip({ cur, prev, polarity, fmt, label, subject, has?, labelLong?, none? }) → the standard delta
 //     chip element ("▲ +3 · +50% vs prev 14 d"), as kpiDelta / aaDelta: arrow, signed value, %, the
 //     explicit comparison label; colour by polarity (1 = up is good, -1 = down is good, 0 = neutral);
-//     grey "No previous period" (or none) when prev is null / undefined; grey "—" when cur is missing;
+//     has: a previous period exists (default prev != null); widgets pass has: !!resp.previous, so a
+//     previous period whose value is null still reads as one. has false → grey "No previous period"
+//     (or none), no label; has true but cur or prev null → grey "—" + label ("<subject>: no comparison …");
 //     ±0 when the change rounds to zero at fmt's display precision. fmt(magnitude) → string (unsigned).
 //     label: the visible comparison ("vs prev 14 d"); labelLong: the announced one (default label);
 //     subject: what's measured ("Cards done"). role=img; its aria-label carries the better / worse verdict.
@@ -75,15 +77,15 @@ const DW_DAY = 86_400_000;
 
 const dwPrevDays = (pw) => (pw ? Math.max(1, Math.round((pw.to + 1 - pw.from) / DW_DAY)) : null);
 
-function dwDeltaChip({ cur, prev, polarity = 0, fmt, label, subject, labelLong = label, none = 'No previous period' }) {
+function dwDeltaChip({ cur, prev, polarity = 0, fmt, label, subject, has = prev != null, labelLong = label, none }) {
   const chip = node('span', 'dw-delta');
   chip.setAttribute('role', 'img'); // its aria-label (with the better / worse verdict) is what's announced
-  const has = prev !== null && prev !== undefined;
-  if (!has || cur === null || cur === undefined) {
+  const noneText = none ?? 'No previous period';
+  if (!has || cur == null || prev == null) {
     chip.classList.add('dw-d-flat');
-    chip.append(node('span', 'dw-d-chg', has ? '—' : none));
+    chip.append(node('span', 'dw-d-chg', has ? '—' : noneText));
     if (has) chip.append(node('span', 'dw-d-vs', label));
-    chip.setAttribute('aria-label', has ? `${subject}: no comparison ${labelLong}` : `${subject}: ${none.toLowerCase()}`);
+    chip.setAttribute('aria-label', has ? `${subject}: no comparison ${labelLong}` : `${subject}: ${noneText.toLowerCase()}`);
     return chip;
   }
   // a change that rounds to zero at the display precision ("0 m", "$0.00", "0 pts") is no change
