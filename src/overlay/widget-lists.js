@@ -1,10 +1,12 @@
 // Dashboard widgets: lists — up-next, verticals, send-to-agent, workspace-boards.
 // Classic script after dashboard.js; reuses app.js globals read-only (home, term,
 // homeQueueBtn, homeDrillLane, homeBoardChip, homeLaneChip, mergeButton, ptySend,
-// DASH_LANES, DASH_STATE, DASH_MAX_CARDS, teamByName, avatarEl, setView, EMBED).
+// DASH_LANES, DASH_STATE, DASH_MAX_CARDS, teamByName, avatarEl, mxPlural, homeBoardName, EMBED)
+// and dashboard.js' dwKanbanTarget / dwOpenKanban.
 // Every user-controlled string goes in via node() / textContent.
 
 const WL_UP_NEXT_MAX = { M: 3, L: 8 };
+const WL_UP_NEXT_HL = 'Up next'; // the Kanban highlight banner's source: "N cards highlighted from Up next"
 const WL_SEND_CHIPS = [
   ['Work next card', 'Work the next queued card on this board.'],
   ['Status report', "Give me a short status report on what you're doing."],
@@ -92,7 +94,15 @@ dwRegister({
       if (q) row.append(q);
       list.append(row);
     }
-    root.append(wlLink(`View all ${up.total_pending} in Kanban →`, () => setView('kanban')));
+    // highlight them on the board holding the most (a workspace Home's own board may hold none)
+    const target = dwKanbanTarget(up.pending ?? []);
+    if (!target) return;
+    // pending is capped (200): what isn't highlighted counts against total_pending
+    const rest = up.total_pending - target.ids.length;
+    const where = target.board.id === ctx.projectId ? 'Kanban' : `${homeBoardName(target.board)} Kanban`;
+    const link = wlLink(rest > 0 ? `View ${target.ids.length} in ${where} →` : `View all ${up.total_pending} in ${where} →`, () => dwOpenKanban(target, WL_UP_NEXT_HL));
+    if (rest > 0) link.title = `${mxPlural(rest, 'card')} on other boards ${rest === 1 ? 'isn’t' : 'aren’t'} shown there`;
+    root.append(link);
   },
 });
 

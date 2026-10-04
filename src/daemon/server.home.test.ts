@@ -79,6 +79,7 @@ describe('daemon GET /home', () => {
         },
       ],
       total_pending: 1,
+      pending: [{ id: next, board: { id, name: 'solo' } }],
     });
     assert.deepEqual(
       h.agents.map((a: any) => [a.name, a.skill, a.lines_added, a.hours, a.cards, a.now]),
