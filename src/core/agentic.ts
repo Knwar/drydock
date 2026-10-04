@@ -23,8 +23,10 @@
  *        set. The hook only records events it can tie to a card, so `untied` only counts
  *        events posted some other way: a floor, not a measure of untracked work.
  *      - risky Bash commands, matched on the recorded command text (the hook stores it in
- *        payload.file, cut to 80 chars, with any `.../.trees/<id>/` prefix stripped). It is
- *        recorded after the tool ran, so these are commands that ran, not refused attempts.
+ *        payload.file, cut to 80 chars, with everything up to a `.trees/<id>/` path stripped,
+ *        which can drop the command itself when it uses an absolute worktree path). It is
+ *        recorded after the tool ran, so these are commands that ran, not refused attempts;
+ *        matches inside echo / grep strings can be false positives.
  *      - done cards linked to a decision (governance_links, target_type 'card').
  *
  * Window: [from, to]; `to` defaults to now, `from` to the earliest done / stop / tool
@@ -50,14 +52,27 @@ import { cardQuality } from './quality.js';
 
 export const DEFAULT_BATCH_LINES = 200;
 
+/** `rm` with both a recursive and a force flag, in any order / spelling (-rf, -Rf, -fR, -r -f, --recursive --force). */
+function isRmRf(command: string): boolean {
+  for (const m of command.matchAll(/\brm((?:\s+-[^\s]*)+)/g)) {
+    const flags = m[1].trim().split(/\s+/);
+    const short = flags.filter((f) => /^-[a-zA-Z]+$/.test(f)).join('');
+    const recursive = /[rR]/.test(short) || flags.includes('--recursive');
+    const force = /f/.test(short) || flags.includes('--force');
+    if (recursive && force) return true;
+  }
+  return false;
+}
+
 /** Conservative risky-command patterns, matched on recorded Bash command text. */
-export const RISKY_PATTERNS: { name: string; re: RegExp }[] = [
-  { name: 'rm -rf', re: /\brm\s+(?:-[a-zA-Z]*(?:r[a-zA-Z]*f|f[a-zA-Z]*r)[a-zA-Z]*|-[rR]\s+-f|-f\s+-[rR])\b/ },
-  { name: 'git push --force', re: /\bgit\s+push\b.*(?:--force|\s-f\b)/ },
-  { name: 'git reset --hard', re: /\bgit\s+reset\b.*--hard\b/ },
-  { name: 'DROP TABLE', re: /\bdrop\s+table\b/i },
-  { name: 'chmod 777', re: /\bchmod\s+(?:-\w+\s+)*0?777\b/ },
-  { name: 'curl | sh', re: /\bcurl\b[^|]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b/ },
+export const RISKY_PATTERNS: { name: string; test: (command: string) => boolean }[] = [
+  { name: 'rm -rf', test: isRmRf },
+  // --force-with-lease is the safe force push: not counted
+  { name: 'git push --force', test: (c) => /\bgit\s+push\b.*(?:--force(?![-\w])|\s-f\b)/.test(c) },
+  { name: 'git reset --hard', test: (c) => /\bgit\s+reset\b.*--hard\b/.test(c) },
+  { name: 'DROP TABLE', test: (c) => /\bdrop\s+table\b/i.test(c) },
+  { name: 'chmod 777', test: (c) => /\bchmod\s+(?:-\w+\s+)*0?777\b/.test(c) },
+  { name: 'curl | sh', test: (c) => /\bcurl\b[^|]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b/.test(c) },
 ];
 
 /** A recorded `tool` event (payload already parsed). */
@@ -128,6 +143,8 @@ export interface AgenticMetrics {
       criteria: { total: number; checked: number };
       reviewed: number;
       firstPassRate: number | null;
+      /** Done cards in the phase with all criteria checked AND a first-pass review. */
+      adherent: number;
     }[];
     done: number;
     adherent: number;
@@ -169,11 +186,11 @@ export function cardStops(x: DerivedCard): { at: number; kind: 'agent' | 'redire
     else if (e.type === 'redirect') {
       failPending = false;
       out.push({ at: e.created_at, kind: 'redirect' });
-    } else if (e.type === 'move' && field(e.payload, 'to') === 'in_progress') {
+    } else if (e.type === 'move') {
+      // only the move right after a fail review is its rework; any other lane change clears the fail
       const from = field(e.payload, 'from');
-      if (from === 'in_review' || from === 'done') {
-        if (!failPending) out.push({ at: e.created_at, kind: 'reopen' });
-      }
+      if (field(e.payload, 'to') === 'in_progress' && (from === 'in_review' || from === 'done') && !failPending)
+        out.push({ at: e.created_at, kind: 'reopen' });
       failPending = false;
     }
   }
@@ -184,13 +201,15 @@ const isAutonomous = (x: DerivedCard) => !x.h.events.some((e) => e.type === 'blo
 
 /** The command a risky pattern matches, else null. */
 export function riskyPattern(command: string): string | null {
-  return RISKY_PATTERNS.find((p) => p.re.test(command))?.name ?? null;
+  return RISKY_PATTERNS.find((p) => p.test(command))?.name ?? null;
 }
 
 const TOOL_NOTE =
   'The activity hook only records tool events it can tie to a card, so untied is a floor, not a measure of untracked agent work.';
 const RISKY_CAVEAT =
-  'Matched on the Bash command text the activity hook records (cut to 80 characters, worktree path prefixes stripped), after the command ran: refused attempts and patterns past the cut are not counted.';
+  'Matched on the Bash command text the activity hook records, after the command ran, so refused attempts are not counted. ' +
+  'The text is cut to 80 characters (patterns past the cut are missed) and everything up to a `.trees/<id>/` path is stripped, ' +
+  'so a command using an absolute worktree path can lose the command itself. Matches inside echo / grep strings can be false positives.';
 
 export function agenticFromInput(input: AgenticInput, opts: AgenticOptions): AgenticMetrics {
   const { tz, now } = opts;
@@ -257,11 +276,12 @@ export function agenticFromInput(input: AgenticInput, opts: AgenticOptions): Age
   }
   const titles = input.phaseTitles ?? new Map<string, string>();
   const crit = (x: DerivedCard) => input.subtasks.get(x.m.id) ?? { total: 0, checked: 0 };
-  const adherent = done.filter((x) => {
+  const isAdherent = (x: DerivedCard) => {
     const c = crit(x);
     const q = quality.get(x.m.id)!;
     return c.total > 0 && c.checked === c.total && q.reviewed && q.firstPass;
-  }).length;
+  };
+  const adherent = done.filter(isAdherent).length;
 
   // governance
   const tools = input.toolEvents.filter((t) => inWin(t.created_at));
@@ -323,6 +343,7 @@ export function agenticFromInput(input: AgenticInput, opts: AgenticOptions): Age
           criteria: xs.reduce((s, x) => ({ total: s.total + crit(x).total, checked: s.checked + crit(x).checked }), { total: 0, checked: 0 }),
           reviewed: qs.length,
           firstPassRate: ratio(qs.filter((q) => q.firstPass).length, qs.length),
+          adherent: xs.filter(isAdherent).length,
         };
       }),
       done: done.length,

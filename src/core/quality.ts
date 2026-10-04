@@ -116,8 +116,9 @@ function countRework(x: DerivedCard): number {
       pending = false;
       n = 0; // a fresh start
     }
-    else if (e.type === 'move' && pending && field(e.payload, 'to') === 'in_progress') {
-      n++;
+    else if (e.type === 'move') {
+      // only the move right after a fail review is rework; any other lane change clears the fail
+      if (pending && field(e.payload, 'to') === 'in_progress') n++;
       pending = false;
     }
   }

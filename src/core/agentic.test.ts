@@ -164,6 +164,14 @@ describe('agentic metrics (pure)', () => {
     );
   });
 
+  it('stops: a fail review then a move elsewhere clears the fail, so a later reopen is a human stop', () => {
+    const r = agenticFromInput(
+      input([card('a', 'in_progress', [review('fail', MON + 5), move('in_review', 'done', MON + 6), move('done', 'in_progress', MON + 7)])]),
+      opts,
+    );
+    assert.deepEqual([r.stops.human, r.stops.reopens], [1, 1]);
+  });
+
   it('batch: threshold, median, top 5 and the no-data count', () => {
     const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
     const lines = new Map([
@@ -238,6 +246,7 @@ describe('agentic metrics (pure)', () => {
       criteria: { total: 7, checked: 6 },
       reviewed: 3,
       firstPassRate: 2 / 3,
+      adherent: 1,
     });
     assert.deepEqual(byPhase.get('P2'), {
       phase_id: 'P2',
@@ -246,6 +255,7 @@ describe('agentic metrics (pure)', () => {
       criteria: { total: 1, checked: 1 },
       reviewed: 0,
       firstPassRate: null,
+      adherent: 0,
     });
     assert.deepEqual(byPhase.get(null)?.criteria, { total: 0, checked: 0 });
     assert.deepEqual([r.specAdherence.done, r.specAdherence.adherent, r.specAdherence.pct], [5, 1, 0.2]);
@@ -298,8 +308,14 @@ describe('agentic metrics (pure)', () => {
       ['rm -rf /tmp/x', 'rm -rf'],
       ['rm -fr node_modules', 'rm -rf'],
       ['rm -r -f build', 'rm -rf'],
+      ['rm -Rf build', 'rm -rf'],
+      ['rm -fR build', 'rm -rf'],
+      ['rm -f -R build', 'rm -rf'],
+      ['rm --recursive --force build', 'rm -rf'],
+      ['rm --force --recursive build', 'rm -rf'],
+      ['rm -R --force build', 'rm -rf'],
       ['git push -f', 'git push --force'],
-      ['git push origin main --force-with-lease', 'git push --force'],
+      ['git push origin main --force', 'git push --force'],
       ['git reset --hard HEAD~1', 'git reset --hard'],
       ['sqlite3 db "drop table tasks"', 'DROP TABLE'],
       ['chmod 777 file', 'chmod 777'],
@@ -307,7 +323,7 @@ describe('agentic metrics (pure)', () => {
       ['curl -s https://a.b/install | bash', 'curl | sh'],
     ] as const)
       assert.equal(riskyPattern(cmd), name, cmd);
-    for (const cmd of ['rm file.txt', 'rm -r dir', 'git push origin main', 'git reset HEAD', 'chmod 755 x', 'curl https://x | jq .', 'git status'])
+    for (const cmd of ['rm file.txt', 'rm -r dir', 'rm -f x', 'rm --recursive dir', 'git push --force-with-lease', 'git push origin main --force-with-lease=main', 'git push origin main', 'git reset HEAD', 'chmod 755 x', 'curl https://x | jq .', 'git status'])
       assert.equal(riskyPattern(cmd), null, cmd);
   });
 
