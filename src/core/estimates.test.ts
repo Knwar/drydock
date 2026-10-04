@@ -15,7 +15,7 @@ const END = T0 + 7 * 24 * HOUR;
 let seq = 0;
 const ev = (type: string, at: number, payload: Record<string, unknown>): MetricsEvent => ({ id: ++seq, type, payload: JSON.stringify(payload), created_at: at });
 /** Queued at `start`, done `hours` later. */
-const card = (id: string, start: number, hours: number) => ({
+const card = (id: string, start: number, hours: number, agent: string | null = null) => ({
   card: {
     id,
     project_id: 'p',
@@ -23,7 +23,7 @@ const card = (id: string, start: number, hours: number) => ({
     title: id.toUpperCase(),
     lane: 'done',
     tag: null,
-    assigned_agent: null,
+    assigned_agent: agent,
     blocked_at: null,
     blocked_reason: null,
     review_rounds: 0,
@@ -70,7 +70,15 @@ describe('estimatesFrom', () => {
     );
     assert.equal(r.done, 5);
     assert.deepEqual(r.coverage, { estimated: 4, pct: 0.8 });
-    assert.deepEqual(r.hourlyRate, { cards: 3, noSpend: 1, estimateHours: 16, cost: 4, hoursPerDollar: 4, dollarsPerHour: 0.25 });
+    assert.deepEqual(r.hourlyRate, {
+      cards: 3,
+      noSpend: 1,
+      estimateHours: 16,
+      cost: 4,
+      hoursPerDollar: 4,
+      dollarsPerHour: 0.25,
+      byAgent: [{ agent: null, cards: 3, estimateHours: 16, cost: 4, hoursPerDollar: 4 }],
+    });
     assert.deepEqual(
       r.perception.cards.map((p) => [p.id, p.estimateHours, p.cycleHours, p.cost, p.ratio]),
       [
@@ -91,12 +99,43 @@ describe('estimatesFrom', () => {
       range: { from: T0, to: END, tz: 'UTC' },
       done: 0,
       coverage: { estimated: 0, pct: null },
-      hourlyRate: { cards: 0, noSpend: 0, estimateHours: 0, cost: 0, hoursPerDollar: null, dollarsPerHour: null },
+      hourlyRate: { cards: 0, noSpend: 0, estimateHours: 0, cost: 0, hoursPerDollar: null, dollarsPerHour: null, byAgent: [] },
       perception: { cards: [], medianRatio: null, topMisses: [] },
     });
     // done cards but none estimated
     const none = estimatesFrom(deriveCards([card('a', T0, 1)], END), new Map(), new Map([['a', 3]]), opts);
     assert.deepEqual([none.done, none.coverage.pct, none.hourlyRate.hoursPerDollar, none.perception.medianRatio], [1, 0, null, null]);
+  });
+
+  it('byAgent: the rate per assigned agent over cards with spend, most hours first', () => {
+    const ds = deriveCards(
+      [card('a', T0, 4, 'Ada'), card('b', T0, 2, 'Bram'), card('c', T0, 6, 'Ada'), card('d', T0, 3, 'Bram'), card('e', T0, 1)],
+      END,
+    );
+    const r = estimatesFrom(
+      ds,
+      new Map([
+        ['a', 2],
+        ['b', 8],
+        ['c', 6],
+        ['d', 5], // no spend: left out, as in the overall rate
+        ['e', 1],
+      ]),
+      new Map([
+        ['a', 1],
+        ['b', 2],
+        ['c', 3],
+        ['e', 0.5],
+      ]),
+      opts,
+    );
+    assert.deepEqual(r.hourlyRate.byAgent, [
+      { agent: 'Ada', cards: 2, estimateHours: 8, cost: 4, hoursPerDollar: 2 },
+      { agent: 'Bram', cards: 1, estimateHours: 8, cost: 2, hoursPerDollar: 4 },
+      { agent: null, cards: 1, estimateHours: 1, cost: 0.5, hoursPerDollar: 2 },
+    ]);
+    // the per-agent parts add up to the overall rate's basis
+    assert.equal(r.hourlyRate.byAgent.reduce((s, a) => s + a.cards, 0), r.hourlyRate.cards);
   });
 
   it('a zero cycle time has no ratio and is not a miss', () => {

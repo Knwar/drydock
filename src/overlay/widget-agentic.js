@@ -14,7 +14,8 @@
 const AG_ICONS = { ok: '✓', warn: '!', bad: '✕', none: '–' };
 const AG_DEFAULT_BATCH = 200;
 const AG_MAX_BATCH = 100_000;
-const AG_WIDGETS = ['autonomy-index', 'agent-stops', 'batch-size', 'spec-adherence', 'governance-posture'];
+// every widget with the "Experimental" head note (agExpNote): these five + the agentic report's three
+const AG_WIDGETS = ['autonomy-index', 'agent-stops', 'batch-size', 'spec-adherence', 'governance-posture', 'steering-pack', 'agent-hourly-rate', 'perception-gap'];
 
 // Home's filters (the widget's ctx.filters: scope / phase / tag / agent / workType / from / to as epoch ms).
 function agFilters(ctx) {
