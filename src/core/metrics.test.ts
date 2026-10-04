@@ -33,6 +33,7 @@ import {
   parseTime,
   percentiles,
   sortEvents,
+  stageBreakdown,
   startOfDay,
   summaryMetrics,
   type MetricsCard,
@@ -507,6 +508,33 @@ describe('aggregations', () => {
     assert.deepEqual(percentiles([7]), { p50: 7, p85: 7, p95: 7, count: 1 });
     assert.deepEqual(percentiles([20, 10]), { p50: 10, p85: 20, p95: 20, count: 2 });
     assert.deepEqual(percentiles([]), { p50: null, p85: null, p95: null, count: 0 });
+  });
+
+  it('stageBreakdown: p50 / p85 per stage from timeInLaneMs + blockedMs; empty is null', () => {
+    const H = 3_600_000;
+    // card n: queued n h, in_progress 2n h (blocked n h inside it), in_review 3n h
+    const ms = [1, 2, 3, 4].map((n) => {
+      const t1 = T0 + n * H;
+      const t2 = t1 + 2 * n * H;
+      const t3 = t2 + 3 * n * H;
+      const h = hist({ id: `c${n}`, lane: 'done' }, [
+        ev('create', T0),
+        move('backlog', 'queued', T0),
+        move('queued', 'in_progress', t1),
+        ev('block', t1, { reason: 'x' }),
+        ev('unblock', t1 + n * H),
+        move('in_progress', 'in_review', t2),
+        move('in_review', 'done', t3),
+      ]);
+      return cardMetrics(h, T0 + 30 * DAY);
+    });
+    // nearest rank over 4 values: p50 = 2nd, p85 = 4th
+    assert.deepEqual(stageBreakdown(ms), {
+      p50: { queued: 2 * H, in_progress: 4 * H, in_review: 6 * H, blocked: 2 * H },
+      p85: { queued: 4 * H, in_progress: 8 * H, in_review: 12 * H, blocked: 4 * H },
+    });
+    const none = { queued: null, in_progress: null, in_review: null, blocked: null };
+    assert.deepEqual(stageBreakdown([]), { p50: none, p85: none });
   });
 
   it('ISO weeks, including year boundaries', () => {

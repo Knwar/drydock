@@ -228,6 +228,34 @@ body:not(.de-editing) .dw-slot.dw-slot-vacant { visibility: hidden; }
 }
 body.reduce-motion .dw-skel-bar { animation: none; }
 
+/* shared delta chip (dwDeltaChip): the agent panel's / KPI tiles' convention */
+.dw-delta {
+  --chip: var(--dim);
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  max-width: 100%;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.dw-d-chg {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  white-space: nowrap;
+  color: var(--chip);
+  background: color-mix(in srgb, var(--chip) 11%, transparent);
+}
+.dw-d-good { --chip: #5dd3a8; }
+.dw-d-bad { --chip: #e06c75; }
+.dw-d-flat { --chip: var(--dim); }
+.dw-d-arrow { font-size: 8.5px; }
+.dw-d-val { font-weight: 600; }
+.dw-d-vs { color: var(--dim); opacity: 0.85; white-space: nowrap; }
+
 /* below 800px: slots stack in order, each keeping its row's height */
 @media (max-width: 799px) {
   .dw-row { grid-template-columns: minmax(0, 1fr); height: auto; }

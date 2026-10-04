@@ -950,10 +950,33 @@ function loadDerived(db: DB, filter: MetricsFilter, now: number): DerivedCard[] 
   return deriveCards(loadRaw(db, { ...filter, from: undefined }), now);
 }
 
+export const STAGES = ['queued', 'in_progress', 'in_review', 'blocked'] as const;
+export type Stage = (typeof STAGES)[number];
+/** Per stage: ms (null when no card counts). */
+export type StageTimes = Record<Stage, number | null>;
+
+/**
+ * Where done cards' time went: per stage, the p50 / p85 over the cards of each card's
+ * timeInLaneMs (queued, in_progress, in_review) and blockedMs (blocked; it overlaps the
+ * lane it was blocked in). Pass the cards done in the range.
+ */
+export function stageBreakdown(done: CardMetrics[]): { p50: StageTimes; p85: StageTimes } {
+  const p50 = {} as StageTimes;
+  const p85 = {} as StageTimes;
+  for (const st of STAGES) {
+    const pc = percentiles(done.map((m) => (st === 'blocked' ? m.blockedMs : m.timeInLaneMs[st])));
+    p50[st] = pc.p50;
+    p85[st] = pc.p85;
+  }
+  return { p50, p85 };
+}
+
 /** /metrics/flow: the flow view plus its per-work-type throughput and the scope's first activity. */
 export interface FlowView extends FlowMetrics {
   /** Cards done in the range per work type ('none' = unclassified); sums to throughput.total. */
   throughputByWorkType: Record<WorkType | 'none', number>;
+  /** p50 / p85 time per stage (ms) of the cards done in the range; null with none done. */
+  stageBreakdown: { p50: StageTimes; p85: StageTimes };
   /** Earliest card create or done event in the filtered scope (from / to ignored); null with no cards. */
   firstActivityAt: number | null;
 }
@@ -963,8 +986,14 @@ export function flowMetrics(db: DB, filter: MetricsFilter, opts: { tz: string; n
   const flow = flowFromDerived(ds, { ...opts, from: filter.from, to: filter.to });
   const { from, to } = flow.range;
   const byType = Object.fromEntries([...WORK_TYPES, 'none'].map((t) => [t, 0])) as FlowView['throughputByWorkType'];
-  for (const x of ds) if (x.m.doneAt !== null && x.m.doneAt >= from && x.m.doneAt <= to) byType[x.h.card.work_type ?? 'none']++;
-  return { ...flow, throughputByWorkType: byType, firstActivityAt: firstActivityAt(db, filter) };
+  const done = ds.filter((x) => x.m.doneAt !== null && x.m.doneAt >= from && x.m.doneAt <= to);
+  for (const x of done) byType[x.h.card.work_type ?? 'none']++;
+  return {
+    ...flow,
+    throughputByWorkType: byType,
+    stageBreakdown: stageBreakdown(done.map((x) => x.m)),
+    firstActivityAt: firstActivityAt(db, filter),
+  };
 }
 
 /**
