@@ -17,10 +17,10 @@ async function wlJson(url) {
   return res.json();
 }
 
-// Home's /home read (pre-seeded per refresh cycle); a widget's own refresh fetches it.
+// Home's /home read (pre-seeded per refresh cycle); a widget's own refresh fetches it (live: no range).
 function wlHome(ctx) {
   return ctx.shared('home', () => {
-    const q = ctx.filters;
+    const q = fbNoRange(ctx.filters);
     return wlJson(`/home?project=${encodeURIComponent(ctx.projectId)}${q ? `&${q}` : ''}`);
   });
 }
@@ -388,7 +388,7 @@ dwRegister({
     const d = await wlHome(ctx);
     if (!d.workspace) return { summary: null };
     const ws = d.workspace.workspace.id;
-    const q = ctx.filters;
+    const q = fbNoRange(ctx.filters); // live tiles: the range never narrows them
     const summary = await ctx.shared('workspace-summary', () => wlJson(`/workspace/summary?project=${encodeURIComponent(ws)}${q ? `&${q}` : ''}`));
     return { summary };
   },

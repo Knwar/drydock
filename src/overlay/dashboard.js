@@ -591,5 +591,5 @@ function dwPrune() {
 // that /home read already landed (its dwRefresh call was skipped) hand it to the widgets.
 if (activeView === 'home') {
   dwOpen();
-  if (home.data && home.key === fbParams(hctx, true)) dwRefresh(home.data);
+  if (home.data && home.key === fbParams(hctx, true, false)) dwRefresh(home.data);
 }

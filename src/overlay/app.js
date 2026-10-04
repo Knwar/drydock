@@ -723,12 +723,14 @@ async function fbLoadMeta(project, { plans: withPlans = false } = {}) {
 // vertical Home's own board: the server's defaults); the range as epoch ms (to inclusive).
 // relative: the range as chosen ("range=2w", a custom range's days) — the key a view compares
 // its data against, so it doesn't go stale when the day rolls over and "2w" resolves anew.
-function fbParams(ctx, relative = false) {
+// withRange false: the range left out (Home's live reads: see hctx.widgetRange).
+function fbParams(ctx, relative = false, withRange = true) {
   const f = ctx.f;
   const workspaceId = ctx.workspaceId ?? ctx.meta?.workspaceId;
   const q = new URLSearchParams();
   if (f.scope && f.scope !== workspaceId && f.scope !== ctx.lockScope) q.set('scope', f.scope);
   for (const k of ['phase', 'tag', 'agent', 'workType']) if (f[k]) q.set(k, f[k]);
+  if (!withRange) return q.toString();
   if (f.range !== 'all' && relative) {
     q.set('range', f.range);
     if (f.range === 'custom') for (const k of ['from', 'to']) if (f[k]) q.set(k, f[k]);
@@ -739,11 +741,18 @@ function fbParams(ctx, relative = false) {
   }
   return q.toString();
 }
+// A widget's filters (ctx.filters) without the date range: the live reads (/home,
+// /workspace/summary) on Home show the present, whatever window the history widgets cover.
+function fbNoRange(params) {
+  const q = new URLSearchParams(params);
+  for (const k of ['range', 'from', 'to']) q.delete(k);
+  return q.toString();
+}
 // One read for the filter options and the matching cards (GET /workspace/cards): a meta
 // like fbLoadMeta's, its cards already filtered (key: the filters they match, see fbParams).
 async function fbLoadCards(project, ctx) {
-  const key = fbParams(ctx, true);
-  const params = fbParams(ctx);
+  const key = fbParams(ctx, true, !ctx.widgetRange);
+  const params = fbParams(ctx, false, !ctx.widgetRange);
   const r = await mxGet(`/workspace/cards?project=${encodeURIComponent(project)}${params ? `&${params}` : ''}`);
   const boards = fbBoards(r.boards);
   const phases = new Map(boards.map((b) => [b.id, []]));
@@ -854,7 +863,7 @@ function fbActiveLabels(ctx, fields) {
   if (f.tag) out.push(f.tag);
   if (f.agent) out.push(f.agent);
   if (f.workType) out.push(fbWorkTypeLabel(f.workType));
-  if (fields.includes('range') && f.range !== ctx.rangeDefault) out.push(f.range === 'custom' ? fbWindowLabel(ctx) : `done in ${f.range}`);
+  if (fields.includes('range') && f.range !== ctx.rangeDefault) out.push(f.range === 'custom' ? fbWindowLabel(ctx) : f.range === 'all' ? 'all time' : `done in ${f.range}`);
   return out;
 }
 
@@ -5454,9 +5463,13 @@ function dashTile(b, isMain) {
 const home = { data: null, key: '', loadSeq: 0, failed: false, sessions: new Map() };
 // status is applied in place (applyHomeStatus), never refetched; init = board socket (re)connected
 const HOME_REFETCH = ['init', 'card', 'card_removed', 'phases', 'event', 'verticals', 'autopilot'];
-// Home's filters (shared filter bar; no date range). lockScope: Home on a vertical covers that board only.
-const hctx = { f: fbReadUrl(new URLSearchParams(), 'all'), meta: null, metaSeq: 0, metaDirty: true, metaReady: null, customOpen: false, window: null, open: false, rangeDefault: 'all', lockScope: null, workspaceId: null };
-const homeFields = () => (hctx.meta && hctx.meta.boards.length > 1 && !hctx.lockScope ? ['scope', 'phase', 'tag', 'agent', 'workType'] : ['phase', 'tag', 'agent', 'workType']);
+// Home's filters (shared filter bar). lockScope: Home on a vertical covers that board only.
+// widgetRange: the date range reaches the widgets only (ctx.filters: agent history, KPIs);
+// /home and the card meta are read without it, so live state (now building, up next, agents,
+// lane counts) never narrows by it.
+const HOME_DEFAULT_RANGE = '4w';
+const hctx = { f: fbReadUrl(new URLSearchParams(), HOME_DEFAULT_RANGE), meta: null, metaSeq: 0, metaDirty: true, metaReady: null, customOpen: false, window: null, open: false, rangeDefault: HOME_DEFAULT_RANGE, widgetRange: true, lockScope: null, workspaceId: null };
+const homeFields = () => (hctx.meta && hctx.meta.boards.length > 1 && !hctx.lockScope ? ['scope', 'phase', 'tag', 'agent', 'workType', 'range'] : ['phase', 'tag', 'agent', 'workType', 'range']);
 const homeScoped = () => !!hctx.f.scope && hctx.f.scope !== fbDefaults(hctx).scope;
 const homeFiltered = () => !!(hctx.f.phase || hctx.f.tag || hctx.f.agent || hctx.f.workType || homeScoped());
 
@@ -5474,7 +5487,7 @@ tick.add(() => {
 });
 
 function openHome() {
-  hctx.f = { ...fbReadUrl(new URLSearchParams(location.search), 'all'), range: 'all', from: '', to: '', tz: MX_LOCAL_TZ };
+  hctx.f = { ...fbReadUrl(new URLSearchParams(location.search), HOME_DEFAULT_RANGE), tz: MX_LOCAL_TZ };
   if (hctx.lockScope) hctx.f.scope = hctx.lockScope;
   hctx.customOpen = false;
   hctx.open = false; // the chip starts collapsed
@@ -5498,11 +5511,11 @@ function homeReloadMeta() {
   });
 }
 async function homeMeta() {
-  if (!hctx.meta || hctx.metaDirty || hctx.meta.key !== fbParams(hctx, true)) await homeReloadMeta();
+  if (!hctx.meta || hctx.metaDirty || hctx.meta.key !== fbParams(hctx, true, false)) await homeReloadMeta();
   return hctx.meta;
 }
 function homeSetFilter(patch) {
-  hctx.f = { ...hctx.f, ...patch, range: 'all', from: '', to: '', tz: MX_LOCAL_TZ };
+  hctx.f = { ...hctx.f, ...patch, tz: MX_LOCAL_TZ };
   if (hctx.lockScope) hctx.f.scope = hctx.lockScope;
   fbSyncUrl('home', hctx);
   renderHome(); // "Loading…" until /home for these filters lands
@@ -5538,13 +5551,13 @@ async function homeDrillNow() {
   fbDrillCards(hctx, homeView, { kicker: 'NOW BUILDING', title: `${mxPlural(list.length, 'card')} in flight`, cards: list });
 }
 
-// /home under Home's filters; key: the filters it was read with.
+// /home under Home's filters, without the range (live state); key: the filters it was read with.
 async function loadHome() {
   const project = currentProject();
   if (!project) return;
   const seq = ++home.loadSeq;
-  const key = fbParams(hctx, true);
-  const params = fbParams(hctx);
+  const key = fbParams(hctx, true, false);
+  const params = fbParams(hctx, false, false);
   let data;
   try {
     const res = await fetch(`/home?project=${encodeURIComponent(project)}${params ? `&${params}` : ''}`);
