@@ -172,7 +172,7 @@ describe('builtin tab groups', () => {
       for (const t of [dl, ex, ao]) {
         const row = t.layout.sections[0].rows.find((r) => r.slots.some((s) => s.widgets.some((w) => w.type === 'tabs')))!;
         const tallest = Math.max(...tabsOf(t.layout).map((tab) => tab.rows.reduce((h, r) => h + r.height, 0)));
-        assert.ok(row.height >= Math.min(12, tallest) && row.height <= 12, `${t.name}: height ${row.height}, tallest tab ${tallest}`);
+        assert.equal(row.height, Math.min(12, tallest + 1), `${t.name}: height ${row.height}, tallest tab ${tallest}`);
       }
     });
 
