@@ -36,6 +36,18 @@ export const WIDGET_TYPES = [
   'ai-spend',
   'investment-mix',
   'budget-burn',
+  'autonomy-index',
+  'agent-stops',
+  'batch-size',
+  'spec-adherence',
+  'governance-posture',
+  'rework-cost',
+  'decision-latency-cost',
+  'cost-anomaly',
+  'usage-runway',
+  'steering-pack',
+  'agent-hourly-rate',
+  'perception-gap',
 ] as const;
 
 export const WIDGET_SIZES = ['S', 'M', 'L', 'XL'] as const;

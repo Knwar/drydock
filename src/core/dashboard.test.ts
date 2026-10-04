@@ -237,6 +237,12 @@ describe('validateLayout', () => {
     assert.deepEqual(paths({ version: 1 }), ['sections']);
   });
 
+  it('accepts the Phase F agentic types', () => {
+    const agentic = ['autonomy-index', 'agent-stops', 'batch-size', 'spec-adherence', 'governance-posture', 'rework-cost', 'decision-latency-cost', 'cost-anomaly', 'usage-runway', 'steering-pack', 'agent-hourly-rate', 'perception-gap'];
+    for (const type of agentic) assert.equal(WIDGET_TYPES.includes(type as (typeof WIDGET_TYPES)[number]), true, type);
+    assert.deepEqual(validateLayout(layoutWith(...agentic.map((type, i) => widget(`a${i}`, { type })))), []);
+  });
+
   it('unknown widget type', () => {
     assert.deepEqual(paths(layoutWith(widget('a', { type: 'bogus' }))), ['sections[0].rows[0].slots[0].widgets[0].type']);
   });

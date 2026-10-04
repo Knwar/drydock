@@ -33,12 +33,24 @@ const DE_LIB_TYPES = {
   'ai-spend': { group: 'Spend', name: 'AI spend', desc: 'Spend in the range and cost per card done.' },
   'investment-mix': { group: 'Spend', desc: 'Share of spend and of cards done by work type.' },
   'budget-burn': { group: 'Spend', desc: 'Actual against budget against projected spend, per phase.' },
+  'autonomy-index': { group: 'Agentic (experimental)', desc: 'Share of done cards that needed no human: no blocker, decision or interrupt.' },
+  'agent-stops': { group: 'Agentic (experimental)', desc: 'Agent self-stops against human interrupts, and their ratio.' },
+  'batch-size': { group: 'Agentic (experimental)', desc: 'Share of done cards over a diff-size threshold, with the median change size.' },
+  'spec-adherence': { group: 'Agentic (experimental)', desc: 'Share of done cards with every criterion checked and a first-pass review.' },
+  'governance-posture': { group: 'Agentic (experimental)', desc: 'Agent actions tied to a card, done cards linked to a decision, and risky actions attempted.' },
+  'rework-cost': { group: 'Agentic (experimental)', desc: 'Spend and share of spend on failed review rounds.' },
+  'decision-latency-cost': { group: 'Agentic (experimental)', desc: 'Idle agent time spent waiting on you, in dollars and days of slip.' },
+  'cost-anomaly': { group: 'Agentic (experimental)', desc: 'Days whose spend stands out from the usual, flagged on a daily sparkline.' },
+  'usage-runway': { group: 'Agentic (experimental)', desc: 'When the 5-hour and weekly usage limits run out, against the phase forecast.' },
+  'steering-pack': { group: 'Agentic (experimental)', desc: 'A one-page steering pre-read: RAG status, decisions, top risks and moved milestones.' },
+  'agent-hourly-rate': { group: 'Agentic (experimental)', desc: 'Human-equivalent hours delivered per dollar, from card estimates.' },
+  'perception-gap': { group: 'Agentic (experimental)', desc: 'Measured time against the human estimate: are cards faster or slower than expected.' },
   'active-agents': { group: 'People', desc: 'Who is working, reviewing or waiting on you.' },
   'send-to-agent': { group: 'Actions', desc: 'Send a prompt to an agent session from Home.' },
   tabs: { group: 'Layout', name: 'Tabs', desc: 'A tab group: each tab holds its own rows of widgets.' },
   placeholder: { group: 'Layout', name: 'Placeholder', desc: 'A note or a reserved spot for a widget to come.' },
 };
-const DE_LIB_GROUPS = ['Delivery', 'Flow', 'Quality & risk', 'Spend', 'People', 'Actions', 'Layout', 'Other'];
+const DE_LIB_GROUPS = ['Delivery', 'Flow', 'Quality & risk', 'Spend', 'Agentic (experimental)', 'People', 'Actions', 'Layout', 'Other'];
 const DE_LIB_SIZE_NAMES = { S: 'Small', M: 'Medium', L: 'Large', XL: 'Extra large' };
 const DE_LIB_SIZE_ORDER = ['S', 'M', 'L', 'XL'];
 
