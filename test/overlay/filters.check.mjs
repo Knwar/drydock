@@ -977,10 +977,14 @@ await page.unroute('**/home?*', slow);
 
 // ---- review-queue under a tag filter: only the matching cards in review ----
 {
-  const inReview = cards.filter((c) => c.lane === 'in_review');
-  const tags = [...new Set(inReview.map((c) => c.tag).filter(Boolean))];
-  // a tag that narrows the queue (some cards in review have it, some don't), else any
-  const tag = tags.find((t) => inReview.some((c) => c.tag !== t)) ?? tags[0] ?? 'ui';
+  // a tagged card in review, so the filtered list is never empty; the tag also narrows the queue
+  // whenever a card in review lacks it
+  const tag = 'ui';
+  // off the board first: its live refetches on the new card would be cut off mid-flight by the goto below
+  await page.goto('about:blank');
+  const probe = (await post('/task', { project_id: seed.ws, title: 'Review-queue probe', tag, requirements: 'spec' })).task_id;
+  await post(`/task/${probe}/move`, { lane: 'in_review' });
+  const inReview = [...cards.filter((c) => c.lane === 'in_review'), { title: 'Review-queue probe', tag }];
   const want = inReview.filter((c) => c.tag === tag);
   await page.goto(`${base}/?project=${seed.ws}&view=home&tag=${tag}`);
   await settledHome();
@@ -990,7 +994,7 @@ await page.unroute('**/home?*', slow);
   const n = await page.$eval(RQ, (f) => f.querySelector('.fw-value')?.textContent ?? '0');
   const shown = await texts(`${RQ} .fw-item-title`);
   const titles = want.map((c) => c.title);
-  ok(Number(n) === want.length && shown.every((t) => titles.includes(t)) && shown.length === Math.min(4, want.length), `review-queue, tag ${tag}: only the matching cards in review (${want.length} of ${inReview.length})`, { n, shown, want: titles });
+  ok(want.length > 0 && Number(n) === want.length && shown.every((t) => titles.includes(t)) && shown.length === Math.min(4, want.length), `review-queue, tag ${tag}: only the matching cards in review (${want.length} of ${inReview.length})`, { n, shown, want: titles });
 }
 
 // ---- Kanban: the hidden-phase toggle shows / hides the cards outside the active phase ----

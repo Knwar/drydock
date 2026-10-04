@@ -180,6 +180,11 @@ describe('schedule()', () => {
     assert.deepEqual([by.none.status, by.none.p50, by.none.remaining, by.none.p95], ['unknown', null, 3, null]);
     assert.deepEqual([by.closed.status, by.closed.p50, by.closed.done_date], ['done', null, '2026-09-15']);
     assert.equal(by.finished.done_date, null, 'only a done phase has a done date');
+    // near local midnight the day is the tz's, not UTC's: 23:30 in New York (EDT) is 03:30 UTC the next day
+    db.prepare("UPDATE task_events SET created_at = ? WHERE type = 'phase_done'").run(Date.UTC(2026, 8, 16, 3, 30));
+    const ny = (tz: string) => schedule(db, p.id, { tz, now: NOW, seed: 3 }).phases.find((x) => x.title === 'closed')!.done_date;
+    assert.equal(ny('America/New_York'), '2026-09-15');
+    assert.equal(ny('UTC'), '2026-09-16');
     assert.deepEqual([by.finished.status, by.finished.p50], ['complete', null]);
     assert.deepEqual([by.empty.status, by.empty.reason, by.empty.p50], ['unknown', 'No cards yet', null]);
     assert.deepEqual(v.milestones.map((x) => x.title), ['Beta', 'Loose']);

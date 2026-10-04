@@ -659,6 +659,7 @@ function dwWidget(w) {
   dwFadeRO?.observe(body);
   body.addEventListener('scroll', () => dwFadeCheck(body), { passive: true });
   body.addEventListener('pointerover', (e) => dwEllipsisTip(e.target, body));
+  body.addEventListener('focusin', (e) => dwEllipsisTip(e.target, body));
   // content patched in place (onStatus, a refresh paint): check again, at most once per frame
   inst.fadeMO = new MutationObserver(() => dwFadeSoon(body));
   inst.fadeMO.observe(body, { childList: true, subtree: true, characterData: true });
@@ -666,10 +667,18 @@ function dwWidget(w) {
   return inst;
 }
 
-// A text cut short with an ellipsis shows in full as its tooltip (measured on hover, like the title;
-// a tooltip the element or an ancestor already has is kept, after the text).
-function dwEllipsisTip(el, body) {
-  if (!(el instanceof HTMLElement) || el === body || el.children.length) return;
+// A text cut short with an ellipsis shows in full as its tooltip (measured on hover or keyboard focus,
+// like the title; a tooltip the element or an ancestor already has is kept, after the text). The
+// target may be inside the cut element (a label with child spans): the nearest ellipsizing one counts.
+function dwEllipsisTip(target, body) {
+  if (!(target instanceof HTMLElement) || target === body) return;
+  let el = target;
+  while (el && el !== body && getComputedStyle(el).textOverflow !== 'ellipsis') el = el.parentElement;
+  if (el && el !== body) return dwEllipsisTipOn(el, body);
+  // focus lands on a control (a button): every cut text inside it
+  for (const x of target.querySelectorAll('*')) if (getComputedStyle(x).textOverflow === 'ellipsis') dwEllipsisTipOn(x, body);
+}
+function dwEllipsisTipOn(el, body) {
   if (el.title && !el.dataset.dwTip) return; // its own tooltip
   const cut = el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow === 'ellipsis';
   if (!cut) {
