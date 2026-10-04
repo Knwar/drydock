@@ -9,6 +9,7 @@ import {
   costPerAgentHour,
   reworkCost,
   roundOfRun,
+  unionWaitMs,
   slipDays,
   usageRunway,
   type CostRun,
@@ -96,6 +97,30 @@ describe('costPerAgentHour', () => {
     );
     assert.equal(costPerAgentHour([run('a', T0, 4, { agent: 'x' }), run('a', T0, 8, { agent: 'y' })]), 6, 'even count: the mean of the middle two');
     assert.equal(costPerAgentHour([]), null);
+    // a run without a recorded duration counts in neither the spend nor the hours
+    assert.equal(costPerAgentHour([run('a', T0, 6, { agent: 'x', ms: 2 * HOUR }), run('a', T0, 100, { agent: 'x', ms: 0 })]), 3);
+    assert.equal(costPerAgentHour([run('a', T0, 100, { agent: 'x', ms: 0 })]), null);
+  });
+});
+
+describe('unionWaitMs', () => {
+  it('overlapping intervals on a board count once; boards add up; clipped to the window, open ones run to now', () => {
+    const win = { from: T0, to: T0 + 10 * HOUR, now: T0 + 8 * HOUR };
+    assert.equal(
+      unionWaitMs(
+        [
+          { project_id: 'p', from: T0 + HOUR, to: T0 + 3 * HOUR },
+          { project_id: 'p', from: T0 + 2 * HOUR, to: T0 + 4 * HOUR }, // overlaps: p = 1h..4h
+          { project_id: 'p', from: T0 + 6 * HOUR, to: null }, // open: to now (8h)
+          { project_id: 'q', from: T0 + 2 * HOUR, to: T0 + 3 * HOUR }, // another board: adds
+          { project_id: 'q', from: T0 - 5 * HOUR, to: T0 + HOUR / 2 }, // clipped at from
+          { project_id: 'q', from: T0 - 5 * HOUR, to: T0 - HOUR }, // outside
+        ],
+        win,
+      ),
+      3 * HOUR + 2 * HOUR + HOUR + HOUR / 2,
+    );
+    assert.equal(unionWaitMs([], win), 0);
   });
 });
 
@@ -164,6 +189,20 @@ describe('costAnomaly', () => {
     runs.unshift({ phase_id: 'P', cost: 1, created_at: at(9) }); // now 5
     assert.equal(costAnomaly(runs, { from: T0 + 14 * DAY, to: T0 + 15 * DAY - 1, tz: 'UTC' }).flagged.length, 1);
   });
+  it('a flat-zero baseline never flags; the first spend is searched over all history', () => {
+    // first spend 30 days before the window, then idle: 14 zero trailing days of data
+    const runs = [
+      { phase_id: 'P', cost: 1, created_at: at(-16) },
+      { phase_id: 'P', cost: 5, created_at: at(14) },
+    ];
+    const opts = { from: T0 + 14 * DAY, to: T0 + 15 * DAY - 1, tz: 'UTC' };
+    assert.equal(costAnomaly(runs, opts).flagged.length, 0, 'all-zero trailing days');
+    // one non-zero trailing day: an anomaly against a known baseline
+    runs.push({ phase_id: 'P', cost: 0.5, created_at: at(5) });
+    const r = costAnomaly(runs, opts);
+    assert.equal(r.flagged.length, 1);
+    assert.equal(r.flagged[0].spend, 5);
+  });
   it('no data', () => {
     const r = costAnomaly([], { from: T0, to: T0 + DAY - 1, tz: 'UTC' });
     assert.deepEqual([r.series, r.flagged], [[], []]);
@@ -191,14 +230,14 @@ describe('usageRunway', () => {
     assert.equal(r.fiveHour!.state, 'projected');
     assert.deepEqual([r.weeklyBeforeP85, r.gapDays], [true, 10]);
   });
-  it('weekly resets first → false; no forecast → null; no samples → unavailable', () => {
+  it('weekly resets first → null; no forecast → null; no samples → unavailable', () => {
     const slow: UsageSample[] = [
       { at: now - 2 * HOUR, five_hour: null, seven_day: { used: 10, resetsAt: now + DAY } },
       { at: now, five_hour: null, seven_day: { used: 10.1, resetsAt: now + DAY } },
     ];
     const info = ok('2026-06-11');
     const r = usageRunway(usageBurn(slow, info, { tz: 'UTC', now }), info, 'UTC', now);
-    assert.deepEqual(r.status === 'ok' && [r.weekly!.state, r.weeklyBeforeP85, r.gapDays], ['resets_first', false, null]);
+    assert.deepEqual(r.status === 'ok' && [r.weekly!.state, r.weeklyBeforeP85, r.gapDays], ['resets_first', null, null]);
     const none: ForecastInfo = { status: 'no_phase', phase: null, reason: 'the project has no active phase' };
     const n = usageRunway(usageBurn(samples, none, { tz: 'UTC', now }), none, 'UTC', now);
     assert.deepEqual(n.status === 'ok' && [n.weeklyBeforeP85, n.gapDays], [null, null]);
@@ -236,6 +275,10 @@ describe('agenticCostMetrics (DB)', () => {
     db.prepare('UPDATE card_activity SET created_at = ? WHERE id = ?').run(now - 2 * HOUR, ids[1]);
     db.prepare("UPDATE reviews SET created_at = ? WHERE verdict = 'fail'").run(now - 3 * HOUR);
     db.prepare("UPDATE reviews SET created_at = ? WHERE verdict = 'pass'").run(now - HOUR);
+    // b was blocked 2.5 hours ago (and its earlier history before that)
+    db.prepare("UPDATE task_events SET created_at = ? WHERE task_id = ? AND type != 'block'").run(now - 3 * HOUR, b.id);
+    db.prepare("UPDATE task_events SET created_at = ? WHERE task_id = ? AND type = 'block'").run(now - 2.5 * HOUR, b.id);
+    db.prepare('UPDATE tasks SET created_at = ?, blocked_at = ? WHERE id = ?').run(now - 3 * HOUR, now - 2.5 * HOUR, b.id);
     db.prepare(
       "INSERT INTO wait_intervals (project_id, agent_id, task_id, kind, started_at, ended_at, reason, closed_by) VALUES (?, 'orchestrator', ?, 'needs_you', ?, ?, 'permission', 'working')",
     ).run(p.id, a.id, now - 3 * HOUR, now - 2 * HOUR);
@@ -249,26 +292,26 @@ describe('agenticCostMetrics (DB)', () => {
     assert.deepEqual(r.reworkCost.top, [{ id: a.id, title: 'A', cost: 3, tokens: 1_000_000, failedRounds: 1 }]);
     const d = r.decisionLatencyCost;
     assert.equal(d.costPerAgentHour, 3); // $6 over 2 active hours
-    assert.ok(d.needsYouHours >= 1.5 && d.needsYouHours < 1.6, `${d.needsYouHours}`);
-    assert.ok(d.blockedHours >= 0 && d.blockedHours < 0.1);
-    assert.equal(d.idleCost, Math.round(d.humanWaitHours * 3 * 1e6) / 1e6);
+    // needs_you [-3h, -2h] + [-30m, now] = 1.5h; blocked [-2.5h, now] = 2.5h; overlapping: their union is 3h
+    assert.equal(d.needsYouHours, 1.5);
+    assert.equal(d.blockedHours, 2.5);
+    assert.equal(d.humanWaitHours, 3);
+    assert.equal(d.idleCost, 9);
     assert.equal(d.slip!.basis, 'critical_path');
     assert.deepEqual(d.slip!.cards.map((c) => c.id), [a.id, b.id]);
+    // oldest first: the blocker (2.5h) before the open needs_you (30m)
     assert.deepEqual(d.queue!.map((q) => [q.kind, q.task_id]), [
-      ['needs_you', a.id],
       ['blocker', b.id],
+      ['needs_you', a.id],
     ]);
-    assert.equal(d.queue![0].title, 'A');
+    assert.equal(d.queue![1].title, 'A');
     assert.equal(r.costAnomaly.series.length, 1);
     assert.deepEqual(r.usageRunway, { status: 'unavailable', reason: r.usageRunway!.status === 'unavailable' ? r.usageRunway!.reason : '', forecast: r.usageRunway!.forecast });
     assert.equal(r.usageRunway!.forecast?.phase?.id, phase.id);
 
-    // a usage sample is picked up from usage_samples
-    db.prepare('INSERT INTO usage_samples (at, data) VALUES (?, ?)').run(
-      now,
-      JSON.stringify({ at: now, five_hour: { used: 40, resetsAt: now + HOUR }, seven_day: { used: 30, resetsAt: now + 3 * DAY } }),
-    );
-    const live = agenticCostMetrics(db, { projectIds: [p.id], from, to: now }, { tz: 'UTC', now, project: p.id });
+    // the daemon's usage samples feed the runway
+    const samples: UsageSample[] = [{ at: now, five_hour: { used: 40, resetsAt: now + HOUR }, seven_day: { used: 30, resetsAt: now + 3 * DAY } }];
+    const live = agenticCostMetrics(db, { projectIds: [p.id], from, to: now }, { tz: 'UTC', now, project: p.id, samples });
     assert.equal(live.usageRunway!.status, 'ok');
 
     const prev = agenticCostMetrics(db, { projectIds: [p.id], from, to: now }, { tz: 'UTC', now, project: p.id, live: false });

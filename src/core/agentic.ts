@@ -51,10 +51,10 @@ import {
 import { cardQuality } from './quality.js';
 import { getActivePhase } from './board.js';
 import { getPrices, loadCostRows, matchesCostFilter, priceRows, type CostFilter } from './cost.js';
-import { forecast } from './forecast.js';
+import { phaseForecastInfo } from './forecast.js';
 import { longestChain } from './plan-graph.js';
 import { usageBurn, type ForecastInfo, type LimitReport, type UsageBurn, type UsageSample } from './usage-burn.js';
-import { loadBlockers, waitMetrics } from './wait-time.js';
+import { computeWait, loadBlockers, loadNeedsYou } from './wait-time.js';
 
 export const DEFAULT_BATCH_LINES = 200;
 
@@ -468,15 +468,22 @@ export function agenticMetrics(db: DB, filter: MetricsFilter, opts: { tz: string
 //
 //  - reworkCost: build runs (card_activity rows, priced by cost.ts) in [from, to] that
 //    belong to a FAILED review round. Attribution rule: a run belongs to the first review
-//    of its card recorded at or after the run's created_at (the run is recorded when it
-//    ends, so it is the work that review judged; the reviewer's own run, which ends before
-//    the orchestrator records the verdict, lands in the same round). Runs after the card's
-//    last review belong to no round yet and are never rework. Redirects don't reset this:
-//    a review is a review whichever attempt it judged.
-//  - decisionLatencyCost: human-wait hours in [from, to] (wait-time.ts: needs_you + blocker
-//    time clipped to the window; the two can overlap and are summed as is) x the median,
-//    over credited agents, of the agent's spend / its active hours (sum of card_activity.ms)
-//    in the window: "$ of idle agent time". Live (not windowed): days of slip and the queue.
+//    of its card recorded at or after the run's created_at. Runs are recorded when they end,
+//    and only builder runs are recorded (on-build-stop.js; reviewer runs leave no row), so
+//    this is the build run the review judged: the run a review failed counts as rework.
+//    Runs after the card's last review belong to no round yet and are never rework.
+//    Redirects don't reset this: a review is a review whichever attempt it judged.
+//    100% rework: a card whose every reviewed run preceded a fail (e.g. capped after two
+//    fails, or failed with its fix not yet reviewed) is all rework, and pct is 1 when every
+//    run in the window preceded a failed review.
+//  - decisionLatencyCost: human-wait hours in [from, to] x the median, over credited agents,
+//    of the agent's spend / its active hours (card_activity.ms; runs without a recorded
+//    duration are left out of both) in the window: "$ of idle agent time". Wait hours are
+//    the UNION per board of the needs_you and blocker intervals (wait-time.ts loaders),
+//    clipped to the window (open ones run to now): a blocker normally overlaps a needs_you
+//    wait, and overlapping time on a board counts once. needsYouHours / blockedHours are
+//    wait-time.ts's own totals (each on its own, so they can sum to more than the union).
+//    Live (not windowed): days of slip and the queue.
 //      - slip: blocked time (all of it, open blockers up to now) on the cards of the active
 //        phase's critical path: the longest depends_on chain among the phase's cards
 //        (plan-graph longestChain). With no chain of 2+ cards there is no critical path, and
@@ -485,12 +492,15 @@ export function agenticMetrics(db: DB, filter: MetricsFilter, opts: { tz: string
 //      - queue: needs_you sessions + open blockers in scope now, oldest first.
 //  - costAnomaly: daily spend per phase over [from - 14 days, to] (local days in tz). A day
 //    in [from, to] is flagged when spend > mean + 2 sigma of its 14 trailing days, counting
-//    only trailing days on or after the phase's first spend (idle days after that are real
-//    zeros; days before it are no data), and only with >= 5 such days. sigma: population.
-//  - usageRunway (live, no range): usage-burn.ts over the persisted usage_samples and the
-//    active phase's forecast (forecast.ts, default seed). The weekly limit runs out before
-//    p85 when its projected hit day is on or before the p85 day (usage-burn's vsForecast);
-//    gapDays = p85 day - hit day (calendar days; > 0 = runs out that many days early).
+//    only trailing days on or after the phase's first spend ever (idle days after that are
+//    real zeros; days before it are no data), only with >= 5 such days, and only when the
+//    trailing days are not all zero (so a flat-zero baseline never flags). sigma: population.
+//  - usageRunway (live, no range): usage-burn.ts over the daemon's usage samples (persisted
+//    in usage_samples) and the active phase's forecast (forecast.ts phaseForecastInfo).
+//    weeklyBeforeP85 is usage-burn's vsForecast (hit day on or before the p85 day), true when
+//    the limit is already reached, and null when unknown: no projection, no forecast, or the
+//    window resets before the hit. gapDays = p85 day - hit day (calendar days; > 0 = runs
+//    out that many days early).
 // =====================================================================================
 
 export const ANOMALY_TRAILING_DAYS = 14;
@@ -570,19 +580,56 @@ export function reworkCost(runs: CostRun[], reviewsByCard: Map<string, ReviewRec
   };
 }
 
-/** Median over credited agents of spend / active hours (agents with run time only); null with none. */
+/**
+ * Median over credited agents of spend / active hours; null with none. Runs without a recorded
+ * duration (ms = 0) are left out of both the spend and the hours.
+ */
 export function costPerAgentHour(runs: CostRun[]): number | null {
   const agents = new Map<string, { cost: number; ms: number }>();
   for (const r of runs) {
+    if (r.ms <= 0) continue;
     const a = agents.get(r.agent ?? '') ?? { cost: 0, ms: 0 };
     a.cost += r.cost;
     a.ms += r.ms;
     agents.set(r.agent ?? '', a);
   }
-  const rates = [...agents.values()].filter((a) => a.ms > 0).map((a) => a.cost / (a.ms / HOUR)).sort((a, b) => a - b);
+  const rates = [...agents.values()].map((a) => a.cost / (a.ms / HOUR)).sort((a, b) => a - b);
   if (!rates.length) return null;
   const mid = rates.length >> 1;
   return rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
+}
+
+/**
+ * Waiting time with overlaps counted once per board: the union of each board's intervals,
+ * clipped to [from, min(to, now)] (open intervals run to now).
+ */
+export function unionWaitMs(
+  intervals: { project_id: string; from: number; to: number | null }[],
+  win: { from: number; to: number; now: number },
+): number {
+  const end = Math.min(win.to, win.now);
+  const byBoard = new Map<string, [number, number][]>();
+  for (const i of intervals) {
+    const a = Math.max(i.from, win.from);
+    const b = Math.min(i.to ?? win.now, end);
+    if (b <= a) continue;
+    if (!byBoard.has(i.project_id)) byBoard.set(i.project_id, []);
+    byBoard.get(i.project_id)!.push([a, b]);
+  }
+  let total = 0;
+  for (const spans of byBoard.values()) {
+    spans.sort((x, y) => x[0] - y[0]);
+    let [cs, ce] = spans[0];
+    for (const [a, b] of spans.slice(1)) {
+      if (a <= ce) ce = Math.max(ce, b);
+      else {
+        total += ce - cs;
+        [cs, ce] = [a, b];
+      }
+    }
+    total += ce - cs;
+  }
+  return total;
 }
 
 export interface SlipCard {
@@ -650,8 +697,11 @@ export function costAnomaly(
   const days: string[] = [];
   for (let d = trailingFrom; d <= toDay; d = addDays(d, 1)) days.push(d);
   const byPhase = new Map<string | null, Map<string, number>>();
+  const firstSpend = new Map<string | null, string>(); // the phase's first spend day, over all history
   for (const r of runs) {
     const day = dayKey(r.created_at, opts.tz);
+    const f = firstSpend.get(r.phase_id);
+    if (f === undefined || day < f) firstSpend.set(r.phase_id, day);
     if (day < trailingFrom || day > toDay) continue;
     const m = byPhase.get(r.phase_id) ?? new Map<string, number>();
     m.set(day, (m.get(day) ?? 0) + r.cost);
@@ -662,13 +712,16 @@ export function costAnomaly(
   const flagged: CostAnomaly['flagged'] = [];
   for (const [phase_id, m] of byPhase) {
     const spend = days.map((d) => m.get(d) ?? 0);
-    const first = days.findIndex((d) => m.has(d));
+    const firstDay = firstSpend.get(phase_id)!;
+    const first = days.findIndex((d) => d >= firstDay);
     series.push({ phase_id, title: title(phase_id), days: days.map((date, i) => ({ date, spend: round6(spend[i]) })) });
     for (let i = ANOMALY_TRAILING_DAYS; i < days.length; i++) {
       const trailing = spend.slice(Math.max(i - ANOMALY_TRAILING_DAYS, first), i);
       if (trailing.length < ANOMALY_MIN_DAYS) continue;
       const mean = trailing.reduce((s, v) => s + v, 0) / trailing.length;
       const sigma = Math.sqrt(trailing.reduce((s, v) => s + (v - mean) ** 2, 0) / trailing.length);
+      // a flat-zero baseline (sigma 0, no spend) would flag any spend at all: not an anomaly signal
+      if (sigma === 0 && !trailing.some((v) => v > 0)) continue;
       if (spend[i] > mean + ANOMALY_SIGMAS * sigma)
         flagged.push({ date: days[i], phase_id, title: title(phase_id), spend: round6(spend[i]), mean: round6(mean), sigma: round6(sigma) });
     }
@@ -683,9 +736,9 @@ export type UsageRunway =
       fiveHour: LimitReport | null;
       weekly: LimitReport | null;
       forecast: ForecastInfo | null;
-      /** Does the weekly limit run out before the active phase's p85 finish? null = unknown (no projection / no forecast). */
+      /** Does the weekly limit run out before the active phase's p85 finish? null = unknown (no projection / no forecast / the window resets first). */
       weeklyBeforeP85: boolean | null;
-      /** p85 day - the weekly hit day, in days (> 0: runs out that many days before p85); null unless it runs out. */
+      /** p85 day - the weekly hit day, in days (> 0: runs out that many days before p85); null when weeklyBeforeP85 is. */
       gapDays: number | null;
       messages: string[];
     }
@@ -698,12 +751,13 @@ export function usageRunway(burn: UsageBurn, info: ForecastInfo | null, tz: stri
   let before: boolean | null = null;
   let gap: number | null = null;
   if (week && info?.status === 'ok') {
-    if (week.state === 'projected' || week.state === 'at_risk' || week.state === 'reached') {
-      const hitDay = dayKey(week.hitsAt ?? now, tz);
-      before = hitDay <= info.p85.date;
-      const [a, b] = [hitDay, info.p85.date].map((d) => Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)));
+    // usage-burn's own comparison (set when the limit is hit before its window resets); reached = runs out now
+    if (week.vsForecast !== null) before = week.vsForecast !== 'after_p85';
+    else if (week.state === 'reached') before = true;
+    if (before !== null) {
+      const [a, b] = [dayKey(week.hitsAt ?? now, tz), info.p85.date].map((d) => Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)));
       gap = Math.round((b - a) / 86_400_000);
-    } else if (week.state === 'resets_first' || week.state === 'not_burning') before = false;
+    }
   }
   return {
     status: 'ok',
@@ -741,15 +795,6 @@ export interface AgenticCost {
   usageRunway: UsageRunway | null;
 }
 
-/** The active phase's forecast as usage-burn wants it (forecast.ts, default seed). */
-function phaseForecastInfo(db: DB, project: string, phase: { id: string; title: string } | null, tz: string, now: number): ForecastInfo {
-  if (!phase) return { status: 'no_phase', phase: null, reason: 'the project has no active phase' };
-  const f = forecast(db, { projectId: project }, { kind: 'phase', phaseId: phase.id }, { tz, now });
-  return f.status === 'ok'
-    ? { status: 'ok', phase, p50: f.p50, p85: f.p85 }
-    : { status: 'insufficient_history', phase, reason: f.reason };
-}
-
 /**
  * Load + compute. `project` is the requested board (its active phase drives slip and the runway);
  * `live: false` skips the live parts (a compare's previous window).
@@ -757,7 +802,14 @@ function phaseForecastInfo(db: DB, project: string, phase: { id: string; title: 
 export function agenticCostMetrics(
   db: DB,
   filter: CostFilter,
-  opts: { tz: string; now: number; project: string; live?: boolean },
+  opts: {
+    tz: string;
+    now: number;
+    project: string;
+    live?: boolean;
+    /** The daemon's usage samples (loaded from usage_samples at startup, kept in step with it). */
+    samples?: UsageSample[];
+  },
 ): AgenticCost {
   const { tz, now } = opts;
   const to = filter.to ?? now;
@@ -794,8 +846,18 @@ export function agenticCostMetrics(
   }
 
   const waitFilter = { projectIds: filter.projectIds, phaseId: filter.phaseId, tag: filter.tag, agent: filter.agent, workType: filter.workType, from: filter.from, to: filter.to };
-  const wait = waitMetrics(db, waitFilter, { tz, now });
-  const waitHours = (wait.needsYou.totalMs + wait.blocked.totalMs) / HOUR;
+  const needs = loadNeedsYou(db, waitFilter);
+  const blockers = loadBlockers(db, waitFilter);
+  const wait = computeWait(needs, blockers, { tz, now, from: filter.from, to: filter.to });
+  // overlapping needs_you and blocker time on a board counts once
+  const waitHours =
+    unionWaitMs(
+      [
+        ...needs.map((n) => ({ project_id: n.project_id, from: n.started_at, to: n.ended_at })),
+        ...blockers.map((b) => ({ project_id: b.project_id, from: b.from, to: b.to })),
+      ],
+      { from: wait.range.from, to: wait.range.to, now },
+    ) / HOUR;
   const rate = costPerAgentHour(inWindow);
 
   const phaseTitles = new Map((db.prepare('SELECT id, title FROM phases').all() as { id: string; title: string }[]).map((p) => [p.id, p.title]));
@@ -846,15 +908,8 @@ export function agenticCostMetrics(
       })),
       ...wait.waiting.blockers.map((b) => ({ kind: 'blocker' as const, project_id: b.project_id, task_id: b.task_id, title: b.title, reason: b.reason, since: b.since, waitingMs: b.waitingMs })),
     ].sort((a, b) => a.since - b.since);
-    const samples = (db.prepare('SELECT data FROM usage_samples ORDER BY at').all() as { data: string }[]).flatMap((r) => {
-      try {
-        return [JSON.parse(r.data) as UsageSample];
-      } catch {
-        return [];
-      }
-    });
-    const info = phaseForecastInfo(db, opts.project, phase, tz, now);
-    runway = usageRunway(usageBurn(samples, info, { tz, now }), info, tz, now);
+    const info = phaseForecastInfo(db, opts.project, phase, { tz, now });
+    runway = usageRunway(usageBurn(opts.samples ?? [], info, { tz, now }), info, tz, now);
   }
 
   return {

@@ -748,6 +748,22 @@ function withCompare<F extends WindowedFilter, T, P>(
   return withPrevious(filter, compute, pick, { now: opts.now, compare: filter.from == null ? null : win });
 }
 
+/** The /metrics/cost filters (phase, tag, agent, from / to in tz, workType) over `project`; bad values → MetricsParamError. */
+function costFilterParam(q: URLSearchParams, project: string, tz: string): cost.CostFilter {
+  const filter: cost.CostFilter = { projectIds: [project] };
+  for (const [key, param] of [['phaseId', 'phase'], ['tag', 'tag'], ['agent', 'agent']] as const) {
+    const v = q.get(param);
+    if (v) filter[key] = v;
+  }
+  const from = q.get('from');
+  const to = q.get('to');
+  if (from) filter.from = metrics.parseTime(from, tz, 'from');
+  if (to) filter.to = metrics.parseTime(to, tz, 'to');
+  const workType = workTypeParam(q);
+  if (workType) filter.workType = workType;
+  return filter;
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -1744,17 +1760,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const tz = q.get('tz') || metrics.localTimeZone();
     if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
     try {
-      const filter: cost.CostFilter = { projectIds: [project] };
-      for (const [key, param] of [['phaseId', 'phase'], ['tag', 'tag'], ['agent', 'agent']] as const) {
-        const v = q.get(param);
-        if (v) filter[key] = v;
-      }
-      const from = q.get('from');
-      const to = q.get('to');
-      if (from) filter.from = metrics.parseTime(from, tz, 'from');
-      if (to) filter.to = metrics.parseTime(to, tz, 'to');
-      const workType = workTypeParam(q);
-      if (workType) filter.workType = workType;
+      const filter = costFilterParam(q, project, tz);
       const now = Date.now();
       return json(
         res,
@@ -1763,7 +1769,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
           q,
           filter,
           // the live parts (slip, queue, usage runway) only for the current window, not the previous one
-          (f) => agentic.agenticCostMetrics(db, f, { tz, now, project, live: f === filter }),
+          (f) => agentic.agenticCostMetrics(db, f, { tz, now, project, live: f === filter, samples: usageSamples }),
           (r) => ({
             reworkCost: { cost: r.reworkCost.cost, tokens: r.reworkCost.tokens, pct: r.reworkCost.pct },
             decisionLatencyCost: { humanWaitHours: r.decisionLatencyCost.humanWaitHours, idleCost: r.decisionLatencyCost.idleCost },
@@ -1951,17 +1957,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const tz = q.get('tz') || metrics.localTimeZone();
     if (!metrics.isValidTimeZone(tz)) return json(res, 400, { error: `invalid tz: ${tz}` });
     try {
-      const filter: cost.CostFilter = { projectIds: [project] };
-      for (const [key, param] of [['phaseId', 'phase'], ['tag', 'tag'], ['agent', 'agent']] as const) {
-        const v = q.get(param);
-        if (v) filter[key] = v;
-      }
-      const from = q.get('from');
-      const to = q.get('to');
-      if (from) filter.from = metrics.parseTime(from, tz, 'from');
-      if (to) filter.to = metrics.parseTime(to, tz, 'to');
-      const workType = workTypeParam(q);
-      if (workType) filter.workType = workType;
+      const filter = costFilterParam(q, project, tz);
       const limit = forecast.intParam(q.get('limit'), 'limit', 1, 100);
       const plans = drafts
         .listDrafts(db, project)
@@ -2009,15 +2005,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         if (phaseId && !phase) return json(res, 404, { error: 'unknown phase' });
         const boards = [project, ...board.listVerticals(db, project).map((v) => v.id)];
         if (phase && !boards.includes(phase.project_id)) return json(res, 400, { error: 'phase is not on this project' });
-        if (!phase) info = { status: 'no_phase', phase: null, reason: 'the project has no active phase' };
-        else {
-          const f = forecast.forecast(db, { projectId: project }, { kind: 'phase', phaseId: phase.id }, { tz, now, seed });
-          const p = { id: phase.id, title: phase.title };
-          info =
-            f.status === 'ok'
-              ? { status: 'ok', phase: p, p50: f.p50, p85: f.p85 }
-              : { status: 'insufficient_history', phase: p, reason: f.reason };
-        }
+        info = forecast.phaseForecastInfo(db, project, phase ?? null, { tz, now, seed });
       }
       return json(res, 200, usageBurn.usageBurn(usageSamples, info, { tz, now }));
     } catch (err) {
