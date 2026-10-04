@@ -151,7 +151,20 @@ function kpiRow(b: ReturnType<typeof builder>): DashRow {
   return b.row(2, ...KPI_METRICS.map((m) => b.slot(3, b.kpi(m, 'S'))));
 }
 
-function tabsRow(b: ReturnType<typeof builder>): DashRow {
+const PLACEHOLDER = {
+  needsYou: 'Blocked cards and open decisions arrive with the needs-you widgets',
+  delivery: 'Forecast range, milestones and scope change arrive with the delivery widgets',
+  flow: 'Cycle time, WIP and review queue arrive with the flow widgets',
+  spend: 'Cost per card and usage runway arrive with the spend widgets',
+  quality: 'First-pass rate, rework and top risks arrive with the quality widgets',
+};
+
+/**
+ * The tab group. Each tab pairs its kpi (span 6) with a placeholder for the widgets still to come.
+ * `upNext`: Needs you shows up-next beside the decisions kpi (else a placeholder) — off where
+ * up-next is already elsewhere on the template or out of focus. `delivery`: include the Delivery tab.
+ */
+function tabsRow(b: ReturnType<typeof builder>, opts: { upNext: boolean; delivery: boolean }): DashRow {
   const { row, slot, tab, kpi, placeholder, w } = b;
   return row(
     5,
@@ -159,20 +172,11 @@ function tabsRow(b: ReturnType<typeof builder>): DashRow {
       12,
       w('tabs', 'L', {
         tabs: [
-          tab('Needs you', row(4, slot(6, kpi('decisions', 'M')), slot(6, w('up-next', 'M')))),
-          tab(
-            'Delivery',
-            row(4, slot(6, kpi('schedule', 'M')), slot(6, placeholder('Forecast, milestones and scope arrive with the delivery widgets'))),
-          ),
-          tab(
-            'Flow',
-            row(4, slot(6, kpi('throughput', 'M')), slot(6, placeholder('Cycle time, WIP and review queue arrive with the flow widgets'))),
-          ),
-          tab(
-            'Spend',
-            row(4, slot(6, kpi('budget', 'M')), slot(6, placeholder('Cost per card and usage runway arrive with the spend widgets'))),
-          ),
-          tab('Quality and risk', row(4, slot(12, placeholder('First-pass rate, rework and top risks arrive with the quality widgets')))),
+          tab('Needs you', row(4, slot(6, kpi('decisions', 'M')), slot(6, opts.upNext ? w('up-next', 'M') : placeholder(PLACEHOLDER.needsYou)))),
+          ...(opts.delivery ? [tab('Delivery', row(4, slot(6, kpi('schedule', 'M')), slot(6, placeholder(PLACEHOLDER.delivery))))] : []),
+          tab('Flow', row(4, slot(6, kpi('throughput', 'M')), slot(6, placeholder(PLACEHOLDER.flow)))),
+          tab('Spend', row(4, slot(6, kpi('budget', 'M')), slot(6, placeholder(PLACEHOLDER.spend)))),
+          tab('Quality and risk', row(4, slot(12, placeholder(PLACEHOLDER.quality)))),
         ],
       }),
     ),
@@ -193,7 +197,7 @@ function deliveryLead(workspace: boolean): DashboardLayout {
     b.row(4, b.slot(6, b.w('now-building', 'M')), b.slot(6, b.w('active-agents', 'M'))),
     kpiRow(b),
     ...(workspace ? [workspaceRow(b)] : []),
-    tabsRow(b),
+    tabsRow(b, { upNext: true, delivery: true }),
     sendRow(b),
   ];
   return { version: 1, sections: [b.section('Overview', ...rows)] };
@@ -201,7 +205,7 @@ function deliveryLead(workspace: boolean): DashboardLayout {
 
 function execRollup(workspace: boolean): DashboardLayout {
   const b = builder('ex');
-  const rows = [kpiRow(b), ...(workspace ? [workspaceRow(b)] : []), tabsRow(b)];
+  const rows = [kpiRow(b), ...(workspace ? [workspaceRow(b)] : []), tabsRow(b, { upNext: false, delivery: true })];
   return { version: 1, sections: [b.section('Overview', ...rows)] };
 }
 
@@ -212,7 +216,11 @@ function agentOps(): DashboardLayout {
     b.row(4, b.slot(12, b.w('up-next', 'M'))),
     sendRow(b),
   ];
-  return { version: 1, sections: [b.section('Overview', ...rows)] };
+  const overview = b.section('Overview', ...rows);
+  // Tabs built last so the existing ao- ids keep their numbers; placed before send-to-agent.
+  // Agent-focused: up-next already has its own row; schedule is a delivery-lead concern.
+  overview.rows.splice(2, 0, tabsRow(b, { upNext: false, delivery: false }));
+  return { version: 1, sections: [overview] };
 }
 
 /** The three builtin templates for a board type, default (Delivery lead) first. */

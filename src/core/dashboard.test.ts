@@ -78,6 +78,84 @@ describe('builtin templates', () => {
   });
 });
 
+describe('builtin tab groups', () => {
+  type Tab = { id: string; title: string; rows: DashboardLayout['sections'][0]['rows'] };
+  const tabsOf = (l: DashboardLayout) =>
+    l.sections[0].rows.flatMap((r) => r.slots.flatMap((s) => s.widgets)).find((w) => w.type === 'tabs')!.params.tabs as Tab[];
+  /** title → each slot as "type[:metric]/span" */
+  const shape = (l: DashboardLayout) =>
+    Object.fromEntries(
+      tabsOf(l).map((t) => [
+        t.title,
+        t.rows.flatMap((r) => r.slots.map((s) => `${s.widgets.map((w) => (w.type === 'kpi' ? `kpi:${w.params.metric}` : w.type)).join(',')}/${s.span}`)),
+      ]),
+    );
+  const placeholderTexts = (l: DashboardLayout) =>
+    tabsOf(l).flatMap((t) => t.rows.flatMap((r) => r.slots.flatMap((s) => s.widgets.filter((w) => w.type === 'placeholder').map((w) => w.params.text as string))));
+
+  for (const workspace of [false, true]) {
+    const [dl, ex, ao] = builtinTemplates(workspace);
+    const v = workspace ? 'workspace' : 'solo';
+
+    it(`Delivery lead (${v}): each tab pairs its kpi with up-next or a placeholder`, () => {
+      assert.deepEqual(shape(dl.layout), {
+        'Needs you': ['kpi:decisions/6', 'up-next/6'],
+        Delivery: ['kpi:schedule/6', 'placeholder/6'],
+        Flow: ['kpi:throughput/6', 'placeholder/6'],
+        Spend: ['kpi:budget/6', 'placeholder/6'],
+        'Quality and risk': ['placeholder/12'],
+      });
+      const top = dl.layout.sections[0].rows[0].slots.flatMap((s) => s.widgets.map((w) => w.type));
+      const inTabs = tabsOf(dl.layout).flatMap((t) => t.rows.flatMap((r) => r.slots.flatMap((s) => s.widgets.map((w) => w.type))));
+      assert.deepEqual(top.filter((t) => inTabs.includes(t)), []);
+      assert.deepEqual(placeholderTexts(dl.layout), [
+        'Forecast range, milestones and scope change arrive with the delivery widgets',
+        'Cycle time, WIP and review queue arrive with the flow widgets',
+        'Cost per card and usage runway arrive with the spend widgets',
+        'First-pass rate, rework and top risks arrive with the quality widgets',
+      ]);
+    });
+
+    it(`Exec roll-up (${v}): Needs you has no up-next`, () => {
+      assert.deepEqual(shape(ex.layout), {
+        'Needs you': ['kpi:decisions/6', 'placeholder/6'],
+        Delivery: ['kpi:schedule/6', 'placeholder/6'],
+        Flow: ['kpi:throughput/6', 'placeholder/6'],
+        Spend: ['kpi:budget/6', 'placeholder/6'],
+        'Quality and risk': ['placeholder/12'],
+      });
+    });
+
+    it(`Agent ops (${v}): agent-focused tabs before send-to-agent, up-next not repeated`, () => {
+      assert.deepEqual(shape(ao.layout), {
+        'Needs you': ['kpi:decisions/6', 'placeholder/6'],
+        Flow: ['kpi:throughput/6', 'placeholder/6'],
+        Spend: ['kpi:budget/6', 'placeholder/6'],
+        'Quality and risk': ['placeholder/12'],
+      });
+      assert.deepEqual(
+        ao.layout.sections[0].rows.map((r) => r.slots[0].widgets[0].type),
+        ['active-agents', 'up-next', 'tabs', 'send-to-agent'],
+      );
+    });
+
+    it(`every placeholder (${v}) says what it arrives with`, () => {
+      for (const t of [dl, ex, ao])
+        for (const text of placeholderTexts(t.layout)) assert.match(text, / arrive with the [a-z-]+ widgets$/, `${t.name}: ${text}`);
+    });
+  }
+
+  it('existing ids keep their numbers', () => {
+    const [dl, , ao] = builtinTemplates(false);
+    assert.deepEqual(
+      ao.layout.sections[0].rows.map((r) => r.id),
+      ['ao-row5', 'ao-row8', 'ao-row37', 'ao-row11'],
+    );
+    assert.equal(ao.layout.sections[0].id, 'ao-sec12');
+    assert.equal(tabsOf(dl.layout)[0].rows[0].slots[1].widgets[0].id, 'dl-w17');
+  });
+});
+
 describe('validateLayout', () => {
   it('accepts a minimal valid layout', () => {
     assert.deepEqual(validateLayout(layoutWith(widget('a'))), []);
