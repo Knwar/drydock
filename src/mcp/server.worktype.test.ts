@@ -79,6 +79,26 @@ describe('MCP work_type + schedule p95', () => {
     assert.match(badUpdate.content[0].text, /work_type/);
     assert.equal(await workType(id), null, 'a rejected update changes nothing');
 
+    // estimate_hours: create, update, clear; zod rejects out-of-range values
+    const estimate = async (tid: string) =>
+      ((await (await fetch(`${daemon.base}/task/${tid}`)).json()) as { estimate_hours: number | null }).estimate_hours;
+    const est = (await ok('create_task', { project_id: pid, title: 'Sized', estimate_hours: 6 })).task_id as string;
+    assert.equal(await estimate(est), 6);
+    await ok('update_task', { task_id: est, estimate_hours: 2.5 });
+    assert.equal(await estimate(est), 2.5);
+    await ok('update_task', { task_id: est, requirements: 'unrelated edit' });
+    assert.equal(await estimate(est), 2.5, 'a patch without estimate_hours leaves it alone');
+    await ok('update_task', { task_id: est, estimate_hours: null });
+    assert.equal(await estimate(est), null);
+    for (const bad of [0, -2, 1001]) {
+      const r = await call('update_task', { task_id: est, estimate_hours: bad });
+      assert.ok(r.isError, `estimate_hours ${bad}`);
+    }
+    assert.ok((await call('create_task', { project_id: pid, title: 'Bad', estimate_hours: 0 })).isError);
+    assert.equal(await estimate(est), null, 'a rejected update changes nothing');
+    for (const name of ['create_task', 'update_task'])
+      assert.match(tools.find((x) => x.name === name)?.description ?? '', /estimate_hours/, `${name} description`);
+
     // get_report json: every phase carries p95 alongside p50/p85, matching the schedule's
     const phaseId = ((await (await fetch(`${daemon.base}/phase`, { method: 'POST', body: JSON.stringify({ project_id: pid, title: 'P1' }) })).json()) as {
       phase_id: string;

@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   blocked_at     INTEGER,                 -- epoch ms a builder raised a blocker, or null (not blocked)
   blocked_reason TEXT,                    -- the decision/question the blocker needs, or null
   work_type      TEXT CHECK (work_type IN ('feature','defect','debt','risk')),  -- null = unclassified
+  estimate_hours REAL,                    -- rough hours a human engineer would take, or null (no estimate)
   review_rounds  INTEGER NOT NULL DEFAULT 0,
   position       INTEGER NOT NULL DEFAULT 0,
   created_at     INTEGER NOT NULL,

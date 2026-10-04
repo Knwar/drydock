@@ -66,6 +66,15 @@ function assertWorkType(v: unknown): asserts v is WorkType | null | undefined {
     throw new Error(`invalid work_type: ${String(v)} (expected ${WORK_TYPES.join(', ')} or null)`);
 }
 
+/** Most hours a card estimate may be. */
+export const MAX_ESTIMATE_HOURS = 1000;
+
+/** A card's human-effort estimate: a number in (0, MAX_ESTIMATE_HOURS], or null/undefined (none). */
+function assertEstimate(v: unknown): asserts v is number | null | undefined {
+  if (v != null && (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > MAX_ESTIMATE_HOURS))
+    throw new Error(`invalid estimate_hours: ${String(v)} (expected a number > 0 and <= ${MAX_ESTIMATE_HOURS}, or null)`);
+}
+
 /** Log a card's phase change as a phase_change {from, to} event; a no-op logs nothing.
  *  Callers that write tasks.phase_id themselves (e.g. plan commits) log through this. */
 export function logPhaseChange(db: DB, projectId: string, taskId: string, from: string | null, to: string | null): void {
@@ -674,9 +683,17 @@ export function createTask(
   db: DB,
   projectId: string,
   title: string,
-  opts: { tag?: string; requirements?: string; depends_on?: string[]; phase_id?: string; work_type?: WorkType | null } = {},
+  opts: {
+    tag?: string;
+    requirements?: string;
+    depends_on?: string[];
+    phase_id?: string;
+    work_type?: WorkType | null;
+    estimate_hours?: number | null;
+  } = {},
 ): Task {
   assertWorkType(opts.work_type);
+  assertEstimate(opts.estimate_hours);
   const ts = now();
   const max = db
     .prepare('SELECT MAX(position) AS max FROM tasks WHERE project_id = ?')
@@ -698,14 +715,15 @@ export function createTask(
     blocked_at: null,
     blocked_reason: null,
     work_type: opts.work_type ?? null,
+    estimate_hours: opts.estimate_hours ?? null,
     review_rounds: 0,
     position: (max.max ?? 0) + 1,
     created_at: ts,
     updated_at: ts,
   };
   db.prepare(
-    `INSERT INTO tasks (id, project_id, phase_id, title, lane, requirements, tag, depends_on, work_type, position, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO tasks (id, project_id, phase_id, title, lane, requirements, tag, depends_on, work_type, estimate_hours, position, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     task.id,
     task.project_id,
@@ -716,6 +734,7 @@ export function createTask(
     task.tag,
     task.depends_on,
     task.work_type,
+    task.estimate_hours,
     task.position,
     task.created_at,
     task.updated_at,
@@ -738,6 +757,7 @@ const UPDATABLE = [
   'branch',
   'phase_id',
   'work_type',
+  'estimate_hours',
 ] as const;
 type UpdatableField = (typeof UPDATABLE)[number];
 
@@ -749,9 +769,10 @@ type UpdatableField = (typeof UPDATABLE)[number];
 export function updateTask(
   db: DB,
   taskId: string,
-  patch: Partial<Record<UpdatableField, string | string[] | null>>,
+  patch: Partial<Record<UpdatableField, string | string[] | number | null>>,
 ): Task {
   if ('work_type' in patch) assertWorkType(patch.work_type);
+  if ('estimate_hours' in patch) assertEstimate(patch.estimate_hours);
   const before = getTask(db, taskId); // existence check
   if ('phase_id' in patch && patch.phase_id != null) {
     const ph = patch.phase_id;
@@ -762,7 +783,7 @@ export function updateTask(
       throw new Error(`invalid phase_id: phase ${ph} belongs to another board`);
   }
   const sets: string[] = [];
-  const values: (string | null)[] = [];
+  const values: (string | number | null)[] = [];
   for (const field of UPDATABLE) {
     if (!(field in patch)) continue;
     const raw = patch[field];

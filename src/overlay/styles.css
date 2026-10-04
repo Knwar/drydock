@@ -1835,6 +1835,8 @@ body.reduce-motion .home-dot { animation: none !important; }
 .cm-wt-sel:disabled { opacity: 0.6; cursor: progress; }
 .cm-wt-err { color: #e06c75; }
 .cm-wt-err:empty { display: none; }
+.cm-est-in { font: inherit; color: inherit; background: transparent; border: 0; width: 4.5em; padding: 2px 2px; }
+.cm-est-in:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
 
 /* ── agent editor dialog ── */
 .ae-backdrop { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, 0.6); }

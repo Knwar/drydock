@@ -10,9 +10,10 @@ import {
   MAX_DAYS,
   mulberry32,
   simulate,
+  stableSeed,
   throughputSamples,
 } from './forecast.js';
-import { MetricsParamError, startOfDay } from './metrics.js';
+import { dayKey, MetricsParamError, startOfDay } from './metrics.js';
 
 const DAY = 86_400_000;
 const tz = 'UTC';
@@ -222,6 +223,41 @@ describe('forecast (DB)', () => {
     const ui = forecast(db, { projectId: p.id, tag: 'ui' }, { kind: 'board' }, opts);
     assert.equal(ui.remaining, 3);
     assert.equal(ui.samples.done, 6);
+  });
+});
+
+describe('forecast default seed', () => {
+  it('is stable within a day (same seed, same numbers), changes with the day and the target', () => {
+    const { db, p, phase } = (() => {
+      const db = openDb();
+      const p = getOrCreateProject(db, '/tmp/forecast-seed', 'p');
+      const phase = createPhase(db, p.id, 'P1');
+      for (let i = 0; i < 12; i++) {
+        const t = createTask(db, p.id, `done ${i}`);
+        moveTask(db, t.id, 'done');
+        db.prepare('UPDATE tasks SET created_at = created_at - ?, updated_at = updated_at - ? WHERE id = ?').run((i + 1) * DAY, (i + 1) * DAY, t.id);
+        db.prepare('UPDATE task_events SET created_at = created_at - ? WHERE task_id = ?').run((i + 1) * DAY, t.id);
+      }
+      for (const title of ['a', 'b', 'c']) createTask(db, p.id, title, { phase_id: phase.id });
+      return { db, p, phase };
+    })();
+    const day0 = startOfDay(dayKey(Date.now(), tz), tz);
+    const now = day0 + 9 * 3_600_000;
+    const target = { kind: 'phase' as const, phaseId: phase.id };
+    const a = forecast(db, { projectId: p.id }, target, { tz, now });
+    assert.equal(a.status, 'ok');
+    assert.equal(a.status === 'ok' && a.seed, stableSeed(`${p.id}|||phase:${phase.id}`, now, tz));
+    // a refresh later the same day: same seed, same numbers
+    assert.deepEqual(forecast(db, { projectId: p.id }, target, { tz, now: day0 + 17 * 3_600_000 }), a);
+    const again = forecast(db, { projectId: p.id }, target, { tz, now });
+    assert.deepEqual(again, a);
+    const tomorrow = forecast(db, { projectId: p.id }, target, { tz, now: now + DAY });
+    assert.notEqual(tomorrow.status === 'ok' && tomorrow.seed, a.status === 'ok' && a.seed);
+    const board = forecast(db, { projectId: p.id }, { kind: 'board' }, { tz, now });
+    assert.notEqual(board.status === 'ok' && board.seed, a.status === 'ok' && a.seed);
+    // an explicit seed still wins
+    assert.equal((forecast(db, { projectId: p.id }, target, { tz, now, seed: 42 }) as { seed: number }).seed, 42);
+    db.close();
   });
 });
 

@@ -27,6 +27,9 @@ async function api(method: string, path: string, body?: unknown): Promise<ToolRe
 const server = new McpServer({ name: 'kankan', version: '0.1.0' });
 
 const WORK_TYPE = z.enum(['feature', 'defect', 'debt', 'risk']);
+const ESTIMATE = z.number().gt(0).max(1000);
+const ESTIMATE_GUIDE =
+  ' estimate_hours: rough hours a human engineer would take (> 0, <= 1000), e.g. S ~2, M ~6, L ~16.';
 const WORK_TYPE_GUIDE =
   ' work_type: feature = new user value; defect = fixing broken behaviour; debt = refactor, upgrade, tests or cleanup; risk = security, compliance or reliability.';
 
@@ -73,7 +76,8 @@ server.registerTool(
 server.registerTool(
   'create_task',
   {
-    description: 'Create a task in the backlog. Returns {task_id}. Pass phase_id to file it under a phase.' + WORK_TYPE_GUIDE,
+    description:
+      'Create a task in the backlog. Returns {task_id}. Pass phase_id to file it under a phase.' + WORK_TYPE_GUIDE + ESTIMATE_GUIDE,
     inputSchema: {
       project_id: z.string(),
       title: z.string(),
@@ -82,6 +86,7 @@ server.registerTool(
       depends_on: z.array(z.string()).optional(),
       phase_id: z.string().optional(),
       work_type: WORK_TYPE.optional(),
+      estimate_hours: ESTIMATE.optional(),
     },
   },
   (input) => api('POST', '/task', input),
@@ -91,8 +96,9 @@ server.registerTool(
   'update_task',
   {
     description:
-      'Update a task’s requirements, tag, depends_on, subtasks (acceptance criteria, replaces the whole list), or work_type (null clears it).' +
-      WORK_TYPE_GUIDE,
+      'Update a task’s requirements, tag, depends_on, subtasks (acceptance criteria, replaces the whole list), work_type or estimate_hours (null clears either).' +
+      WORK_TYPE_GUIDE +
+      ESTIMATE_GUIDE,
     inputSchema: {
       task_id: z.string(),
       requirements: z.string().optional(),
@@ -100,6 +106,7 @@ server.registerTool(
       depends_on: z.array(z.string()).optional(),
       subtasks: z.array(z.string()).optional(),
       work_type: WORK_TYPE.nullable().optional(),
+      estimate_hours: ESTIMATE.nullable().optional(),
     },
   },
   ({ task_id, ...patch }) => api('PATCH', `/task/${task_id}`, patch),

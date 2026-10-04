@@ -239,6 +239,25 @@ export type ForecastTarget =
   | { kind: 'phase'; phaseId: string }
   | { kind: 'plan'; cardIds: string[] };
 
+/** FNV-1a (32-bit) of a string: a small stable hash for seeds. */
+function fnv1a(text: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/**
+ * The default seed when none is passed: a hash of what is forecast (its key) and today's date in
+ * tz, so repeated reads on one day give the same numbers (no jitter on refresh) and the next day
+ * re-samples.
+ */
+export function stableSeed(key: string, now: number, tz: string): number {
+  return fnv1a(`${key}|${dayKey(now, tz)}`);
+}
+
 /** Load the scope, count the target's not-done cards, and forecast them. */
 export function forecast(
   db: DB,
@@ -258,7 +277,13 @@ export function forecast(
   const remaining = cards.filter((c) => c.lane !== 'done' && inTarget(c)).length;
   const doneAts = cards.flatMap((c) => (c.doneAt === null ? [] : [c.doneAt]));
   const firstAt = cards.reduce<number | null>((m, c) => (m === null || c.createdAt < m ? c.createdAt : m), null);
-  return computeForecast(doneAts, firstAt, remaining, opts);
+  const key = [
+    scope.projectId,
+    scope.tag ?? '',
+    scope.workType ?? '',
+    target.kind === 'phase' ? `phase:${target.phaseId}` : target.kind === 'plan' ? `plan:${[...target.cardIds].sort().join(',')}` : 'board',
+  ].join('|');
+  return computeForecast(doneAts, firstAt, remaining, { ...opts, seed: opts.seed ?? stableSeed(key, opts.now, opts.tz) });
 }
 
 /** A phase's forecast in the shape usage-burn compares limits against (no phase → 'no_phase'). */

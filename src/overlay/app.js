@@ -4028,6 +4028,7 @@ async function refreshCardModal() {
   const meta = [
     task.tag && `${team(task.tag).name} team`,
     { workType: task.work_type ?? '' },
+    { estimate: task.estimate_hours ?? null },
     LANE_NAME(task.lane),
     task.assigned_agent && { agent: task.assigned_agent },
     task.skill && `✦ ${task.skill}`,
@@ -4041,11 +4042,15 @@ async function refreshCardModal() {
     if (act.ms) meta.push(fmtDur(act.ms));
   }
   const metaEl = document.getElementById('card-meta');
-  const wtFocused = document.activeElement?.closest?.('.cm-wt') && metaEl.contains(document.activeElement);
+  const wtFocused = document.activeElement?.closest?.('.cm-wt-sel') && metaEl.contains(document.activeElement);
+  // a live update while the estimate is being typed keeps the draft and the caret
+  const estInput = metaEl.querySelector('.cm-est-in');
+  const estDraft = estInput && document.activeElement === estInput ? estInput.value : null;
   metaEl.replaceChildren(
     ...meta.map((m) => {
       if (typeof m === 'string') return node('span', '', m);
       if ('workType' in m) return cardWorkTypeEl(task.id, m.workType);
+      if ('estimate' in m) return cardEstimateEl(task.id, m.estimate);
       const member = teamByName.get(m.agent);
       if (!member) return node('span', '', `● ${m.agent}`);
       const chip = node('span', 'cm-agent');
@@ -4054,6 +4059,13 @@ async function refreshCardModal() {
     }),
   );
   if (wtFocused) metaEl.querySelector('.cm-wt select')?.focus(); // a live update mid-choice keeps focus
+  if (estDraft !== null) {
+    const el = metaEl.querySelector('.cm-est-in');
+    if (el) {
+      el.value = estDraft;
+      el.focus();
+    }
+  }
   const blockedBox = document.getElementById('card-blocked');
   blockedBox.classList.toggle('hidden', !task.blocked_at);
   if (task.blocked_at) {
@@ -4136,6 +4148,53 @@ function cardWorkTypeEl(id, value) {
   wrap.append(field, err);
   const pending = cardWtPending.has(id);
   cardWtPaint(wrap, pending ? cardWtPending.get(id) : value, pending, cardWtError?.id === id ? cardWtError.msg : '');
+  return wrap;
+}
+
+// The meta line's "Est. human hours": a number input (empty = no estimate) that PATCHes
+// estimate_hours on change; a bad value or a failed save shows inline next to it.
+async function cardEstimateSave(id, input, err, prev) {
+  const raw = input.value.trim();
+  const next = raw === '' ? null : Number(raw);
+  if (next !== null && !(Number.isFinite(next) && next > 0 && next <= 1000)) {
+    err.textContent = 'Enter hours > 0 and ≤ 1000, or leave it empty';
+    return;
+  }
+  if (next === prev) {
+    err.textContent = '';
+    return;
+  }
+  input.disabled = true;
+  let msg = null;
+  try {
+    const res = await fetch(`/task/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ estimate_hours: next }),
+    });
+    if (!res.ok) msg = (await res.json().catch(() => null))?.error ?? `HTTP ${res.status}`;
+  } catch {
+    msg = 'Daemon unreachable';
+  }
+  input.disabled = false;
+  err.textContent = msg ? `Couldn't save the estimate: ${msg}` : '';
+  if (msg) input.focus();
+}
+function cardEstimateEl(id, value) {
+  const wrap = node('span', 'cm-wt-wrap');
+  const field = node('label', 'cm-wt cm-est');
+  field.append(node('span', 'cm-wt-k', 'Est. human hours'));
+  const input = node('input', 'cm-est-in');
+  Object.assign(input, { type: 'number', min: '0', max: '1000', step: 'any', placeholder: '—', value: value ?? '' });
+  input.setAttribute('aria-label', 'Estimated human hours');
+  const err = node('span', 'cm-wt-err');
+  err.setAttribute('role', 'alert');
+  input.onchange = () => cardEstimateSave(id, input, err, value);
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') input.blur(); // commits through onchange
+  };
+  field.append(input);
+  wrap.append(field, err);
   return wrap;
 }
 

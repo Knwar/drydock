@@ -80,6 +80,7 @@ export interface Task {
   blocked_at: number | null; // epoch ms a builder raised a blocker, or null (not blocked)
   blocked_reason: string | null; // the decision/question the blocker needs
   work_type: WorkType | null; // what kind of work this is, or null (unclassified)
+  estimate_hours: number | null; // rough hours a human engineer would take, or null (no estimate)
   review_rounds: number;
   position: number;
   created_at: number;
