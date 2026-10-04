@@ -99,10 +99,10 @@ function kpiPrevDelta(r, label, pol, diff, cur, prev) {
   return kpiDelta({ label, pol, diff, cur, prev, has: !!r.previous && days !== null, vs: `vs prev ${days} d`, vsLong: `vs previous ${days} days` });
 }
 
-// A row under the headline holding a chip (and an optional quiet caption before it).
-function kpiDeltaRow(chip, caption) {
+// A row under the headline holding a chip (and an optional quiet caption before it; dropped at S).
+function kpiDeltaRow(chip, caption, ctx) {
   const row = node('div', 'kpi-delta-row');
-  if (caption) row.append(node('span', 'kpi-delta-cap', caption));
+  if (caption && ctx?.size !== 'S') row.append(node('span', 'kpi-delta-cap', caption));
   row.append(chip);
   return row;
 }
@@ -132,19 +132,18 @@ async function kpiScheduleLoad(ctx) {
   if (!phase) return { empty: 'No active phase to track' };
   if (!phase.target_date) return { empty: 'Set a target date on the active phase to track it' };
   const next = s.milestones.filter((m) => m.date >= s.today).sort((a, b) => a.date.localeCompare(b.date))[0] ?? null;
-  // p85 slip vs the phase's first snapshot (its baseline); null before any history
+  // p85 slip vs the phase's first snapshot (its baseline); null until there are two snapshot days
   const hist = await kpiGet(ctx, '/metrics/history', { project: f.project, phase: phase.id });
-  return { phase, next, today: s.today, slip: hist.deltas?.slipDays?.p85 ?? null };
+  const dl = hist.deltas;
+  return { phase, next, today: s.today, slip: dl && dl.from !== dl.to ? (dl.slipDays.p85 ?? null) : null };
 }
 
 function kpiScheduleRender(el, d, ctx) {
   const p = d.phase;
   const [kind, text] = KPI_SCHEDULE[p.status] ?? KPI_SCHEDULE.unknown;
-  el.append(
-    kpiMain(p.p85 ? kpiDay(p.p85) : '—', 'p85', `target ${kpiDay(p.target_date)} · ${p.title}`, () => kpiOpenMetrics('forecast'), 'Open the forecast in Metrics'),
-    kpiStatus(kind, text),
-  );
+  el.append(kpiMain(p.p85 ? kpiDay(p.p85) : '—', 'p85', `target ${kpiDay(p.target_date)} · ${p.title}`, () => kpiOpenMetrics('forecast'), 'Open the forecast in Metrics'));
   if (d.slip !== null) el.append(kpiDeltaRow(kpiSlip(d.slip)));
+  el.append(kpiStatus(kind, text));
   if (ctx.size === 'S') return;
   const det = node('div', 'kpi-detail');
   const pct = node('div', 'kpi-pcts');
@@ -211,7 +210,7 @@ function kpiBudgetRender(el, d, ctx) {
   const c = d.cost;
   el.append(
     kpiMain(mxMoney(b.actual), `of ${mxMoney(b.budget)}`, label, () => kpiOpenMetrics('overview'), 'Open cost in Metrics'),
-    kpiDeltaRow(kpiPrevDelta(c, 'Spend in range', -1, mxMoney, c.totals.cost, c.previous?.totals.cost), c.window ? `${mxMoney(c.totals.cost)} in range` : null),
+    kpiDeltaRow(kpiPrevDelta(c, 'Phase spend', -1, mxMoney, c.totals.cost, c.previous?.totals.cost), c.window ? `${mxMoney(c.totals.cost)} phase spend in range` : null, ctx),
     kpiStatus(kind, text),
   );
   if (ctx.size === 'S') return;
@@ -245,8 +244,10 @@ function kpiBudgetRender(el, d, ctx) {
 // ── decisions: "What needs a human?" ──
 async function kpiDecisionsLoad(ctx) {
   const f = kpiFilters(ctx);
-  const [att, wait] = await Promise.all([
-    kpiGet(ctx, '/attention', { project: f.project, workType: f.workType }),
+  // live (range-free) reads for the list + count; a separate ranged compare read only for the chip
+  const [att, wait, ranged] = await Promise.all([
+    kpiGet(ctx, '/attention', { project: f.project }),
+    kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType }),
     kpiGet(ctx, '/metrics/wait', { project: f.project, tz: MX_LOCAL_TZ, phase: f.phase, workType: f.workType, from: f.from, to: f.to, compare: 'previous' }),
   ]);
   const seen = new Set();
@@ -256,24 +257,24 @@ async function kpiDecisionsLoad(ctx) {
     if (it.id) seen.add(it.id);
     items.push(it);
   };
-  // the Type filter: 'none' = unclassified (also applied here, as /attention returns every type)
+  // the Type filter, applied here (/attention returns every type): 'none' = unclassified
   const typeOk = (a) => !f.workType || (f.workType === 'none' ? !a.work_type : a.work_type === f.workType);
   for (const a of att) if (a.severity === 'blocker' && (!f.phase || a.phase_id === f.phase) && typeOk(a)) add({ id: a.card_id, board: f.project, title: a.title, since: a.since });
   for (const x of wait.waiting.blockers) add({ id: x.task_id, board: x.project_id, title: x.title, since: x.since });
   for (const n of wait.waiting.needsYou) add({ id: n.task_id, board: n.project_id, title: n.reason ? `Session waiting: ${n.reason}` : 'A session is waiting on you', since: n.since });
   items.sort((a, b) => a.since - b.since); // oldest first
-  return { items, wait };
+  return { items, ranged };
 }
 
 function kpiDecisionsRender(el, d, ctx) {
   const now = Date.now();
   const n = d.items.length;
-  // decisions raised in the range (needs-you waits + blockers) vs the previous period; down is good
-  const w = d.wait;
-  const raised = (r) => (r ? r.needsYou.count + r.blocked.count : null);
+  // needs-you waits + blocker waits overlapping the range vs the previous period; down is good
+  const w = d.ranged;
+  const waits = (r) => (r ? r.needsYou.count + r.blocked.count : null);
   el.append(
     kpiMain(String(n), 'waiting on you', n ? `oldest ${mxWait(now - d.items[0].since)}` : 'no blockers, no sessions waiting'),
-    kpiDeltaRow(kpiPrevDelta(w, 'Decisions raised', -1, String, raised(w), raised(w.previous)), w.window ? `${raised(w)} raised in range` : null),
+    kpiDeltaRow(kpiPrevDelta(w, 'Waits in range', -1, String, waits(w), waits(w.previous)), w.window ? `${waits(w)} waits in range` : null, ctx),
     n ? kpiStatus('warn', 'Needs you') : kpiStatus('ok', 'All clear'),
   );
   if (ctx.size === 'S' || !n) return;
@@ -337,7 +338,7 @@ function kpiThroughputRender(el, d, ctx) {
   const last = d.windows[d.windows.length - 1];
   const prior = d.prior; // the full windows among the 4 before: now−35d … now−7d
   const avg = prior.length ? prior.reduce((s, x) => s + x, 0) / prior.length : 0;
-  const vs = prior.length ? `prior ${prior.length}-wk avg ${mxNum(Math.round(avg * 10) / 10)}` : 'no full prior week yet';
+  const vs = prior.length ? `prior ${prior.length}-wk avg ${mxNum(Math.round(avg * 10) / 10)}` : 'prior avg —';
   const main = kpiMain(String(last), 'done · last 7 days', vs, () => kpiDrillRecent(ctx, d, main), 'List the cards done in the last 7 days');
   // its own windows (not Home's range): the last 7 days vs the average of the full prior weeks; up is good
   const chip = kpiDelta({
