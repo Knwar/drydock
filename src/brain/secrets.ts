@@ -444,14 +444,14 @@ async function readValue(db: DB, row: SecretRow): Promise<string> {
 }
 
 /**
- * Read the named secrets for one use. The user has already approved the card;
- * with "confirm on this Mac" on, they also confirm with Touch ID here.
+ * Read secrets for AI Brain's own use (a server's admin login, an app the user
+ * started). Agents never reach this directly: their path is withSecrets.
  */
-export async function withSecrets<T>(db: DB, names: string[], reason: string, use: (env: Record<string, string>) => Promise<T>): Promise<T> {
+export async function readSecrets(db: DB, names: string[]): Promise<Record<string, string>> {
   const rows = names.map((n) => getSecret(db, checkName(n)) ?? (() => { throw new SecretError(`No secret named ${n}. list_secrets shows what exists.`, 'not_found'); })());
+  if (!rows.length) return {};
   const { s } = activeProvider(db);
   if (rows.some((r) => r.provider === 'bitwarden')) bwEnv(); // locked → say so before anything else
-  if (s.confirmOnMac) await confirmOnMac(reason);
   const env: Record<string, string> = {};
   try {
     for (const r of rows) env[r.name] = await readValue(db, r);
@@ -459,7 +459,19 @@ export async function withSecrets<T>(db: DB, names: string[], reason: string, us
     if (rows.some((r) => r.provider === '1password')) await opForget(s);
   }
   db.prepare(`UPDATE secrets SET used_at = ? WHERE name IN (${rows.map(() => '?').join(',')})`).run(Date.now(), ...rows.map((r) => r.name));
-  return use(env);
+  return env;
+}
+
+/**
+ * Read the named secrets for one use by an agent. The user has already
+ * approved the card; with "confirm on this Mac" on, they also confirm here.
+ */
+export async function withSecrets<T>(db: DB, names: string[], reason: string, use: (env: Record<string, string>) => Promise<T>): Promise<T> {
+  names.forEach((n) => { if (!getSecret(db, checkName(n))) throw new SecretError(`No secret named ${n}. list_secrets shows what exists.`, 'not_found'); });
+  const { s } = activeProvider(db);
+  if (names.some((n) => getSecret(db, n)!.provider === 'bitwarden')) bwEnv();
+  if (s.confirmOnMac) await confirmOnMac(reason);
+  return use(await readSecrets(db, names));
 }
 
 /** Blank out any of the values (and their common encodings) in text an agent will see. */

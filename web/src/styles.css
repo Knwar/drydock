@@ -393,3 +393,27 @@ button.chev-btn:hover { background: var(--hover); }
 .cmd-hint { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
 .cmd-foot { font-size: 11.5px; padding: 8px 14px; border-top: 1px solid var(--border); }
 .board-card.hit { box-shadow: 0 0 0 2px var(--accent); }
+
+/* Apps running on this Mac */
+.live-card { border-left: 3px solid var(--border2); }
+.live-card.live-live { border-left-color: var(--g-fg); }
+.live-card.live-crashed, .live-card.live-error { border-left-color: var(--r-fg); }
+.live-card.live-paused, .live-card.live-needs_approval { border-left-color: var(--a-fg); }
+.live-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--n-fg); flex: 0 0 10px; display: inline-block; }
+.live-dot-live { background: var(--g-fg); box-shadow: 0 0 0 4px color-mix(in srgb, var(--g-fg) 22%, transparent); animation: live-pulse 2s ease-in-out infinite; }
+.live-dot-starting, .live-dot-installing { background: var(--accent); }
+.live-dot-paused, .live-dot-needs_approval { background: var(--a-fg); }
+.live-dot-crashed, .live-dot-error { background: var(--r-fg); }
+@keyframes live-pulse { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--g-fg) 8%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .live-dot-live { animation: none; } }
+.live-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.live-link { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border2); background: var(--surface2); text-decoration: none; color: var(--text); font-size: 13px; max-width: 100%; }
+.live-link .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-link.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.live-link[aria-disabled='true'] { opacity: 0.55; }
+.live-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--text2); }
+.live-db { display: inline-flex; gap: 6px; align-items: center; }
+.live-log { max-height: 60vh; min-height: 240px; overflow: auto; font-size: 11.5px; }
+.live-count { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.live-count .live-dot { width: 8px; height: 8px; flex-basis: 8px; }
+@media (max-width: 900px) { .live-count { display: none; } }

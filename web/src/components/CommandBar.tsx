@@ -23,6 +23,7 @@ export const SETTINGS_SECTIONS = [
   ['daily', 'The Daily'],
   ['team', 'Team & permissions'],
   ['secrets', 'Secrets'],
+  ['services', 'Local services'],
   ['usage', 'Usage alerts'],
   ['checkins', 'Check-ins'],
   ['workspace', 'Workspace'],

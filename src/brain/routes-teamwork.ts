@@ -1,5 +1,6 @@
 // /api routes for project teams, memory and learnings, close-out, project
 // status, check-ins and delegation.
+import { stopApp } from './live.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { addMessage, createChannel, getConversation, listMessages, members as convMembers } from './chat.js';
@@ -174,6 +175,7 @@ on('POST', '/api/projects/:id/status', async (req, res, _u, ctx, p) => {
   const reason = status === 'closed' ? (['completed', 'cancelled'].includes(b?.reason) ? b.reason : 'completed') : null;
   setProjectStatus(db, p.id, status, reason);
   if (status === 'closed') writeProjectMemory(db, p.id);
+  if (status !== 'active') await stopApp(db, p.id); // a paused or closed project stops running on this Mac
   ctx.json(res, 200, projectStatus(db, p.id));
 });
 

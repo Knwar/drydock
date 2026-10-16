@@ -82,6 +82,9 @@ function systemPrompt(role: Role, conversationId: string): string {
     '- Need a new random secret (DB password, signing key)? save_secret with generate: you never see the value.',
     '- Need a key from another service? request_secret: the user pastes it into a card.',
     '- Need to use one? run_with_secrets runs your command with them as env vars, after the user approves and confirms on the Mac. Commit `.env.example` with names only, never `.env`.',
+    '',
+    '## Running the app on this Mac',
+    "Every runnable project needs a run recipe (save_run_recipe) so the user can start it from the project overview: services listen on $PORT at 127.0.0.1, databases come from needs (list_local_services shows the user's servers), keys from secrets. Once started it restarts by itself on each merge. Use live_status and live_logs to test the running app and to debug a crash.",
   );
   // what this member has learned from repeated mistakes (capped, strongest first)
   const learned = activeLearnings(db, role.id);

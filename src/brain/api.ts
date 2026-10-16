@@ -14,6 +14,8 @@ import './routes-personal.js';
 import './routes-teamwork.js';
 import './search.js';
 import './routes-secrets.js';
+import './routes-live.js';
+import { restoreApps, startLiveWatcher } from './live.js';
 import { startCheckins } from './checkins.js';
 import { resumeInterruptedRuns } from './runner.js';
 import { ensureSchema } from './schema.js';
@@ -28,13 +30,15 @@ export function startBrain(db: () => import('../core/db.js').DB, schedulers = tr
       ensureSchema(db());
       const n = resumeInterruptedRuns();
       if (n) console.log(`resumed ${n} interrupted agent run(s)`);
+      void restoreApps(db());
     } catch (err) {
       console.error(`resume: ${(err as Error).message}`);
     }
   }, 1500);
-  if (!schedulers) return [];
+  const watcher = startLiveWatcher();
+  if (!schedulers) return [watcher];
   void listServers();
-  return [startDailyScheduler(), startCheckins()];
+  return [startDailyScheduler(), startCheckins(), watcher];
 }
 
 export { handleApi } from './router.js';

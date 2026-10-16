@@ -504,6 +504,66 @@ server.registerTool(
   },
 );
 
+// ── running the app on this Mac ──────────────────────────────────
+
+server.registerTool(
+  'save_run_recipe',
+  {
+    description:
+      "Tell AI Brain how to run a project on this Mac (written to <project>/.ai-brain/run.json; commit it). web: services each get $PORT and must listen on 127.0.0.1; one is primary (its URL is <slug>.localhost). Other services' ports arrive as <NAME>_PORT / <NAME>_URL. needs: databases and services by type; each becomes an env var with its connection URL (a database of its own on the user's server, or Docker). secrets: names from list_secrets. install runs when lockfiles change; setup (migrations) runs on every start. app: launch builds and opens it.",
+    inputSchema: {
+      project_id: z.string(),
+      recipe: z.object({
+        kind: z.enum(['web', 'app', 'none']),
+        install: z.string().optional(),
+        setup: z.string().optional(),
+        services: z.array(z.object({ name: z.string(), command: z.string(), cwd: z.string().optional(), health: z.string().optional(), primary: z.boolean().optional() })).optional(),
+        launch: z.string().optional(),
+        needs: z.array(z.object({ type: z.enum(['postgres', 'mysql', 'mongodb', 'redis', 'rabbitmq', 's3', 'smtp', 'other']), as: z.string(), service: z.string().optional() })).optional(),
+        secrets: z.array(z.string()).optional(),
+        env: z.record(z.string(), z.string()).optional().describe('Non-secret settings only'),
+      }),
+    },
+  },
+  async ({ project_id, recipe }) => {
+    await call(`/api/projects/${project_id}/live/recipe`, { recipe });
+    return text('Saved .ai-brain/run.json. The user starts it from the project overview; after that it restarts by itself on each merge.');
+  },
+);
+
+server.registerTool(
+  'list_local_services',
+  { description: "Database and other servers the user registered on their network (no logins). A recipe's needs are matched against these, else Docker.", inputSchema: {} },
+  async () => {
+    const rows = await call('/api/local-services/names');
+    return text(rows.length ? rows.map((s: any) => `${s.name}: ${s.type} on ${s.host}${s.ok === false ? ' (last check failed)' : ''}`).join('\n') : 'None registered; needs fall back to Docker.');
+  },
+);
+
+server.registerTool(
+  'live_status',
+  { description: "Whether the project's app is running on this Mac, its URLs, services and databases.", inputSchema: { project_id: z.string() } },
+  async ({ project_id }) => text(JSON.stringify(await call(`/api/projects/${project_id}/live`), null, 2)),
+);
+
+server.registerTool(
+  'live_logs',
+  { description: "Recent output of the project's running app (secrets blanked).", inputSchema: { project_id: z.string(), service: z.string().optional(), lines: z.number().int().max(2000).optional() } },
+  async ({ project_id, service, lines }) => {
+    const q = new URLSearchParams({ ...(service ? { service } : {}), lines: String(lines ?? 200) });
+    return text((await call(`/api/projects/${project_id}/live/logs?${q}`)).log || 'No output yet.');
+  },
+);
+
+server.registerTool(
+  'live_restart',
+  { description: "Start or restart the project's app on this Mac (e.g. after fixing a crash). It uses only secrets the user already approved; if new ones are needed, the user has to press Start.", inputSchema: { project_id: z.string() } },
+  async ({ project_id }) => {
+    const r = await call(`/api/projects/${project_id}/live/start`, { by: 'agent' });
+    return text(r.status === 'needs_approval' ? `The user must approve ${r.needsApproval.join(', ')} by pressing Start on the project overview.` : `Status: ${r.status}${r.message ? ` (${r.message})` : ''}`);
+  },
+);
+
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop()!)) {
   await server.connect(new StdioServerTransport());
 }

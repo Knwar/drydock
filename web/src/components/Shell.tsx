@@ -3,6 +3,7 @@ import { useApi } from '../lib/api';
 import { go, href } from '../lib/router';
 import { STAGE_LABEL, type Conversation, type ProjectSummary } from '../lib/types';
 import { Icon, type IconName } from './Icon';
+import { LiveCount } from './LiveCard';
 
 const STAGE_TONE: Record<string, string> = { build: 't-g', design: 't-v', plan: 't-b', requirements: 't-a', create: 't-n', idea: 't-n' };
 
@@ -33,6 +34,7 @@ export function Header({ theme, toggleTheme, name, onSearch }: { theme: string; 
         <span className="search-ph">Search projects, docs, people, or run a command…</span>
         <span className="kbd">⌘K</span>
       </button>
+      <LiveCount />
       <UsageMeter />
       <button className="icon-btn" onClick={toggleTheme} aria-label={label} title={label}>
         <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={18} />

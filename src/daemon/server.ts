@@ -31,6 +31,7 @@ import { openDb } from '../core/db.js';
 import { handleApi, startBrain } from '../brain/api.js';
 import { serveApp } from '../brain/static.js';
 import { bindBus, markShuttingDown } from '../brain/bus.js';
+import { proxyHttp, proxyUpgrade, stopAllForShutdown } from '../brain/live.js';
 import { resolveDbPath } from '../brain/workspace.js';
 import { cardLines } from '../core/lines.js';
 import { cachedCodeVersion, readCodeVersion } from './code-version.js';
@@ -2591,6 +2592,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
 // ── server ──────────────────────────────────────────────────────────
 const server = createServer((req, res) => {
+  if (proxyHttp(req, res)) return; // <slug>.localhost → a project's running app
   route(req, res).catch((err: Error) =>
     json(res, err instanceof PayloadTooLargeError ? err.status : 400, { error: err.message }),
   );
@@ -2653,6 +2655,7 @@ ptyWss.on('connection', (ws, req) => {
 
 // one HTTP server, two WS endpoints: /ws (board, open) and /pty (terminal, gated).
 server.on('upgrade', (req, socket, head) => {
+  if (proxyUpgrade(req, socket, head)) return;
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
   if (url.pathname === '/ws') {
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
@@ -2888,6 +2891,7 @@ async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   markShuttingDown(); // agent runs cut off now stay recorded, to resume on the next start
+  stopAllForShutdown(); // running apps stop now and come back on the next start
   setTimeout(() => process.exit(0), SHUTDOWN_DEADLINE_MS).unref();
 
   const sessions = [...ptySessions.values()];

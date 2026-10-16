@@ -1,6 +1,7 @@
 import { when } from '../lib/time';
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { PROJECT_TABS } from '../components/CommandBar';
+import { LiveCard } from '../components/LiveCard';
 import { Diagram, Legend, type Element, type Relation } from '../components/Diagram';
 import { Modal } from '../components/Dialogs';
 import { TeamPopup, type Recommendation } from '../components/TeamPopup';
@@ -207,6 +208,7 @@ function Overview({ p, openConversation, newThread }: { p: Detail; openConversat
   ];
   return (
     <>
+      <LiveCard projectId={p.id} />
       <div className="kpis">
         {kpis.map((k) => (
           <div key={k.label} className="kpi">
