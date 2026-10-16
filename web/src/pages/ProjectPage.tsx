@@ -41,20 +41,35 @@ interface Detail {
 const refresh = (id: string) => (m: any) =>
   (['brain_project', 'requirements', 'design', 'decisions', 'conversations'].includes(m?.type) && (!m.project_id || m.project_id === id)) || ['card', 'phases', 'card_removed'].includes(m?.type);
 
+const ROLE_LABEL: Record<string, string> = { architect: 'Architect', pm: 'PM', cto: 'CTO' };
+
 function Gate({ p, openConversation }: { p: Detail; openConversation: (id: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [needs, setNeeds] = useState<string | null>(null);
   const run = async (path: string) => {
     setBusy(true);
     setError(null);
+    setNeeds(null);
     try {
-      const r = await api<{ channel?: string }>(path, { method: 'POST' });
+      const res = await fetch(path, { method: 'POST' });
+      const r = await res.json();
+      if (res.status === 409 && r.needs_role) {
+        setNeeds(r.needs_role);
+        setError(r.error);
+        return;
+      }
+      if (!res.ok) throw new Error(r.error ?? res.statusText);
       if (r?.channel) openConversation(r.channel);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
+  };
+  const addAndRun = async (path: string) => {
+    await api('/api/roles', { body: { template: needs } });
+    await run(path);
   };
   const action =
     p.stage === 'requirements'
@@ -70,11 +85,17 @@ function Gate({ p, openConversation }: { p: Detail; openConversation: (id: strin
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         <span style={{ fontWeight: 700, fontSize: 13 }}>Next gate</span>
         <span className="muted" style={{ fontSize: 12 }}>{action.hint}</span>
-        {error && <span className="error">{error}</span>}
+        {error && <span className={needs ? 'muted' : 'error'} style={needs ? { fontSize: 12, color: 'var(--a-fg)' } : undefined}>{error}</span>}
       </div>
-      <button className="btn primary" disabled={busy || action.disabled} onClick={() => run(action.path)}>
-        {busy ? 'Working…' : action.label}
-      </button>
+      {needs ? (
+        <button className="btn primary" disabled={busy} onClick={() => addAndRun(action.path)}>
+          Add {ROLE_LABEL[needs] ?? needs} and continue
+        </button>
+      ) : (
+        <button className="btn primary" disabled={busy || action.disabled} onClick={() => run(action.path)}>
+          {busy ? 'Working…' : action.label}
+        </button>
+      )}
     </div>
   );
 }

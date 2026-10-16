@@ -23,7 +23,7 @@ import {
   standingTools,
   updateMessageMeta,
 } from './chat.js';
-import { deleteRole, getRole, listRoles, saveRole } from './roles.js';
+import { addFromTemplate, deleteRole, getRole, listRoles, ROLE_TEMPLATES, saveRole } from './roles.js';
 import { HttpError, on, type ApiCtx } from './router.js';
 import { activeRuns, respond, stopRun, toolSummary } from './runner.js';
 import { currentWorkspace } from './workspace.js';
@@ -37,10 +37,20 @@ const need = <T>(v: T | undefined | null, what: string): T => {
 
 on('GET', '/api/roles', (_q, res, _u, ctx) => ctx.json(res, 200, listRoles(ctx.db())));
 
+on('GET', '/api/role-templates', (_q, res, _u, ctx) => {
+  const have = new Set(listRoles(ctx.db()).map((r) => r.id));
+  ctx.json(res, 200, ROLE_TEMPLATES.map((t) => ({ ...t, added: have.has(t.id) })));
+});
+
 on('POST', '/api/roles', async (req, res, _u, ctx) => {
   const b = await ctx.readBody(req);
-  if (!b?.name) throw new HttpError(400, 'name required');
-  const role = saveRole(ctx.db(), b);
+  if (!b?.name && !b?.template) throw new HttpError(400, 'name or template required');
+  let role;
+  try {
+    role = b.template ? addFromTemplate(ctx.db(), String(b.template)) : saveRole(ctx.db(), b);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
   ensureDms(ctx.db());
   ctx.broadcast({ type: 'roles' });
   ctx.broadcast({ type: 'conversations' });
@@ -233,3 +243,68 @@ on('POST', '/api/decisions', async (req, res, _u, ctx) => {
 });
 
 on('GET', '/api/decisions', (_q, res, url, ctx) => ctx.json(res, 200, listDecisions(ctx.db(), url.searchParams.get('project'))));
+
+// ── team proposals: the Main agent suggests, the user decides ─────
+
+on('POST', '/api/role-proposals', async (req, res, _u, ctx) => {
+  const db = ctx.db();
+  const b = await ctx.readBody(req);
+  const conversation = b?.conversation && getConversation(db, b.conversation) ? String(b.conversation) : null;
+  const template = b?.template ? ROLE_TEMPLATES.find((t) => t.id === b.template) : undefined;
+  if (b?.template && !template) throw new HttpError(400, `unknown template ${b.template}; templates: ${ROLE_TEMPLATES.map((t) => t.id).join(', ')}`);
+  const name = template?.name ?? String(b?.name ?? '').trim();
+  if (!name) throw new HttpError(400, 'name or template required');
+  if (getRole(db, template?.id ?? name.toLowerCase().replace(/[^a-z0-9]+/g, '-'))) return ctx.json(res, 200, { status: 'exists' });
+  if (!conversation) throw new HttpError(400, 'conversation required');
+  const meta = {
+    status: 'pending',
+    template: template?.id ?? null,
+    name,
+    skill: b?.skill ?? template?.skill ?? null,
+    scope: b?.scope ?? template?.scope ?? 'shared',
+    model: b?.model ?? template?.model ?? 'sonnet',
+    persona: b?.persona ?? null,
+    reason: b?.reason ?? null,
+  };
+  const m = addMessage(db, conversation, String(b?.role ?? 'main'), `Add ${name} to your team?`, 'proposal', meta);
+  ctx.broadcast({ type: 'chat', conversation, message: m });
+  ctx.json(res, 200, { status: 'proposed', message_id: m.id });
+});
+
+on('POST', '/api/role-proposals/:id', async (req, res, _u, ctx, p) => {
+  const db = ctx.db();
+  const m = need(getMessage(db, Number(p.id)), 'proposal');
+  if (m.kind !== 'proposal') throw new HttpError(400, 'not a proposal');
+  if (m.meta?.status !== 'pending') throw new HttpError(409, `already ${m.meta?.status}`);
+  const b = await ctx.readBody(req);
+  let role = null;
+  if (b?.accept) {
+    const mt = m.meta;
+    role = mt.template
+      ? addFromTemplate(db, mt.template)
+      : saveRole(db, { name: mt.name, skill: mt.skill, scope: mt.scope, model: mt.model, ...(mt.persona ? { persona: mt.persona } : {}) });
+    ensureDms(db);
+  }
+  const updated = updateMessageMeta(db, m.id, { ...m.meta, status: b?.accept ? 'added' : 'declined', role_id: role?.id ?? null });
+  ctx.broadcast({ type: 'chat_update', conversation: m.conversation_id, message: updated });
+  ctx.broadcast({ type: 'roles' });
+  ctx.broadcast({ type: 'conversations' });
+  ctx.json(res, 200, { status: updated.meta.status, role });
+});
+
+/** Everything waiting on the user, across conversations: approvals and team proposals. */
+on('GET', '/api/needs-you', (_q, res, _u, ctx) => {
+  const db = ctx.db();
+  const approvals = listPendingApprovals(db).map((a) => ({
+    id: a.id,
+    role: a.role_id,
+    tool: a.tool,
+    summary: toolSummary(a.tool, a.input),
+    conversation: a.conversation_id,
+    created_at: a.created_at,
+  }));
+  const proposals = (
+    db.prepare(`SELECT id, conversation_id, body, meta, created_at FROM messages WHERE kind = 'proposal' AND json_extract(meta, '$.status') = 'pending' ORDER BY id`).all() as any[]
+  ).map((m) => ({ message_id: m.id, conversation: m.conversation_id, title: m.body, reason: JSON.parse(m.meta).reason ?? null, created_at: m.created_at }));
+  ctx.json(res, 200, { approvals, proposals });
+});

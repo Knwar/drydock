@@ -51,7 +51,7 @@ export interface Message {
   id: number;
   conversation_id: string;
   author: string;
-  kind: 'text' | 'tool' | 'decision' | 'approval' | 'error';
+  kind: 'text' | 'tool' | 'decision' | 'approval' | 'proposal' | 'error';
   body: string;
   meta: any;
   created_at: number;

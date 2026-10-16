@@ -137,7 +137,7 @@ function TreeRows({ nodes, depth, open, toggle, current }: { nodes: TreeNode[]; 
   );
 }
 
-export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking }: { projects: ProjectSummary[]; path: string; children?: React.ReactNode; mainOn: boolean; onMain: () => void; mainWorking: boolean }) {
+export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking, onNewProject }: { projects: ProjectSummary[]; path: string; children?: React.ReactNode; mainOn: boolean; onMain: () => void; mainWorking: boolean; onNewProject: () => void }) {
   const [open, setOpen] = useState<Set<string>>(() => new Set(projects[0] ? [projects[0].id] : []));
   const toggle = (id: string) => setOpen((s) => (s.has(id) ? (s.delete(id), new Set(s)) : new Set(s.add(id))));
   return (
@@ -150,7 +150,7 @@ export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking 
       <div>
         <div className="side-label">
           <span>PROJECTS</span>
-          <button aria-label="New project" title="New project: describe it to the main agent" onClick={() => document.getElementById('chat-input')?.focus()}>
+          <button aria-label="New project" title="New project" onClick={onNewProject}>
             +
           </button>
         </div>
@@ -158,7 +158,7 @@ export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking 
           <TreeRows nodes={projects.map(projectTree)} depth={0} open={open} toggle={toggle} current={path} />
         ) : (
           <div className="muted" style={{ fontSize: 12.5, padding: '4px 10px' }}>
-            No projects yet. Describe an idea to the main agent to start one.
+            No projects yet. <button className="link-btn" style={{ color: 'var(--accent)', fontSize: 12.5 }} onClick={onNewProject}>Start one</button> or describe an idea to the Main agent.
           </div>
         )}
       </div>

@@ -29,6 +29,7 @@ export class HttpError extends Error {
   constructor(
     public status: number,
     message: string,
+    public extra: Record<string, unknown> = {},
   ) {
     super(message);
   }
@@ -46,7 +47,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       await r.handler(req, res, url, ctx, params);
     } catch (err) {
       const status = err instanceof HttpError ? err.status : 500;
-      if (!res.headersSent) ctx.json(res, status, { error: (err as Error).message });
+      if (!res.headersSent) ctx.json(res, status, { error: (err as Error).message, ...(err instanceof HttpError ? err.extra : {}) });
     }
     return true;
   }

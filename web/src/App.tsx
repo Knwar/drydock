@@ -5,6 +5,8 @@ import { useTheme } from './lib/theme';
 import type { Conversation, ProjectSummary, Role, WorkspaceInfo } from './lib/types';
 import { ChatPanel } from './components/Chat';
 import { Header, Sidebar } from './components/Shell';
+import { NewProjectDialog } from './components/Dialogs';
+import { RightRail } from './components/RightRail';
 import { TeamList } from './components/Team';
 import { Home } from './pages/Home';
 import { Onboarding } from './pages/Onboarding';
@@ -44,6 +46,9 @@ export function App() {
   const roles = useApi<Role[]>(ready ? '/api/roles' : null, (m) => m?.type === 'roles');
   const convs = useApi<Conversation[]>(ready ? '/api/conversations' : null, convEvents);
   const [convId, setConvId] = useStored('ai-brain-conversation', 'dm:main');
+  const [chatState, setChatState] = useStored('ai-brain-chat', 'open');
+  const [newProject, setNewProject] = useState(false);
+  const [draft, setDraft] = useState<string | undefined>();
 
   if (ws.error) return <main className="main"><div className="error">Can't reach the AI Brain daemon: {ws.error}</div></main>;
   if (!ws.data) return null;
@@ -54,7 +59,12 @@ export function App() {
   const current = conversations.find((c) => c.id === convId) ?? conversations.find((c) => c.id === 'dm:main') ?? null;
   const select = (id: string) => {
     setConvId(id);
+    setChatState('open');
     convs.reload();
+  };
+  const askMain = (text: string) => {
+    select('dm:main');
+    if (text) setDraft(text);
   };
 
   let page: React.ReactNode;
@@ -76,11 +86,17 @@ export function App() {
           mainOn={current?.id === 'dm:main'}
           onMain={() => select('dm:main')}
           mainWorking={Boolean(conversations.find((c) => c.id === 'dm:main')?.working)}
+          onNewProject={() => setNewProject(true)}
         >
           <TeamList conversations={conversations} roles={roles.data ?? []} current={current?.id ?? null} select={select} />
         </Sidebar>
         <main className="main">{page}</main>
-        <ChatPanel conversation={current} roles={roles.data ?? []} onSent={convs.reload} />
+        {chatState === 'open' ? (
+          <ChatPanel conversation={current} roles={roles.data ?? []} onSent={convs.reload} onClose={() => setChatState('closed')} draftText={draft} onDraftUsed={() => setDraft(undefined)} />
+        ) : (
+          <RightRail roles={roles.data ?? []} conversations={conversations} open={select} onExpand={() => setChatState('open')} />
+        )}
+        {newProject && <NewProjectDialog onClose={() => setNewProject(false)} askMain={askMain} />}
       </div>
     </div>
   );

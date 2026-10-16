@@ -37,11 +37,29 @@ describe('team chat (fake claude)', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('seeds the default roles, each with a DM', async () => {
-    const roles = await call('GET', '/api/roles');
-    assert.deepEqual(roles.map((r: any) => r.id).slice(0, 3), ['main', 'cto', 'cfo']);
+  it('starts with only the Main agent; members are added from templates, each with a DM', async () => {
+    assert.deepEqual((await call('GET', '/api/roles')).map((r: any) => r.id), ['main']);
+    const templates = await call('GET', '/api/role-templates');
+    assert.ok(templates.some((t: any) => t.id === 'architect' && !t.added));
+    for (const template of ['cto', 'cfo', 'marketing', 'qc']) await call('POST', '/api/roles', { template });
+    assert.deepEqual((await call('GET', '/api/roles')).map((r: any) => r.id), ['main', 'cto', 'cfo', 'marketing', 'qc']);
     const convs = await call('GET', '/api/conversations');
-    assert.ok(convs.some((c: any) => c.id === 'dm:main' && c.kind === 'dm'));
+    assert.ok(convs.some((c: any) => c.id === 'dm:main') && convs.some((c: any) => c.id === 'dm:cto'));
+  });
+
+  it('a team proposal becomes a card; Add creates the member, Not now does not', async () => {
+    const p1 = await call('POST', '/api/role-proposals', { role: 'main', conversation: 'dm:main', template: 'architect', reason: 'to design the system' });
+    const p2 = await call('POST', '/api/role-proposals', { role: 'main', conversation: 'dm:main', name: 'Legal advisor', skill: 'legal', persona: 'Reviews contracts.', reason: 'contracts' });
+    const { messages } = await call('GET', '/api/conversations/dm:main/messages');
+    const card = messages.find((m: any) => m.id === p1.message_id);
+    assert.equal(card.kind, 'proposal');
+    assert.equal(card.body, 'Add Architect to your team?');
+    await call('POST', `/api/role-proposals/${p1.message_id}`, { accept: true });
+    await call('POST', `/api/role-proposals/${p2.message_id}`, { accept: false });
+    const ids = (await call('GET', '/api/roles')).map((r: any) => r.id);
+    assert.ok(ids.includes('architect') && !ids.includes('legal-advisor'));
+    assert.equal((await call('POST', '/api/role-proposals', { conversation: 'dm:main', template: 'architect' })).status, 'exists');
+    await assert.rejects(call('POST', `/api/role-proposals/${p1.message_id}`, { accept: true }), /already added/);
   });
 
   it('answers a DM and resumes the same session next time', async () => {

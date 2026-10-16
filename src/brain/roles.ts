@@ -39,7 +39,9 @@ You are the user's main agent: their personal manager and the front door for new
 
 For a new idea: understand it, propose a concrete solution (what to build, for whom, the main parts), and ask whether to create a project. Only when the user agrees, call create_project. After that, help them shape the requirements: ask focused questions and keep the requirements document updated with save_requirements. Do not write code or design the system yourself at this stage; the Architect does the design once the user marks the requirements final.
 
-For everything else (their day, email, reminders, notes, other projects) act as a calm, organised personal manager.`,
+For everything else (their day, email, reminders, notes, other projects) act as a calm, organised personal manager.
+
+The user builds their own team; it starts with just you. When the conversation shows they need a specialist (for example an Architect to design a system, a PM to run the build, Marketing for a launch, a CFO for money), check the team with list_team and, if that role is missing, call propose_team_member. That shows the user an "Add to your team?" card; never add members yourself. Templates exist for: architect, pm, cto, cfo, marketing, social, qc. For anything else, propose a custom member with a name, a skill and a short persona.`,
   },
   {
     id: 'cto',
@@ -148,9 +150,32 @@ CREATE TABLE IF NOT EXISTS roles (
       `INSERT OR IGNORE INTO roles (id, name, initials, scope, persona, skill, model, tone, position, builtin, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
     );
-    DEFAULT_ROLES.forEach((r, i) => insert.run(r.id, r.name, r.initials, r.scope, r.persona, r.skill, r.model, r.tone, i, Date.now()));
+    // a clean slate: only the Main agent; everyone else is added by the user (from a template or custom)
+    const main = DEFAULT_ROLES.find((r) => r.id === 'main')!;
+    insert.run(main.id, main.name, main.initials, main.scope, main.persona, main.skill, main.model, main.tone, 0, Date.now());
   },
 );
+
+/** What each template does, in a line for the user (the persona is written for the agent). */
+const BLURBS: Record<string, string> = {
+  cto: 'Reviews architecture and technical decisions across all projects, and flags risks.',
+  cfo: 'Tracks money across projects and your personal finances: spend, budgets, bills.',
+  marketing: 'Turns projects into launch plans, positioning, campaigns and content.',
+  social: 'Plans your posting calendar and drafts posts. Never publishes without you.',
+  qc: 'Checks what was built against the requirements: tests, diffs, findings.',
+  architect: 'Designs each project as a C4 system model once requirements are final.',
+  pm: "Runs a project's build on the board: phases, cards, builders and reviewers.",
+};
+
+/** Ready-made roles the user can add to their team. */
+export const ROLE_TEMPLATES = DEFAULT_ROLES.filter((r) => r.id !== 'main').map((r) => ({ ...r, blurb: BLURBS[r.id] ?? '' }));
+
+export function addFromTemplate(db: DB, templateId: string): Role {
+  const t = ROLE_TEMPLATES.find((r) => r.id === templateId);
+  if (!t) throw new Error(`unknown template ${templateId}`);
+  const { blurb: _blurb, ...role } = t;
+  return getRole(db, t.id) ?? saveRole(db, role);
+}
 
 export function listRoles(db: DB): Role[] {
   return db.prepare('SELECT * FROM roles ORDER BY position, created_at').all() as Role[];

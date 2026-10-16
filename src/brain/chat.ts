@@ -5,7 +5,7 @@ import type { DB } from '../core/db.js';
 import { listRoles } from './roles.js';
 import { defineSchema } from './schema.js';
 
-export type MessageKind = 'text' | 'tool' | 'decision' | 'approval' | 'error';
+export type MessageKind = 'text' | 'tool' | 'decision' | 'approval' | 'proposal' | 'error';
 
 export interface Conversation {
   id: string;
@@ -122,8 +122,8 @@ export function members(db: DB, conversationId: string): string[] {
 export function listConversations(db: DB) {
   ensureDms(db);
   const rows = db.prepare('SELECT * FROM conversations ORDER BY kind, created_at').all() as Conversation[];
-  const last = db.prepare(`SELECT body, kind, author FROM messages WHERE conversation_id = ? AND kind IN ('text', 'decision', 'approval') ORDER BY id DESC LIMIT 1`);
-  const unread = db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND author != 'user' AND kind IN ('text', 'decision', 'approval') AND created_at > ?`);
+  const last = db.prepare(`SELECT body, kind, author FROM messages WHERE conversation_id = ? AND kind IN ('text', 'decision', 'approval', 'proposal') ORDER BY id DESC LIMIT 1`);
+  const unread = db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND author != 'user' AND kind IN ('text', 'decision', 'approval', 'proposal') AND created_at > ?`);
   return rows.map((c) => ({
     ...c,
     members: members(db, c.id),

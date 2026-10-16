@@ -10,6 +10,7 @@ import {
   finalizeRequirements,
   getDesign,
   listRequirements,
+  NeedsRole,
   projectRef,
   removeDesignItem,
   reopenRequirements,
@@ -30,7 +31,8 @@ const ref = (db: any, id: string) => {
     throw new HttpError(404, 'unknown project');
   }
 };
-const bad = (err: unknown) => new HttpError(400, (err as Error).message);
+const bad = (err: unknown) =>
+  err instanceof NeedsRole ? new HttpError(409, err.message, { needs_role: err.role }) : new HttpError(400, (err as Error).message);
 
 on('POST', '/api/projects', async (req, res, _u, ctx) => {
   const b = await ctx.readBody(req);
@@ -135,7 +137,11 @@ on('POST', '/api/projects/:id/design/final', async (_q, res, _u, ctx, p) => {
 on('POST', '/api/projects/:id/start', (_q, res, _u, ctx, p) => {
   ref(ctx.db(), p.id);
   if (!board.getPhases(ctx.db(), p.id).length) throw new HttpError(400, 'no phases yet: wait for the PM to propose the roadmap');
-  ctx.json(res, 200, { channel: startBuilding(ctx.db(), p.id) });
+  try {
+    ctx.json(res, 200, { channel: startBuilding(ctx.db(), p.id) });
+  } catch (err) {
+    throw bad(err);
+  }
 });
 
 // ── live agents for a project ──

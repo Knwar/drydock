@@ -55,6 +55,43 @@ function ApprovalCard({ m, role }: { m: Message; role?: Role }) {
   );
 }
 
+function ProposalCard({ m, proposer }: { m: Message; proposer?: Role }) {
+  const [busy, setBusy] = useState(false);
+  const status = m.meta?.status ?? 'pending';
+  const answer = async (accept: boolean) => {
+    setBusy(true);
+    try {
+      await api(`/api/role-proposals/${m.id}`, { body: { accept } });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="card-proposal" data-status={status}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className="pill t-b">Team</span>
+        <span className="muted" style={{ fontSize: 12 }}>{proposer?.name ?? 'Main agent'} suggests</span>
+      </div>
+      <div style={{ fontWeight: 700, fontSize: 14 }}>{m.body}</div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {m.meta?.skill && <span className="pill t-n mono" style={{ fontSize: 11 }}>skill: {m.meta.skill}</span>}
+        <span className="pill t-n" style={{ fontSize: 11 }}>{m.meta?.scope === 'project' ? 'per project' : 'all projects'}</span>
+        <span className="pill t-n" style={{ fontSize: 11 }}>{m.meta?.model}</span>
+      </div>
+      {m.meta?.reason && <div style={{ fontSize: 12.5, color: 'var(--text2)' }}>{m.meta.reason}</div>}
+      {m.meta?.persona && <div className="muted" style={{ fontSize: 12 }}>{m.meta.persona}</div>}
+      {status === 'pending' ? (
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button className="btn sm primary" disabled={busy} onClick={() => answer(true)}>Add to team</button>
+          <button className="btn sm" disabled={busy} onClick={() => answer(false)}>Not now</button>
+        </div>
+      ) : (
+        <span className={`pill ${status === 'added' ? 't-g' : 't-n'}`} style={{ alignSelf: 'flex-start' }}>{status === 'added' ? 'Added to your team' : 'Not added'}</span>
+      )}
+    </div>
+  );
+}
+
 function DecisionCard({ m }: { m: Message }) {
   return (
     <div className="card-decision">
@@ -86,7 +123,7 @@ function ToolLines({ items }: { items: Message[] }) {
   );
 }
 
-export function ChatPanel({ conversation, roles, onSent }: { conversation: Conversation | null; roles: Role[]; onSent?: () => void }) {
+export function ChatPanel({ conversation, roles, onSent, onClose, draftText, onDraftUsed }: { conversation: Conversation | null; roles: Role[]; onSent?: () => void; onClose: () => void; draftText?: string; onDraftUsed?: () => void }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [working, setWorking] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ role: string; text: string } | null>(null);
@@ -95,6 +132,13 @@ export function ChatPanel({ conversation, roles, onSent }: { conversation: Conve
   const [view, setView] = useState<'chat' | 'activity'>('chat');
   const logRef = useRef<HTMLDivElement>(null);
   const convId = conversation?.id ?? null;
+  useEffect(() => {
+    if (draftText) {
+      setText(draftText);
+      onDraftUsed?.();
+      document.getElementById('chat-input')?.focus();
+    }
+  }, [draftText]); // eslint-disable-line react-hooks/exhaustive-deps
   const byId = useMemo(() => new Map(roles.map((r) => [r.id, r])), [roles]);
 
   useEffect(() => {
@@ -170,6 +214,7 @@ export function ChatPanel({ conversation, roles, onSent }: { conversation: Conve
           <button aria-pressed={view === 'chat'} onClick={() => setView('chat')}>Chat</button>
           <button aria-pressed={view === 'activity'} onClick={() => setView('activity')}>Activity</button>
         </div>
+        <button className="icon-btn" style={{ width: 30, height: 30, flex: '0 0 30px', borderRadius: 8, fontSize: 13 }} aria-label="Minimise chat" title="Minimise chat" onClick={onClose}>✕</button>
       </header>
       {lead && (
         <div className="perm-strip">
@@ -201,6 +246,7 @@ export function ChatPanel({ conversation, roles, onSent }: { conversation: Conve
           const role = byId.get(m.author);
           if (m.kind === 'approval') return <ApprovalCard key={m.id} m={m} role={role} />;
           if (m.kind === 'decision') return <DecisionCard key={m.id} m={m} />;
+          if (m.kind === 'proposal') return <ProposalCard key={m.id} m={m} proposer={role} />;
           return (
             <div key={m.id} className="msg">
               <Avatar role={role} />

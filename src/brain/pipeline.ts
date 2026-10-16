@@ -237,6 +237,22 @@ export function designChanged(db: DB, projectId: string): void {
 
 // ── gates ────────────────────────────────────────────────────────
 
+/** A gate that hands work to a role the user has not added yet. */
+export class NeedsRole extends Error {
+  constructor(public role: string, label: string) {
+    super(`This step needs ${label} on your team.`);
+  }
+}
+
+function requireRole(db: DB, id: string, label: string): void {
+  if (!db.prepare('SELECT 1 FROM roles WHERE id = ?').get(id)) throw new NeedsRole(id, label);
+}
+
+/** Members for a stage channel: the required role plus any optional ones the user has. */
+function present(db: DB, ids: string[]): string[] {
+  return ids.filter((id) => db.prepare('SELECT 1 FROM roles WHERE id = ?').get(id));
+}
+
 /** The project's channel for a stage, created on first use with its members. */
 function stageChannel(db: DB, ref: ProjectRef, suffix: string, memberIds: string[]): string {
   const id = `ch:${slugify(`${ref.slug}-${suffix}`)}`;
@@ -256,9 +272,10 @@ export function finalizeRequirements(db: DB, projectId: string): string {
   const ref = projectRef(db, projectId);
   const latest = listRequirements(db, projectId)[0];
   if (!latest) throw new Error('no requirements yet');
+  requireRole(db, 'architect', 'an Architect');
   db.prepare('UPDATE requirements SET final = 1 WHERE project_id = ? AND version = ?').run(projectId, latest.version);
   setStage(db, projectId, 'design');
-  const ch = stageChannel(db, ref, 'design', ['architect', 'cto']);
+  const ch = stageChannel(db, ref, 'design', present(db, ['architect', 'cto']));
   kickoff(
     db,
     ch,
@@ -281,6 +298,7 @@ export async function finalizeDesign(db: DB, projectId: string): Promise<string>
   const ref = projectRef(db, projectId);
   const design = getDesign(db, projectId);
   if (!design.elements.length) throw new Error('the design is empty');
+  requireRole(db, 'pm', 'a PM (project manager)');
   const version = (design.finalVersion ?? 0) + 1;
   db.prepare('INSERT INTO design_snapshots (project_id, version, model, created_at) VALUES (?, ?, ?, ?)').run(projectId, version, JSON.stringify(design), Date.now());
 
@@ -299,7 +317,7 @@ export async function finalizeDesign(db: DB, projectId: string): Promise<string>
     if (!res.ok) throw new Error(`could not create vertical ${c.name}: ${(await res.json().catch(() => ({}))).error ?? res.status}`);
   }
   setStage(db, projectId, 'plan');
-  const ch = stageChannel(db, ref, 'build', ['pm', 'cto', 'qc']);
+  const ch = stageChannel(db, ref, 'build', present(db, ['pm', 'cto', 'qc']));
   kickoff(
     db,
     ch,
@@ -314,8 +332,9 @@ export async function finalizeDesign(db: DB, projectId: string): Promise<string>
 /** Gate 5 → 6: the roadmap is approved; the PM runs the phase loop. */
 export function startBuilding(db: DB, projectId: string): string {
   const ref = projectRef(db, projectId);
+  requireRole(db, 'pm', 'a PM (project manager)');
   setStage(db, projectId, 'build');
-  const ch = stageChannel(db, ref, 'build', ['pm', 'cto', 'qc']);
+  const ch = stageChannel(db, ref, 'build', present(db, ['pm', 'cto', 'qc']));
   kickoff(db, ch, `@PM the roadmap is approved. Commit the phases if you have not, advance to the first phase and run the phase loop from CLAUDE.md. Post a short recap here at each phase boundary.`, '@PM');
   getBus().emit({ type: 'brain_project', project_id: projectId });
   return ch;

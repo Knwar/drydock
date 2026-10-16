@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { api } from '../lib/api';
 import type { Conversation, Role } from '../lib/types';
 import { Avatar } from './Chat';
+import { AddMemberDialog } from './Dialogs';
 
 function preview(c: Conversation): string {
   if (c.working) return 'working…';
@@ -49,12 +50,22 @@ function NewChannel({ roles, onDone }: { roles: Role[]; onDone: (id?: string) =>
 
 export function TeamList({ conversations, roles, current, select }: { conversations: Conversation[]; roles: Role[]; current: string | null; select: (id: string) => void }) {
   const [adding, setAdding] = useState(false);
+  const [addingMember, setAddingMember] = useState(false);
   const byId = new Map(roles.map((r) => [r.id, r]));
   const dms = conversations.filter((c) => c.kind === 'dm' && c.role_id !== 'main');
   const channels = conversations.filter((c) => c.kind === 'channel');
   return (
     <div>
-      <div className="side-label"><span>TEAM</span></div>
+      <div className="side-label">
+        <span>TEAM</span>
+        <button aria-label="Add team member" title="Add team member" onClick={() => setAddingMember(true)}>+</button>
+      </div>
+      {addingMember && <AddMemberDialog onClose={() => setAddingMember(false)} onAdded={(id) => select(`dm:${id}`)} />}
+      {dms.length === 0 && (
+        <div className="muted" style={{ fontSize: 12, padding: '2px 10px 6px', lineHeight: 1.45 }}>
+          Your team is empty. <button className="link-btn" style={{ color: 'var(--accent)', fontSize: 12 }} onClick={() => setAddingMember(true)}>Add a member</button>, or the Main agent will suggest one when you need it.
+        </div>
+      )}
       {dms.map((c) => {
         const role = byId.get(c.role_id!);
         return (
@@ -73,7 +84,7 @@ export function TeamList({ conversations, roles, current, select }: { conversati
       })}
       <div className="side-label" style={{ marginTop: 10 }}>
         <span>CHANNELS</span>
-        <button aria-label="New channel" onClick={() => setAdding(true)}>+</button>
+        {dms.length > 0 && <button aria-label="New channel" onClick={() => setAdding(true)}>+</button>}
       </div>
       {adding && <NewChannel roles={roles} onDone={(id) => (setAdding(false), id && select(id))} />}
       {channels.map((c) => (
@@ -84,7 +95,7 @@ export function TeamList({ conversations, roles, current, select }: { conversati
           {c.unread > 0 && <span className="badge">{c.unread}</span>}
         </button>
       ))}
-      {!channels.length && !adding && <div className="muted" style={{ fontSize: 12, padding: '2px 10px' }}>Group chats with several team members.</div>}
+      {!channels.length && !adding && <div className="muted" style={{ fontSize: 12, padding: '2px 10px' }}>{dms.length ? 'Group chats with several team members.' : 'Add team members to start group chats.'}</div>}
     </div>
   );
 }

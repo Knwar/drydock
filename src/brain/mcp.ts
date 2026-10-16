@@ -64,6 +64,38 @@ server.registerTool(
 );
 
 server.registerTool(
+  'list_team',
+  { description: "The user's current team members (roles) and the templates they can add.", inputSchema: {} },
+  async () => {
+    const [roles, templates] = await Promise.all([call('/api/roles'), call('/api/role-templates')]);
+    return text(
+      'Team: ' + roles.map((r: any) => `${r.name} (${r.id}, ${r.scope})`).join(', ') +
+        '\nTemplates not added yet: ' + (templates.filter((t: any) => !t.added).map((t: any) => `${t.id} (${t.name})`).join(', ') || 'none'),
+    );
+  },
+);
+
+server.registerTool(
+  'propose_team_member',
+  {
+    description:
+      'Suggest adding a team member. The user sees an "Add to your team?" card and decides; you never add members yourself. Use a template id when one fits, otherwise give a name, skill and short persona.',
+    inputSchema: {
+      template: z.enum(['architect', 'pm', 'cto', 'cfo', 'marketing', 'social', 'qc']).optional(),
+      name: z.string().optional().describe('For a custom member, e.g. "Legal advisor"'),
+      skill: z.string().optional().describe('A Claude Code skill name, e.g. "marketing:seo-audit"'),
+      scope: z.enum(['shared', 'project']).optional(),
+      persona: z.string().optional().describe('For a custom member: who they are and how they work, 2-4 sentences'),
+      reason: z.string().describe('One sentence: why the user needs them now'),
+    },
+  },
+  async (b) => {
+    const r = await call('/api/role-proposals', { ...b, role: ROLE, conversation: CONVERSATION });
+    return text(r.status === 'exists' ? 'That member is already on the team.' : 'Proposed. The user will choose Add or Not now on the card.');
+  },
+);
+
+server.registerTool(
   'list_projects',
   { description: 'List the projects in AI Brain with their stage and progress.', inputSchema: {} },
   async () => text(JSON.stringify(await call('/api/projects'), null, 2)),

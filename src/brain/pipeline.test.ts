@@ -58,7 +58,15 @@ describe('project pipeline', () => {
     assert.deepEqual(versions.map((v: any) => v.version), [2, 1]);
   });
 
+  it('a gate that needs a missing role says which one', async () => {
+    const err = await fetch(`${d.base}/api/projects/${id}/requirements/final`, { method: 'POST' });
+    assert.equal(err.status, 409);
+    assert.equal((await err.json()).needs_role, 'architect');
+  });
+
   it('finalising requirements locks them and brings in the Architect', async () => {
+    await call('POST', '/api/roles', { template: 'architect' });
+    await call('POST', '/api/roles', { template: 'cto' });
     const { channel } = await call('POST', `/api/projects/${id}/requirements/final`);
     assert.equal(channel, 'ch:kusic-player-design');
     const reply = await waitFor(channel, (m) => m.author === 'architect' && m.kind === 'text');
@@ -89,6 +97,8 @@ describe('project pipeline', () => {
 
   it('finalising the design creates one vertical per app container and asks the PM for a roadmap', async () => {
     await assert.rejects(call('POST', `/api/projects/${id}/start`), /no phases yet/);
+    await assert.rejects(call('POST', `/api/projects/${id}/design/final`), /needs a PM/);
+    await call('POST', '/api/roles', { template: 'pm' });
     const { channel } = await call('POST', `/api/projects/${id}/design/final`);
     assert.equal(channel, 'ch:kusic-player-build');
     const p = await call('GET', `/api/projects/${id}`);
