@@ -22,12 +22,15 @@
     "!**/*.test.*"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && vite build --config web/vite.config.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
     "test:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-exclude=\"**/*.test.ts\" --test-coverage-exclude=\"src/overlay/**\" \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p web",
     "prepublishOnly": "npm run build",
-    "postinstall": "node scripts/fix-node-pty.js"
+    "postinstall": "node scripts/fix-node-pty.js",
+    "dev:web": "vite --config web/vite.config.ts",
+    "build:web": "vite build --config web/vite.config.ts",
+    "dev:daemon": "tsx watch --clear-screen=false src/daemon/server.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
@@ -39,10 +42,17 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.9.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^4.7.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
-    "typescript": "^6.0.3"
+    "elkjs": "^0.10.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^6.0.3",
+    "vite": "^6.4.4"
   },
   "optionalDependencies": {
     "node-pty": "^1.1.0"

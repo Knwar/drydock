@@ -2,61 +2,17 @@
 // feature module registers handlers here; the daemon calls handleApi first
 // for every /api/ request.
 import { execFile } from 'node:child_process';
-import type { IncomingMessage, ServerResponse } from 'node:http';
 import { promisify } from 'node:util';
-import type { DB } from '../core/db.js';
+import { HttpError, on, type ApiCtx } from './router.js';
+import { listProjects } from './projects.js';
+import { getSetting, putSetting } from './settings.js';
 import { currentWorkspace, setupWorkspace } from './workspace.js';
 
+import './routes-chat.js';
+
+export { handleApi } from './router.js';
+
 const execFileAsync = promisify(execFile);
-
-export interface ApiCtx {
-  db: () => DB;
-  dbPath: () => string;
-  switchDb: (path: string) => void;
-  /** DB_PATH was set explicitly (tests): never move the DB. */
-  explicitDb: boolean;
-  broadcast: (msg: unknown) => void;
-  json: (res: ServerResponse, status: number, body: unknown) => void;
-  readBody: (req: IncomingMessage) => Promise<any>;
-}
-
-type Handler = (req: IncomingMessage, res: ServerResponse, url: URL, ctx: ApiCtx, params: Record<string, string>) => Promise<void> | void;
-const routes: { method: string; pattern: RegExp; keys: string[]; handler: Handler }[] = [];
-
-/** Register a route; `:name` segments become params. */
-export function on(method: string, path: string, handler: Handler): void {
-  const keys: string[] = [];
-  const pattern = new RegExp('^' + path.replace(/:(\w+)/g, (_, k) => (keys.push(k), '([^/]+)')) + '$');
-  routes.push({ method, pattern, keys, handler });
-}
-
-export class HttpError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-export async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, ctx: ApiCtx): Promise<boolean> {
-  const method = req.method ?? 'GET';
-  for (const r of routes) {
-    if (r.method !== method) continue;
-    const m = r.pattern.exec(url.pathname);
-    if (!m) continue;
-    const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
-    try {
-      await r.handler(req, res, url, ctx, params);
-    } catch (err) {
-      const status = err instanceof HttpError ? err.status : 500;
-      if (!res.headersSent) ctx.json(res, status, { error: (err as Error).message });
-    }
-    return true;
-  }
-  return false;
-}
-
 // ── workspace ──────────────────────────────────────────────────────
 
 function workspaceView(ctx: ApiCtx) {
@@ -89,4 +45,23 @@ on('POST', '/api/workspace/pick', async (_req, res, _url, ctx) => {
   } catch {
     ctx.json(res, 200, { path: null }); // cancelled
   }
+});
+
+// ── projects ───────────────────────────────────────────────────────
+
+on('GET', '/api/projects', (_req, res, _url, ctx) => {
+  const ws = currentWorkspace();
+  ctx.json(res, 200, listProjects(ctx.db(), ws ? ws.projects : null));
+});
+
+// ── profile (kept in kankanban's settings table) ───────────────────
+
+on('GET', '/api/profile', (_req, res, _url, ctx) => ctx.json(res, 200, getSetting(ctx.db(), 'brain.profile', { name: null })));
+
+on('POST', '/api/profile', async (req, res, _url, ctx) => {
+  const body = await ctx.readBody(req);
+  const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 60) : null;
+  putSetting(ctx.db(), 'brain.profile', { name });
+  ctx.broadcast({ type: 'profile' });
+  ctx.json(res, 200, { name });
 });

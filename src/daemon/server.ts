@@ -29,6 +29,8 @@ import { agentHistory, type AgentHistoryOptions } from '../core/agent-history.js
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
 import { handleApi } from '../brain/api.js';
+import { serveApp } from '../brain/static.js';
+import { bindBus } from '../brain/bus.js';
 import { resolveDbPath } from '../brain/workspace.js';
 import { cardLines } from '../core/lines.js';
 import { cachedCodeVersion, readCodeVersion } from './code-version.js';
@@ -80,6 +82,8 @@ function switchDb(path: string): void {
   waitTime.closeOpenWaits(db, Date.now(), NEEDS_YOU_MAX_MS);
   console.log(`db switched to ${path}`);
 }
+
+bindBus({ db: () => db, emit: (msg) => broadcaster.sendAll(msg), daemonUrl: `http://127.0.0.1:${PORT}` });
 
 // ── embedded terminal (on by default; KANKAN_TERMINAL=0 disables) ───
 // node-pty is an OPTIONAL native dep: the board runs fine without it, and a
@@ -871,6 +875,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const { pathname } = url;
   const method = req.method ?? 'GET';
 
+  if (method === 'GET' && (pathname === '/app' || pathname.startsWith('/app/'))) return serveApp(res, pathname);
   if (pathname.startsWith('/api/')) {
     const handled = await handleApi(req, res, url, {
       db: () => db,
