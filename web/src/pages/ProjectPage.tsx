@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { when } from '../lib/time';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { Diagram, Legend, type Element, type Relation } from '../components/Diagram';
 import { Modal } from '../components/Dialogs';
 import { TeamPopup, type Recommendation } from '../components/TeamPopup';
@@ -505,6 +506,8 @@ function Board({ p }: { p: Detail }) {
 
 function ProjectTeam({ p, openTeam }: { p: Detail; openTeam: () => void }) {
   const [removing, setRemoving] = useState<string | null>(null);
+  const templates = useApi<{ id: string; blurb: string }[]>('/api/role-templates', (m) => m?.type === 'roles');
+  const blurb = new Map((templates.data ?? []).map((t) => [t.id, t.blurb]));
   return (
     <section className="panel">
       <div className="panel-head">
@@ -519,7 +522,8 @@ function ProjectTeam({ p, openTeam }: { p: Detail; openTeam: () => void }) {
             <span className={`avatar t-${m.tone}`}>{m.initials}</span>
             <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
               <span style={{ fontWeight: 600, fontSize: 13 }}>{m.name} <span className={`pill ${m.kind === 'core' ? 't-b' : 't-v'}`} style={{ marginLeft: 6 }}>{m.kind}</span></span>
-              {m.reason && <span className="muted" style={{ fontSize: 12 }}>{m.reason}</span>}
+              {blurb.get(m.role_id) && <span style={{ fontSize: 12, color: 'var(--text2)' }}>{blurb.get(m.role_id)}</span>}
+              {m.reason && <span className="muted" style={{ fontSize: 12 }}>Why on this project: {m.reason}</span>}
             </span>
             {m.skill && <span className="pill t-n mono" style={{ fontSize: 10.5 }}>{m.skill}</span>}
             <button className="link-btn" style={{ color: 'var(--r-fg)', fontSize: 12 }} onClick={() => setRemoving(m.role_id)}>Remove</button>
@@ -634,17 +638,29 @@ function Roles({ p, roles, openConversation, openTeam }: { p: Detail; roles: Rol
       setError((e as Error).message);
     }
   };
+  const onTeam = new Set(p.team.map((m) => m.role_id));
+  const members = roles.filter((r) => onTeam.has(r.id));
+  const others = roles.filter((r) => r.id !== 'main' && !onTeam.has(r.id));
   return (
     <>
       <ProjectTeam p={p} openTeam={openTeam} />
       <section className="panel">
         <h2>Talk to a member about {p.name}</h2>
-        <div className="muted" style={{ fontSize: 13 }}>Opens a thread in this project's Discussions with that role. Shared roles keep their knowledge of your other projects.</div>
+        <div className="muted" style={{ fontSize: 13 }}>Opens a thread in this project's Discussions with that member.</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          {roles.filter((r) => r.id !== 'main').map((r) => (
+          {members.map((r) => (
             <button key={r.id} className="btn" onClick={() => bring(r)}>{r.name}</button>
           ))}
+          {!members.length && <span className="muted" style={{ fontSize: 13 }}>Nobody is on this project's team yet.</span>}
         </div>
+        {others.length > 0 && (
+          <details>
+            <summary className="muted" style={{ fontSize: 12.5, cursor: 'pointer' }}>Not on this project ({others.length}): ask them anyway</summary>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+              {others.map((r) => <button key={r.id} className="btn sm" onClick={() => bring(r)}>{r.name}</button>)}
+            </div>
+          </details>
+        )}
         {error && <div className="error">{error}</div>}
       </section>
       <section className="panel">
@@ -682,7 +698,7 @@ function Agents({ p, openConversation }: { p: Detail; openConversation: (id: str
       <section className="panel grow1">
         <h2>Recent activity</h2>
         <div className="term">
-          {recent.length ? recent.map((r, i) => <div key={i}><span style={{ color: '#6b7585' }}>{new Date(r.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })} {r.author}</span> {r.body}</div>) : <div style={{ color: '#6b7585' }}>Nothing yet.</div>}
+          {recent.length ? recent.map((r, i) => <div key={i}><span style={{ color: '#6b7585' }}>{when(r.created_at)} {r.author}</span> {r.body}</div>) : <div style={{ color: '#6b7585' }}>Nothing yet.</div>}
         </div>
       </section>
     </div>
@@ -732,6 +748,18 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
   const p = detail.data;
   const [teamOpen, setTeamOpen] = useState(false);
   const [autoShown, setAutoShown] = useState(false);
+  const tabsRef = useRef<HTMLElement>(null);
+  const [tabsMore, setTabsMore] = useState('');
+  const measureTabs = () => {
+    const el = tabsRef.current;
+    if (!el) return;
+    setTabsMore((el.scrollLeft > 4 ? ' more-left' : '') + (el.scrollLeft + el.clientWidth < el.scrollWidth - 4 ? ' more-right' : ''));
+  };
+  useEffect(() => {
+    measureTabs();
+    window.addEventListener('resize', measureTabs);
+    return () => window.removeEventListener('resize', measureTabs);
+  });
   // the team step: open the recommendation once, as soon as requirements are final
   useEffect(() => {
     if (!autoShown && p && p.stage === 'requirements' && p.requirementsFinal && p.recommendation?.status === 'open') {
@@ -766,7 +794,7 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
           <Gate p={p} openConversation={openConversation} openTeam={() => setTeamOpen(true)} />
         </div>
       </div>
-      <nav aria-label="Project sections" className="tabs">
+      <nav aria-label="Project sections" className={`tabs${tabsMore}`} ref={tabsRef} onScroll={measureTabs}>
         {TABS.map(([t, label]) => (
           <a key={t} aria-current={tab === t ? 'page' : undefined} className={`tab${tab === t ? ' on' : ''}`} href={href(t ? `${base}/${t}` : base)} onClick={go(t ? `${base}/${t}` : base)}>
             {label}

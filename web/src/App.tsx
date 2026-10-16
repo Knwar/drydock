@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useApi } from './lib/api';
-import { usePath } from './lib/router';
+import { navigate, threadParam, usePath } from './lib/router';
 import { useTheme } from './lib/theme';
 import type { Conversation, ProjectSummary, Role, WorkspaceInfo } from './lib/types';
 import { ChatPanel } from './components/Chat';
@@ -55,8 +55,9 @@ export function App() {
   // Overview tab only when the user expands it; on other tabs it slides over
   // the content when opened and goes away on the next navigation.
   const [projectSide, setProjectSide] = useStored('ai-brain-project-side', 'closed');
-  const [drawer, setDrawer] = useState(false);
-  useEffect(() => setDrawer(false), [path]);
+  const linked = threadParam();
+  const [drawer, setDrawer] = useState(() => Boolean(linked));
+  useEffect(() => setDrawer(Boolean(linked)), [path, linked]);
   useEffect(() => {
     if (!drawer) return;
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !document.querySelector('.modal') && setDrawer(false);
@@ -70,13 +71,14 @@ export function App() {
 
   const list = projects.data ?? [];
   const conversations = convs.data ?? [];
-  const current = conversations.find((c) => c.id === convId) ?? conversations.find((c) => c.id === 'dm:main') ?? null;
+  const current = conversations.find((c) => c.id === (linked ?? convId)) ?? conversations.find((c) => c.id === 'dm:main') ?? null;
   const onProject = parts[0] === 'project' && Boolean(parts[1]);
   const onOverview = onProject && !parts[2];
   const sideOpen = !onProject || (onOverview ? projectSide === 'open' : drawer);
   const setSide = (open: boolean) => (onOverview ? setProjectSide(open ? 'open' : 'closed') : setDrawer(open));
   const select = (id: string) => {
     setConvId(id);
+    if (threadParam() !== id) navigate(`${path === '/' ? '' : path}?thread=${encodeURIComponent(id)}`);
     setChatState('open');
     if (onProject) setSide(true);
     convs.reload();
@@ -102,13 +104,13 @@ export function App() {
           key={list.length ? 'loaded' : 'empty'}
           projects={list}
           path={path}
-          mainOn={current?.id === 'dm:main'}
+          mainOn={chatState === 'open' && sideOpen && current?.id === 'dm:main'}
           onMain={() => select('dm:main')}
           mainWorking={Boolean(conversations.find((c) => c.id === 'dm:main')?.working)}
           onNewProject={() => setNewProject(true)}
           threads={{ conversations, current: chatState === 'open' && sideOpen ? current?.id ?? null : null, open: select, newThread: (project) => setNewThread({ project }) }}
         >
-          <TeamList conversations={conversations} roles={roles.data ?? []} current={current?.id ?? null} select={select} onNewThread={() => setNewThread({ project: null })} />
+          <TeamList conversations={conversations} roles={roles.data ?? []} current={chatState === 'open' && sideOpen ? current?.id ?? null : null} select={select} onNewThread={() => setNewThread({ project: null })} />
         </Sidebar>
         <main className="main">{page}</main>
         {sideOpen && (

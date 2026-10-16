@@ -5,7 +5,7 @@ import { AddMemberDialog } from './Dialogs';
 
 function preview(c: Conversation): string {
   if (c.working) return 'working…';
-  if (!c.last) return c.kind === 'dm' ? 'No messages yet' : `${c.members.length} members`;
+  if (!c.last) return c.kind === 'dm' ? 'No direct messages yet' : `${c.members.length} members`;
   return (c.last.author === 'user' ? 'You: ' : '') + c.last.body.replace(/\s+/g, ' ');
 }
 
@@ -23,7 +23,7 @@ export function TeamList({ conversations, roles, current, select, onNewThread }:
       </div>
       {addingMember && <AddMemberDialog onClose={() => setAddingMember(false)} onAdded={(id) => select(`dm:${id}`)} />}
       {dms.length === 0 && (
-        <div className="muted" style={{ fontSize: 12, padding: '2px 10px 6px', lineHeight: 1.45 }}>
+        <div className="muted side-note" style={{ fontSize: 12, padding: '2px 10px 6px', lineHeight: 1.45 }}>
           Your team is empty. <button className="link-btn" style={{ color: 'var(--accent)', fontSize: 12 }} onClick={() => setAddingMember(true)}>Add a member</button>, or the Main agent will suggest one when you need it.
         </div>
       )}
@@ -55,7 +55,7 @@ export function TeamList({ conversations, roles, current, select, onNewThread }:
           {c.unread > 0 && <span className="badge">{c.unread}</span>}
         </button>
       ))}
-      {!channels.length && <div className="muted" style={{ fontSize: 12, padding: '2px 10px', lineHeight: 1.45 }}>{dms.length ? 'General threads with one or more members. Project threads live under each project’s Discussions.' : 'Add team members to start threads.'}</div>}
+      {!channels.length && <div className="muted side-note" style={{ fontSize: 12, padding: '2px 10px', lineHeight: 1.45 }}>{dms.length ? 'General threads with one or more members. Project threads live under each project.' : 'Add team members to start threads.'}</div>}
     </div>
   );
 }

@@ -9,6 +9,9 @@ export function navigate(to: string): void {
   listeners.forEach((l) => l());
 }
 
+/** The open thread, from ?thread= in the address. */
+export const threadParam = () => new URLSearchParams(location.search).get('thread');
+
 export function usePath(): string[] {
   const read = () => location.pathname.replace(/^\/app/, '').split('/').filter(Boolean).map(decodeURIComponent);
   const [parts, setParts] = useState(read);

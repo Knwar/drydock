@@ -1,3 +1,4 @@
+import { localDay } from '../lib/time';
 import { useState } from 'react';
 import { api, useApi } from '../lib/api';
 import { Markdown } from '../lib/md';
@@ -58,6 +59,7 @@ export function DailyCard({ edition, generating, compact = false }: { edition: E
         <div>
           <div className="eyebrow">The Daily · edition {edition.number}</div>
           <h2 id="daily-h" className="daily-title">{dayLabel(edition.day)}</h2>
+          {edition.day !== localDay() && <span className="pill t-a" style={{ alignSelf: 'flex-start' }} title="Generate a new edition for today">Not today’s edition</span>}
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           {edition.audio && <audio controls src={`/api/daily/${edition.day}/audio`} style={{ height: 32 }} />}

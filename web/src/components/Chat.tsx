@@ -1,3 +1,4 @@
+import { when } from '../lib/time';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { onLive } from '../lib/live';
@@ -243,7 +244,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
           if (m.author === 'system')
             return (
               <details key={m.id} className="sys-note">
-                <summary>AI Brain asked {conversation.id === 'sys:daily' ? 'for the Daily' : 'the team'} · {new Date(m.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</summary>
+                <summary>AI Brain asked {conversation.id === 'sys:daily' ? 'for the Daily' : 'the team'} · {when(m.created_at)}</summary>
                 <Markdown text={m.body} />
               </details>
             );
@@ -257,7 +258,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
               <div className="msg-body">
                 <div className="msg-meta">
                   <strong>{role?.name ?? m.author}</strong>
-                  <span>{new Date(m.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span>
+                  <span>{when(m.created_at)}</span>
                 </div>
                 {m.kind === 'error' ? <div className="error">{m.body}</div> : <Markdown text={m.body} />}
               </div>

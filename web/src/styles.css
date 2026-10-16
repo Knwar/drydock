@@ -162,7 +162,8 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .switch > span { width: 20px; height: 20px; border-radius: 10px; background: var(--knob); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); }
 
 @media (max-width: 720px) {
-  .sidebar, .chat { max-width: none; flex-basis: 100%; }
+  .chat { max-width: none; flex-basis: 100%; }
+  .main { flex: 1 1 0; }
   .brand { flex-basis: auto; }
   .main { padding: 16px; }
 }
@@ -353,9 +354,27 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 @media (max-width: 900px) { .kbd { display: none; } .usage { display: none; } }
 /* The sidebar keeps Personal and Settings in reach on long pages. */
 .sidebar { position: sticky; top: 69px; height: calc(100vh - 69px); overflow-y: auto; }
-@media (max-width: 720px) { .body, .app-header { flex-wrap: wrap; } .sidebar { position: static; height: auto; } }
+@media (max-width: 720px) { .body, .app-header { flex-wrap: wrap; } }
 .c4-drill { cursor: pointer; }
 /* Keyboard focus is always visible. */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .search:focus-within, .composer:focus-within, .input:focus { box-shadow: 0 0 0 3px var(--ring); border-color: var(--accent); }
 .search input:focus-visible, .composer textarea:focus-visible { outline: none; }
+
+/* Sidebar tree: the chevron expands, the label navigates. */
+.tree-row { display: flex; align-items: center; gap: 2px; }
+.tree-row .nav-row { flex: 1; min-width: 0; }
+.chev-btn { flex: 0 0 18px; width: 18px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--muted); display: grid; place-items: center; border-radius: 5px; }
+button.chev-btn:hover { background: var(--hover); }
+.nav-row.open-thread { color: var(--accent); font-weight: 600; }
+/* Project tabs scroll sideways on narrow screens: fade the edge that has more. */
+.tabs.more-right { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }
+.tabs.more-left { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent); }
+.tabs.more-left.more-right { -webkit-mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); }
+/* Small screens: the sidebar is an icon rail that expands over the page on hover. */
+@media (max-width: 800px) {
+  .sidebar { flex: 0 0 56px; max-width: 56px; padding: 14px 6px; overflow-x: hidden; z-index: 15; transition: max-width 0.15s ease, flex-basis 0.15s ease, margin-right 0.15s ease; }
+  .sidebar:not(.hold):hover, .sidebar:not(.hold):focus-within { flex-basis: 264px; max-width: 264px; margin-right: -208px; box-shadow: 8px 0 28px rgba(0, 0, 0, 0.22); }
+  :is(.sidebar.hold, .sidebar:not(:hover):not(:focus-within)) :is(.label, .pill, .badge, .side-label, .side-note, .tree-kid, .chev-btn, .dot) { display: none !important; }
+  :is(.sidebar.hold, .sidebar:not(:hover):not(:focus-within)) .nav-row { justify-content: center; padding: 6px 0; }
+}

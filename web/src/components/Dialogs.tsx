@@ -9,7 +9,17 @@ export function Modal({ title, onClose, children, width = 560 }: { title: string
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
     (ref.current?.querySelector<HTMLElement>('input, textarea') ?? ref.current?.querySelector<HTMLElement>('.template, button'))?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') return onClose();
+      if (e.key !== 'Tab' || !ref.current) return;
+      const items = [...ref.current.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])')].filter((el) => el.offsetParent !== null);
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (!ref.current.contains(document.activeElement)) (e.preventDefault(), first.focus());
+      else if (e.shiftKey && document.activeElement === first) (e.preventDefault(), last.focus());
+      else if (!e.shiftKey && document.activeElement === last) (e.preventDefault(), first.focus());
+    };
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);

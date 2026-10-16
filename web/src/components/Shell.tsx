@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApi } from '../lib/api';
 import { go, href } from '../lib/router';
 import { STAGE_LABEL, type Conversation, type ProjectSummary } from '../lib/types';
@@ -66,6 +66,8 @@ interface TreeNode {
   /** an action instead of navigation (open a thread, start one) */
   onSelect?: () => void;
   active?: boolean;
+  /** the thread open in the chat panel */
+  thread?: boolean;
   badge?: { text: string; tone: string };
   children?: TreeNode[];
   bold?: boolean;
@@ -82,95 +84,70 @@ interface ThreadCtx {
   newThread: (projectId: string | null) => void;
 }
 
-function projectTree(p: ProjectSummary, t: ThreadCtx): TreeNode {
+function projectTree(p: ProjectSummary, t: ThreadCtx, path: string): TreeNode {
   const slug = p.root.split('/').pop();
-  const threads = t.conversations.filter((c) => c.kind === 'channel' && c.project_id === p.id);
-  const unread = threads.reduce((n, c) => n + c.unread, 0);
-  const discussions: TreeNode = {
-    id: `${p.id}/discussions`,
-    label: 'Discussions',
-    icon: 'chat',
-    badge: unread ? { text: String(unread), tone: 't-b' } : threads.some((c) => c.working) ? { text: 'live', tone: 't-g' } : undefined,
-    children: [
-      ...threads.map((c) => ({
-        id: c.id,
-        label: `# ${threadName(c, slug)}`,
-        icon: 'chat' as IconName,
-        onSelect: () => t.open(c.id),
-        active: t.current === c.id,
-        badge: c.unread ? { text: String(c.unread), tone: 't-b' } : c.working ? { text: 'live', tone: 't-g' } : undefined,
-      })),
-      { id: `${p.id}/new-thread`, label: 'New thread', icon: 'plus' as IconName, onSelect: () => t.newThread(p.id), quiet: true },
-    ],
-  };
   const base = `/project/${p.id}`;
-  const design: TreeNode = {
-    id: `${p.id}/design`,
-    label: 'System design',
-    icon: 'diagram',
-    to: `${base}/design`,
-    children: p.containers.map((c) => {
-      const v = p.verticals.find((x) => x.name === c.name);
-      return {
-        id: `${p.id}/c/${c.id}`,
-        label: c.name,
-        icon: 'vertical' as IconName,
-        to: c.components ? `${base}/design/${c.id}` : `${base}/design`,
-        badge: v?.total ? { text: `${Math.round((v.done / v.total) * 100)}%`, tone: 't-n' } : undefined,
-      };
-    }),
-  };
+  const threads = t.conversations.filter((c) => c.kind === 'channel' && c.project_id === p.id);
   return {
     id: p.id,
     label: p.name,
     icon: 'project',
     bold: true,
+    to: base,
+    active: path === base || path.startsWith(`${base}/`),
     badge:
       p.status === 'closed' ? { text: 'Closed', tone: 't-n' }
       : p.status === 'paused' ? { text: 'Paused', tone: 't-a' }
       : p.status === 'review' ? { text: 'Close-out', tone: 't-v' }
       : { text: p.blocked ? 'Blocked' : STAGE_LABEL[p.stage], tone: p.blocked ? 't-r' : STAGE_TONE[p.stage] },
     children: [
-      { id: `${p.id}/overview`, label: 'Overview', icon: 'overview', to: base },
-      { id: `${p.id}/req`, label: 'Requirements', icon: 'doc', to: `${base}/requirements` },
-      design,
-      { id: `${p.id}/board`, label: p.phase ? `Board · phase ${p.phase.index}/${p.phase.count}` : 'Board', icon: 'board', to: `${base}/board`, badge: p.cards.total ? { text: `${p.cards.done}/${p.cards.total}`, tone: 't-n' } : undefined },
-      discussions,
-      { id: `${p.id}/roles`, label: 'Team', icon: 'role', to: `${base}/roles` },
-      { id: `${p.id}/memory`, label: 'Memory', icon: 'doc', to: `${base}/memory` },
-      { id: `${p.id}/agents`, label: 'Live agents', icon: 'agent', to: `${base}/agents`, badge: p.liveAgents ? { text: String(p.liveAgents), tone: 't-g' } : undefined },
-      { id: `${p.id}/docs`, label: 'Docs', icon: 'vault', to: `${base}/docs` },
+      ...threads.map((c) => ({
+        id: c.id,
+        label: `# ${threadName(c, slug)}`,
+        icon: 'chat' as IconName,
+        onSelect: () => t.open(c.id),
+        thread: t.current === c.id,
+        badge: c.unread ? { text: String(c.unread), tone: 't-b' } : c.working ? { text: 'live', tone: 't-g' } : undefined,
+      })),
+      { id: `${p.id}/new-thread`, label: 'New thread', icon: 'plus' as IconName, onSelect: () => t.newThread(p.id), quiet: true },
     ],
   };
 }
 
-function TreeRows({ nodes, depth, open, toggle, current }: { nodes: TreeNode[]; depth: number; open: Set<string>; toggle: (id: string) => void; current: string }) {
+function TreeRows({ nodes, depth, open, toggle }: { nodes: TreeNode[]; depth: number; open: Set<string>; toggle: (id: string) => void }) {
   return (
     <>
       {nodes.map((n) => {
         const kids = Boolean(n.children?.length);
         const isOpen = open.has(n.id);
-        const on = n.active ?? (n.to !== undefined && n.to === current);
         return (
-          <div key={n.id}>
-            <a
-              className={`nav-row${on ? ' on' : ''}`}
-              style={{ paddingLeft: 6 + depth * 14, fontWeight: n.bold ? 600 : undefined, color: n.quiet ? 'var(--muted)' : undefined }}
-              href={n.to ? href(n.to) : '#'}
-              aria-expanded={kids ? isOpen : undefined}
-              onClick={(e) => {
-                if (kids) toggle(n.id);
-                if (n.to) go(n.to)(e);
-                else e.preventDefault();
-                n.onSelect?.();
-              }}
-            >
-              <Icon name="chevron" size={12} className={`chev${kids ? (isOpen ? ' open' : '') : ' none'}`} />
-              <Icon name={n.icon} size={15} style={{ flex: '0 0 15px', color: n.icon === 'project' ? 'var(--accent)' : 'var(--muted)' }} />
-              <span className="label">{n.label}</span>
-              {n.badge && <span className={`pill ${n.badge.tone}`} style={{ fontSize: 10.5 }}>{n.badge.text}</span>}
-            </a>
-            {kids && isOpen && <TreeRows nodes={n.children!} depth={depth + 1} open={open} toggle={toggle} current={current} />}
+          <div key={n.id} className={depth ? 'tree-kid' : undefined}>
+            <div className="tree-row" style={{ paddingLeft: depth * 14 }}>
+              {kids ? (
+                <button className="chev-btn" aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${n.label}`} aria-expanded={isOpen} onClick={() => toggle(n.id)}>
+                  <Icon name="chevron" size={12} className={`chev${isOpen ? ' open' : ''}`} />
+                </button>
+              ) : (
+                <span className="chev-btn" aria-hidden="true" />
+              )}
+              <a
+                className={`nav-row${n.active ? ' on' : ''}${n.thread ? ' open-thread' : ''}`}
+                style={{ fontWeight: n.bold ? 600 : undefined, color: n.quiet ? 'var(--muted)' : undefined }}
+                href={n.to ? href(n.to) : '#'}
+                title={n.label}
+                aria-current={n.active ? 'page' : undefined}
+                onClick={(e) => {
+                  if (n.to) go(n.to)(e);
+                  else e.preventDefault();
+                  n.onSelect?.();
+                }}
+              >
+                <Icon name={n.icon} size={15} style={{ flex: '0 0 15px', color: n.icon === 'project' ? 'var(--accent)' : 'var(--muted)' }} />
+                <span className="label">{n.label}</span>
+                {n.badge && <span className={`pill ${n.badge.tone}`} style={{ fontSize: 10.5 }}>{n.badge.text}</span>}
+              </a>
+            </div>
+            {kids && isOpen && <TreeRows nodes={n.children!} depth={depth + 1} open={open} toggle={toggle} />}
           </div>
         );
       })}
@@ -181,8 +158,15 @@ function TreeRows({ nodes, depth, open, toggle, current }: { nodes: TreeNode[]; 
 export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking, onNewProject, threads }: { projects: ProjectSummary[]; path: string; children?: React.ReactNode; mainOn: boolean; onMain: () => void; mainWorking: boolean; onNewProject: () => void; threads: ThreadCtx }) {
   const [open, setOpen] = useState<Set<string>>(() => new Set(projects[0] ? [projects[0].id] : []));
   const toggle = (id: string) => setOpen((s) => { const next = new Set(s); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  // the project you are on shows its threads
+  const here = path.match(/^\/project\/([^/]+)/)?.[1];
+  useEffect(() => {
+    if (here) setOpen((s) => (s.has(here) ? s : new Set(s).add(here)));
+  }, [here]);
+  // small screens: the icon rail expands on hover and folds away again once you pick something
+  const [hold, setHold] = useState(false);
   return (
-    <nav className="sidebar" aria-label="Main">
+    <nav className={`sidebar${hold ? ' hold' : ''}`} aria-label="Main" onClickCapture={() => setHold(true)} onMouseLeave={() => setHold(false)}>
       <button className={`nav-row${mainOn ? ' on' : ''}`} onClick={onMain} style={{ fontWeight: 600, fontSize: 14, padding: '8px 10px' }}>
         <span className="avatar" style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }}>M</span>
         <span className="label">Main agent</span>
@@ -196,9 +180,9 @@ export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking,
           </button>
         </div>
         {projects.length ? (
-          <TreeRows nodes={projects.map((p) => projectTree(p, threads))} depth={0} open={open} toggle={toggle} current={path} />
+          <TreeRows nodes={projects.map((p) => projectTree(p, threads, path))} depth={0} open={open} toggle={toggle} />
         ) : (
-          <div className="muted" style={{ fontSize: 12.5, padding: '4px 10px' }}>
+          <div className="muted side-note" style={{ fontSize: 12.5, padding: '4px 10px' }}>
             No projects yet. <button className="link-btn" style={{ color: 'var(--accent)', fontSize: 12.5 }} onClick={onNewProject}>Start one</button> or describe an idea to the Main agent.
           </div>
         )}
