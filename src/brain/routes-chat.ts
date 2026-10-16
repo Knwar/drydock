@@ -58,12 +58,16 @@ on('POST', '/api/roles', async (req, res, _u, ctx) => {
 });
 
 on('DELETE', '/api/roles/:id', (_q, res, _u, ctx, p) => {
+  need(getRole(ctx.db(), p.id), 'role');
+  // stop anything they are doing first
+  for (const r of activeRuns()) if (r.role === p.id) stopRun(r.conversation);
   try {
     deleteRole(ctx.db(), p.id);
   } catch (err) {
     throw new HttpError(400, (err as Error).message);
   }
   ctx.broadcast({ type: 'roles' });
+  ctx.broadcast({ type: 'conversations' });
   ctx.json(res, 200, { ok: true });
 });
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, useApi } from '../lib/api';
 import { go, href } from '../lib/router';
 import type { Role, WorkspaceInfo } from '../lib/types';
+import { AddMemberDialog } from '../components/Dialogs';
 
 const SECTIONS = [
   ['integrations', 'Integrations'],
@@ -218,7 +219,12 @@ function DailySettingsPage() {
 function RoleEditor({ role, onClose }: { role: Partial<Role> | null; onClose: () => void }) {
   const [form, setForm] = useState<Partial<Role>>(role ?? {});
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => setForm(role ?? {}), [role]);
+  const [confirming, setConfirming] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  useEffect(() => {
+    setForm(role ?? {});
+    setConfirming(false);
+  }, [role]);
   if (!role) return null;
   const set = (k: keyof Role, v: string) => setForm((f) => ({ ...f, [k]: v }));
   const save = async () => {
@@ -242,10 +248,44 @@ function RoleEditor({ role, onClose }: { role: Partial<Role> | null; onClose: ()
         <textarea className="input" rows={8} style={{ fontSize: 13, color: 'var(--text)' }} value={form.persona ?? ''} onChange={(e) => set('persona', e.target.value)} placeholder="Who this team member is and how they work…" />
       </label>
       {error && <div className="error">{error}</div>}
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button className="btn primary" disabled={!form.name?.trim()} onClick={save}>Save</button>
-        {role.id && !role.builtin && <button className="btn" style={{ color: 'var(--r-fg)' }} onClick={async () => { await api(`/api/roles/${role.id}`, { method: 'DELETE' }); onClose(); }}>Delete role</button>}
-      </div>
+      {confirming ? (
+        <div className="confirm" role="alertdialog" aria-labelledby="rm-title" aria-describedby="rm-desc">
+          <strong id="rm-title">Remove {role.name} from your team?</strong>
+          <span id="rm-desc" className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+            They leave every channel, anything they are working on now is stopped, and their standing permissions and integration access are cleared. Your chat history with them is kept. If you add them again, they start with a fresh memory.
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="btn danger"
+              disabled={removing}
+              autoFocus
+              onClick={async () => {
+                setRemoving(true);
+                try {
+                  await api(`/api/roles/${role.id}`, { method: 'DELETE' });
+                  onClose();
+                } catch (e) {
+                  setError((e as Error).message);
+                  setConfirming(false);
+                } finally {
+                  setRemoving(false);
+                }
+              }}
+            >
+              {removing ? 'Removing…' : `Yes, remove ${role.name}`}
+            </button>
+            <button className="btn" onClick={() => setConfirming(false)}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button className="btn primary" disabled={!form.name?.trim()} onClick={save}>Save</button>
+          {role.id && role.id !== 'main' && (
+            <button className="btn" style={{ color: 'var(--r-fg)', marginLeft: 'auto' }} onClick={() => setConfirming(true)}>Remove from team</button>
+          )}
+          {role.id === 'main' && <span className="muted" style={{ fontSize: 12, marginLeft: 'auto' }}>The Main agent can be edited but not removed.</span>}
+        </div>
+      )}
     </section>
   );
 }
@@ -263,6 +303,7 @@ const PRESETS: [string, string][] = [
 function Team({ roles }: { roles: Role[] }) {
   const perms = useApi<{ role_id: string; tool: string; policy: 'allow' | 'deny' }[]>('/api/permissions', (m) => ['permissions', 'approvals'].includes(m?.type));
   const [editing, setEditing] = useState<Partial<Role> | null>(null);
+  const [adding, setAdding] = useState(false);
   const [rule, setRule] = useState({ role: 'main', tool: 'Edit', policy: 'allow' });
   const name = (id: string) => roles.find((r) => r.id === id)?.name ?? id;
   const add = async (e: React.FormEvent) => {
@@ -274,8 +315,9 @@ function Team({ roles }: { roles: Role[] }) {
     <>
       <div className="settings-head">
         <div><h1>Team &amp; permissions</h1><p className="muted">Each role is a Claude Code session started with its persona and skill. Shared roles see every project; project roles see only theirs.</p></div>
-        <button className="btn primary" onClick={() => setEditing({ scope: 'shared', model: 'sonnet' })}>+ New role</button>
+        <button className="btn primary" onClick={() => setAdding(true)}>+ Add member</button>
       </div>
+      {adding && <AddMemberDialog onClose={() => setAdding(false)} onAdded={() => setAdding(false)} />}
       <RoleEditor role={editing} onClose={() => setEditing(null)} />
       <section className="panel scroll-x" style={{ padding: '6px 18px 10px' }}>
         <table className="table">

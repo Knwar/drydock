@@ -330,3 +330,6 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .rail-row:hover { background: var(--hover); }
 .rail-row .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 720px) { .rail { max-width: none; flex-basis: 100%; position: static; height: auto; } }
+.confirm { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--r-fg); background: var(--r-bg); }
+.btn.danger { border: 0; background: var(--r-fg); color: #fff; }
+.btn.danger:hover { filter: brightness(1.08); background: var(--r-fg); }

@@ -98,6 +98,20 @@ describe('team chat (fake claude)', () => {
     assert.deepEqual(authors, ['qc', 'cto', 'qc', 'cto', 'qc']); // 1 asked + 4 handoffs, then it stops
   });
 
+  it('removing a member takes them out of channels and the team list but keeps history; Main cannot be removed', async () => {
+    await call('POST', '/api/roles', { template: 'social' });
+    await call('POST', '/api/channels', { name: 'launch-crew', members: ['social', 'marketing'] });
+    await call('POST', '/api/permissions', { role: 'social', tool: 'Write', policy: 'allow' });
+    await call('DELETE', '/api/roles/social');
+    const convs = await call('GET', '/api/conversations');
+    assert.ok(!convs.some((c: any) => c.id === 'dm:social'));
+    assert.deepEqual(convs.find((c: any) => c.id === 'ch:launch-crew').members, ['marketing']);
+    assert.ok(!(await call('GET', '/api/permissions')).some((p: any) => p.role_id === 'social'));
+    await assert.rejects(call('DELETE', '/api/roles/main'), /cannot be removed/);
+    await call('POST', '/api/roles', { template: 'social' }); // back again: DM reappears
+    assert.ok((await call('GET', '/api/conversations')).some((c: any) => c.id === 'dm:social'));
+  });
+
   it('routes a tool request to an approval card; "always" also creates a standing rule', async () => {
     await call('POST', '/api/conversations/dm:qc/messages', { text: 'NEEDS_APPROVAL please' });
     const card = await waitFor('dm:qc', (m) => m.kind === 'approval');

@@ -213,9 +213,20 @@ export function saveRole(db: DB, input: Partial<Role> & { name: string }): Role 
   return getRole(db, id)!;
 }
 
+/**
+ * Remove a member from the team: out of every channel, with their sessions,
+ * standing permissions and integration access cleared. Chat history stays;
+ * if they are added again they start with a fresh memory.
+ */
 export function deleteRole(db: DB, id: string): void {
   const role = getRole(db, id);
   if (!role) return;
-  if (role.builtin) throw new Error('built-in roles can be edited but not deleted');
-  db.prepare('DELETE FROM roles WHERE id = ?').run(id);
+  if (role.id === 'main') throw new Error('the Main agent cannot be removed');
+  db.transaction(() => {
+    db.prepare(`DELETE FROM conversation_members WHERE role_id = ? AND conversation_id NOT LIKE 'dm:%'`).run(id);
+    db.prepare('DELETE FROM agent_sessions WHERE role_id = ?').run(id);
+    db.prepare('DELETE FROM standing_permissions WHERE role_id = ?').run(id);
+    if (db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'role_servers'`).get()) db.prepare('DELETE FROM role_servers WHERE role_id = ?').run(id);
+    db.prepare('DELETE FROM roles WHERE id = ?').run(id);
+  })();
 }

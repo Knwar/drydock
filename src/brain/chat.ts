@@ -121,7 +121,10 @@ export function members(db: DB, conversationId: string): string[] {
 
 export function listConversations(db: DB) {
   ensureDms(db);
-  const rows = db.prepare('SELECT * FROM conversations ORDER BY kind, created_at').all() as Conversation[];
+  // a removed member's DM is kept (history) but not listed until they are added again
+  const rows = db
+    .prepare(`SELECT * FROM conversations c WHERE c.kind != 'dm' OR EXISTS (SELECT 1 FROM roles r WHERE r.id = c.role_id) ORDER BY kind, created_at`)
+    .all() as Conversation[];
   const last = db.prepare(`SELECT body, kind, author FROM messages WHERE conversation_id = ? AND kind IN ('text', 'decision', 'approval', 'proposal') ORDER BY id DESC LIMIT 1`);
   const unread = db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND author != 'user' AND kind IN ('text', 'decision', 'approval', 'proposal') AND created_at > ?`);
   return rows.map((c) => ({
