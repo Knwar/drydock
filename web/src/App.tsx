@@ -8,7 +8,9 @@ import { Header, Sidebar } from './components/Shell';
 import { TeamList } from './components/Team';
 import { Home } from './pages/Home';
 import { Onboarding } from './pages/Onboarding';
+import { Personal } from './pages/Personal';
 import { ProjectPage } from './pages/ProjectPage';
+import { Settings } from './pages/Settings';
 
 const projectEvents = (m: any) => ['card', 'card_removed', 'phases', 'project_removed', 'workspace', 'brain_project', 'design'].includes(m?.type);
 const convEvents = (m: any) => ['chat', 'chat_status', 'conversations', 'roles', 'chat_update'].includes(m?.type);
@@ -59,7 +61,9 @@ export function App() {
   if (parts.length === 0) page = <Home projects={list} />;
   else if (parts[0] === 'project' && parts[1])
     page = <ProjectPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} openConversation={select} />;
-  else page = <div className="empty">This screen is being built.</div>;
+  else if (parts[0] === 'personal') page = <Personal />;
+  else if (parts[0] === 'settings') page = <Settings section={parts[1] ?? 'integrations'} roles={roles.data ?? []} />;
+  else page = <div className="empty">Not found. <a href="/app/">Go home</a></div>;
 
   return (
     <div className="app">

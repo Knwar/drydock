@@ -191,6 +191,13 @@ export function ChatPanel({ conversation, roles, onSent }: { conversation: Conve
           if (Array.isArray(row)) return <ToolLines key={`t${row[0].id}`} items={row} />;
           const m = row;
           if (m.author === 'user') return <div key={m.id} className="bubble-me">{m.body}</div>;
+          if (m.author === 'system')
+            return (
+              <details key={m.id} className="sys-note">
+                <summary>AI Brain asked {conversation.id === 'sys:daily' ? 'for the Daily' : 'the team'} · {new Date(m.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</summary>
+                <Markdown text={m.body} />
+              </details>
+            );
           const role = byId.get(m.author);
           if (m.kind === 'approval') return <ApprovalCard key={m.id} m={m} role={role} />;
           if (m.kind === 'decision') return <DecisionCard key={m.id} m={m} />;

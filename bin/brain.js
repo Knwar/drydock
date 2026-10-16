@@ -65,7 +65,7 @@ async function start() {
   writeFileSync(PID_FILE, String(child.pid));
   for (let i = 0; i < 20; i++) {
     if (await up()) {
-      console.log(`daemon started at ${DAEMON_URL} (db: ${dbPath()})`);
+      console.log(`daemon started at ${DAEMON_URL} (db: ${dbPath()})\napp:     ${DAEMON_URL}/app/`);
       return true;
     }
     await new Promise((r) => setTimeout(r, 250));
@@ -156,6 +156,7 @@ async function info(dir) {
   const counts = lanes.map((l) => `${l}:${board.filter((c) => c.lane === l).length}`).join('  ');
   console.log(`project:   ${project.name} (${project.project_id})`);
   console.log(`daemon:    up at ${DAEMON_URL}`);
+  console.log(`app:       ${DAEMON_URL}/app/project/${project.project_id}`);
   console.log(`overlay:   ${DAEMON_URL}/?project=${project.project_id}`);
   console.log(`board:     ${counts}`);
   console.log(`data:      ${dbPath()}  log: ${LOG_FILE}`);

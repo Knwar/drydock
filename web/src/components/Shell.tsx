@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useApi } from '../lib/api';
 import { go, href } from '../lib/router';
 import { STAGE_LABEL, type ProjectSummary } from '../lib/types';
 import { Icon, type IconName } from './Icon';
@@ -35,10 +36,25 @@ export function Header({ theme, toggleTheme, name }: { theme: string; toggleThem
         <input id="cmd" placeholder="Search projects, docs, people, or run a command…" />
         <span className="kbd">⌘K</span>
       </form>
+      <UsageMeter />
       <button className="icon-btn" onClick={toggleTheme} aria-label={label} title={label}>
         <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={18} />
       </button>
     </header>
+  );
+}
+
+function UsageMeter() {
+  const u = useApi<{ five_hour: { pct: number } | null; seven_day: { pct: number } | null; threshold: number; high: boolean }>('/api/usage', (m) => m?.type === 'usage');
+  const week = u.data?.seven_day;
+  return (
+    <a className={`usage${u.data?.high ? ' high' : ''}`} href={href('/settings/usage')} onClick={go('/settings/usage')} style={{ textDecoration: 'none' }} title="Claude subscription usage this week">
+      <div className="usage-top">
+        <span style={{ fontWeight: 600, color: u.data?.high ? 'var(--a-fg)' : 'var(--muted)' }}>{u.data?.high ? 'Usage high' : 'Usage this week'}</span>
+        <span className="mono">{week ? `${week.pct}%` : '—'}</span>
+      </div>
+      <div className="bar" style={{ height: 5 }}><div style={{ width: `${week?.pct ?? 0}%`, background: u.data?.high ? 'var(--a-fg)' : 'var(--accent)' }} /></div>
+    </a>
   );
 }
 

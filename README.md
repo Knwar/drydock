@@ -1,6 +1,6 @@
 # AI Brain
 
-A second brain and project studio that runs on your Mac. You describe an idea in chat, and AI Brain helps you scope it, designs the system (C4 model), breaks it into phases and cards, and runs a team of Claude Code agents to build it. Each agent is a Claude Code session with its own role and skill, and works only within the permissions you grant. Alongside projects, it manages your day: email, calendar, notes, reminders, and a daily brief.
+A second brain and project studio that runs on your Mac. Describe an idea to the main agent and it helps you scope it, creates the project, keeps the requirements, has an Architect design the system (C4 model), and then a PM runs the build on a live board with builder and reviewer agents. Every agent is a Claude Code session on your subscription, with its own role and memory, and works only within the permissions you grant. Alongside projects it runs your day: the Daily, reminders, notes, email and calendar (once connected), bills and spending.
 
 AI Brain is a fork of [kankanban](https://github.com/Knwar/kankanban), which provides the board engine: daemon, SQLite, MCP server, hooks, git worktrees, phases and cards.
 
@@ -8,36 +8,57 @@ AI Brain is a fork of [kankanban](https://github.com/Knwar/kankanban), which pro
 - Mockups: [AI Brain — Main Dashboard](https://claude.ai/artifact/PtzGG5m9a5yWj93np1dkPc)
 - Engine reference: [docs/kankanban-engine.md](docs/kankanban-engine.md)
 
-## Status
-
-Phase 1 (fork and foundation) is done. The board engine runs under its own name, so it can sit next to an installed kankanban:
-
-| | kankanban | AI Brain |
-| --- | --- | --- |
-| CLI | `kankan` | `brain` |
-| Daemon | `http://localhost:7890` | `http://localhost:7900` |
-| Data | `~/.kankan/` | `~/.ai-brain/` (moves into your workspace folder in phase 2) |
-
-Next phases: workspace folder and onboarding, the new UI shell, agent sessions and team chat, the project pipeline, then the personal page, the Daily, and Settings.
-
 ## Run it
 
 ```bash
-npm install          # also fixes node-pty's spawn-helper permissions
+npm install
 npm run build
-node bin/brain.js daemon start   # http://localhost:7900
+node bin/brain.js daemon start      # then open http://localhost:7900/app/
 ```
 
-To put `brain` on your PATH, run `npm link` from this folder.
+The first screen asks for your **workspace folder**. Everything AI Brain creates (vault, projects, database) goes inside it, and agents are blocked from reading or writing outside it by a PreToolUse hook (`.claude/hooks/boundary.js`). The only file outside is `~/.ai-brain/config.json`, which records where the workspace is.
 
-## Develop
+### Develop with live reload
+
+```bash
+PORT=7900 npm run dev:daemon        # daemon, restarts on backend changes
+npm run dev:web                     # UI with hot reload at http://localhost:5190/app/
+```
+
+## How it works
+
+| Piece | Where |
+| --- | --- |
+| Workspace, onboarding, boundary guard | `src/brain/workspace.ts`, `.claude/hooks/boundary.js` |
+| `/api/*` routes | `src/brain/router.ts`, `routes-*.ts` |
+| Roles and personas (main, CTO, CFO, Marketing, Social, QC, Architect, PM) | `src/brain/roles.ts` |
+| Team chat: DMs, channels, decisions, approvals | `src/brain/chat.ts`, `routes-chat.ts` |
+| Agent runs: `claude -p` per role per conversation, resumed sessions, streamed replies | `src/brain/runner.ts` |
+| Agent tools (the `brain` MCP server), incl. the permission-prompt tool behind approval cards | `src/brain/mcp.ts` |
+| Project pipeline: create → requirements → C4 design → verticals → roadmap → build | `src/brain/pipeline.ts`, `routes-projects.ts` |
+| Personal data, the Daily, integrations, usage | `src/brain/personal.ts`, `daily.ts`, `integrations.ts`, `usage.ts` |
+| Web app (React + Vite, ELK for diagrams) | `web/` |
+
+Lifecycle gates: **Mark requirements final** brings in the Architect and CTO (`#<project>-design`); **Finalise design** creates one board vertical per app container and asks the PM for a roadmap (`#<project>-build`); **Approve roadmap** starts the phase loop.
+
+## Connect email and calendar
+
+Gmail and Google Calendar come from your claude.ai connectors. If Settings → Integrations shows them connected but agents can't use them, sign in once for Claude Code: run `claude`, type `/mcp`, pick each server and follow the browser sign-in.
+
+## Test
 
 ```bash
 npm run typecheck
 npm test
 ```
 
-One autopilot test (`autopilot nudges an idle session through the pty`) is timing-sensitive. It sometimes fails under full-suite load and passes on its own. It has the same behaviour in kankanban.
+Agent tests use a fake `claude` (`test/fixtures/fake-claude.mjs`); the real CLI was verified end to end separately. One kankanban autopilot test is timing-sensitive under full-suite load.
+
+| | kankanban | AI Brain |
+| --- | --- | --- |
+| CLI | `kankan` | `brain` |
+| Daemon | `http://localhost:7890` | `http://localhost:7900` (app at `/app/`) |
+| Data | `~/.kankan/` | your workspace folder (`<workspace>/.ai-brain/`) |
 
 ## License
 

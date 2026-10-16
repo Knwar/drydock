@@ -74,7 +74,8 @@ export function generateDaily(db: DB): void {
   if (generating) return;
   const s = dailySettings(db);
   const day = localDay();
-  const sections = Object.entries(s.sections).filter(([, on]) => on).map(([k]) => k);
+  const TITLES: Record<string, string> = { day: 'Your day', work: 'Work & projects', inbox: 'Inbox', life: 'Life & money', team: 'Team decisions' };
+  const sections = Object.entries(s.sections).filter(([, on]) => on).map(([k]) => `"${TITLES[k] ?? k}"`);
   const prompt = [
     `Write today's edition of The Daily (${day}).`,
     '',
@@ -87,7 +88,7 @@ export function generateDaily(db: DB): void {
     '- Open reminders with list_reminders.',
     s.sections.team ? '- Decisions agreed since yesterday with list_decisions.' : '',
     '',
-    `Then call publish_daily once, with a one-sentence headline (the most important thing today), a 2–3 sentence summary, a focus for the day, and these sections: ${sections.join(', ')}. Each item is one short line.`,
+    `Then call publish_daily once, with a one-sentence headline (the most important thing today), a 2–3 sentence summary, a focus for the day, and these sections, using exactly these titles: ${sections.join(', ')}. Each item is one short line; tag each with a tone (work, personal, social, money or alert).`,
     'If Gmail or Calendar is not connected, say so in one item and work with what you have. Never invent events, emails or amounts.',
     s.email ? "Finally, email the edition to the user's own address with Gmail (subject: \"The Daily · <date>\"). Send nothing else." : '',
   ]
