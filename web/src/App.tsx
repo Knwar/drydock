@@ -4,6 +4,7 @@ import { navigate, threadParam, usePath } from './lib/router';
 import { useTheme } from './lib/theme';
 import type { Conversation, ProjectSummary, Role, WorkspaceInfo } from './lib/types';
 import { ChatPanel } from './components/Chat';
+import { CommandBar } from './components/CommandBar';
 import { Header, Sidebar } from './components/Shell';
 import { AddMemberDialog, NewProjectDialog, NewThreadDialog } from './components/Dialogs';
 import { RightRail } from './components/RightRail';
@@ -60,10 +61,18 @@ export function App() {
   useEffect(() => setDrawer(Boolean(linked)), [path, linked]);
   useEffect(() => {
     if (!drawer) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !document.querySelector('.modal') && setDrawer(false);
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !document.querySelector('.modal-back') && setDrawer(false);
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [drawer]);
+  const [cmd, setCmd] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') (e.preventDefault(), setCmd((v) => !v));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   if (ws.error) return <main className="main"><div className="error">Can't reach the AI Brain daemon: {ws.error}</div></main>;
   if (!ws.data) return null;
@@ -74,8 +83,18 @@ export function App() {
   const current = conversations.find((c) => c.id === (linked ?? convId)) ?? conversations.find((c) => c.id === 'dm:main') ?? null;
   const onProject = parts[0] === 'project' && Boolean(parts[1]);
   const onOverview = onProject && !parts[2];
-  const sideOpen = !onProject || (onOverview ? projectSide === 'open' : drawer);
-  const setSide = (open: boolean) => (onOverview ? setProjectSide(open ? 'open' : 'closed') : setDrawer(open));
+  const sideOpen = !onProject || (onOverview ? projectSide === 'open' || Boolean(linked) : drawer);
+  const setSide = (open: boolean) => {
+    if (onOverview) setProjectSide(open ? 'open' : 'closed');
+    else setDrawer(open);
+    if (!open && linked) navigate(path);
+  };
+  /** Open an app path; a ?thread= in it opens that thread in the chat panel. */
+  const openLink = (link: string) => {
+    const thread = new URL(link, location.origin).searchParams.get('thread');
+    if (thread) (setConvId(thread), setChatState('open'));
+    navigate(link);
+  };
   const select = (id: string) => {
     setConvId(id);
     if (threadParam() !== id) navigate(`${path === '/' ? '' : path}?thread=${encodeURIComponent(id)}`);
@@ -98,7 +117,7 @@ export function App() {
 
   return (
     <div className="app">
-      <Header theme={theme} toggleTheme={toggleTheme} name={profile.data?.name ?? ''} />
+      <Header theme={theme} toggleTheme={toggleTheme} name={profile.data?.name ?? ''} onSearch={() => setCmd(true)} />
       <div className="body">
         <Sidebar
           key={list.length ? 'loaded' : 'empty'}
@@ -131,6 +150,22 @@ export function App() {
             onClose={() => setNewThread(null)}
             onCreated={select}
             onAddMember={() => (setNewThread(null), setAddingMember(true))}
+          />
+        )}
+        {cmd && (
+          <CommandBar
+            projects={list}
+            conversations={conversations}
+            roles={roles.data ?? []}
+            onClose={() => setCmd(false)}
+            openLink={openLink}
+            actions={{
+              newProject: () => setNewProject(true),
+              newThread: () => setNewThread({ project: onProject ? parts[1] : null }),
+              addMember: () => setAddingMember(true),
+              toggleTheme,
+              askMain,
+            }}
           />
         )}
         {addingMember && <AddMemberDialog onClose={() => setAddingMember(false)} onAdded={() => setAddingMember(false)} />}

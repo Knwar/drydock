@@ -12,6 +12,7 @@ import './routes-chat.js';
 import './routes-projects.js';
 import './routes-personal.js';
 import './routes-teamwork.js';
+import './search.js';
 import { startCheckins } from './checkins.js';
 import { resumeInterruptedRuns } from './runner.js';
 import { ensureSchema } from './schema.js';

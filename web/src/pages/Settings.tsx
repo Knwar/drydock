@@ -1,17 +1,11 @@
+import { SETTINGS_SECTIONS } from '../components/CommandBar';
 import { useEffect, useState } from 'react';
 import { api, useApi } from '../lib/api';
 import { go, href } from '../lib/router';
 import type { Role, WorkspaceInfo } from '../lib/types';
 import { AddMemberDialog, Modal } from '../components/Dialogs';
 
-const SECTIONS = [
-  ['integrations', 'Integrations'],
-  ['daily', 'The Daily'],
-  ['team', 'Team & permissions'],
-  ['usage', 'Usage alerts'],
-  ['checkins', 'Check-ins'],
-  ['workspace', 'Workspace'],
-] as const;
+const SECTIONS = SETTINGS_SECTIONS;
 
 type Policy = 'allow' | 'ask' | 'deny';
 const NEXT: Record<Policy, Policy> = { ask: 'allow', allow: 'deny', deny: 'ask' };

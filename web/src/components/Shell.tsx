@@ -11,7 +11,7 @@ function greeting(d = new Date()): string {
   return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
 }
 
-export function Header({ theme, toggleTheme, name }: { theme: string; toggleTheme: () => void; name: string }) {
+export function Header({ theme, toggleTheme, name, onSearch }: { theme: string; toggleTheme: () => void; name: string; onSearch: () => void }) {
   const now = new Date();
   const stamp = now.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) + ' · ' + now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   const label = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
@@ -28,14 +28,11 @@ export function Header({ theme, toggleTheme, name }: { theme: string; toggleThem
           {name ? `, ${name}` : ''}
         </h1>
       </div>
-      <form className="search" role="search" onSubmit={(e) => e.preventDefault()}>
+      <button className="search" onClick={onSearch} aria-label="Search or run a command (⌘K)">
         <Icon name="search" style={{ color: 'var(--muted)' }} />
-        <label htmlFor="cmd" className="sr-only">
-          Search or run a command
-        </label>
-        <input id="cmd" placeholder="Search projects, docs, people, or run a command…" />
+        <span className="search-ph">Search projects, docs, people, or run a command…</span>
         <span className="kbd">⌘K</span>
-      </form>
+      </button>
       <UsageMeter />
       <button className="icon-btn" onClick={toggleTheme} aria-label={label} title={label}>
         <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={18} />

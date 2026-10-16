@@ -1,5 +1,6 @@
 import { when } from '../lib/time';
 import { useEffect, useMemo, useState, useRef } from 'react';
+import { PROJECT_TABS } from '../components/CommandBar';
 import { Diagram, Legend, type Element, type Relation } from '../components/Diagram';
 import { Modal } from '../components/Dialogs';
 import { TeamPopup, type Recommendation } from '../components/TeamPopup';
@@ -10,16 +11,7 @@ import { Markdown } from '../lib/md';
 import { go, href, navigate } from '../lib/router';
 import type { Role } from '../lib/types';
 
-const TABS = [
-  ['', 'Overview'],
-  ['requirements', 'Requirements'],
-  ['design', 'System design'],
-  ['board', 'Board'],
-  ['roles', 'Team'],
-  ['memory', 'Memory'],
-  ['agents', 'Live agents'],
-  ['docs', 'Docs'],
-] as const;
+const TABS = PROJECT_TABS;
 
 const STAGE_NAMES: Record<string, string> = { idea: 'Idea', create: 'Create', requirements: 'Requirements', design: 'Design', plan: 'Plan', build: 'Build' };
 
@@ -379,8 +371,9 @@ function Requirements({ p }: { p: Detail }) {
 
 function SystemDesign({ p, focus, openConversation }: { p: Detail; focus: string | null; openConversation: (id: string) => void }) {
   const design = useApi<{ elements: Element[]; relations: Relation[]; finalVersion: number | null }>(`/api/projects/${p.id}/design`, (m) => m?.type === 'design' && m.project_id === p.id);
-  const [selected, setSelected] = useState<string | null>(null);
-  useEffect(() => setSelected(null), [focus]);
+  const elParam = new URLSearchParams(location.search).get('el');
+  const [selected, setSelected] = useState<string | null>(elParam);
+  useEffect(() => setSelected(elParam), [focus, elParam]);
   const elements = design.data?.elements ?? [];
   const relations = design.data?.relations ?? [];
   const byId = useMemo(() => new Map(elements.map((e) => [e.id, e])), [elements]);
@@ -462,6 +455,11 @@ function Board({ p }: { p: Detail }) {
   const name = (id: string) => (id === p.id ? 'Shared' : p.verticals.find((v) => v.id === id)?.name ?? '');
   const lanes = [['backlog', 'Backlog'], ['queued', 'Queued'], ['in_progress', 'In progress'], ['in_review', 'In review'], ['done', 'Done']];
   const shown = cards.filter((c) => filter === 'all' || c.board === filter);
+  const cardParam = new URLSearchParams(location.search).get('card');
+  const scrolledTo = useRef<string | null>(null);
+  const reveal = (el: HTMLDivElement | null) => {
+    if (el && scrolledTo.current !== cardParam) (scrolledTo.current = cardParam, el.scrollIntoView({ block: 'nearest', inline: 'center' }));
+  };
   return (
     <>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -481,7 +479,7 @@ function Board({ p }: { p: Detail }) {
                 <div key={lane} className="lane">
                   <div className="lane-head"><strong>{label}</strong><span className="mono muted">{items.length}</span></div>
                   {items.map((c) => (
-                    <div key={c.id} className={`board-card${c.blocked ? ' blocked' : ''}`}>
+                    <div key={c.id} className={`board-card${c.blocked ? ' blocked' : ''}${c.id === cardParam ? ' hit' : ''}`} ref={c.id === cardParam ? reveal : undefined}>
                       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                         <span className="mono muted" style={{ fontSize: 10.5 }}>{c.id}</span>
                         <span className="pill t-b" style={{ fontSize: 10.5 }}>{name(c.board)}</span>
@@ -708,8 +706,15 @@ function Agents({ p, openConversation }: { p: Detail; openConversation: (id: str
 function Docs({ p }: { p: Detail }) {
   const roots = { vault: `vault/projects/${p.slug}`, code: `projects/${p.slug}` };
   const [root, setRoot] = useState<'vault' | 'code'>('vault');
+  const fileParam = new URLSearchParams(location.search).get('file');
   const [dir, setDir] = useState(roots.vault);
   const [file, setFile] = useState<string | null>(null);
+  useEffect(() => {
+    if (!fileParam) return;
+    setRoot(fileParam.startsWith('vault/') ? 'vault' : 'code');
+    setDir(fileParam.split('/').slice(0, -1).join('/'));
+    setFile(fileParam);
+  }, [fileParam]);
   const listing = useApi<{ kind: string; entries: { name: string; dir: boolean; path: string }[] }>(`/api/files?path=${encodeURIComponent(dir)}`);
   const content = useApi<{ content: string; path: string }>(file ? `/api/files?path=${encodeURIComponent(file)}` : null);
   return (
