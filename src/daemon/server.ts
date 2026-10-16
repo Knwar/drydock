@@ -28,7 +28,7 @@ import * as snapshots from '../core/snapshots.js';
 import { agentHistory, type AgentHistoryOptions } from '../core/agent-history.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
-import { handleApi } from '../brain/api.js';
+import { handleApi, startBrain } from '../brain/api.js';
 import { serveApp } from '../brain/static.js';
 import { bindBus } from '../brain/bus.js';
 import { resolveDbPath } from '../brain/workspace.js';
@@ -2686,6 +2686,7 @@ server.listen(PORT, HOST, onListening);
 // to disable it. A bad tick is swallowed so a delivery hiccup can't kill the
 // daemon; runOnce is fire-and-forget so a slow send never blocks the interval.
 const intervals: NodeJS.Timeout[] = [];
+if (!process.env.BRAIN_NO_SCHEDULER) intervals.push(startBrain());
 if (process.env.KANKAN_DISPATCHER !== '0') {
   const dispatcher = new Dispatcher(db);
   intervals.push(setInterval(() => {

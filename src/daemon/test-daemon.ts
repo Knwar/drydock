@@ -72,6 +72,8 @@ export async function startDaemon(opts: { env?: Record<string, string | undefine
     KANKAN_DISPATCHER: '0',
     KANKAN_TERMINAL: '0',
     KANKAN_AUTOPILOT: '0', // never type into a pty unless a test opts in
+    BRAIN_NO_SCHEDULER: '1', // no Daily scheduler or `claude mcp list` in tests
+    BRAIN_NO_NOTIFY: '1',
     ...opts.env,
     PORT: String(port),
     DB_PATH: opts.dbPath === null ? undefined : (opts.dbPath ?? join(dbDir, 'board.db')),

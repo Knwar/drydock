@@ -8,9 +8,11 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getBus } from './bus.js';
-import { putSetting, getSetting } from './settings.js';
+import { getSetting } from './settings.js';
 import { addMessage, getConversation, getSession, listMessages, members, saveSession, standingTools, type Message } from './chat.js';
 import { getRole, listRoles, type Role } from './roles.js';
+import { blockedServers, listServers, recordTools, toolPolicies } from './integrations.js';
+import { onRateLimit } from './usage.js';
 import { currentWorkspace } from './workspace.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -115,7 +117,7 @@ function shimDir(dataDir: string): string {
 }
 
 /** Run one turn for `roleId` in the conversation, if it has anything new to answer. */
-async function runTurn(roleId: string, conversationId: string): Promise<void> {
+async function runTurn(roleId: string, conversationId: string, modelOverride?: string): Promise<void> {
   const db = getBus().db();
   const role = getRole(db, roleId);
   const ws = currentWorkspace();
@@ -135,15 +137,19 @@ async function runTurn(roleId: string, conversationId: string): Promise<void> {
     if (p) cwd = p.root_path;
   }
   const projectRole = Boolean(conv.project_id && role.scope === 'project');
-  const allowed = [...ALWAYS_ALLOWED, ...(projectRole ? PROJECT_ALLOWED : []), ...standingTools(db, roleId, 'allow')];
-  const denied = standingTools(db, roleId, 'deny');
+  void listServers(); // refreshes in the background; role access uses the cached list
+  const policies = toolPolicies(db);
+  const globalAllow = Object.keys(policies).filter((t) => policies[t] === 'allow');
+  const globalDeny = Object.keys(policies).filter((t) => policies[t] === 'deny');
+  const allowed = [...ALWAYS_ALLOWED, ...(projectRole ? PROJECT_ALLOWED : []), ...globalAllow, ...standingTools(db, roleId, 'allow')];
+  const denied = [...globalDeny, ...blockedServers(db, roleId), ...standingTools(db, roleId, 'deny')];
   const args = [
     '-p',
     pending.prompt,
     '--output-format', 'stream-json',
     '--verbose',
     '--include-partial-messages',
-    '--model', role.model,
+    '--model', modelOverride ?? role.model,
     '--append-system-prompt', systemPrompt(role, conversationId),
     '--mcp-config', mcpConfig(roleId, conversationId, ws.data, projectRole),
     '--permission-prompt-tool', 'mcp__brain__approve',
@@ -189,6 +195,7 @@ async function runTurn(roleId: string, conversationId: string): Promise<void> {
       return;
     }
     if (ev.session_id) sessionId = ev.session_id;
+    if (ev.type === 'system' && ev.subtype === 'init' && Array.isArray(ev.tools)) recordTools(getBus().db(), ev.tools);
     if (ev.type === 'stream_event' && ev.event?.type === 'content_block_delta' && ev.event.delta?.type === 'text_delta') {
       streamed += ev.event.delta.text;
       flushDelta();
@@ -196,14 +203,14 @@ async function runTurn(roleId: string, conversationId: string): Promise<void> {
       streamed = '';
     } else if (ev.type === 'assistant') {
       for (const c of ev.message?.content ?? []) {
+        if (c.type === 'tool_use') recordTools(getBus().db(), [c.name]);
         if (c.type === 'tool_use' && c.name !== 'mcp__brain__approve' && !String(c.name).startsWith('mcp__brain__log_')) {
           const summary = toolSummary(c.name, c.input);
           emitMessage(addMessage(getBus().db(), conversationId, roleId, summary, 'tool', { name: c.name, input: truncate(c.input) }));
         }
       }
     } else if (ev.type === 'rate_limit_event') {
-      putSetting(getBus().db(), 'brain.rate_limit', { ...ev, at: Date.now() });
-      getBus().emit({ type: 'usage' });
+      onRateLimit(getBus().db(), ev);
     } else if (ev.type === 'result') {
       final = ev;
     }
@@ -268,7 +275,7 @@ export function toolSummary(name: string, input: any): string {
  * Queue the conversation's members to answer: a DM's role, or each channel
  * member in turn (only those @mentioned, when anyone is).
  */
-export function respond(conversationId: string, mentionText = ''): void {
+export function respond(conversationId: string, mentionText = '', opts: { model?: string; onDone?: () => void } = {}): void {
   const db = getBus().db();
   const conv = getConversation(db, conversationId);
   if (!conv) return;
@@ -284,9 +291,10 @@ export function respond(conversationId: string, mentionText = ''): void {
   const prev = queues.get(conversationId) ?? Promise.resolve();
   const next = prev
     .then(async () => {
-      for (const roleId of who) await runTurn(roleId, conversationId);
+      for (const roleId of who) await runTurn(roleId, conversationId, opts.model);
     })
-    .catch((err) => console.error(`agent turn failed in ${conversationId}: ${(err as Error).message}`));
+    .catch((err) => console.error(`agent turn failed in ${conversationId}: ${(err as Error).message}`))
+    .finally(() => opts.onDone?.());
   queues.set(conversationId, next);
 }
 

@@ -164,6 +164,110 @@ server.registerTool(
   },
 );
 
+// ── personal manager and the Daily ───────────────────────────────
+
+server.registerTool(
+  'list_reminders',
+  { description: "The user's reminders (open first).", inputSchema: {} },
+  async () => text(JSON.stringify((await call('/api/personal')).reminders, null, 2)),
+);
+
+server.registerTool(
+  'add_reminder',
+  { description: 'Add a reminder for the user.', inputSchema: { text: z.string(), due: z.string().optional().describe('YYYY-MM-DD or YYYY-MM-DDTHH:MM') } },
+  async ({ text: t, due }) => {
+    await call('/api/reminders', { text: t, due });
+    return text(`Reminder added: ${t}`);
+  },
+);
+
+server.registerTool(
+  'save_note',
+  { description: "Save a note to the user's vault (vault/personal/notes).", inputSchema: { title: z.string(), text: z.string() } },
+  async ({ title, text: t }) => {
+    const n = await call('/api/notes', { title, text: t });
+    return text(`Saved note ${n.file}`);
+  },
+);
+
+server.registerTool(
+  'list_decisions',
+  { description: 'Recent decisions across all projects, newest first.', inputSchema: {} },
+  async () => text(JSON.stringify(await call('/api/decisions/recent'), null, 2)),
+);
+
+server.registerTool(
+  'record_inbox',
+  {
+    description: 'Record emails that need the user\'s action, for the personal page. Use the email thread id as id so repeats update rather than duplicate.',
+    inputSchema: {
+      items: z.array(
+        z.object({
+          id: z.string(),
+          sender: z.string(),
+          subject: z.string(),
+          summary: z.string().optional(),
+          tag: z.enum(['reply', 'payment', 'project', 'personal', 'travel', 'action']),
+          action: z.string().optional().describe('The one next step, e.g. "Draft reply", "Pay by Friday"'),
+          received: z.string().optional().describe('ISO date'),
+        }),
+      ),
+    },
+  },
+  async ({ items }) => {
+    await call('/api/personal/inbox', { items });
+    return text(`Recorded ${items.length} inbox items.`);
+  },
+);
+
+server.registerTool(
+  'record_calendar',
+  {
+    description: 'Replace the calendar events shown for a date range (usually this week) with what the calendar says now.',
+    inputSchema: {
+      from: z.string().describe('YYYY-MM-DD'),
+      to: z.string().describe('YYYY-MM-DD'),
+      events: z.array(z.object({ day: z.string(), time: z.string().optional().describe('HH:MM, omit for all-day'), title: z.string(), meta: z.string().optional(), category: z.enum(['work', 'personal', 'social', 'reminder']).optional() })),
+    },
+  },
+  async (b) => {
+    await call('/api/personal/calendar', b);
+    return text(`Recorded ${b.events.length} events.`);
+  },
+);
+
+server.registerTool(
+  'record_money',
+  {
+    description: 'Record bills found in email (invoices, renewals) and this month\'s spending by category (from receipts and bank emails). Only real amounts from emails; never estimate.',
+    inputSchema: {
+      bills: z.array(z.object({ id: z.string(), name: z.string(), amount: z.number().optional(), currency: z.string().optional(), due: z.string().optional(), autopay: z.boolean().optional() })).optional(),
+      spending: z.object({ month: z.string().describe('YYYY-MM'), rows: z.array(z.object({ category: z.string(), amount: z.number(), currency: z.string().optional() })) }).optional(),
+    },
+  },
+  async (b) => {
+    await call('/api/personal/money', b);
+    return text('Recorded.');
+  },
+);
+
+server.registerTool(
+  'publish_daily',
+  {
+    description: "Publish today's edition of The Daily. Call once, after gathering.",
+    inputSchema: {
+      headline: z.string().describe('One sentence: the most important thing today'),
+      summary: z.string().describe('Two or three sentences'),
+      focus: z.string().optional().describe('A suggested focus for the day'),
+      sections: z.array(z.object({ title: z.string(), items: z.array(z.object({ text: z.string(), tone: z.enum(['work', 'personal', 'social', 'money', 'alert']).optional() })) })),
+    },
+  },
+  async (b) => {
+    const e = await call('/api/daily/publish', b);
+    return text(`Published edition ${e.number} for ${e.day}.`);
+  },
+);
+
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop()!)) {
   await server.connect(new StdioServerTransport());
 }
