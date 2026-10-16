@@ -99,3 +99,16 @@ describe('boundary hook', () => {
     assert.equal(checkToolCall({ root: null, cwd, tool: 'Read', input: { file_path: '/etc/hosts' } }), null);
   });
 });
+
+describe('schema upgrades', () => {
+  it('adds columns a newer version declares to an older table', async () => {
+    const { openDb } = await import('../core/db.js');
+    const { addMissingColumns } = await import('./schema.js');
+    const db = openDb(':memory:');
+    db.exec('CREATE TABLE agent_runs (conversation_id TEXT PRIMARY KEY, role_id TEXT NOT NULL, started_at INTEGER NOT NULL)');
+    addMissingColumns(db, 'agent_runs', { seen_upto: 'INTEGER NOT NULL DEFAULT 0' });
+    addMissingColumns(db, 'agent_runs', { seen_upto: 'INTEGER NOT NULL DEFAULT 0' }); // idempotent
+    const cols = (db.prepare('PRAGMA table_info(agent_runs)').all() as { name: string }[]).map((c) => c.name);
+    assert.ok(cols.includes('seen_upto'));
+  });
+});

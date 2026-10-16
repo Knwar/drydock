@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getBus, isShuttingDown } from './bus.js';
-import { defineSchema } from './schema.js';
+import { addMissingColumns, defineSchema } from './schema.js';
 import { getSetting } from './settings.js';
 import { addMessage, getConversation, getSession, listMessages, members, saveSession, standingTools, type Message } from './chat.js';
 import { getRole, listRoles, type Role } from './roles.js';
@@ -128,8 +128,34 @@ function shimDir(dataDir: string): string {
 }
 
 /** Run one turn for `roleId` in the conversation, if it has anything new to answer. */
-/** Runs one turn; resolves to the text the role posted (null if nothing). */
+/**
+ * Runs one turn; resolves to the text the role posted (null if nothing).
+ * Whatever goes wrong, the agent process is stopped, the conversation stops
+ * showing "working", and the error is posted where the user can see it.
+ */
 async function runTurn(roleId: string, conversationId: string, modelOverride?: string, resumeNote?: string): Promise<string | null> {
+  try {
+    return await runTurnInner(roleId, conversationId, modelOverride, resumeNote);
+  } catch (err) {
+    const r = running.get(conversationId);
+    if (r?.roleId === roleId) {
+      r.child.kill('SIGTERM');
+      running.delete(conversationId);
+    }
+    try {
+      clearRun(conversationId);
+      emitMessage(addMessage(getBus().db(), conversationId, roleId, `Something went wrong running this agent: ${(err as Error).message}`, 'error'));
+    } catch {
+      /* the DB itself failed: the log line below is all we can do */
+    }
+    console.error(`agent turn failed in ${conversationId}: ${(err as Error).message}`);
+    getBus().emit({ type: 'chat_delta', conversation: conversationId, role: roleId, text: '' });
+    emitStatus(conversationId, roleId, 'idle');
+    return null;
+  }
+}
+
+async function runTurnInner(roleId: string, conversationId: string, modelOverride?: string, resumeNote?: string): Promise<string | null> {
   const db = getBus().db();
   const role = getRole(db, roleId);
   const ws = currentWorkspace();
@@ -350,7 +376,8 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // ── runs survive restarts ────────────────────────────────────────
 
-defineSchema(`
+defineSchema(
+  `
 CREATE TABLE IF NOT EXISTS agent_runs (
   conversation_id TEXT PRIMARY KEY,
   role_id         TEXT NOT NULL,
@@ -359,7 +386,9 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   seen_upto       INTEGER NOT NULL DEFAULT 0, -- the last message this run was answering
   started_at      INTEGER NOT NULL
 );
-`);
+`,
+  (db) => addMissingColumns(db, 'agent_runs', { seen_upto: 'INTEGER NOT NULL DEFAULT 0' }),
+);
 
 function markRun(conversationId: string, roleId: string, sessionId: string | null, model: string | null, seenUpto = 0): void {
   getBus()

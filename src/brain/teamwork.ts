@@ -13,7 +13,7 @@ import { getBus } from './bus.js';
 import { listDecisions } from './chat.js';
 import { projectRef } from './pipeline.js';
 import { addFromTemplate, getRole, listRoles, ROLE_TEMPLATES, saveRole } from './roles.js';
-import { defineSchema } from './schema.js';
+import { addMissingColumns, defineSchema } from './schema.js';
 import { getSetting } from './settings.js';
 
 export const MAX_LEARNINGS = 15;
@@ -74,14 +74,14 @@ CREATE TABLE IF NOT EXISTS enhancements (
 `,
   (db) => {
     // lifecycle and check-in state on brain_projects (added after the table existed)
-    const cols = new Set((db.prepare('PRAGMA table_info(brain_projects)').all() as { name: string }[]).map((c) => c.name));
-    const add = (name: string, def: string) => !cols.has(name) && db.exec(`ALTER TABLE brain_projects ADD COLUMN ${name} ${def}`);
-    add('status', `TEXT NOT NULL DEFAULT 'active'`); // active | paused | review | closed
-    add('closed_reason', 'TEXT');
-    add('closed_at', 'INTEGER');
-    add('checkin_tier', 'INTEGER NOT NULL DEFAULT 0');
-    add('checkin_at', 'INTEGER');
-    add('rag', 'TEXT');
+    addMissingColumns(db, 'brain_projects', {
+      status: `TEXT NOT NULL DEFAULT 'active'`, // active | paused | review | closed
+      closed_reason: 'TEXT',
+      closed_at: 'INTEGER',
+      checkin_tier: 'INTEGER NOT NULL DEFAULT 0',
+      checkin_at: 'INTEGER',
+      rag: 'TEXT',
+    });
   },
 );
 
