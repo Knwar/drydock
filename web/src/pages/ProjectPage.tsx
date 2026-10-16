@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Diagram, Legend, type Element, type Relation } from '../components/Diagram';
+import { Modal } from '../components/Dialogs';
 import { Icon } from '../components/Icon';
 import { StageSteps } from '../components/Shell';
 import { api, useApi } from '../lib/api';
@@ -28,6 +29,7 @@ interface Detail {
   stage: string;
   description: string | null;
   verticals: { id: string; name: string; done: number; total: number }[];
+  containers: { id: string; name: string; components: number }[];
   phase: { index: number; count: number; title: string } | null;
   phases: { id: string; title: string; goal: string | null; status: string }[];
   cards: { done: number; total: number };
@@ -44,9 +46,16 @@ const refresh = (id: string) => (m: any) =>
 const ROLE_LABEL: Record<string, string> = { architect: 'Architect', pm: 'PM', cto: 'CTO' };
 
 function Gate({ p, openConversation }: { p: Detail; openConversation: (id: string) => void }) {
+  const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needs, setNeeds] = useState<string | null>(null);
+  const reqs = useApi<{ version: number }[]>(p.stage === 'requirements' ? `/api/projects/${p.id}/requirements` : null, (m) => m?.type === 'requirements');
+  const close = () => {
+    setConfirming(false);
+    setError(null);
+    setNeeds(null);
+  };
   const run = async (path: string) => {
     setBusy(true);
     setError(null);
@@ -60,6 +69,7 @@ function Gate({ p, openConversation }: { p: Detail; openConversation: (id: strin
         return;
       }
       if (!res.ok) throw new Error(r.error ?? res.statusText);
+      setConfirming(false);
       if (r?.channel) openConversation(r.channel);
     } catch (e) {
       setError((e as Error).message);
@@ -67,17 +77,61 @@ function Gate({ p, openConversation }: { p: Detail; openConversation: (id: strin
       setBusy(false);
     }
   };
-  const addAndRun = async (path: string) => {
-    await api('/api/roles', { body: { template: needs } });
+  const confirm = async (path: string) => {
+    if (needs) {
+      setBusy(true);
+      try {
+        await api('/api/roles', { body: { template: needs } });
+      } catch (e) {
+        setError((e as Error).message);
+        setBusy(false);
+        return;
+      }
+    }
     await run(path);
   };
+  const v = reqs.data?.[0]?.version;
+  const containers = p.containers ?? [];
   const action =
     p.stage === 'requirements'
-      ? { label: 'Mark requirements final', hint: 'The Architect starts the system design.', path: `/api/projects/${p.id}/requirements/final` }
+      ? {
+          label: 'Mark requirements final',
+          confirm: 'Mark requirements final',
+          hint: 'The Architect starts the system design.',
+          path: `/api/projects/${p.id}/requirements/final`,
+          steps: [
+            `Requirements${v ? ` v${v}` : ''} are locked. You can reopen them later from the Requirements tab.`,
+            `The Architect starts the system design in #${p.slug}-design, and the CTO reviews it if they are on your team.`,
+            'Agents start working, which uses your subscription.',
+          ],
+        }
       : p.stage === 'design'
-        ? { label: 'Finalise design', hint: 'Creates the verticals and asks the PM for a roadmap.', path: `/api/projects/${p.id}/design/final` }
+        ? {
+            label: 'Finalise design',
+            confirm: 'Finalise design',
+            hint: 'Creates the verticals and asks the PM for a roadmap.',
+            path: `/api/projects/${p.id}/design/final`,
+            steps: [
+              'The current design is saved as a final version.',
+              containers.length
+                ? `A board vertical and folder are created for each app: ${containers.map((c) => c.name).join(', ')}.`
+                : 'A board vertical and folder are created for each app container in the design.',
+              `The PM drafts a roadmap of phases in #${p.slug}-build and waits for your approval before building.`,
+            ],
+          }
         : p.stage === 'plan'
-          ? { label: 'Approve roadmap and start building', hint: p.phases.length ? `${p.phases.length} phases proposed.` : 'Waiting for the PM to propose phases.', path: `/api/projects/${p.id}/start`, disabled: !p.phases.length }
+          ? {
+              label: 'Approve roadmap and start building',
+              confirm: 'Approve and start building',
+              hint: p.phases.length ? `${p.phases.length} phases proposed.` : 'Waiting for the PM to propose phases.',
+              path: `/api/projects/${p.id}/start`,
+              disabled: !p.phases.length,
+              steps: [
+                `The PM starts the first of ${p.phases.length} phases: ${p.phases.map((x) => x.title).join(' → ')}.`,
+                'Builder and reviewer agents create and work cards on the board, in separate git worktrees.',
+                'Anything they are not allowed to do on their own still asks you first. This is the stage that uses the most of your subscription.',
+              ],
+            }
           : null;
   if (!action) return null;
   return (
@@ -85,16 +139,31 @@ function Gate({ p, openConversation }: { p: Detail; openConversation: (id: strin
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         <span style={{ fontWeight: 700, fontSize: 13 }}>Next gate</span>
         <span className="muted" style={{ fontSize: 12 }}>{action.hint}</span>
-        {error && <span className={needs ? 'muted' : 'error'} style={needs ? { fontSize: 12, color: 'var(--a-fg)' } : undefined}>{error}</span>}
       </div>
-      {needs ? (
-        <button className="btn primary" disabled={busy} onClick={() => addAndRun(action.path)}>
-          Add {ROLE_LABEL[needs] ?? needs} and continue
-        </button>
-      ) : (
-        <button className="btn primary" disabled={busy || action.disabled} onClick={() => run(action.path)}>
-          {busy ? 'Working…' : action.label}
-        </button>
+      <button className="btn primary" disabled={action.disabled} onClick={() => setConfirming(true)}>
+        {action.label}
+      </button>
+      {confirming && (
+        <Modal title={`${action.label}?`} onClose={close} width={520}>
+          <div style={{ fontSize: 13 }}>
+            <strong>{p.name}</strong> moves from <strong>{STAGE_NAMES[p.stage]}</strong> to the next stage. This will:
+          </div>
+          <ul className="md-list" style={{ fontSize: 13, lineHeight: 1.55, margin: 0 }}>
+            {action.steps.map((s) => <li key={s}>{s}</li>)}
+          </ul>
+          {needs && (
+            <div className="banner t-a" style={{ fontSize: 12.5 }}>
+              {error} Confirming adds {ROLE_LABEL[needs] ?? needs} to your team first.
+            </div>
+          )}
+          {error && !needs && <div className="error">{error}</div>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn primary" disabled={busy} onClick={() => confirm(action.path)}>
+              {busy ? 'Working…' : needs ? `Add ${ROLE_LABEL[needs] ?? needs} and continue` : `Yes, ${action.confirm.toLowerCase()}`}
+            </button>
+            <button className="btn" disabled={busy} onClick={close}>Cancel</button>
+          </div>
+        </Modal>
       )}
     </div>
   );
@@ -185,6 +254,30 @@ function Overview({ p, openConversation }: { p: Detail; openConversation: (id: s
   );
 }
 
+function ReopenButton({ p }: { p: Detail }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  return (
+    <>
+      <button className="btn sm" onClick={() => setOpen(true)}>Reopen</button>
+      {open && (
+        <Modal title="Reopen requirements?" onClose={() => setOpen(false)} width={480}>
+          <ul className="md-list" style={{ fontSize: 13, lineHeight: 1.55, margin: 0 }}>
+            <li>{p.name} goes back to the Requirements stage and the document becomes editable again.</li>
+            <li>The existing design and roadmap stay as they are; review them after you change the requirements.</li>
+          </ul>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn primary" disabled={busy} onClick={async () => { setBusy(true); await api(`/api/projects/${p.id}/requirements/reopen`, { method: 'POST' }); setOpen(false); }}>
+              Yes, reopen requirements
+            </button>
+            <button className="btn" onClick={() => setOpen(false)}>Cancel</button>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 function Requirements({ p }: { p: Detail }) {
   const versions = useApi<{ version: number; markdown: string; author: string | null; final: number; created_at: number }[]>(`/api/projects/${p.id}/requirements`, (m) => m?.type === 'requirements');
   const [editing, setEditing] = useState<string | null>(null);
@@ -205,7 +298,7 @@ function Requirements({ p }: { p: Detail }) {
         <div className="banner t-g">
           <Icon name="check" />
           <span style={{ flex: 1 }}><strong>Requirements v{cur.version} are final.</strong> The design and roadmap are built from this version.</span>
-          <button className="btn sm" onClick={() => api(`/api/projects/${p.id}/requirements/reopen`, { method: 'POST' })}>Reopen</button>
+          <ReopenButton p={p} />
         </div>
       ) : (
         <div className="banner t-b">
