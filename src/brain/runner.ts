@@ -117,18 +117,19 @@ function shimDir(dataDir: string): string {
 }
 
 /** Run one turn for `roleId` in the conversation, if it has anything new to answer. */
-async function runTurn(roleId: string, conversationId: string, modelOverride?: string): Promise<void> {
+/** Runs one turn; resolves to the text the role posted (null if nothing). */
+async function runTurn(roleId: string, conversationId: string, modelOverride?: string): Promise<string | null> {
   const db = getBus().db();
   const role = getRole(db, roleId);
   const ws = currentWorkspace();
-  if (!role) return;
+  if (!role) return null;
   if (!ws) {
     emitMessage(addMessage(db, conversationId, roleId, 'Set up a workspace folder first: agents only run inside it.', 'error'));
-    return;
+    return null;
   }
   const session = getSession(db, roleId, conversationId);
   const pending = pendingPrompt(role, conversationId, session?.seen_message_id ?? 0);
-  if (!pending) return;
+  if (!pending) return null;
 
   const conv = getConversation(db, conversationId)!;
   let cwd = ws.root;
@@ -248,6 +249,18 @@ async function runTurn(roleId: string, conversationId: string, modelOverride?: s
   }
   getBus().emit({ type: 'chat_delta', conversation: conversationId, role: roleId, text: '' });
   emitStatus(conversationId, roleId, 'idle');
+  return final && !final.is_error && text && text !== 'PASS' ? text : null;
+}
+
+/** Channel members @mentioned in `text` (by name or id), in member order. */
+function mentionedMembers(conversationId: string, text: string, exclude: string[] = []): string[] {
+  const db = getBus().db();
+  const roles = listRoles(db);
+  return members(db, conversationId).filter((id) => {
+    if (exclude.includes(id)) return false;
+    const r = roles.find((x) => x.id === id);
+    return r && new RegExp(`@(${escape(r.name)}|${escape(r.id)})\\b`, 'i').test(text);
+  });
 }
 
 const truncate = (v: unknown) => {
@@ -281,22 +294,32 @@ export function respond(conversationId: string, mentionText = '', opts: { model?
   if (!conv) return;
   let who = conv.kind === 'dm' ? [conv.role_id!] : members(db, conversationId);
   if (conv.kind === 'channel') {
-    const roles = listRoles(db);
-    const mentioned = who.filter((id) => {
-      const r = roles.find((x) => x.id === id);
-      return r && new RegExp(`@(${escape(r.name)}|${escape(r.id)})\\b`, 'i').test(mentionText);
-    });
+    const mentioned = mentionedMembers(conversationId, mentionText);
     if (mentioned.length) who = mentioned;
   }
   const prev = queues.get(conversationId) ?? Promise.resolve();
   const next = prev
     .then(async () => {
-      for (const roleId of who) await runTurn(roleId, conversationId, opts.model);
+      // In a channel, a reply that @mentions a teammate hands over to them,
+      // up to MAX_HANDOFFS extra turns per user message (no endless ping-pong).
+      const queue = [...who];
+      let handoffs = 0;
+      while (queue.length) {
+        const roleId = queue.shift()!;
+        const posted = await runTurn(roleId, conversationId, opts.model);
+        if (conv.kind !== 'channel' || !posted) continue;
+        for (const next of mentionedMembers(conversationId, posted, [roleId, ...queue])) {
+          if (handoffs >= MAX_HANDOFFS) break;
+          queue.push(next);
+          handoffs++;
+        }
+      }
     })
     .catch((err) => console.error(`agent turn failed in ${conversationId}: ${(err as Error).message}`))
     .finally(() => opts.onDone?.());
   queues.set(conversationId, next);
 }
 
+const MAX_HANDOFFS = 4;
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 

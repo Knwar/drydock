@@ -20,6 +20,9 @@ if (prompt.includes('NEEDS_APPROVAL')) {
   reply = `write ${a.status}`;
 }
 if (prompt.includes('Reply as') && prompt.includes('nothing to add')) reply = 'PASS';
+// handover chain for tests: "HANDOFF to @X" makes this role mention X back; never-ending on purpose
+const handoff = /HANDOFF/.test(prompt);
+if (handoff) reply = `done, over to you HANDOFF to ${args[args.indexOf('--append-system-prompt') + 1].includes('You are the CTO') ? '@QC' : '@CTO'}`;
 out({ type: 'stream_event', event: { type: 'message_start' } });
 out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: reply } } });
 out({ type: 'assistant', message: { content: [{ type: 'text', text: reply }] } });

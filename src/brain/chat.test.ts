@@ -63,6 +63,23 @@ describe('team chat (fake claude)', () => {
     assert.ok(!messages.some((m: any) => m.author === 'cto'));
   });
 
+  it('hands over to a teammate an agent @mentions, at most 4 extra turns', async () => {
+    await call('POST', '/api/channels', { name: 'relay', members: ['cto', 'qc'] });
+    await call('POST', '/api/conversations/ch:relay/messages', { text: '@QC start the HANDOFF' });
+    const end = Date.now() + 20_000;
+    let replies: any[] = [];
+    while (Date.now() < end) {
+      const r = await call('GET', '/api/conversations/ch:relay/messages');
+      replies = r.messages.filter((m: any) => m.author !== 'user' && m.kind === 'text');
+      if (replies.length >= 5 && !r.working) break;
+      await new Promise((res) => setTimeout(res, 150));
+    }
+    await new Promise((res) => setTimeout(res, 500));
+    const { messages } = await call('GET', '/api/conversations/ch:relay/messages');
+    const authors = messages.filter((m: any) => m.author !== 'user' && m.kind === 'text').map((m: any) => m.author);
+    assert.deepEqual(authors, ['qc', 'cto', 'qc', 'cto', 'qc']); // 1 asked + 4 handoffs, then it stops
+  });
+
   it('routes a tool request to an approval card; "always" also creates a standing rule', async () => {
     await call('POST', '/api/conversations/dm:qc/messages', { text: 'NEEDS_APPROVAL please' });
     const card = await waitFor('dm:qc', (m) => m.kind === 'approval');
