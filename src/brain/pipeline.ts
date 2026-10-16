@@ -2,7 +2,8 @@
 // workspace, keep versioned requirements, hold the C4 design model, and move
 // through the gates that hand work to the next agent.
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -13,6 +14,7 @@ import { addMessage, createChannel, getConversation } from './chat.js';
 import { setStage, type Stage } from './projects.js';
 import { respond } from './runner.js';
 import { defineSchema } from './schema.js';
+import { getRecommendation, setProjectStatus, setRecommendation } from './teamwork.js';
 import { currentWorkspace, isInside } from './workspace.js';
 
 const execFileAsync = promisify(execFile);
@@ -267,20 +269,73 @@ function kickoff(db: DB, conversationId: string, text: string, mention: string):
   respond(conversationId, mention);
 }
 
-/** Gate 3 → 4: requirements are final; the Architect designs, the CTO reviews. */
-export function finalizeRequirements(db: DB, projectId: string): string {
+/**
+ * Gate 3: requirements are final. Locks them and opens the team step: a
+ * recommendation starting from the always-on core (Architect, PM, QC,
+ * Security Champion) that the Main agent tailors to the requirements.
+ * The design starts once the user has added the team (startDesign).
+ */
+export function finalizeRequirements(db: DB, projectId: string): { recommendation: true } {
   const ref = projectRef(db, projectId);
   const latest = listRequirements(db, projectId)[0];
   if (!latest) throw new Error('no requirements yet');
-  requireRole(db, 'architect', 'an Architect');
   db.prepare('UPDATE requirements SET final = 1 WHERE project_id = ? AND version = ?').run(projectId, latest.version);
+  if (!getRecommendation(db, projectId)) setRecommendation(db, projectId, [], 'baseline');
+  askMainForTeam(db, ref, latest.version);
+  getBus().emit({ type: 'brain_project', project_id: projectId });
+  return { recommendation: true };
+}
+
+/** Skill names under ~/.claude/skills (what a specialist can be given). */
+function installedSkills(): string[] {
+  const dir = join(homedir(), '.claude', 'skills');
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((e) => (e.isDirectory() || e.isSymbolicLink()) && existsSync(join(dir, e.name, 'SKILL.md')))
+      .map((e) => e.name)
+      .slice(0, 60);
+  } catch {
+    return [];
+  }
+}
+
+/** The Main agent reads the requirements and calls recommend_team (in a quiet thread of its own). */
+function askMainForTeam(db: DB, ref: ProjectRef, version: number): void {
+  const conv = `sys:team:${ref.id}`;
+  if (!getConversation(db, conv)) {
+    db.prepare(`INSERT INTO conversations (id, kind, role_id, project_id, name, created_at, last_at) VALUES (?, 'dm', 'main', ?, ?, ?, 0)`).run(conv, ref.id, `Team for ${ref.name}`, Date.now());
+    db.prepare(`INSERT OR IGNORE INTO conversation_members (conversation_id, role_id) VALUES (?, 'main')`).run(conv);
+  }
+  const skills = installedSkills();
+  const m = addMessage(
+    db,
+    conv,
+    'system',
+    `The requirements for ${ref.name} are final (v${version}, project_id ${ref.id}). Read them with get_requirements, then call recommend_team once with the members this project needs beyond the always-on core (Architect, PM, Quality control, Security Champion): developer specialists with a matching skill, and templates (cto, cfo, marketing, social) only if the requirements call for them. At most four extra members, each with a one-line reason that refers to the requirements. You may also give the core members a project-specific reason.${skills.length ? `\nInstalled skills you can assign to developers: ${skills.join(', ')}` : ''}`,
+  );
+  getBus().emit({ type: 'chat', conversation: conv, message: m });
+  respond(conv, '', { model: 'sonnet' });
+}
+
+/** Gate 3 → 4 (after the team step): the Architect designs; the Security Champion threat-models; the CTO reviews. */
+export function startDesign(db: DB, projectId: string): string {
+  const ref = projectRef(db, projectId);
+  const latest = listRequirements(db, projectId)[0];
+  if (!latest?.final) throw new Error('mark the requirements final first');
+  requireRole(db, 'architect', 'an Architect');
+  for (const id of ['architect', 'security', 'cto']) if (db.prepare('SELECT 1 FROM roles WHERE id = ?').get(id)) db.prepare(`INSERT OR IGNORE INTO project_members (project_id, role_id, kind, added_at) VALUES (?, ?, 'core', ?)`).run(projectId, id, Date.now());
+  db.prepare(`UPDATE team_recommendations SET status = 'done' WHERE project_id = ?`).run(projectId);
   setStage(db, projectId, 'design');
-  const ch = stageChannel(db, ref, 'design', present(db, ['architect', 'cto']));
+  const members = present(db, ['architect', 'security', 'cto']);
+  const ch = stageChannel(db, ref, 'design', members);
+  const security = members.includes('security');
   kickoff(
     db,
     ch,
     `@Architect the requirements for ${ref.name} are final (v${latest.version}, project_id ${ref.id}, saved at ${join(ref.vault, 'requirements', 'current.md')}). ` +
-      `Read them and create the system design with the design tools: containers first (the verticals), then the components inside the important ones. Then summarise the design here in a few lines and ask the CTO for review.`,
+      `Read them and create the system design with the design tools: containers first (the verticals), then the components inside the important ones. Then summarise the design here in a few lines` +
+      (security ? ` and ask @Security Champion for the STRIDE threat model` : '') +
+      (members.includes('cto') ? `, and the CTO for review.` : '.'),
     '@Architect',
   );
   getBus().emit({ type: 'brain_project', project_id: projectId });
@@ -317,7 +372,8 @@ export async function finalizeDesign(db: DB, projectId: string): Promise<string>
     if (!res.ok) throw new Error(`could not create vertical ${c.name}: ${(await res.json().catch(() => ({}))).error ?? res.status}`);
   }
   setStage(db, projectId, 'plan');
-  const ch = stageChannel(db, ref, 'build', present(db, ['pm', 'cto', 'qc']));
+  for (const id of ['pm', 'qc', 'security']) if (db.prepare('SELECT 1 FROM roles WHERE id = ?').get(id)) db.prepare(`INSERT OR IGNORE INTO project_members (project_id, role_id, kind, added_at) VALUES (?, ?, 'core', ?)`).run(projectId, id, Date.now());
+  const ch = stageChannel(db, ref, 'build', present(db, ['pm', 'qc', 'security', 'cto']));
   kickoff(
     db,
     ch,
@@ -334,7 +390,7 @@ export function startBuilding(db: DB, projectId: string): string {
   const ref = projectRef(db, projectId);
   requireRole(db, 'pm', 'a PM (project manager)');
   setStage(db, projectId, 'build');
-  const ch = stageChannel(db, ref, 'build', present(db, ['pm', 'cto', 'qc']));
+  const ch = stageChannel(db, ref, 'build', present(db, ['pm', 'qc', 'security', 'cto']));
   kickoff(db, ch, `@PM the roadmap is approved. Commit the phases if you have not, advance to the first phase and run the phase loop from CLAUDE.md. Post a short recap here at each phase boundary.`, '@PM');
   getBus().emit({ type: 'brain_project', project_id: projectId });
   return ch;
@@ -343,4 +399,33 @@ export function startBuilding(db: DB, projectId: string): string {
 export function setProjectStage(db: DB, projectId: string, stage: Stage): void {
   setStage(db, projectId, stage);
   getBus().emit({ type: 'brain_project', project_id: projectId });
+}
+
+// ── security artefact and close-out ──────────────────────────────
+
+export function saveThreatModel(db: DB, projectId: string, markdown: string): string {
+  const ref = projectRef(db, projectId);
+  mkdirSync(join(ref.vault, 'design'), { recursive: true });
+  const file = join(ref.vault, 'design', 'threat-model.md');
+  writeFileSync(file, markdown);
+  getBus().emit({ type: 'design', project_id: projectId });
+  return file;
+}
+
+/** From the PM when advance_phase returns null: open the close-out with the Main agent. */
+export function reportWorkComplete(db: DB, projectId: string, summary: string): string {
+  const ref = projectRef(db, projectId);
+  setProjectStatus(db, projectId, 'review');
+  const ch = stageChannel(db, ref, 'close-out', present(db, ['main', 'qc', 'security', 'pm']));
+  kickoff(
+    db,
+    ch,
+    `@Main agent the PM reports that every phase of ${ref.name} (project_id ${ref.id}) is complete.\n\nPM's summary: ${summary}\n\n` +
+      `Run the close-out: readiness check (QC: tests, build, open TODOs, acceptance criteria; Security Champion: brain security-scan and a final pass), a short blameless retrospective recorded with record_lesson, enhancements with save_enhancements, then ask the user to sign off.`,
+    '@Main agent',
+  );
+  // and tell the user in their main chat
+  const note = addMessage(db, 'dm:main', 'main', `**${ref.name}**: the PM reports every phase is complete. I'm running the close-out (readiness check, retrospective, enhancements) in #close-out under the project's Discussions, and will ask you to sign off.`);
+  getBus().emit({ type: 'chat', conversation: 'dm:main', message: note });
+  return ch;
 }

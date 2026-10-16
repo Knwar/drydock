@@ -11,13 +11,15 @@ import { currentWorkspace, setupWorkspace } from './workspace.js';
 import './routes-chat.js';
 import './routes-projects.js';
 import './routes-personal.js';
+import './routes-teamwork.js';
+import { startCheckins } from './checkins.js';
 import { startDailyScheduler } from './daily.js';
 import { listServers } from './integrations.js';
 
 /** Background work the daemon starts once: the Daily scheduler and the MCP server list. */
-export function startBrain(): NodeJS.Timeout {
+export function startBrain(): NodeJS.Timeout[] {
   void listServers();
-  return startDailyScheduler();
+  return [startDailyScheduler(), startCheckins()];
 }
 
 export { handleApi } from './router.js';

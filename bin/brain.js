@@ -8,6 +8,7 @@
 //   brain stop                stop the daemon (set-up folders only)
 //   brain restart             restart + show project details (set-up folders only)
 //   brain worktree add|remove|merge <id> [--force]   per-card git worktree, run in the project
+//   brain security-scan [dir]  dependency audit, secret scan, Semgrep if installed
 //   brain recount-lines [--dry-run] [--db <path>]    recompute lines written per card from git history
 //   brain daemon start|stop|restart|status|run   machine-level daemon management
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -226,6 +227,12 @@ async function main() {
       stdio: 'inherit',
       env: { ...process.env, DAEMON_URL, KANKAN_UPDATE: '1' },
     });
+    process.exit(res.status ?? 0);
+  }
+
+  // Automated security checks (dependency audit, secret scan, Semgrep if installed).
+  if (cmd === 'security-scan') {
+    const res = spawnSync(process.execPath, [join(ROOT, 'scripts', 'security-scan.js'), ...rest], { cwd: process.cwd(), stdio: 'inherit' });
     process.exit(res.status ?? 0);
   }
 

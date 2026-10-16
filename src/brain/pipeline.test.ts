@@ -58,16 +58,23 @@ describe('project pipeline', () => {
     assert.deepEqual(versions.map((v: any) => v.version), [2, 1]);
   });
 
-  it('a gate that needs a missing role says which one', async () => {
-    const err = await fetch(`${d.base}/api/projects/${id}/requirements/final`, { method: 'POST' });
-    assert.equal(err.status, 409);
-    assert.equal((await err.json()).needs_role, 'architect');
+  it('finalising requirements locks them and opens the team step with the always-on core', async () => {
+    const r = await call('POST', `/api/projects/${id}/requirements/final`);
+    assert.equal(r.recommendation, true);
+    const team = await call('GET', `/api/projects/${id}/team`);
+    assert.deepEqual(team.recommendation.items.map((i: any) => i.key), ['architect', 'pm', 'qc', 'security']);
+    assert.ok(team.recommendation.items.every((i: any) => i.required && i.reason));
+    // the Main agent was asked to tailor it, in a quiet thread of its own
+    await waitFor(`sys:team:${id}`, (m) => m.author === 'main' && m.kind === 'text');
   });
 
-  it('finalising requirements locks them and brings in the Architect', async () => {
-    await call('POST', '/api/roles', { template: 'architect' });
+  it('starting the design needs an Architect, then brings in the Architect', async () => {
+    const err = await fetch(`${d.base}/api/projects/${id}/design/start`, { method: 'POST' });
+    assert.equal(err.status, 409);
+    assert.equal((await err.json()).needs_role, 'architect');
+    await call('POST', `/api/projects/${id}/team`, { keys: ['architect'] });
     await call('POST', '/api/roles', { template: 'cto' });
-    const { channel } = await call('POST', `/api/projects/${id}/requirements/final`);
+    const { channel } = await call('POST', `/api/projects/${id}/design/start`);
     assert.equal(channel, 'ch:kusic-player-design');
     const reply = await waitFor(channel, (m) => m.author === 'architect' && m.kind === 'text');
     assert.match(reply.body, /requirements for Kusic Player are final/);

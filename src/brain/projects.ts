@@ -30,6 +30,8 @@ export interface ProjectSummary {
   liveAgents: number;
   blocked: number;
   inReview: number;
+  status: string;
+  rag: string | null;
 }
 
 interface Row {
@@ -61,7 +63,7 @@ export function setStage(db: DB, projectId: string, stage: Stage, description?: 
 export function listProjects(db: DB, insideRoot: string | null): ProjectSummary[] {
   const rows = db
     .prepare(
-      `SELECT p.id, p.name, p.root_path, p.parent_id, b.stage, b.description
+      `SELECT p.id, p.name, p.root_path, p.parent_id, b.stage, b.description, b.*
        FROM projects p LEFT JOIN brain_projects b ON b.project_id = p.id
        ORDER BY p.created_at DESC`,
     )
@@ -123,6 +125,8 @@ export function listProjects(db: DB, insideRoot: string | null): ProjectSummary[
         liveAgents: live,
         blocked,
         inReview,
+        status: (r as any).status ?? 'active',
+        rag: (r as any).rag ?? null,
       };
     });
 }

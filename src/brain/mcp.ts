@@ -300,6 +300,129 @@ server.registerTool(
   },
 );
 
+// ── team, learning, security and close-out ───────────────────────
+
+server.registerTool(
+  'recommend_team',
+  {
+    description:
+      "Recommend a project's team after its requirements are final. The always-on core (Architect, PM, Quality control, Security Champion) is included automatically; list what else this project needs (max 4), each with a reason tied to the requirements. Use a template id when one fits, otherwise a developer specialist with a name and an installed skill.",
+    inputSchema: {
+      project_id: z.string(),
+      members: z.array(
+        z.object({
+          template: z.enum(['architect', 'pm', 'qc', 'security', 'cto', 'cfo', 'marketing', 'social']).optional(),
+          name: z.string().optional().describe('For a specialist, e.g. "Flutter developer"'),
+          skill: z.string().optional().describe('e.g. "flutter-dev"'),
+          kind: z.enum(['core', 'specialist']).optional(),
+          reason: z.string().describe('One line, specific to these requirements'),
+          persona: z.string().optional(),
+        }),
+      ),
+    },
+  },
+  async ({ project_id, members }) => {
+    const r = await call(`/api/projects/${project_id}/team/recommendation`, { members });
+    return text(`Recommendation saved (${r.items.length} members). The user picks who to add.`);
+  },
+);
+
+server.registerTool(
+  'record_lesson',
+  {
+    description:
+      'Record a lesson after a failed review (or in a retrospective). Blameless: classify the cause. Process causes go to project memory; agent-behavior mistakes also count towards a learning for that member once they recur.',
+    inputSchema: {
+      project_id: z.string(),
+      cause: z.enum(['requirements-gap', 'missing-check', 'convention', 'environment', 'agent-behavior']),
+      lesson: z.string().describe('Imperative rule under 25 words, e.g. "Validate every request body with the shared zod schema"'),
+      mechanism: z.string().optional().describe('What was added so it cannot recur: a test, an acceptance criterion, a lint rule, a convention'),
+      trigger: z.string().optional().describe('What happened, in one line'),
+      card_id: z.string().optional(),
+      member: z.string().optional().describe("The card's assigned member (name or id)"),
+      supersedes: z.number().optional().describe('Id (number after L) of an older lesson this replaces'),
+    },
+  },
+  async ({ project_id, ...b }) => {
+    const r = await call(`/api/projects/${project_id}/lessons`, b);
+    return text(`Lesson L${r.lesson} recorded.${r.learning ? ` ${r.learning.active ? 'It is now an active learning for' : 'Counted towards a learning for'} ${r.learning.role}.` : ''}`);
+  },
+);
+
+server.registerTool(
+  'member_learnings',
+  { description: "A member's learned rules and the team checklist, to include when dispatching a builder for that member's card.", inputSchema: { member: z.string() } },
+  async ({ member }) => {
+    const r = await call(`/api/learnings?member=${encodeURIComponent(member)}`);
+    const lines = [...r.rules.map((x: string) => `- ${x}`), ...r.checklist.map((x: string) => `- (team) ${x}`)];
+    return text(lines.length ? `Rules for ${r.member}:\n${lines.join('\n')}` : `No learnings recorded for ${r.member}.`);
+  },
+);
+
+server.registerTool(
+  'save_threat_model',
+  { description: "Save the project's STRIDE threat model (Markdown: threats per container/data flow, likelihood, impact, mitigation).", inputSchema: { project_id: z.string(), markdown: z.string() } },
+  async ({ project_id, markdown }) => {
+    const r = await call(`/api/projects/${project_id}/threat-model`, { markdown });
+    return text(`Threat model saved to ${r.file}.`);
+  },
+);
+
+server.registerTool(
+  'report_status',
+  { description: "Report a project's overall status (for check-ins).", inputSchema: { project_id: z.string(), rag: z.enum(['green', 'amber', 'red']) } },
+  async ({ project_id, rag }) => {
+    await call(`/api/projects/${project_id}/rag`, { rag });
+    return text(`Status set to ${rag}.`);
+  },
+);
+
+server.registerTool(
+  'report_work_complete',
+  {
+    description: 'PM only: call when advance_phase returns null and every phase meets the Definition of Done. Opens the close-out with the Main agent.',
+    inputSchema: { project_id: z.string(), summary: z.string().describe('What was delivered, known gaps, and what you would do next') },
+  },
+  async ({ project_id, summary }) => {
+    const r = await call(`/api/projects/${project_id}/complete`, { summary });
+    return text(`Reported. The close-out runs in ${r.channel}.`);
+  },
+);
+
+server.registerTool(
+  'save_enhancements',
+  { description: 'Propose enhancements for a project (shown to the user to accept or drop).', inputSchema: { project_id: z.string(), items: z.array(z.object({ title: z.string(), why: z.string().optional() })) } },
+  async ({ project_id, items }) => {
+    await call(`/api/projects/${project_id}/enhancements`, { items });
+    return text(`Saved ${items.length} enhancements.`);
+  },
+);
+
+server.registerTool(
+  'delegate',
+  {
+    description:
+      "Hand work to team members: posts your message in a thread (an existing one, or a new topic thread, in a project's Discussions when project_id is given) and they answer there. Members must already be on the team.",
+    inputSchema: {
+      members: z.array(z.string()).describe('Names or ids, e.g. ["Quality control", "security"]'),
+      message: z.string(),
+      project_id: z.string().optional(),
+      topic: z.string().optional().describe('Thread topic when starting a new one, e.g. "readiness check"'),
+      conversation: z.string().optional().describe('An existing thread id to post into'),
+    },
+  },
+  async (b) => {
+    const r = await call('/api/delegate', { ...b, from: ROLE });
+    return text(`Posted in ${r.conversation}. They will answer there; use thread_status to follow up.`);
+  },
+);
+
+server.registerTool(
+  'thread_status',
+  { description: "Read a thread's recent messages, members and whether someone is working in it.", inputSchema: { conversation: z.string() } },
+  async ({ conversation }) => text(JSON.stringify(await call(`/api/threads/${encodeURIComponent(conversation)}`), null, 2)),
+);
+
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop()!)) {
   await server.connect(new StdioServerTransport());
 }

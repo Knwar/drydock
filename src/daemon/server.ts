@@ -2686,7 +2686,7 @@ server.listen(PORT, HOST, onListening);
 // to disable it. A bad tick is swallowed so a delivery hiccup can't kill the
 // daemon; runOnce is fire-and-forget so a slow send never blocks the interval.
 const intervals: NodeJS.Timeout[] = [];
-if (!process.env.BRAIN_NO_SCHEDULER) intervals.push(startBrain());
+if (!process.env.BRAIN_NO_SCHEDULER) intervals.push(...startBrain());
 if (process.env.KANKAN_DISPATCHER !== '0') {
   const dispatcher = new Dispatcher(db);
   intervals.push(setInterval(() => {

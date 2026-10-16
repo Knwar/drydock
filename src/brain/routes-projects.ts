@@ -22,6 +22,8 @@ import {
 import { listProjects } from './projects.js';
 import { HttpError, on } from './router.js';
 import { activeRuns } from './runner.js';
+import { lastActivity } from './checkins.js';
+import { getRecommendation, projectMembers, projectStatus } from './teamwork.js';
 import { currentWorkspace, isInside } from './workspace.js';
 
 const ref = (db: any, id: string) => {
@@ -51,7 +53,20 @@ on('GET', '/api/projects/:id', (_q, res, _u, ctx, p) => {
   const summary = listProjects(db, null).find((s) => s.id === p.id);
   const phases = board.getPhases(db, p.id);
   const channels = db.prepare(`SELECT id, name FROM conversations WHERE project_id = ? ORDER BY created_at`).all(p.id);
-  ctx.json(res, 200, { ...summary, ...r, phases, channels, decisions: listDecisions(db, p.id, 20) });
+  const latest = listRequirements(db, p.id)[0];
+  ctx.json(res, 200, {
+    ...summary,
+    ...r,
+    phases,
+    channels,
+    decisions: listDecisions(db, p.id, 20),
+    ...projectStatus(db, p.id),
+    requirementsFinal: Boolean(latest?.final),
+    requirementsVersion: latest?.version ?? null,
+    team: projectMembers(db, p.id),
+    recommendation: getRecommendation(db, p.id),
+    last_activity: lastActivity(db, p.id),
+  });
 });
 
 // ── requirements ──
@@ -75,7 +90,7 @@ on('POST', '/api/projects/:id/requirements', async (req, res, _u, ctx, p) => {
 on('POST', '/api/projects/:id/requirements/final', (_q, res, _u, ctx, p) => {
   ref(ctx.db(), p.id);
   try {
-    ctx.json(res, 200, { channel: finalizeRequirements(ctx.db(), p.id) });
+    ctx.json(res, 200, finalizeRequirements(ctx.db(), p.id));
   } catch (err) {
     throw bad(err);
   }

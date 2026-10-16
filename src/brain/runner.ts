@@ -12,6 +12,7 @@ import { getSetting } from './settings.js';
 import { addMessage, getConversation, getSession, listMessages, members, saveSession, standingTools, type Message } from './chat.js';
 import { getRole, listRoles, type Role } from './roles.js';
 import { blockedServers, listServers, recordTools, toolPolicies } from './integrations.js';
+import { activeLearnings, memoryDigest, projectMembers } from './teamwork.js';
 import { onRateLimit } from './usage.js';
 import { currentWorkspace } from './workspace.js';
 
@@ -25,7 +26,7 @@ const CLAUDE_BIN = process.env.BRAIN_CLAUDE_BIN ?? 'claude';
 /** Tools every role may use without asking: reading, searching, and AI Brain's own tools. */
 export const ALWAYS_ALLOWED = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'mcp__brain'];
 /** Project roles also run the board, its subagents and per-card worktrees without asking. */
-export const PROJECT_ALLOWED = ['mcp__kankan', 'Task', 'Bash(brain worktree:*)'];
+export const PROJECT_ALLOWED = ['mcp__kankan', 'Task', 'Bash(brain worktree:*)', 'Bash(brain security-scan:*)'];
 
 const running = new Map<string, { child: ChildProcess; roleId: string }>();
 const queues = new Map<string, Promise<void>>();
@@ -70,6 +71,15 @@ function systemPrompt(role: Role, conversationId: string): string {
       : `- This is the #${conv.name} channel. Members: ${members(db, conversationId).map((m) => roleName(m, roles)).join(', ')} and the user. Other members reply in turn after you; keep to your role.`,
   ];
   if (role.skill) lines.push(`- Use the ${role.skill} skill when it fits the task.`);
+  // what this member has learned from repeated mistakes (capped, strongest first)
+  const learned = activeLearnings(db, role.id);
+  if (learned.length) lines.push('', '## Your learnings', 'You made these mistakes more than once before. Follow these rules:', ...learned.map((l) => `- ${l.rule}`));
+  // a project conversation carries the project's team and its compact memory
+  if (conv.project_id) {
+    const team = projectMembers(db, conv.project_id);
+    if (team.length) lines.push('', `## Project team`, ...team.map((m) => `- ${m.name} (${m.kind}${m.skill ? `, skill ${m.skill}` : ''})`));
+    lines.push('', memoryDigest(db, conv.project_id));
+  }
   return lines.join('\n');
 }
 
