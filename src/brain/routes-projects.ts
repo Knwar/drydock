@@ -1,4 +1,5 @@
 // /api routes for the project pipeline: create, requirements, design, gates, files.
+import { isType, pluginById, PLUGINS, setPlugin, TYPES } from './plugins.js';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import * as board from '../core/board.js';
@@ -40,11 +41,23 @@ on('POST', '/api/projects', async (req, res, _u, ctx) => {
   const b = await ctx.readBody(req);
   if (!b?.name) throw new HttpError(400, 'name required');
   try {
-    const p = await createProject(ctx.db(), String(b.name), String(b.description ?? ''));
+    const p = await createProject(ctx.db(), String(b.name), String(b.description ?? ''), isType(b.type) ? b.type : 'software');
     ctx.json(res, 200, p);
   } catch (err) {
     throw bad(err);
   }
+});
+
+on('GET', '/api/plugins', (_q, res, _u, ctx) => ctx.json(res, 200, { plugins: PLUGINS, types: Object.values(TYPES) }));
+
+/** Switch a plugin on or off for one project (its data stays; off only hides it and its agent tools). */
+on('POST', '/api/projects/:id/plugins', async (req, res, _u, ctx, p) => {
+  ref(ctx.db(), p.id);
+  const b = await ctx.readBody(req);
+  if (!pluginById(String(b?.id))) throw new HttpError(400, 'unknown plugin');
+  const list = setPlugin(ctx.db(), p.id, String(b.id), Boolean(b.on));
+  ctx.broadcast({ type: 'brain_project', project_id: p.id });
+  ctx.json(res, 200, { plugins: list });
 });
 
 on('GET', '/api/projects/:id', (_q, res, _u, ctx, p) => {
@@ -67,6 +80,9 @@ on('GET', '/api/projects/:id', (_q, res, _u, ctx, p) => {
     team: projectMembers(db, p.id),
     recommendation: getRecommendation(db, p.id),
     last_activity: lastActivity(db, p.id),
+    stages: TYPES[summary?.type ?? 'software'].stages,
+    typeName: TYPES[summary?.type ?? 'software'].name,
+    pluginList: PLUGINS.map((x) => ({ id: x.id, name: x.name, icon: x.icon, description: x.description, suggested: x.types.includes(summary?.type ?? 'software'), on: (summary?.plugins ?? []).includes(x.id), overviewCard: Boolean(x.overviewCard) })),
   });
 });
 

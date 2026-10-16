@@ -7,16 +7,22 @@ import { api } from '../lib/api';
 import type { Conversation, ProjectSummary, Role } from '../lib/types';
 import { Icon, type IconName } from './Icon';
 
+/** Core project pages; plugin pages (System design, On this Mac…) appear per project in the sidebar. */
 export const PROJECT_TABS = [
   ['', 'Overview'],
   ['requirements', 'Requirements'],
-  ['design', 'System design'],
   ['board', 'Board'],
   ['roles', 'Team'],
   ['memory', 'Memory'],
   ['agents', 'Live agents'],
   ['docs', 'Docs'],
 ] as const;
+
+/** Plugin names and icons for navigation (the server's /api/plugins is the full catalog). */
+export const PLUGIN_META: Record<string, { name: string; icon: IconName }> = {
+  design: { name: 'System design', icon: 'diagram' },
+  live: { name: 'On this Mac', icon: 'agent' },
+};
 
 export const SETTINGS_SECTIONS = [
   ['integrations', 'Integrations'],
@@ -137,9 +143,14 @@ export function CommandBar({ projects, conversations, roles, onClose, openLink, 
       { id: 'personal', label: 'Personal', hint: 'email, calendar, notes, the Daily', icon: 'person', link: '/personal' },
       ...SETTINGS_SECTIONS.map(([id, label]) => ({ id: `settings/${id}`, label: `Settings › ${label}`, icon: 'settings' as IconName, link: `/settings/${id}` })),
     ];
-    for (const p of projects)
+    for (const p of projects) {
       for (const [tab, label] of PROJECT_TABS)
         out.push({ id: `p/${p.id}/${tab}`, label: tab ? `${p.name} › ${label}` : p.name, hint: tab ? undefined : 'project', icon: tab ? 'doc' : 'project', link: `/project/${p.id}${tab ? `/${tab}` : ''}` });
+      for (const id of p.plugins ?? []) {
+        const m = PLUGIN_META[id];
+        if (m) out.push({ id: `p/${p.id}/${id}`, label: `${p.name} › ${m.name}`, hint: 'plugin', icon: m.icon, link: `/project/${p.id}/${id}` });
+      }
+    }
     for (const c of conversations) {
       const project = c.project_id ? projects.find((p) => p.id === c.project_id) : null;
       const label = c.id === 'dm:main' ? 'Main agent' : c.kind === 'dm' ? `Chat with ${byRole.get(c.role_id ?? '')?.name ?? c.name}` : `#${c.name}`;

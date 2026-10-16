@@ -14,6 +14,7 @@ import { addMessage, countTurn, getConversation, getSession, listMessages, membe
 import { effectiveEffort, getRole, listRoles, type Role } from './roles.js';
 import { blockedServers, listServers, recordTools, toolPolicies } from './integrations.js';
 import { activeLearnings, memoryDigest, projectMembers } from './teamwork.js';
+import { disabledTools, projectPlugins } from './plugins.js';
 import { onRateLimit } from './usage.js';
 import { currentWorkspace } from './workspace.js';
 
@@ -74,9 +75,14 @@ function systemPrompt(role: Role, conversationId: string): string {
     '- Need a new random secret (DB password, signing key)? save_secret with generate: you never see the value.',
     '- Need a key from another service? request_secret: the user pastes it into a card.',
     '- Need to use one? run_with_secrets runs your command with them as env vars, after the user approves and confirms on the Mac. Commit `.env.example` with names only, never `.env`.',
+  );
+  // only where the On this Mac plugin is on (or outside projects)
+  if (!conv.project_id || projectPlugins(db, conv.project_id).includes('live')) lines.push(
     '',
     '## Running the app on this Mac',
     "Every runnable project needs a run recipe (save_run_recipe) so the user can start it from the project overview: services listen on $PORT at 127.0.0.1, databases come from needs (list_local_services shows the user's servers), keys from secrets, and verify is the check (tests, lint, typecheck) that must pass before a card merges. Once started it restarts by itself on each merge. After a merge, check the running app with live_check; use live_status and live_logs to debug a crash.",
+  );
+  lines.push(
     '',
     '## Working with tools and teammates',
     '- Ask tools for what you need, not everything: prefer filters, limits and the concise format; open details only when needed.',
@@ -206,7 +212,7 @@ function mcpConfig(roleId: string, conversationId: string, dataDir: string, with
     brain: {
       command: process.execPath,
       args: ['--import', TSX_LOADER, MCP_SERVER],
-      env: { BRAIN_DAEMON_URL: getBus().daemonUrl, BRAIN_ROLE: roleId, BRAIN_CONVERSATION: conversationId },
+      env: { BRAIN_DAEMON_URL: getBus().daemonUrl, BRAIN_ROLE: roleId, BRAIN_CONVERSATION: conversationId, BRAIN_DISABLED_TOOLS: disabledTools(getBus().db(), getConversation(getBus().db(), conversationId)?.project_id ?? null).join(',') },
     },
   };
   // project roles drive the kankanban board (phases, cards, worktrees)

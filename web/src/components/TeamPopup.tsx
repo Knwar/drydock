@@ -1,7 +1,8 @@
 // The recommended-team popup: shown when a project's requirements are final.
 // Core members (always: Architect, PM, QC, Security Champion) and specialists
 // the Main agent suggests from the requirements; add one by one or all at once,
-// then start the system design (with confirmation).
+// then start the system design (with confirmation), or the planning for
+// projects without the System design plugin.
 import { useState } from 'react';
 import { api } from '../lib/api';
 import { Modal } from './Dialogs';
@@ -24,7 +25,7 @@ export interface Recommendation {
   updated_at: number;
 }
 
-export function TeamPopup({ projectId, projectName, slug, rec, onClose, onStarted }: { projectId: string; projectName: string; slug: string; rec: Recommendation; onClose: () => void; onStarted: (channel: string) => void }) {
+export function TeamPopup({ projectId, projectName, slug, rec, design = true, onClose, onStarted }: { projectId: string; projectName: string; slug: string; rec: Recommendation; design?: boolean; onClose: () => void; onStarted: (channel: string) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -56,22 +57,31 @@ export function TeamPopup({ projectId, projectName, slug, rec, onClose, onStarte
     }
   };
   const missing = rec.items.filter((i) => !i.added);
-  const architectAdded = rec.items.some((i) => i.key === 'architect' && i.added);
+  const lead = design ? 'architect' : 'pm';
+  const leadAdded = rec.items.some((i) => i.key === lead && i.added);
   const tailoring = rec.source === 'baseline';
   return (
     <Modal title={`Recommended team for ${projectName}`} onClose={onClose} width={680}>
       {confirming ? (
         <>
-          <div style={{ fontSize: 13 }}>Start the system design for <strong>{projectName}</strong>? This will:</div>
-          <ul className="md-list" style={{ fontSize: 13, lineHeight: 1.55, margin: 0 }}>
-            <li>Move the project to the Design stage.</li>
-            <li>Brief the Architect in <strong>#{slug} › design</strong> to write the C4 system design.</li>
-            {rec.items.some((i) => i.key === 'security' && i.added) && <li>Ask the Security Champion for a STRIDE threat model of the design.</li>}
-            <li>Start agents working, which uses your subscription.</li>
-          </ul>
+          <div style={{ fontSize: 13 }}>Start the {design ? 'system design' : 'planning'} for <strong>{projectName}</strong>? This will:</div>
+          {design ? (
+            <ul className="md-list" style={{ fontSize: 13, lineHeight: 1.55, margin: 0 }}>
+              <li>Move the project to the Design stage.</li>
+              <li>Brief the Architect in <strong>#{slug} › design</strong> to write the C4 system design.</li>
+              {rec.items.some((i) => i.key === 'security' && i.added) && <li>Ask the Security Champion for a STRIDE threat model of the design.</li>}
+              <li>Start agents working, which uses your subscription.</li>
+            </ul>
+          ) : (
+            <ul className="md-list" style={{ fontSize: 13, lineHeight: 1.55, margin: 0 }}>
+              <li>Move the project to the Plan stage.</li>
+              <li>Ask the PM in <strong>#{slug} › build</strong> to draft the phases and post them for your approval.</li>
+              <li>Start agents working, which uses your subscription.</li>
+            </ul>
+          )}
           {error && <div className="error">{error}</div>}
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn primary" disabled={busy === 'start'} onClick={start}>{busy === 'start' ? 'Starting…' : 'Yes, start the design'}</button>
+            <button className="btn primary" disabled={busy === 'start'} onClick={start}>{busy === 'start' ? 'Starting…' : design ? 'Yes, start the design' : 'Yes, start planning'}</button>
             <button className="btn" onClick={() => setConfirming(false)}>Back to the team</button>
           </div>
         </>
@@ -102,7 +112,7 @@ export function TeamPopup({ projectId, projectName, slug, rec, onClose, onStarte
             <button className="btn" disabled={busy !== null || missing.length === 0} onClick={() => add(missing.map((m) => m.key))}>{busy === 'all' ? 'Adding…' : missing.length ? `Add all (${missing.length})` : 'All added'}</button>
             <span style={{ flex: 1 }} />
             <button className="btn" onClick={onClose}>Later</button>
-            <button className="btn primary" disabled={!architectAdded} title={architectAdded ? undefined : 'Add the Architect first'} onClick={() => setConfirming(true)}>Start system design →</button>
+            <button className="btn primary" disabled={!leadAdded} title={leadAdded ? undefined : `Add the ${design ? 'Architect' : 'PM'} first`} onClick={() => setConfirming(true)}>{design ? 'Start system design →' : 'Start planning →'}</button>
           </div>
         </>
       )}

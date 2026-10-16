@@ -5,7 +5,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { addMessage, createChannel, getConversation, listMessages, members as convMembers } from './chat.js';
 import { checkinSettings, lastActivity, runCheckins } from './checkins.js';
-import { projectRef, reportWorkComplete, saveThreatModel, slugify, startDesign, NeedsRole } from './pipeline.js';
+import { projectRef, reportWorkComplete, saveThreatModel, slugify, startDesign, startPlanning, NeedsRole } from './pipeline.js';
+import { projectPlugins } from './plugins.js';
 import { getRole, listRoles } from './roles.js';
 import { HttpError, on } from './router.js';
 import { activeRuns, respond } from './runner.js';
@@ -76,10 +77,12 @@ on('DELETE', '/api/projects/:id/team/:role', (_q, res, _u, ctx, p) => {
   ctx.json(res, 200, { ok: true });
 });
 
+/** After the team step: the design stage when the project has System design, else straight to planning. */
 on('POST', '/api/projects/:id/design/start', (_q, res, _u, ctx, p) => {
   project(ctx.db(), p.id);
   try {
-    ctx.json(res, 200, { channel: startDesign(ctx.db(), p.id) });
+    const design = projectPlugins(ctx.db(), p.id).includes('design');
+    ctx.json(res, 200, { channel: design ? startDesign(ctx.db(), p.id) : startPlanning(ctx.db(), p.id), stage: design ? 'design' : 'plan' });
   } catch (err) {
     if (err instanceof NeedsRole) throw new HttpError(409, err.message, { needs_role: err.role });
     throw new HttpError(400, (err as Error).message);

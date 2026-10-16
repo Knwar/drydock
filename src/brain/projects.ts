@@ -1,7 +1,8 @@
 // Project summaries for Home and the sidebar tree: the kankanban board data
 // (phases, cards, verticals) plus AI Brain's lifecycle stage.
 import type { DB } from '../core/db.js';
-import { defineSchema } from './schema.js';
+import { addMissingColumns, defineSchema } from './schema.js';
+import { isType, projectPlugins, type ProjectType } from './plugins.js';
 
 export const STAGES = ['idea', 'create', 'requirements', 'design', 'plan', 'build'] as const;
 export type Stage = (typeof STAGES)[number];
@@ -15,7 +16,7 @@ CREATE TABLE IF NOT EXISTS brain_projects (
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
-`);
+`, (db) => addMissingColumns(db, 'brain_projects', { type: "TEXT NOT NULL DEFAULT 'software'", plugins: 'TEXT' }));
 
 export interface ProjectSummary {
   id: string;
@@ -32,6 +33,8 @@ export interface ProjectSummary {
   inReview: number;
   status: string;
   rag: string | null;
+  type: ProjectType;
+  plugins: string[];
 }
 
 interface Row {
@@ -127,6 +130,8 @@ export function listProjects(db: DB, insideRoot: string | null): ProjectSummary[
         inReview,
         status: (r as any).status ?? 'active',
         rag: (r as any).rag ?? null,
+        type: isType((r as any).type) ? (r as any).type : 'software',
+        plugins: projectPlugins(db, r.id),
       };
     });
 }

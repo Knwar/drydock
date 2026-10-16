@@ -36,6 +36,12 @@ const ago = (t: number) => {
 
 export const server = new McpServer({ name: 'brain', version: '0.1.0' });
 
+// Tools of plugins this project has switched off are not offered at all (the
+// runner passes their names), so agents neither see nor pay for them.
+const DISABLED = new Set((process.env.BRAIN_DISABLED_TOOLS ?? '').split(',').filter(Boolean));
+const registerTool = server.registerTool.bind(server);
+(server as any).registerTool = (name: string, ...rest: unknown[]) => (DISABLED.has(name) ? undefined : (registerTool as any)(name, ...rest));
+
 // Permission prompt tool (--permission-prompt-tool mcp__brain__approve): the
 // request becomes an approval card in the app and waits for the user.
 server.registerTool(
@@ -129,11 +135,16 @@ server.registerTool(
 server.registerTool(
   'create_project',
   {
-    description: 'Create a new project the user agreed to: a folder under projects/ with git and the board kit, a vault folder, and requirements v1. Only call after the user says yes.',
-    inputSchema: { name: z.string().describe('Short project name, e.g. "kusic"'), description: z.string().describe('Two or three sentences: what it is, for whom, the core idea') },
+    description:
+      'Create a new project the user agreed to: a folder under projects/ with git and the board kit, a vault folder, and requirements v1. Only call after the user says yes, and after agreeing its type with them: software (apps, websites, APIs, tools: gets a system design stage and runs on this Mac) or general (anything else: writing, content, research, planning, events).',
+    inputSchema: {
+      name: z.string().describe('Short project name, e.g. "kusic"'),
+      description: z.string().describe('Two or three sentences: what it is, for whom, the core idea'),
+      type: z.enum(['software', 'general']).describe('software or general'),
+    },
   },
-  async ({ name, description }) => {
-    const p = await call('/api/projects', { name, description });
+  async ({ name, description, type }) => {
+    const p = await call('/api/projects', { name, description, type });
     return text(`Project created: ${p.name} (project_id ${p.id})\nfolder: ${p.root}\nvault: ${p.vault}\nNext: discuss requirements with the user and keep them updated with save_requirements.`);
   },
 );

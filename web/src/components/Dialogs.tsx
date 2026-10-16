@@ -112,6 +112,7 @@ export function AddMemberDialog({ onClose, onAdded }: { onClose: () => void; onA
 export function NewProjectDialog({ onClose, askMain }: { onClose: () => void; askMain: (draft: string) => void }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [type, setType] = useState<'software' | 'general'>('software');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const create = async (e: React.FormEvent) => {
@@ -119,7 +120,7 @@ export function NewProjectDialog({ onClose, askMain }: { onClose: () => void; as
     setBusy(true);
     setError(null);
     try {
-      const p = await api<{ id: string }>('/api/projects', { body: { name, description } });
+      const p = await api<{ id: string }>('/api/projects', { body: { name, description, type } });
       onClose();
       navigate(`/project/${p.id}/requirements`);
     } catch (err) {
@@ -137,6 +138,11 @@ export function NewProjectDialog({ onClose, askMain }: { onClose: () => void; as
         <label className="muted" style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }}>What is it? (2–3 sentences)
           <textarea className="input" rows={4} style={{ color: 'var(--text)', fontSize: 13 }} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Who it is for, what it does, the core idea." />
         </label>
+        <div className="seg" role="radiogroup" aria-label="Kind of project" style={{ alignSelf: 'flex-start' }}>
+          <button type="button" aria-pressed={type === 'software'} onClick={() => setType('software')}>Software</button>
+          <button type="button" aria-pressed={type === 'general'} onClick={() => setType('general')}>Anything else</button>
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginTop: -4 }}>{type === 'software' ? 'Apps, websites, APIs, tools: a system design stage, and it can run on this Mac.' : 'Writing, content, research, planning, events: a brief, a plan in phases, then the work, each piece reviewed.'}</div>
         <div className="muted" style={{ fontSize: 12 }}>Creates <span className="mono">projects/{name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'name'}</span> with git and a vault folder, and starts the requirements.</div>
         {error && <div className="error">{error}</div>}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>

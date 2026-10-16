@@ -17,6 +17,8 @@ export interface ProjectSummary {
   inReview: number;
   status: string;
   rag: string | null;
+  type?: 'software' | 'general';
+  plugins?: string[];
 }
 
 export interface WorkspaceInfo {

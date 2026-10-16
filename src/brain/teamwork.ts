@@ -5,6 +5,7 @@
 //   repeated agent-behaviour mistakes become (capped) learnings on that member
 // - project memory: a compact digest injected into every agent working on the project
 // - lifecycle status: active / paused / review (close-out) / closed
+import { projectType, TYPES } from './plugins.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as board from '../core/board.js';
@@ -111,15 +112,15 @@ export function projectMembers(db: DB, projectId: string) {
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
 
-/** The always-on core: Architect, PM, Quality control and a Security Champion. */
-export function baselineRecommendation(): RecommendedMember[] {
+/** The always-on core for the project's type (software: Architect, PM, Quality control, Security Champion). */
+export function baselineRecommendation(core: string[] = ALWAYS_RECOMMENDED): RecommendedMember[] {
   const reasons: Record<string, string> = {
     architect: 'Designs the system (C4 model) from the final requirements.',
-    pm: 'Owns the build end to end: phases, cards, builders and reviewers.',
-    qc: 'Checks every card against its acceptance criteria and runs the tests.',
+    pm: 'Owns the work end to end: phases, cards, and who does and reviews each piece.',
+    qc: 'Checks every card against its acceptance criteria before it is done.',
     security: 'Threat-models the design and reviews risky cards for vulnerabilities (OWASP ASVS).',
   };
-  return ALWAYS_RECOMMENDED.map((id) => {
+  return core.map((id) => {
     const t = ROLE_TEMPLATES.find((x) => x.id === id)!;
     return { key: id, template: id, name: t.name, skill: t.skill, kind: 'core' as const, reason: reasons[id], required: true };
   });
@@ -135,7 +136,7 @@ export function getRecommendation(db: DB, projectId: string) {
 
 /** Store a recommendation; the always-on core members are kept whatever the Main agent suggests. Max 8. */
 export function setRecommendation(db: DB, projectId: string, items: Partial<RecommendedMember>[], source: 'baseline' | 'main'): void {
-  const base = baselineRecommendation();
+  const base = baselineRecommendation(TYPES[projectType(db, projectId)].core);
   const extra: RecommendedMember[] = [];
   for (const i of items) {
     const template = i.template && ROLE_TEMPLATES.some((t) => t.id === i.template) ? i.template : null;

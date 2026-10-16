@@ -1,6 +1,8 @@
 // The project pipeline (lifecycle stages 2–6): create a project inside the
 // workspace, keep versioned requirements, hold the C4 design model, and move
 // through the gates that hand work to the next agent.
+import { ROLE_TEMPLATES } from './roles.js';
+import { projectType, TYPES, type ProjectType } from './plugins.js';
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -90,7 +92,7 @@ export function projectRef(db: DB, projectId: string): ProjectRef {
 }
 
 /** Stage 2: folder under projects/, git + kit, vault folder, requirements v1. */
-export async function createProject(db: DB, name: string, description: string): Promise<ProjectRef> {
+export async function createProject(db: DB, name: string, description: string, type: ProjectType = 'software'): Promise<ProjectRef> {
   const ws = currentWorkspace();
   if (!ws) throw new Error('set up a workspace first');
   const clean = name.trim();
@@ -103,6 +105,7 @@ export async function createProject(db: DB, name: string, description: string): 
   await execFileAsync('sh', [INIT, root, clean], { env: { ...process.env, DAEMON_URL: getBus().daemonUrl }, timeout: 120_000 });
   const project = board.getOrCreateProject(db, root, clean);
   setStage(db, project.id, 'requirements', description.trim());
+  db.prepare('UPDATE brain_projects SET type = ? WHERE project_id = ?').run(type, project.id);
   const ref = projectRef(db, project.id);
   for (const d of ['requirements', 'design', 'roles', 'notes']) mkdirSync(join(ref.vault, d), { recursive: true });
   saveRequirements(
@@ -307,11 +310,14 @@ function askMainForTeam(db: DB, ref: ProjectRef, version: number): void {
     db.prepare(`INSERT OR IGNORE INTO conversation_members (conversation_id, role_id) VALUES (?, 'main')`).run(conv);
   }
   const skills = installedSkills();
+  const type = TYPES[projectType(db, ref.id)];
+  const core = type.core.map((id) => ROLE_TEMPLATES.find((t) => t.id === id)?.name ?? id).join(', ');
+  const specialists = type.id === 'software' ? 'developer specialists with a matching skill, and templates (cto, cfo, marketing, social) only if the requirements call for them' : 'specialists for this kind of work (for example a writer, an editor, a researcher, a designer) with a matching skill if one is installed, and templates (marketing, social, cfo, cto) only if the brief calls for them';
   const m = addMessage(
     db,
     conv,
     'system',
-    `The requirements for ${ref.name} are final (v${version}, project_id ${ref.id}). Read them with get_requirements, then call recommend_team once with the members this project needs beyond the always-on core (Architect, PM, Quality control, Security Champion): developer specialists with a matching skill, and templates (cto, cfo, marketing, social) only if the requirements call for them. At most four extra members, each with a one-line reason that refers to the requirements. You may also give the core members a project-specific reason.${skills.length ? `\nInstalled skills you can assign to developers: ${skills.join(', ')}` : ''}`,
+    `The requirements for ${ref.name} (a ${type.name.toLowerCase()} project) are final (v${version}, project_id ${ref.id}). Read them with get_requirements, then call recommend_team once with the members this project needs beyond the always-on core (${core}): ${specialists}. At most four extra members, each with a one-line reason that refers to the requirements. You may also give the core members a project-specific reason.${skills.length ? `\nInstalled skills you can assign: ${skills.join(', ')}` : ''}`,
   );
   getBus().emit({ type: 'chat', conversation: conv, message: m });
   respond(conv, '', { model: 'sonnet' });
@@ -337,6 +343,28 @@ export function startDesign(db: DB, projectId: string): string {
       (security ? ` and ask @Security Champion for the STRIDE threat model` : '') +
       (members.includes('cto') ? `, and the CTO for review.` : '.'),
     '@Architect',
+  );
+  getBus().emit({ type: 'brain_project', project_id: projectId });
+  return ch;
+}
+
+/** Gate 3 → 5 for projects without the System design plugin: the PM plans the work in phases. */
+export function startPlanning(db: DB, projectId: string): string {
+  const ref = projectRef(db, projectId);
+  const latest = listRequirements(db, projectId)[0];
+  if (!latest?.final) throw new Error('mark the requirements final first');
+  requireRole(db, 'pm', 'a PM (project manager)');
+  for (const id of ['pm', 'qc']) if (db.prepare('SELECT 1 FROM roles WHERE id = ?').get(id)) db.prepare(`INSERT OR IGNORE INTO project_members (project_id, role_id, kind, added_at) VALUES (?, ?, 'core', ?)`).run(projectId, id, Date.now());
+  db.prepare(`UPDATE team_recommendations SET status = 'done' WHERE project_id = ?`).run(projectId);
+  setStage(db, projectId, 'plan');
+  const ch = stageChannel(db, ref, 'build', present(db, ['pm', 'qc']));
+  kickoff(
+    db,
+    ch,
+    `@PM the requirements for ${ref.name} are final (v${latest.version}, project_id ${ref.id}, saved at ${join(ref.vault, 'requirements', 'current.md')}). ` +
+      `This is not a software project: the work is documents and other files in the project folder, and the checks are reviews against each card's acceptance criteria. ` +
+      `Follow the project kickoff in CLAUDE.md: draft the phases with the manager subagent, then post them here for my approval. Do not create cards or start the work until I approve.`,
+    '@PM',
   );
   getBus().emit({ type: 'brain_project', project_id: projectId });
   return ch;

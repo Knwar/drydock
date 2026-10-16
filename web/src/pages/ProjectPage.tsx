@@ -40,6 +40,11 @@ interface Detail {
   requirementsFinal: boolean;
   requirementsVersion: number | null;
   requirementsOpen: string[];
+  stages: string[];
+  type?: 'software' | 'general';
+  plugins?: string[];
+  typeName: string;
+  pluginList: { id: string; name: string; icon: string; description: string; suggested: boolean; on: boolean; overviewCard: boolean }[];
   team: { role_id: string; kind: string; reason: string | null; name: string; initials: string; tone: string; skill: string | null; scope: string }[];
   recommendation: Recommendation | null;
   last_activity: number;
@@ -72,6 +77,7 @@ interface GateAction {
 }
 
 function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: (id: string) => void; openTeam: () => void }) {
+  const design = p.plugins?.includes('design') ?? true;
   const [confirming, setConfirming] = useState<GateAction | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -125,13 +131,17 @@ function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: 
     actions.push({
       label: 'Mark requirements final',
       confirm: 'Mark requirements final',
-      hint: 'Next: pick the team, then the design starts.',
+      hint: design ? 'Next: pick the team, then the design starts.' : 'Next: pick the team, then the PM plans the work.',
       path: `${base}/requirements/final`,
-      warning: p.requirementsOpen.length ? `Still marked “To discuss”: ${p.requirementsOpen.join(', ')}. The Architect will have to guess these; consider filling them in with the Main agent first.` : undefined,
-      steps: [`Requirements${p.requirementsVersion ? ` v${p.requirementsVersion}` : ''} are locked. You can reopen them later from the Requirements tab.`, 'You get a recommended team: always Quality control and a Security Champion, plus specialists the Main agent picks from the requirements.', 'Nothing is designed or built until you start the design.'],
+      warning: p.requirementsOpen.length ? `Still marked “To discuss”: ${p.requirementsOpen.join(', ')}. The team will have to guess these; consider filling them in with the Main agent first.` : undefined,
+      steps: [
+        `Requirements${p.requirementsVersion ? ` v${p.requirementsVersion}` : ''} are locked. You can reopen them later from the Requirements tab.`,
+        design ? 'You get a recommended team: always an Architect, a PM, Quality control and a Security Champion, plus specialists the Main agent picks from the requirements.' : 'You get a recommended team: always a PM and Quality control, plus specialists the Main agent picks from the brief.',
+        design ? 'Nothing is designed or built until you start the design.' : 'No work starts until you start the planning.',
+      ],
     });
   } else if (p.stage === 'requirements') {
-    actions.push({ label: 'Pick the team and start design', confirm: '', hint: 'Requirements are final.', open: 'team', steps: [] });
+    actions.push({ label: design ? 'Pick the team and start design' : 'Pick the team and start planning', confirm: '', hint: 'Requirements are final.', open: 'team', steps: [] });
   } else if (p.stage === 'design') {
     actions.push({
       label: 'Finalise design',
@@ -199,6 +209,45 @@ function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: 
 
 const shortThread = (name: string, slug: string) => (name.startsWith(`${slug}-`) ? name.slice(slug.length + 1) : name);
 
+/** A plugin page for a project that has it switched off. */
+function PluginOff({ p, id }: { p: Detail; id: string }) {
+  const m = p.pluginList.find((x) => x.id === id);
+  return (
+    <div className="empty" style={{ padding: 36 }}>
+      {m ? <><strong>{m.name}</strong> is off for {p.name}. {m.description}</> : 'No such page.'}
+      {m && <div style={{ marginTop: 12 }}><button className="btn sm" onClick={() => api(`/api/projects/${p.id}/plugins`, { body: { id, on: true } })}>Turn on {m.name}</button></div>}
+    </div>
+  );
+}
+
+/** Plugins on this project: what each adds, with a switch. Off only hides a plugin and its agent tools; its data stays. */
+function Plugins({ p }: { p: Detail }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const toggle = async (id: string, on: boolean) => {
+    setBusy(id);
+    try {
+      await api(`/api/projects/${p.id}/plugins`, { body: { id, on } });
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <section className="panel">
+      <div className="panel-head"><h2>Plugins</h2><span className="muted" style={{ fontSize: 12 }}>{p.typeName} project</span></div>
+      {p.pluginList.map((x) => (
+        <div key={x.id} className="check-row" style={{ alignItems: 'flex-start' }}>
+          <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ fontWeight: 600, fontSize: 13 }}>{x.name} {x.suggested && <span className="pill t-n" style={{ marginLeft: 4 }}>suggested</span>}</span>
+            <span className="muted" style={{ fontSize: 12 }}>{x.description}</span>
+          </span>
+          <button role="switch" aria-checked={x.on} aria-label={`${x.name} for this project`} className="switch" disabled={busy !== null} onClick={() => toggle(x.id, !x.on)}><span /></button>
+        </div>
+      ))}
+      <div className="muted" style={{ fontSize: 11.5 }}>Switched-on plugins appear under the project in the sidebar. Turning one off hides it and its agent tools; nothing is deleted.</div>
+    </section>
+  );
+}
+
 function Overview({ p, openConversation, newThread }: { p: Detail; openConversation: (id: string) => void; newThread: () => void }) {
   const kpis = [
     { label: 'Stage', value: STAGE_NAMES[p.stage], sub: p.description ?? '' },
@@ -208,7 +257,7 @@ function Overview({ p, openConversation, newThread }: { p: Detail; openConversat
   ];
   return (
     <>
-      <LiveCard projectId={p.id} />
+      {p.plugins?.includes('live') && <LiveCard projectId={p.id} />}
       <div className="kpis">
         {kpis.map((k) => (
           <div key={k.label} className="kpi">
@@ -236,6 +285,7 @@ function Overview({ p, openConversation, newThread }: { p: Detail; openConversat
               <div className="empty">No roadmap yet. The PM proposes phases after the design is final.</div>
             )}
           </section>
+          {p.plugins?.includes('design') && (
           <section className="panel">
             <div className="panel-head">
               <h2>Verticals</h2>
@@ -258,6 +308,7 @@ function Overview({ p, openConversation, newThread }: { p: Detail; openConversat
               <div className="empty">Verticals are created from the system design when you finalise it.</div>
             )}
           </section>
+          )}
         </div>
         <div className="grow1" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <section className="panel">
@@ -279,6 +330,7 @@ function Overview({ p, openConversation, newThread }: { p: Detail; openConversat
               <button key={c.id} className="nav-row" onClick={() => openConversation(c.id)}><span className="muted">#</span><span className="label">{shortThread(c.name, p.slug)}</span></button>
             )) : <div className="muted" style={{ fontSize: 13 }}>Threads about this project appear here: the stage threads the agents start, and any you open with your team.</div>}
           </section>
+          <Plugins p={p} />
         </div>
       </div>
     </>
@@ -793,7 +845,7 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <StageSteps stage={p.stage} />
+            <StageSteps stage={p.stage} type={p.type} />
             <button className={`btn sm${side.open ? ' on' : ''}`} aria-pressed={side.open} onClick={side.toggle} title={side.open ? 'Hide the chat panel' : tab ? 'Show the chat panel over this page' : 'Show the chat panel'}>
               <Icon name="chat" size={14} /> {side.open ? 'Hide chat' : 'Chat'}
             </button>
@@ -810,12 +862,13 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
       </nav>
       {tab === '' && <Overview p={p} openConversation={openConversation} newThread={newThread} />}
       {tab === 'requirements' && <Requirements p={p} />}
-      {tab === 'design' && <SystemDesign p={p} focus={sub} openConversation={openConversation} />}
+      {tab === 'design' && (p.plugins?.includes('design') ? <SystemDesign p={p} focus={sub} openConversation={openConversation} /> : <PluginOff p={p} id="design" />)}
+      {tab === 'live' && (p.plugins?.includes('live') ? <LiveCard projectId={p.id} /> : <PluginOff p={p} id="live" />)}
       {tab === 'board' && <Board p={p} />}
       {tab === 'roles' && <Roles p={p} roles={roles} openConversation={openConversation} openTeam={() => setTeamOpen(true)} />}
       {tab === 'memory' && <Memory p={p} />}
       {teamOpen && p.recommendation && (
-        <TeamPopup projectId={p.id} projectName={p.name} slug={p.slug} rec={p.recommendation} onClose={() => setTeamOpen(false)} onStarted={openConversation} />
+        <TeamPopup projectId={p.id} projectName={p.name} slug={p.slug} rec={p.recommendation} design={p.plugins?.includes('design') ?? true} onClose={() => setTeamOpen(false)} onStarted={openConversation} />
       )}
       {tab === 'agents' && <Agents p={p} openConversation={openConversation} />}
       {tab === 'docs' && <Docs p={p} />}

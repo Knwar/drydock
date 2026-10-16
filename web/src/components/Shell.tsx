@@ -4,6 +4,7 @@ import { go, href } from '../lib/router';
 import { STAGE_LABEL, type Conversation, type ProjectSummary } from '../lib/types';
 import { Icon, type IconName } from './Icon';
 import { LiveCount } from './LiveCard';
+import { PLUGIN_META } from './CommandBar';
 
 const STAGE_TONE: Record<string, string> = { build: 't-g', design: 't-v', plan: 't-b', requirements: 't-a', create: 't-n', idea: 't-n' };
 
@@ -100,6 +101,10 @@ function projectTree(p: ProjectSummary, t: ThreadCtx, path: string): TreeNode {
       : p.status === 'review' ? { text: 'Close-out', tone: 't-v' }
       : { text: p.blocked ? 'Blocked' : STAGE_LABEL[p.stage], tone: p.blocked ? 't-r' : STAGE_TONE[p.stage] },
     children: [
+      ...(p.plugins ?? []).flatMap((id) => {
+        const m = PLUGIN_META[id];
+        return m ? [{ id: `${p.id}/plugin/${id}`, label: m.name, icon: m.icon, to: `${base}/${id}`, active: path === `${base}/${id}` || path.startsWith(`${base}/${id}/`) }] : [];
+      }),
       ...threads.map((c) => ({
         id: c.id,
         label: `# ${threadName(c, slug)}`,
@@ -199,8 +204,8 @@ export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking,
   );
 }
 
-export function StageSteps({ stage }: { stage: string }) {
-  const order = ['idea', 'create', 'requirements', 'design', 'plan', 'build'];
+export function StageSteps({ stage, type }: { stage: string; type?: string }) {
+  const order = type === 'general' ? ['idea', 'create', 'requirements', 'plan', 'build'] : ['idea', 'create', 'requirements', 'design', 'plan', 'build'];
   const cur = order.indexOf(stage);
   return (
     <div className="steps" aria-label={`Stage: ${stage}, ${cur + 1} of ${order.length}`}>
