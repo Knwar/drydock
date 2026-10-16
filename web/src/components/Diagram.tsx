@@ -32,7 +32,7 @@ const NODE_H = 112;
 const KIND_LABEL: Record<string, string> = { person: 'Person', container: 'Container', component: 'Component', store: 'Container: data store', queue: 'Container: queue', external: 'External system' };
 
 interface ViewNode { el: Element; out: boolean; drill: number; x: number; y: number }
-interface ViewEdge { id: string; points: [number, number][]; labels: { text: string; x: number; y: number; tech: string | null }[]; async: boolean }
+interface ViewEdge { id: string; points: [number, number][]; labels: { text: string; full: string; x: number; y: number; tech: string | null }[]; async: boolean }
 interface Layout { width: number; height: number; nodes: ViewNode[]; edges: ViewEdge[]; boundary: { x: number; y: number; w: number; h: number } | null }
 
 export function buildView(elements: Element[], relations: Relation[], focus: string | null) {
@@ -75,7 +75,10 @@ export function buildView(elements: Element[], relations: Relation[], focus: str
   return {
     inside,
     neighbours: [...neighbours].map((id) => byId.get(id)!).filter(Boolean),
-    edges: [...edges.values()].map((e) => ({ ...e, label: [...e.labels].slice(0, 2).join('; ') + (e.labels.size > 2 ? ' …' : ''), techLabel: [...e.tech].join(', ') || null })),
+    edges: [...edges.values()].map((e) => {
+      const full = [...e.labels].join('; ');
+      return { ...e, full, label: full.length > 30 ? full.slice(0, 29).trimEnd() + '…' : full, techLabel: [...e.tech].join(', ').slice(0, 30) || null };
+    }),
     childCount,
   };
 }
@@ -105,7 +108,7 @@ async function layout(elements: Element[], relations: Relation[], focus: string 
       id: `e${i}`,
       sources: [e.source],
       targets: [e.target],
-      labels: [{ text: e.label, width: Math.min(180, Math.max(60, e.label.length * charW)), height: e.techLabel ? 30 : 16 }],
+      labels: [{ text: e.label, width: Math.max(60, Math.max(e.label.length, (e.techLabel ?? '').length + 2) * charW), height: e.techLabel ? 30 : 16 }],
     })),
   };
   const out = await elk.layout(graph);
@@ -140,7 +143,7 @@ async function layout(elements: Element[], relations: Relation[], focus: string 
       id: e.id,
       points: pts,
       async: v.edges[i].async,
-      labels: (e.labels ?? []).map((l: any) => ({ text: l.text, tech: v.edges[i].techLabel, x: (l.x ?? 0) + container.x, y: (l.y ?? 0) + container.y })),
+      labels: (e.labels ?? []).map((l: any) => ({ text: l.text, full: v.edges[i].full, tech: v.edges[i].techLabel, x: (l.x ?? 0) + container.x, y: (l.y ?? 0) + container.y })),
     };
   });
   return { width: out.width ?? 600, height: out.height ?? 400, nodes, edges, boundary };
@@ -217,6 +220,7 @@ export function Diagram({ elements, relations, focus, selected, onSelect, onDril
               />
               {e.labels.map((l, i) => (
                 <text key={i} x={l.x + pad} y={l.y + pad + 11} className="c4-edge-label">
+                  <title>{l.full}</title>
                   <tspan>{l.text}</tspan>
                   {l.tech && <tspan x={l.x + pad} dy="14" className="c4-edge-tech">[{l.tech}]</tspan>}
                 </text>
