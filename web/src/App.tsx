@@ -8,8 +8,9 @@ import { Header, Sidebar } from './components/Shell';
 import { TeamList } from './components/Team';
 import { Home } from './pages/Home';
 import { Onboarding } from './pages/Onboarding';
+import { ProjectPage } from './pages/ProjectPage';
 
-const projectEvents = (m: any) => ['card', 'card_removed', 'phases', 'project_removed', 'workspace', 'brain_project'].includes(m?.type);
+const projectEvents = (m: any) => ['card', 'card_removed', 'phases', 'project_removed', 'workspace', 'brain_project', 'design'].includes(m?.type);
 const convEvents = (m: any) => ['chat', 'chat_status', 'conversations', 'roles', 'chat_update'].includes(m?.type);
 
 function useStored(key: string, initial: string): [string, (v: string) => void] {
@@ -56,6 +57,8 @@ export function App() {
 
   let page: React.ReactNode;
   if (parts.length === 0) page = <Home projects={list} />;
+  else if (parts[0] === 'project' && parts[1])
+    page = <ProjectPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} openConversation={select} />;
   else page = <div className="empty">This screen is being built.</div>;
 
   return (

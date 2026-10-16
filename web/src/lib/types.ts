@@ -9,6 +9,7 @@ export interface ProjectSummary {
   stage: Stage;
   description: string | null;
   verticals: { id: string; name: string; done: number; total: number }[];
+  containers: { id: string; name: string; components: number }[];
   phase: { index: number; count: number; title: string } | null;
   cards: { done: number; total: number };
   liveAgents: number;

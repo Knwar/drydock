@@ -24,6 +24,7 @@ export interface ProjectSummary {
   stage: Stage;
   description: string | null;
   verticals: { id: string; name: string; done: number; total: number }[];
+  containers: { id: string; name: string; components: number }[];
   phase: { index: number; count: number; title: string } | null;
   cards: { done: number; total: number };
   liveAgents: number;
@@ -74,6 +75,13 @@ export function listProjects(db: DB, insideRoot: string | null): ProjectSummary[
      FROM tasks WHERE project_id = ? AND (? IS NULL OR phase_id = ?)`,
   );
   const phasesOf = db.prepare(`SELECT id, title, status FROM phases WHERE project_id = ? ORDER BY position`);
+  const hasDesign = Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'design_elements'`).get());
+  const containersOf = hasDesign
+    ? db.prepare(
+        `SELECT e.id, e.name, (SELECT COUNT(*) FROM design_elements c WHERE c.project_id = e.project_id AND c.parent_id = e.id) AS components
+         FROM design_elements e WHERE e.project_id = ? AND e.parent_id IS NULL AND e.kind = 'container' ORDER BY e.position, e.id`,
+      )
+    : null;
 
   return rows
     .filter((r) => r.parent_id === null)
@@ -109,6 +117,7 @@ export function listProjects(db: DB, insideRoot: string | null): ProjectSummary[
         stage: (STAGES as readonly string[]).includes(r.stage ?? '') ? (r.stage as Stage) : derivedStage(db, ids),
         description: r.description,
         verticals,
+        containers: (containersOf?.all(r.id) as { id: string; name: string; components: number }[]) ?? [],
         phase: active ? { index: activeIdx + 1, count: phases.length, title: active.title } : null,
         cards: { done, total },
         liveAgents: live,

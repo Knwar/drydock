@@ -59,13 +59,16 @@ function projectTree(p: ProjectSummary): TreeNode {
     label: 'System design',
     icon: 'diagram',
     to: `${base}/design`,
-    children: p.verticals.map((v) => ({
-      id: `${p.id}/v/${v.id}`,
-      label: v.name,
-      icon: 'vertical' as IconName,
-      to: `${base}/design/${v.id}`,
-      badge: v.total ? { text: `${Math.round((v.done / v.total) * 100)}%`, tone: 't-n' } : undefined,
-    })),
+    children: p.containers.map((c) => {
+      const v = p.verticals.find((x) => x.name === c.name);
+      return {
+        id: `${p.id}/c/${c.id}`,
+        label: c.name,
+        icon: 'vertical' as IconName,
+        to: c.components ? `${base}/design/${c.id}` : `${base}/design`,
+        badge: v?.total ? { text: `${Math.round((v.done / v.total) * 100)}%`, tone: 't-n' } : undefined,
+      };
+    }),
   };
   return {
     id: p.id,
