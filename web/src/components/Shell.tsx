@@ -118,16 +118,16 @@ function TreeRows({ nodes, depth, open, toggle, current }: { nodes: TreeNode[]; 
   );
 }
 
-export function Sidebar({ projects, path, children }: { projects: ProjectSummary[]; path: string; children?: React.ReactNode }) {
+export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking }: { projects: ProjectSummary[]; path: string; children?: React.ReactNode; mainOn: boolean; onMain: () => void; mainWorking: boolean }) {
   const [open, setOpen] = useState<Set<string>>(() => new Set(projects[0] ? [projects[0].id] : []));
   const toggle = (id: string) => setOpen((s) => (s.has(id) ? (s.delete(id), new Set(s)) : new Set(s.add(id))));
   return (
     <nav className="sidebar" aria-label="Main">
-      <a className={`nav-row${path === '/' ? ' on' : ''}`} href={href('/')} onClick={go('/')} style={{ fontWeight: 600, fontSize: 14, padding: '8px 10px' }}>
+      <button className={`nav-row${mainOn ? ' on' : ''}`} onClick={onMain} style={{ fontWeight: 600, fontSize: 14, padding: '8px 10px' }}>
         <span className="avatar" style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }}>M</span>
         <span className="label">Main agent</span>
-        <span className="dot" style={{ background: 'var(--g-fg)' }} />
-      </a>
+        <span className="dot" style={{ background: mainWorking ? 'var(--g-fg)' : 'var(--n-fg)' }} title={mainWorking ? 'working' : 'idle'} />
+      </button>
       <div>
         <div className="side-label">
           <span>PROJECTS</span>

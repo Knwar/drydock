@@ -9,6 +9,7 @@ import { getSetting, putSetting } from './settings.js';
 import { currentWorkspace, setupWorkspace } from './workspace.js';
 
 import './routes-chat.js';
+import './routes-projects.js';
 
 export { handleApi } from './router.js';
 

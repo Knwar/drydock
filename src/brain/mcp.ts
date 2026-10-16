@@ -69,6 +69,101 @@ server.registerTool(
   async () => text(JSON.stringify(await call('/api/projects'), null, 2)),
 );
 
+// ── projects, requirements and design ────────────────────────────
+
+server.registerTool(
+  'create_project',
+  {
+    description: 'Create a new project the user agreed to: a folder under projects/ with git and the board kit, a vault folder, and requirements v1. Only call after the user says yes.',
+    inputSchema: { name: z.string().describe('Short project name, e.g. "kusic"'), description: z.string().describe('Two or three sentences: what it is, for whom, the core idea') },
+  },
+  async ({ name, description }) => {
+    const p = await call('/api/projects', { name, description });
+    return text(`Project created: ${p.name} (project_id ${p.id})\nfolder: ${p.root}\nvault: ${p.vault}\nNext: discuss requirements with the user and keep them updated with save_requirements.`);
+  },
+);
+
+server.registerTool(
+  'get_requirements',
+  { description: "Read a project's current requirements (Markdown) and version history.", inputSchema: { project_id: z.string() } },
+  async ({ project_id }) => {
+    const versions = await call(`/api/projects/${project_id}/requirements`);
+    if (!versions.length) return text('No requirements yet.');
+    return text(`Current: v${versions[0].version}${versions[0].final ? ' (final)' : ''}\n\n${versions[0].markdown}`);
+  },
+);
+
+server.registerTool(
+  'save_requirements',
+  {
+    description: 'Save a new version of the requirements document (the whole Markdown document, not a diff). Sections: Goal, Users, Features (table with ID, feature, priority Must/Should/Could), Non-functional, Out of scope, Open questions.',
+    inputSchema: { project_id: z.string(), markdown: z.string() },
+  },
+  async ({ project_id, markdown }) => {
+    const v = await call(`/api/projects/${project_id}/requirements`, { markdown, author: ROLE });
+    return text(`Saved requirements v${v.version}.`);
+  },
+);
+
+server.registerTool(
+  'get_design',
+  { description: "Read a project's C4 design model: elements (with parent_id for nesting) and relations.", inputSchema: { project_id: z.string() } },
+  async ({ project_id }) => text(JSON.stringify(await call(`/api/projects/${project_id}/design`), null, 2)),
+);
+
+server.registerTool(
+  'set_element',
+  {
+    description:
+      'Create or update one C4 element. Top level (no parent_id): person, container (an app, API, worker), store (database), queue, or external system. Inside a container (parent_id = container id): component. Each needs a technology and a one-line description.',
+    inputSchema: {
+      project_id: z.string(),
+      id: z.string().describe('Stable id: lowercase, e.g. "api" or "api.auth"'),
+      kind: z.enum(['person', 'container', 'component', 'store', 'queue', 'external']),
+      name: z.string(),
+      parent_id: z.string().optional(),
+      technology: z.string().optional().describe('e.g. "Node.js / Express", "PostgreSQL", "Flutter"'),
+      description: z.string().describe('One line: what it does'),
+      responsibilities: z.string().optional(),
+      interfaces: z.string().optional().describe('e.g. "REST /v1 (HTTPS/JSON)"'),
+      risks: z.string().optional(),
+    },
+  },
+  async ({ project_id, ...el }) => {
+    await call(`/api/projects/${project_id}/design/elements`, el);
+    return text(`Saved ${el.kind} ${el.id}.`);
+  },
+);
+
+server.registerTool(
+  'set_relation',
+  {
+    description: 'Create or update a one-way relationship between two elements, with a specific label (a verb phrase, never just "Uses") and its protocol.',
+    inputSchema: {
+      project_id: z.string(),
+      source: z.string(),
+      target: z.string(),
+      label: z.string().describe('e.g. "Reads/writes user records"'),
+      technology: z.string().optional().describe('e.g. "HTTPS/JSON", "SQL", "WebSocket", "AMQP"'),
+      interaction: z.enum(['sync', 'async']).optional(),
+    },
+  },
+  async ({ project_id, ...r }) => {
+    await call(`/api/projects/${project_id}/design/relations`, r);
+    return text(`Saved ${r.source} → ${r.target}.`);
+  },
+);
+
+server.registerTool(
+  'remove_design_item',
+  { description: 'Remove an element (with its children and relations) or a relation by id.', inputSchema: { project_id: z.string(), id: z.string() } },
+  async ({ project_id, id }) => {
+    const res = await fetch(`${DAEMON}/api/projects/${project_id}/design/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`remove failed: ${res.status}`);
+    return text(`Removed ${id}.`);
+  },
+);
+
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop()!)) {
   await server.connect(new StdioServerTransport());
 }

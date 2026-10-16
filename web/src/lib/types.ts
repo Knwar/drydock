@@ -21,3 +21,37 @@ export interface WorkspaceInfo {
   root: string | null;
   db: string;
 }
+
+export interface Role {
+  id: string;
+  name: string;
+  initials: string;
+  scope: 'global' | 'shared' | 'project';
+  persona: string;
+  skill: string | null;
+  model: string;
+  tone: string;
+  builtin: number;
+}
+
+export interface Conversation {
+  id: string;
+  kind: 'dm' | 'channel';
+  role_id: string | null;
+  project_id: string | null;
+  name: string;
+  members: string[];
+  last: { body: string; kind: string; author: string } | null;
+  unread: number;
+  working: string | null;
+}
+
+export interface Message {
+  id: number;
+  conversation_id: string;
+  author: string;
+  kind: 'text' | 'tool' | 'decision' | 'approval' | 'error';
+  body: string;
+  meta: any;
+  created_at: number;
+}

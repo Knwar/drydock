@@ -3,7 +3,7 @@
 // into the chat; tool calls that are not pre-allowed go to the in-app
 // approvals flow through the brain MCP server's `approve` tool.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,11 +15,15 @@ import { currentWorkspace } from './workspace.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MCP_SERVER = join(HERE, 'mcp.ts');
+const KANKAN_MCP = join(HERE, '..', 'mcp', 'server.ts');
+const BRAIN_CLI = join(HERE, '..', '..', 'bin', 'brain.js');
 const TSX_LOADER = createRequire(import.meta.url).resolve('tsx/esm');
 const CLAUDE_BIN = process.env.BRAIN_CLAUDE_BIN ?? 'claude';
 
 /** Tools every role may use without asking: reading, searching, and AI Brain's own tools. */
 export const ALWAYS_ALLOWED = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'mcp__brain'];
+/** Project roles also run the board, its subagents and per-card worktrees without asking. */
+export const PROJECT_ALLOWED = ['mcp__kankan', 'Task', 'Bash(brain worktree:*)'];
 
 const running = new Map<string, { child: ChildProcess; roleId: string }>();
 const queues = new Map<string, Promise<void>>();
@@ -83,23 +87,31 @@ function pendingPrompt(role: Role, conversationId: string, seen: number): { prom
   };
 }
 
-function mcpConfig(roleId: string, conversationId: string, dataDir: string): string {
+function mcpConfig(roleId: string, conversationId: string, dataDir: string, withBoard: boolean): string {
   const dir = join(dataDir, 'runs');
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `${roleId}__${conversationId.replace(/[^a-z0-9-]/gi, '_')}.mcp.json`);
-  writeFileSync(
-    file,
-    JSON.stringify({
-      mcpServers: {
-        brain: {
-          command: process.execPath,
-          args: ['--import', TSX_LOADER, MCP_SERVER],
-          env: { BRAIN_DAEMON_URL: getBus().daemonUrl, BRAIN_ROLE: roleId, BRAIN_CONVERSATION: conversationId },
-        },
-      },
-    }),
-  );
+  const servers: Record<string, unknown> = {
+    brain: {
+      command: process.execPath,
+      args: ['--import', TSX_LOADER, MCP_SERVER],
+      env: { BRAIN_DAEMON_URL: getBus().daemonUrl, BRAIN_ROLE: roleId, BRAIN_CONVERSATION: conversationId },
+    },
+  };
+  // project roles drive the kankanban board (phases, cards, worktrees)
+  if (withBoard) servers.kankan = { command: process.execPath, args: ['--import', TSX_LOADER, KANKAN_MCP], env: { DAEMON_URL: getBus().daemonUrl } };
+  writeFileSync(file, JSON.stringify({ mcpServers: servers }));
   return file;
+}
+
+/** A `brain` command on the agents' PATH (the kankan protocol runs `brain worktree …`). */
+function shimDir(dataDir: string): string {
+  const dir = join(dataDir, 'bin');
+  mkdirSync(dir, { recursive: true });
+  const shim = join(dir, 'brain');
+  writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${BRAIN_CLI}" "$@"\n`);
+  chmodSync(shim, 0o755);
+  return dir;
 }
 
 /** Run one turn for `roleId` in the conversation, if it has anything new to answer. */
@@ -122,7 +134,8 @@ async function runTurn(roleId: string, conversationId: string): Promise<void> {
     const p = db.prepare('SELECT root_path FROM projects WHERE id = ?').get(conv.project_id) as { root_path: string } | undefined;
     if (p) cwd = p.root_path;
   }
-  const allowed = [...ALWAYS_ALLOWED, ...standingTools(db, roleId, 'allow')];
+  const projectRole = Boolean(conv.project_id && role.scope === 'project');
+  const allowed = [...ALWAYS_ALLOWED, ...(projectRole ? PROJECT_ALLOWED : []), ...standingTools(db, roleId, 'allow')];
   const denied = standingTools(db, roleId, 'deny');
   const args = [
     '-p',
@@ -132,7 +145,7 @@ async function runTurn(roleId: string, conversationId: string): Promise<void> {
     '--include-partial-messages',
     '--model', role.model,
     '--append-system-prompt', systemPrompt(role, conversationId),
-    '--mcp-config', mcpConfig(roleId, conversationId, ws.data),
+    '--mcp-config', mcpConfig(roleId, conversationId, ws.data, projectRole),
     '--permission-prompt-tool', 'mcp__brain__approve',
     '--allowedTools', ...allowed,
   ];
@@ -142,7 +155,13 @@ async function runTurn(roleId: string, conversationId: string): Promise<void> {
   emitStatus(conversationId, roleId, 'working');
   const child = spawn(CLAUDE_BIN, args, {
     cwd,
-    env: { ...process.env, BRAIN_WORKSPACE: ws.root, MCP_TOOL_TIMEOUT: String(24 * 3600 * 1000) },
+    env: {
+      ...process.env,
+      PATH: `${shimDir(ws.data)}:${process.env.PATH ?? ''}`,
+      DAEMON_URL: getBus().daemonUrl,
+      BRAIN_WORKSPACE: ws.root,
+      MCP_TOOL_TIMEOUT: String(24 * 3600 * 1000),
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   running.set(conversationId, { child, roleId });

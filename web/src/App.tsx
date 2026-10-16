@@ -1,26 +1,59 @@
+import { useEffect, useState } from 'react';
 import { useApi } from './lib/api';
 import { usePath } from './lib/router';
 import { useTheme } from './lib/theme';
-import type { ProjectSummary, WorkspaceInfo } from './lib/types';
+import type { Conversation, ProjectSummary, Role, WorkspaceInfo } from './lib/types';
+import { ChatPanel } from './components/Chat';
 import { Header, Sidebar } from './components/Shell';
+import { TeamList } from './components/Team';
 import { Home } from './pages/Home';
 import { Onboarding } from './pages/Onboarding';
 
 const projectEvents = (m: any) => ['card', 'card_removed', 'phases', 'project_removed', 'workspace', 'brain_project'].includes(m?.type);
+const convEvents = (m: any) => ['chat', 'chat_status', 'conversations', 'roles', 'chat_update'].includes(m?.type);
+
+function useStored(key: string, initial: string): [string, (v: string) => void] {
+  const [v, setV] = useState(() => {
+    try {
+      return localStorage.getItem(key) ?? initial;
+    } catch {
+      return initial;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, v);
+    } catch {
+      /* private mode */
+    }
+  }, [key, v]);
+  return [v, setV];
+}
 
 export function App() {
   const [theme, toggleTheme] = useTheme();
   const parts = usePath();
   const path = '/' + parts.join('/');
   const ws = useApi<WorkspaceInfo>('/api/workspace', (m) => m?.type === 'workspace');
+  const ready = Boolean(ws.data?.configured);
   const profile = useApi<{ name: string | null }>('/api/profile', (m) => m?.type === 'profile');
-  const projects = useApi<ProjectSummary[]>(ws.data?.configured ? '/api/projects' : null, projectEvents);
+  const projects = useApi<ProjectSummary[]>(ready ? '/api/projects' : null, projectEvents);
+  const roles = useApi<Role[]>(ready ? '/api/roles' : null, (m) => m?.type === 'roles');
+  const convs = useApi<Conversation[]>(ready ? '/api/conversations' : null, convEvents);
+  const [convId, setConvId] = useStored('ai-brain-conversation', 'dm:main');
 
   if (ws.error) return <main className="main"><div className="error">Can't reach the AI Brain daemon: {ws.error}</div></main>;
   if (!ws.data) return null;
-  if (!ws.data.configured) return <Onboarding onDone={() => { ws.reload(); profile.reload(); }} />;
+  if (!ready) return <Onboarding onDone={() => { ws.reload(); profile.reload(); }} />;
 
   const list = projects.data ?? [];
+  const conversations = convs.data ?? [];
+  const current = conversations.find((c) => c.id === convId) ?? conversations.find((c) => c.id === 'dm:main') ?? null;
+  const select = (id: string) => {
+    setConvId(id);
+    convs.reload();
+  };
+
   let page: React.ReactNode;
   if (parts.length === 0) page = <Home projects={list} />;
   else page = <div className="empty">This screen is being built.</div>;
@@ -29,8 +62,18 @@ export function App() {
     <div className="app">
       <Header theme={theme} toggleTheme={toggleTheme} name={profile.data?.name ?? ''} />
       <div className="body">
-        <Sidebar key={list.length ? 'loaded' : 'empty'} projects={list} path={path} />
+        <Sidebar
+          key={list.length ? 'loaded' : 'empty'}
+          projects={list}
+          path={path}
+          mainOn={current?.id === 'dm:main'}
+          onMain={() => select('dm:main')}
+          mainWorking={Boolean(conversations.find((c) => c.id === 'dm:main')?.working)}
+        >
+          <TeamList conversations={conversations} roles={roles.data ?? []} current={current?.id ?? null} select={select} />
+        </Sidebar>
         <main className="main">{page}</main>
+        <ChatPanel conversation={current} roles={roles.data ?? []} onSent={convs.reload} />
       </div>
     </div>
   );
