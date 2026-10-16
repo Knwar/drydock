@@ -23,7 +23,7 @@ import {
   standingTools,
   updateMessageMeta,
 } from './chat.js';
-import { addFromTemplate, deleteRole, getRole, listRoles, ROLE_TEMPLATES, saveRole } from './roles.js';
+import { addFromTemplate, deleteRole, effectiveEffort, getRole, listRoles, ROLE_TEMPLATES, saveRole } from './roles.js';
 import { HttpError, on, type ApiCtx } from './router.js';
 import { activeRuns, respond, stopRun, toolSummary } from './runner.js';
 import { currentWorkspace } from './workspace.js';
@@ -35,7 +35,7 @@ const need = <T>(v: T | undefined | null, what: string): T => {
 
 // ── roles ─────────────────────────────────────────────────────────
 
-on('GET', '/api/roles', (_q, res, _u, ctx) => ctx.json(res, 200, listRoles(ctx.db())));
+on('GET', '/api/roles', (_q, res, _u, ctx) => ctx.json(res, 200, listRoles(ctx.db()).map((r) => ({ ...r, default_effort: effectiveEffort({ id: r.id, effort: null }) }))));
 
 on('GET', '/api/role-templates', (_q, res, _u, ctx) => {
   const have = new Set(listRoles(ctx.db()).map((r) => r.id));

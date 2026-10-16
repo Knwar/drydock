@@ -27,5 +27,10 @@ const handoff = /HANDOFF/.test(prompt);
 if (handoff) reply = `done, over to you HANDOFF to ${args[args.indexOf('--append-system-prompt') + 1].includes('You are the CTO') ? '@QC' : '@CTO'}`;
 out({ type: 'stream_event', event: { type: 'message_start' } });
 out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: reply } } });
-out({ type: 'assistant', message: { content: [{ type: 'text', text: reply }] } });
-out({ type: 'result', subtype: 'success', is_error: false, result: reply, total_cost_usd: 0.001, num_turns: 1, duration_ms: 5 });
+// a session refresh asks for a handover note; record what the system prompt and effort were for the tests
+if (prompt.includes('Your session is being refreshed')) reply = `HANDOVER NOTE for ${resumed}`;
+if (process.env.FAKE_CLAUDE_LOG) (await import('node:fs')).appendFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify({ prompt: prompt.slice(0, 300), resumed, effort: val('--effort'), system: val('--append-system-prompt') }) + '\n');
+// usage like the real CLI: the first call writes the cache, resumed ones read it
+const usage = resumed ? { input_tokens: 50, cache_creation_input_tokens: 100, cache_read_input_tokens: 5000, output_tokens: 20 } : { input_tokens: 50, cache_creation_input_tokens: 5000, cache_read_input_tokens: 0, output_tokens: 20 };
+out({ type: 'assistant', message: { content: [{ type: 'text', text: reply }], usage } });
+out({ type: 'result', subtype: 'success', is_error: false, result: reply, total_cost_usd: 0.001, num_turns: 1, duration_ms: 5, usage });

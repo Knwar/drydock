@@ -269,6 +269,10 @@ function RoleEditor({ role, onClose }: { role: Partial<Role> | null; onClose: ()
         <label>Name<input className="input" value={form.name ?? ''} onChange={(e) => set('name', e.target.value)} /></label>
         <label>Scope<select className="input" value={form.scope ?? 'shared'} onChange={(e) => set('scope', e.target.value)}><option value="shared">Shared · all projects</option><option value="project">Per project</option><option value="global">Global</option></select></label>
         <label>Model<select className="input" value={form.model ?? 'sonnet'} onChange={(e) => set('model', e.target.value)}><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option></select></label>
+        <label>Thinking effort<select className="input" value={form.effort ?? ''} onChange={(e) => set('effort', e.target.value)} title="How hard the model thinks before answering. Higher is slower and uses more of your plan.">
+          <option value="">Default{form.default_effort ? ` (${form.default_effort})` : ''}</option>
+          {['low', 'medium', 'high', 'xhigh', 'max'].map((e) => <option key={e} value={e}>{e[0].toUpperCase() + e.slice(1)}</option>)}
+        </select></label>
         <label>Skill<input className="input mono" placeholder="e.g. marketing:campaign-plan" value={form.skill ?? ''} onChange={(e) => set('skill', e.target.value)} /></label>
       </div>
       <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }} className="muted">Persona (system prompt)
@@ -407,6 +411,68 @@ function Usage() {
           Alert me when weekly usage passes <span className="mono" style={{ fontSize: 22, fontWeight: 800 }}>{t}%</span>
           <input type="range" min={10} max={99} value={t} onChange={(e) => setThreshold(Number(e.target.value))} onMouseUp={() => api('/api/usage/alert', { body: { threshold: t } }).then(u.reload)} onKeyUp={() => api('/api/usage/alert', { body: { threshold: t } }).then(u.reload)} style={{ accentColor: 'var(--accent)' }} />
         </label>
+      </section>
+      <AgentUsage />
+    </>
+  );
+}
+
+const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
+
+/** Where tokens go, per team member, and how much was read from the cheap prompt cache. */
+function AgentUsage() {
+  const [days, setDays] = useState(7);
+  const u = useApi<{ roles: { role_id: string; runs: number; read: number; cache_read: number; output: number; cost: number | null; cacheHit: number | null }[]; sessions: { maxTurns: number; maxContextTokens: number } }>(`/api/usage/agents?days=${days}`);
+  const roles = useApi<Role[]>('/api/roles');
+  const [limits, setLimits] = useState<{ maxTurns: number; maxContextTokens: number } | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  if (!u.data) return null;
+  const name = (id: string) => roles.data?.find((r) => r.id === id)?.name ?? id;
+  const lim = limits ?? u.data.sessions;
+  const total = u.data.roles.reduce((a, r) => ({ read: a.read + r.read, cache: a.cache + r.cache_read }), { read: 0, cache: 0 });
+  return (
+    <>
+      <section className="panel">
+        <div className="panel-head">
+          <h2>Where tokens go</h2>
+          <div className="seg">{[1, 7, 30].map((d) => <button key={d} aria-pressed={days === d} onClick={() => setDays(d)}>{d === 1 ? 'Today' : `${d} days`}</button>)}</div>
+        </div>
+        <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+          Agents re-read their whole conversation on every turn. The part that comes from the prompt cache costs about a tenth as much, so a high cache share is good. If it drops sharply, something is changing the start of the agents' prompts.
+          {total.read > 0 && <> Overall: <strong>{Math.round((total.cache / total.read) * 100)}%</strong> from cache.</>}
+        </div>
+        {u.data.roles.length === 0 ? (
+          <div className="muted" style={{ fontSize: 13 }}>No agent runs in this period.</div>
+        ) : (
+          <div className="scroll-x">
+            <table className="table">
+              <thead><tr><th>Member</th><th>Runs</th><th>Read</th><th>From cache</th><th>Written</th><th>Cost (API price)</th></tr></thead>
+              <tbody>
+                {u.data.roles.map((r) => (
+                  <tr key={r.role_id}>
+                    <td>{name(r.role_id)}</td>
+                    <td>{r.runs}</td>
+                    <td className="mono">{fmt(r.read)}</td>
+                    <td><span className={`pill ${r.cacheHit === null ? 't-n' : r.cacheHit >= 70 ? 't-g' : r.cacheHit >= 40 ? 't-a' : 't-r'}`}>{r.cacheHit === null ? '—' : `${r.cacheHit}%`}</span></td>
+                    <td className="mono">{fmt(r.output)}</td>
+                    <td className="mono">{r.cost === null ? '—' : `$${r.cost.toFixed(2)}`}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="muted" style={{ fontSize: 11.5 }}>Cost is what the same tokens would cost on the API; on your subscription it shows up as plan usage instead.</div>
+      </section>
+      <section className="panel" style={{ maxWidth: 640 }}>
+        <h2>Fresh sessions</h2>
+        <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>A long agent conversation starts a fresh session once it passes either limit: the old session writes a handover note that opens the new one. This keeps answers sharp as context grows.</div>
+        <div className="form-grid">
+          <label className="field"><span className="muted">After this many turns</span><input className="input" type="number" min={10} max={500} value={lim.maxTurns} onChange={(e) => setLimits({ ...lim, maxTurns: Number(e.target.value) })} /></label>
+          <label className="field"><span className="muted">Or when the context reaches (thousand tokens)</span><input className="input" type="number" min={50} max={2000} value={Math.round(lim.maxContextTokens / 1000)} onChange={(e) => setLimits({ ...lim, maxContextTokens: Number(e.target.value) * 1000 })} /></label>
+          <button className="btn sm" style={{ alignSelf: 'end' }} disabled={!limits} onClick={async () => { await api('/api/settings/sessions', { body: lim }); setLimits(null); setMsg('Saved.'); u.reload(); }}>Save</button>
+        </div>
+        {msg && <div className="muted" style={{ fontSize: 12 }}>{msg}</div>}
       </section>
     </>
   );

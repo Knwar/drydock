@@ -318,12 +318,12 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
               send();
             }
           }}
-          placeholder={lead?.id === 'main' ? 'Describe an idea, or ask anything…' : lead ? `Message ${lead.name}…` : several ? `Message #${threadTitle}: @${byId.get(conversation.members[0])?.name ?? 'name'} to ask just them…` : `Message #${threadTitle}…`}
+          placeholder={lead?.id === 'main' ? 'Describe an idea, or ask anything…' : lead ? `Message ${lead.name}…` : several ? `Message #${threadTitle}: ${byId.get(conversation.members[0])?.name ?? 'the lead'} answers, or @mention someone…` : `Message #${threadTitle}…`}
         />
         {error && <div className="error">{error}</div>}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className="muted" style={{ fontSize: 11 }} title={several ? 'Without an @mention each member answers in turn if they have something to add. With @mentions only those members answer.' : undefined}>
-            {several ? 'All members answer in turn · @mention to ask one' : 'Enter to send · Shift+Enter for a new line'}
+          <span className="muted" style={{ fontSize: 11 }} title={several ? `Without an @mention, ${byId.get(conversation.members[0])?.name ?? 'the first member'} (the lead) answers and brings others in. With @mentions only those members answer.` : undefined}>
+            {several ? `${byId.get(conversation.members[0])?.name ?? 'The lead'} answers · @mention to ask others` : 'Enter to send · Shift+Enter for a new line'}
           </span>
           {working ? (
             <button type="button" className="btn sm" style={{ marginLeft: 'auto' }} onClick={stop}>Stop</button>

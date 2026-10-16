@@ -1,6 +1,6 @@
 // /api routes for apps running on this Mac and the local services they use.
 import type { DB } from '../core/db.js';
-import { appLogs, appStatus, liveSettings, pauseApp, readRecipe, resumeApp, runningApps, saveRecipe, startApp, stopApp } from './live.js';
+import { appLogs, appStatus, checkApp, liveSettings, pauseApp, readRecipe, resumeApp, runningApps, saveRecipe, startApp, stopApp } from './live.js';
 import { projectRef } from './pipeline.js';
 import { HttpError, on } from './router.js';
 import { SecretError } from './secrets.js';
@@ -55,6 +55,12 @@ on('POST', '/api/projects/:id/live/pause', async (_q, res, _u, ctx, p) => {
 on('POST', '/api/projects/:id/live/resume', async (_q, res, _u, ctx, p) => {
   await guard(() => resumeApp(ctx.db(), p.id));
   ctx.json(res, 200, appStatus(ctx.db(), p.id));
+});
+
+on('POST', '/api/projects/:id/live/check', async (req, res, _u, ctx, p) => {
+  const b = await ctx.readBody(req);
+  const paths = Array.isArray(b?.paths) && b.paths.length ? b.paths.map(String) : ['/'];
+  ctx.json(res, 200, await checkApp(p.id, paths, b?.service ? String(b.service) : undefined));
 });
 
 on('GET', '/api/projects/:id/live/logs', (_q, res, url, ctx, p) => {

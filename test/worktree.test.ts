@@ -87,3 +87,58 @@ describe('worktree merge lock', () => {
     assert.equal(existsSync(lockDir()), false);
   });
 });
+
+describe('worktree verify gate', () => {
+  let repo: string;
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
+  const run = (...args: string[]) => {
+    try {
+      return { code: 0, out: execFileSync(process.execPath, [SCRIPT, ...args], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] }).toString() };
+    } catch (e: any) {
+      return { code: e.status as number, out: `${e.stdout}${e.stderr}` };
+    }
+  };
+
+  beforeEach(() => {
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'kankan-verify-')));
+    git(repo, 'init', '-b', 'main');
+    git(repo, 'config', 'user.name', 'Test');
+    git(repo, 'config', 'user.email', 'test@example.com');
+    mkdirSync(join(repo, '.ai-brain'));
+    // the check: fails while broken.txt exists in the tree
+    writeFileSync(join(repo, '.ai-brain', 'run.json'), JSON.stringify({ kind: 'none', verify: 'for i in $(seq 1 100); do echo noise $i; done; test ! -e broken.txt || { echo "TEST FAILED: broken.txt"; exit 1; }' }));
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-m', 'init');
+  });
+  afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+  it('refuses to merge a card whose checks fail, prints only the tail, and merges once fixed', () => {
+    run('add', 'ccc');
+    const tree = join(repo, '.trees', 'ccc');
+    writeFileSync(join(tree, 'broken.txt'), 'x');
+    git(tree, 'add', '.');
+    git(tree, 'commit', '-m', 'broken');
+    const v = run('verify', 'ccc');
+    assert.equal(v.code, 1);
+    assert.match(v.out, /verify FAILED[\s\S]*TEST FAILED: broken.txt/);
+    assert.ok(!v.out.includes('noise 1\n'), 'only the tail of a long output');
+    const m = run('merge', 'ccc');
+    assert.equal(m.code, 1);
+    assert.match(m.out, /not merged/);
+    assert.ok(existsSync(tree), 'the card stays in its worktree');
+    git(tree, 'rm', '-q', 'broken.txt');
+    git(tree, 'commit', '-m', 'fix');
+    const ok = run('merge', 'ccc');
+    assert.equal(ok.code, 0, ok.out);
+    assert.match(ok.out, /verify passed/);
+  });
+
+  it('uses package.json scripts when no verify is set, and passes when there is nothing to run', () => {
+    writeFileSync(join(repo, '.ai-brain', 'run.json'), JSON.stringify({ kind: 'none' }));
+    assert.match(run('verify', '.').out, /no check set/);
+    writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: { lint: 'echo linted', test: 'echo tested' } }));
+    const r = run('verify', '.');
+    assert.equal(r.code, 0);
+    assert.match(r.out, /verify passed: npm run lint && npm test/);
+  });
+});

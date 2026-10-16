@@ -1,7 +1,7 @@
 // Team roles (D7/D8): each role is a Claude Code persona with a scope, a
 // model and a skill. Shared roles see every project; project roles see one.
 import type { DB } from '../core/db.js';
-import { defineSchema } from './schema.js';
+import { addMissingColumns, defineSchema } from './schema.js';
 
 export type RoleScope = 'global' | 'shared' | 'project';
 
@@ -16,7 +16,14 @@ export interface Role {
   tone: string;
   position: number;
   builtin: number;
+  /** reasoning effort for `claude --effort`; null = the role's default */
+  effort: string | null;
 }
+
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+/** Defaults: deep thinking where mistakes are expensive (design, security), light where it is routine. */
+const DEFAULT_EFFORT: Record<string, string> = { architect: 'high', security: 'high', cto: 'high', pm: 'medium', qc: 'medium', main: 'medium', cfo: 'medium', marketing: 'low', social: 'low' };
+export const effectiveEffort = (r: Pick<Role, 'id' | 'effort'>): string | null => r.effort ?? DEFAULT_EFFORT[r.id] ?? null;
 
 const COMMON = `You are a member of the user's personal AI team inside AI Brain, a local app on their Mac. You talk to the user in a chat window, like a colleague in an office chat. Keep replies short and plain: a few sentences or a short list. No headings unless asked.
 
@@ -24,7 +31,7 @@ Everything you create goes inside the AI Brain workspace folder (your working di
 
 When the user agrees to a decision in this conversation, call the log_decision tool with a short title, the reason, and the follow-up actions, so it is recorded. Do not log trivia.`;
 
-export const DEFAULT_ROLES: Omit<Role, 'position' | 'builtin'>[] = [
+export const DEFAULT_ROLES: Omit<Role, 'position' | 'builtin' | 'effort'>[] = [
   {
     id: 'main',
     name: 'Main agent',
@@ -176,6 +183,7 @@ CREATE TABLE IF NOT EXISTS roles (
 );
 `,
   (db) => {
+    addMissingColumns(db, 'roles', { effort: 'TEXT' });
     const insert = db.prepare(
       `INSERT OR IGNORE INTO roles (id, name, initials, scope, persona, skill, model, tone, position, builtin, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
@@ -230,16 +238,17 @@ export function saveRole(db: DB, input: Partial<Role> & { name: string }): Role 
     skill: input.skill === undefined ? existing?.skill ?? null : input.skill || null,
     model: input.model ?? existing?.model ?? 'sonnet',
     tone: input.tone ?? existing?.tone ?? 'v',
+    effort: input.effort === undefined ? existing?.effort ?? null : (EFFORTS as readonly string[]).includes(input.effort ?? '') ? input.effort : null,
   };
   if (existing) {
-    db.prepare('UPDATE roles SET name = ?, initials = ?, scope = ?, persona = ?, skill = ?, model = ?, tone = ? WHERE id = ?').run(
-      next.name, next.initials, next.scope, next.persona, next.skill, next.model, next.tone, id,
+    db.prepare('UPDATE roles SET name = ?, initials = ?, scope = ?, persona = ?, skill = ?, model = ?, tone = ?, effort = ? WHERE id = ?').run(
+      next.name, next.initials, next.scope, next.persona, next.skill, next.model, next.tone, next.effort, id,
     );
   } else {
     const pos = (db.prepare('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM roles').get() as { p: number }).p;
     db.prepare(
-      `INSERT INTO roles (id, name, initials, scope, persona, skill, model, tone, position, builtin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-    ).run(id, next.name, next.initials, next.scope, next.persona, next.skill, next.model, next.tone, pos, Date.now());
+      `INSERT INTO roles (id, name, initials, scope, persona, skill, model, tone, effort, position, builtin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+    ).run(id, next.name, next.initials, next.scope, next.persona, next.skill, next.model, next.tone, next.effort, pos, Date.now());
   }
   return getRole(db, id)!;
 }

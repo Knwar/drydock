@@ -98,7 +98,7 @@ export function generateDaily(db: DB): void {
   const m = addMessage(db, DAILY_CONVERSATION, 'system', prompt);
   getBus().emit({ type: 'chat', conversation: DAILY_CONVERSATION, message: m });
   getBus().emit({ type: 'daily', status: 'generating' });
-  respond(DAILY_CONVERSATION, '', { model: 'sonnet', onDone: () => {
+  respond(DAILY_CONVERSATION, '', { model: 'sonnet', effort: 'low', onDone: () => {
     generating = false;
     getBus().emit({ type: 'daily', status: 'idle' });
   } });

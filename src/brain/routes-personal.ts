@@ -23,6 +23,7 @@ import {
   upsertInbox,
 } from './personal.js';
 import { listRoles } from './roles.js';
+import { sessionLimits, usageByRole } from './runner.js';
 import { HttpError, on } from './router.js';
 import { putSetting } from './settings.js';
 import { getUsage, usageAlert } from './usage.js';
@@ -186,6 +187,20 @@ on('POST', '/api/integrations/policy', async (req, res, _u, ctx) => {
 // ── usage ──
 
 on('GET', '/api/usage', (_q, res, _u, ctx) => ctx.json(res, 200, getUsage(ctx.db())));
+
+/** Tokens per role over the last N days, with how much was read from the prompt cache. */
+on('GET', '/api/usage/agents', (_q, res, url, ctx) => {
+  const days = Math.min(90, Math.max(1, Number(url.searchParams.get('days')) || 7));
+  ctx.json(res, 200, { days, roles: usageByRole(ctx.db(), Date.now() - days * 86_400_000), sessions: sessionLimits(ctx.db()) });
+});
+
+/** When a long agent session starts fresh (with a handover note). */
+on('POST', '/api/settings/sessions', async (req, res, _u, ctx) => {
+  const b = await ctx.readBody(req);
+  const next = { maxTurns: Math.min(500, Math.max(10, Number(b?.maxTurns) || 60)), maxContextTokens: Math.min(2_000_000, Math.max(50_000, Number(b?.maxContextTokens) || 400_000)) };
+  putSetting(ctx.db(), 'brain.sessions', next);
+  ctx.json(res, 200, next);
+});
 on('POST', '/api/usage/alert', async (req, res, _u, ctx) => {
   const b = await ctx.readBody(req);
   const cur = usageAlert(ctx.db());

@@ -3,7 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DB } from '../core/db.js';
 import { listRoles } from './roles.js';
-import { defineSchema } from './schema.js';
+import { addMissingColumns, defineSchema } from './schema.js';
 
 export type MessageKind = 'text' | 'tool' | 'decision' | 'approval' | 'proposal' | 'secret_request' | 'error';
 
@@ -93,7 +93,10 @@ CREATE TABLE IF NOT EXISTS brain_decisions (
   created_at      INTEGER NOT NULL
 );
 `,
-  (db) => ensureDms(db),
+  (db) => {
+    addMissingColumns(db, 'agent_sessions', { turns: 'INTEGER NOT NULL DEFAULT 0', context_tokens: 'INTEGER NOT NULL DEFAULT 0' });
+    ensureDms(db);
+  },
 );
 
 const parseMeta = (m: any): Message => ({ ...m, meta: m.meta ? JSON.parse(m.meta) : null });
@@ -183,14 +186,21 @@ export function markRead(db: DB, conversationId: string): void {
 
 // ── sessions: one Claude session per (role, conversation) ─────────
 
-export function getSession(db: DB, roleId: string, conversationId: string): { session_id: string; seen_message_id: number } | undefined {
-  return db.prepare('SELECT session_id, seen_message_id FROM agent_sessions WHERE role_id = ? AND conversation_id = ?').get(roleId, conversationId) as any;
+export function getSession(db: DB, roleId: string, conversationId: string): { session_id: string; seen_message_id: number; turns: number; context_tokens: number } | undefined {
+  return db.prepare('SELECT session_id, seen_message_id, turns, context_tokens FROM agent_sessions WHERE role_id = ? AND conversation_id = ?').get(roleId, conversationId) as any;
+}
+
+/** One more turn in the session, and how big its context is now (tokens the latest call read). */
+export function countTurn(db: DB, roleId: string, conversationId: string, contextTokens: number): void {
+  db.prepare('UPDATE agent_sessions SET turns = turns + 1, context_tokens = ? WHERE role_id = ? AND conversation_id = ?').run(contextTokens, roleId, conversationId);
 }
 
 export function saveSession(db: DB, roleId: string, conversationId: string, sessionId: string, seen: number): void {
   db.prepare(
     `INSERT INTO agent_sessions (role_id, conversation_id, session_id, seen_message_id, updated_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(role_id, conversation_id) DO UPDATE SET session_id = excluded.session_id, seen_message_id = excluded.seen_message_id, updated_at = excluded.updated_at`,
+     ON CONFLICT(role_id, conversation_id) DO UPDATE SET session_id = excluded.session_id, seen_message_id = excluded.seen_message_id, updated_at = excluded.updated_at,
+       turns = CASE WHEN agent_sessions.session_id = excluded.session_id THEN agent_sessions.turns ELSE 0 END,
+       context_tokens = CASE WHEN agent_sessions.session_id = excluded.session_id THEN agent_sessions.context_tokens ELSE 0 END`,
   ).run(roleId, conversationId, sessionId, seen, Date.now());
 }
 

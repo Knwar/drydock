@@ -55,6 +55,8 @@ export interface Recipe {
   kind: 'web' | 'app' | 'none';
   install?: string;
   setup?: string;
+  /** checks a card must pass before it merges (brain verify), e.g. "npm run lint && npm test" */
+  verify?: string;
   services?: ServiceSpec[];
   /** kind "app": build and open it (a Mac app, a simulator) */
   launch?: string;
@@ -73,7 +75,7 @@ export function validateRecipe(r: any, root: string): Recipe {
   };
   if (!r || typeof r !== 'object') bad('must be an object');
   if (!['web', 'app', 'none'].includes(r.kind)) bad('kind must be "web", "app" or "none"');
-  for (const k of ['install', 'setup', 'launch'] as const) if (r[k] !== undefined && typeof r[k] !== 'string') bad(`${k} must be a command string`);
+  for (const k of ['install', 'setup', 'launch', 'verify'] as const) if (r[k] !== undefined && typeof r[k] !== 'string') bad(`${k} must be a command string`);
   if (r.kind === 'web') {
     if (!Array.isArray(r.services) || !r.services.length) bad('a web project needs services: [{ name, command }]');
     const names = new Set<string>();
@@ -576,6 +578,37 @@ export function appStatus(db: DB, projectId: string) {
     })),
     databases: projectDatabases(db, projectId).map((d) => ({ id: d.id, as: d.as_name, name: d.db_name, where: d.service_id.startsWith('docker:') ? 'Docker' : d.service_name ?? 'removed server', type: d.type ?? d.service_id.slice(7) })),
   };
+}
+
+/**
+ * Smoke-test the running app: GET each path on a service and report status,
+ * time, size and the page title (or the start of an error body). Cheap and
+ * deterministic: what QC runs after a merge before anything heavier.
+ */
+export async function checkApp(projectId: string, paths: string[], service?: string): Promise<{ ok: boolean; results: { path: string; status: number | null; ms: number; bytes: number; title: string | null; error: string | null }[]; message?: string }> {
+  const a = apps.get(projectId);
+  const svcs = a ? [...a.services.values()] : [];
+  const svc = service ? a?.services.get(service) : (svcs.find((s) => s.spec.primary) ?? svcs[0]);
+  if (!a || !svc || a.status !== 'live') return { ok: false, results: [], message: `Not live (${a?.status ?? 'stopped'}). Start it from the project overview, or live_restart.` };
+  const results = [];
+  for (const path of paths.slice(0, 20)) {
+    const t0 = Date.now();
+    const r = await new Promise<{ status: number | null; body: string; error: string | null }>((done) => {
+      const req = request({ host: '127.0.0.1', port: svc.port, path: path.startsWith('/') ? path : `/${path}`, method: 'GET', timeout: 15_000, headers: { accept: 'text/html,application/json,*/*' } }, (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => body.length < 200_000 && (body += c));
+        res.on('end', () => done({ status: res.statusCode ?? null, body, error: null }));
+      });
+      req.on('timeout', () => req.destroy(new Error('timed out after 15s')));
+      req.on('error', (e) => done({ status: null, body: '', error: e.message }));
+      req.end();
+    });
+    const title = /<title[^>]*>([^<]{0,120})<\/title>/i.exec(r.body)?.[1]?.trim() ?? null;
+    const bad = r.status === null || r.status >= 400;
+    results.push({ path, status: r.status, ms: Date.now() - t0, bytes: r.body.length, title, error: r.error ?? (bad ? redact(r.body.replace(/\s+/g, ' ').slice(0, 300), a.secretValues) : null) });
+  }
+  return { ok: results.every((r) => r.status !== null && r.status < 400), results };
 }
 
 export function appLogs(projectId: string, service?: string, lines = 200): string {

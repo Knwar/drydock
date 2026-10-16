@@ -35,6 +35,8 @@ export interface Role {
   model: string;
   tone: string;
   builtin: number;
+  effort?: string | null;
+  default_effort?: string | null;
 }
 
 export interface Conversation {

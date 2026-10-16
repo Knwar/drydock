@@ -8,6 +8,7 @@
 //   brain stop                stop the daemon (set-up folders only)
 //   brain restart             restart + show project details (set-up folders only)
 //   brain worktree add|remove|merge <id> [--force]   per-card git worktree, run in the project
+//   brain verify [id]                                the project's checks in a card's worktree
 //   brain security-scan [dir]  dependency audit, secret scan, Semgrep if installed
 //   brain recount-lines [--dry-run] [--db <path>]    recompute lines written per card from git history
 //   brain daemon start|stop|restart|status|run   machine-level daemon management
@@ -238,6 +239,12 @@ async function main() {
 
   // Per-card git worktree, run against the project in the current directory.
   // The script lives centrally (one source of truth); we just invoke it in cwd.
+  // The project's checks (tests, lint, typecheck) in a card's worktree; merge runs them too.
+  if (cmd === 'verify') {
+    const res = spawnSync(process.execPath, [join(ROOT, 'scripts', 'worktree.js'), 'verify', rest[0] ?? '.'], { cwd: process.cwd(), stdio: 'inherit' });
+    process.exit(res.status ?? 0);
+  }
+
   if (cmd === 'worktree') {
     const res = spawnSync(process.execPath, [join(ROOT, 'scripts', 'worktree.js'), ...rest], {
       cwd: process.cwd(),
@@ -285,6 +292,7 @@ async function main() {
   brain info                              project details for this folder
   brain start|stop|restart                daemon + project details (set-up folders)
   brain worktree add|remove|merge <id>    per-card git worktree, run in the project
+  brain verify [id]                       run the project's checks in a card's worktree (merge runs them too)
   brain recount-lines [--dry-run]         recompute lines written per card from git history
   brain daemon start|stop|restart|status  machine-level daemon management
   brain daemon run                        run daemon in the foreground`);

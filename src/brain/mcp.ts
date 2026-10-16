@@ -23,6 +23,17 @@ async function call(path: string, body?: unknown): Promise<any> {
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 
+// Tool results are re-read on every later turn, so they are compact lines,
+// not indented JSON; `detail: true` gives the long form where it exists.
+const clip = (v: unknown, n = 160) => {
+  const t = String(v ?? '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n - 1) + '…' : t;
+};
+const ago = (t: number) => {
+  const m = Math.round((Date.now() - t) / 60_000);
+  return m < 60 ? `${m}m ago` : m < 2880 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
+};
+
 export const server = new McpServer({ name: 'brain', version: '0.1.0' });
 
 // Permission prompt tool (--permission-prompt-tool mcp__brain__approve): the
@@ -98,7 +109,19 @@ server.registerTool(
 server.registerTool(
   'list_projects',
   { description: 'List the projects in AI Brain with their stage and progress.', inputSchema: {} },
-  async () => text(JSON.stringify(await call('/api/projects'), null, 2)),
+  async () => {
+    const ps = await call('/api/projects');
+    if (!ps.length) return text('No projects yet.');
+    return text(
+      ps
+        .map((p: any) =>
+          [`${p.name} (project_id ${p.id})`, `stage ${p.stage}`, p.status !== 'active' ? p.status : '', p.phase ? `phase ${p.phase.index}/${p.phase.count} ${p.phase.title}` : '', p.cards.total ? `cards ${p.cards.done}/${p.cards.total}` : '', p.inReview ? `${p.inReview} in review` : '', p.blocked ? `${p.blocked} blocked` : '', p.rag ?? '']
+            .filter(Boolean)
+            .join(' · '),
+        )
+        .join('\n'),
+    );
+  },
 );
 
 // ── projects, requirements and design ────────────────────────────
@@ -139,8 +162,26 @@ server.registerTool(
 
 server.registerTool(
   'get_design',
-  { description: "Read a project's C4 design model: elements (with parent_id for nesting) and relations.", inputSchema: { project_id: z.string() } },
-  async ({ project_id }) => text(JSON.stringify(await call(`/api/projects/${project_id}/design`), null, 2)),
+  {
+    description: "Read a project's C4 design model: one line per element (indented under its parent) and per relation. detail: true adds responsibilities, interfaces and risks.",
+    inputSchema: { project_id: z.string(), detail: z.boolean().optional() },
+  },
+  async ({ project_id, detail }) => {
+    const d = await call(`/api/projects/${project_id}/design`);
+    if (!d.elements.length) return text('No design yet.');
+    const lines = [`Design${d.finalVersion ? ` v${d.finalVersion} (final)` : ' (draft)'}: ${d.elements.length} elements, ${d.relations.length} relations`];
+    const kids = (parent: string | null, depth: number) => {
+      for (const e of d.elements.filter((x: any) => (x.parent_id ?? null) === parent)) {
+        lines.push(`${'  '.repeat(depth)}${e.id} [${e.kind}${e.technology ? `: ${e.technology}` : ''}] ${e.name}: ${clip(e.description, 140)}${e.status && e.status !== 'planned' ? ` (${e.status})` : ''}`);
+        if (detail) for (const k of ['responsibilities', 'interfaces', 'risks']) if (e[k]) lines.push(`${'  '.repeat(depth + 1)}${k}: ${clip(e[k], 400)}`);
+        kids(e.id, depth + 1);
+      }
+    };
+    kids(null, 0);
+    lines.push('Relations:');
+    for (const r of d.relations) lines.push(`${r.source} → ${r.target}: ${r.label}${r.technology ? ` [${r.technology}]` : ''}${r.interaction === 'async' ? ' (async)' : ''}`);
+    return text(lines.join('\n'));
+  },
 );
 
 server.registerTool(
@@ -201,7 +242,10 @@ server.registerTool(
 server.registerTool(
   'list_reminders',
   { description: "The user's reminders (open first).", inputSchema: {} },
-  async () => text(JSON.stringify((await call('/api/personal')).reminders, null, 2)),
+  async () => {
+    const rs = (await call('/api/personal')).reminders;
+    return text(rs.length ? rs.map((r: any) => `#${r.id} ${r.done ? '[done] ' : ''}${r.text}${r.due ? ` (due ${r.due})` : ''}`).join('\n') : 'No reminders.');
+  },
 );
 
 server.registerTool(
@@ -225,7 +269,10 @@ server.registerTool(
 server.registerTool(
   'list_decisions',
   { description: 'Recent decisions across all projects, newest first.', inputSchema: {} },
-  async () => text(JSON.stringify(await call('/api/decisions/recent'), null, 2)),
+  async () => {
+    const ds = await call('/api/decisions/recent');
+    return text(ds.length ? ds.map((d: any) => `${ago(d.created_at)}: ${d.title}${d.why ? `: ${clip(d.why, 200)}` : ''}`).join('\n') : 'No decisions yet.');
+  },
 );
 
 server.registerTool(
@@ -420,7 +467,11 @@ server.registerTool(
 server.registerTool(
   'thread_status',
   { description: "Read a thread's recent messages, members and whether someone is working in it.", inputSchema: { conversation: z.string() } },
-  async ({ conversation }) => text(JSON.stringify(await call(`/api/threads/${encodeURIComponent(conversation)}`), null, 2)),
+  async ({ conversation }) => {
+    const t = await call(`/api/threads/${encodeURIComponent(conversation)}`);
+    const head = `#${t.name} (${t.id}) · members: ${t.members.map((m: any) => (typeof m === 'string' ? m : m.name ?? m.id)).join(', ')} · ${t.working ? `${t.working} is working now` : 'nobody working'}`;
+    return text([head, ...t.messages.map((m: any) => `${ago(m.at)} ${m.author}${m.kind !== 'text' ? ` (${m.kind})` : ''}: ${clip(m.body, 400)}`)].join('\n'));
+  },
 );
 
 // ── secrets (values never come back to you) ──────────────────────
@@ -517,6 +568,7 @@ server.registerTool(
         kind: z.enum(['web', 'app', 'none']),
         install: z.string().optional(),
         setup: z.string().optional(),
+        verify: z.string().optional().describe('Checks every card must pass before it merges, e.g. "npm run lint && npm run typecheck && npm test"'),
         services: z.array(z.object({ name: z.string(), command: z.string(), cwd: z.string().optional(), health: z.string().optional(), primary: z.boolean().optional() })).optional(),
         launch: z.string().optional(),
         needs: z.array(z.object({ type: z.enum(['postgres', 'mysql', 'mongodb', 'redis', 'rabbitmq', 's3', 'smtp', 'other']), as: z.string(), service: z.string().optional() })).optional(),
@@ -543,7 +595,28 @@ server.registerTool(
 server.registerTool(
   'live_status',
   { description: "Whether the project's app is running on this Mac, its URLs, services and databases.", inputSchema: { project_id: z.string() } },
-  async ({ project_id }) => text(JSON.stringify(await call(`/api/projects/${project_id}/live`), null, 2)),
+  async ({ project_id }) => {
+    const l = await call(`/api/projects/${project_id}/live`);
+    const lines = [`${l.status}${l.message ? `: ${l.message}` : ''}${l.runnable ? '' : ' (no run recipe)'}`];
+    for (const s of l.services) lines.push(`${s.name}${s.primary ? ' (primary)' : ''}: ${s.status} · ${s.url}${s.port ? ` · port ${s.port}` : ''}`);
+    for (const d of l.databases) lines.push(`${d.as}: ${d.type} ${d.name} on ${d.where}`);
+    if (l.needsApproval?.length) lines.push(`waiting for the user to approve: ${l.needsApproval.join(', ')}`);
+    return text(lines.join('\n'));
+  },
+);
+
+server.registerTool(
+  'live_check',
+  {
+    description: "Smoke-test the app running on this Mac: GET each path and get status, time, size and page title (or the start of the error). Run it after a merge; for flows beyond page loads, use the project's own end-to-end tests.",
+    inputSchema: { project_id: z.string(), paths: z.array(z.string()).max(20).optional().describe('Default ["/"]'), service: z.string().optional() },
+  },
+  async ({ project_id, paths, service }) => {
+    const r = await call(`/api/projects/${project_id}/live/check`, { paths, service });
+    if (!r.results.length) return text(r.message);
+    const lines = r.results.map((x: any) => `${x.status ?? 'ERR'} ${x.path} ${x.ms}ms ${x.bytes}B${x.title ? ` "${x.title}"` : ''}${x.error ? ` · ${x.error}` : ''}`);
+    return text(`${r.ok ? 'All passed' : 'FAILED'}\n${lines.join('\n')}`);
+  },
 );
 
 server.registerTool(

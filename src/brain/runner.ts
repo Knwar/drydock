@@ -10,8 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { getBus, isShuttingDown } from './bus.js';
 import { addMissingColumns, defineSchema } from './schema.js';
 import { getSetting } from './settings.js';
-import { addMessage, getConversation, getSession, listMessages, members, saveSession, standingTools, type Message } from './chat.js';
-import { getRole, listRoles, type Role } from './roles.js';
+import { addMessage, countTurn, getConversation, getSession, listMessages, members, saveSession, standingTools, type Message } from './chat.js';
+import { effectiveEffort, getRole, listRoles, type Role } from './roles.js';
 import { blockedServers, listServers, recordTools, toolPolicies } from './integrations.js';
 import { activeLearnings, memoryDigest, projectMembers } from './teamwork.js';
 import { onRateLimit } from './usage.js';
@@ -27,7 +27,7 @@ const CLAUDE_BIN = process.env.BRAIN_CLAUDE_BIN ?? 'claude';
 /** Tools every role may use without asking: reading, searching, and AI Brain's own tools. */
 export const ALWAYS_ALLOWED = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'mcp__brain'];
 /** Project roles also run the board, its subagents and per-card worktrees without asking. */
-export const PROJECT_ALLOWED = ['mcp__kankan', 'Task', 'Bash(brain worktree:*)', 'Bash(brain security-scan:*)'];
+export const PROJECT_ALLOWED = ['mcp__kankan', 'Task', 'Bash(brain worktree:*)', 'Bash(brain verify:*)', 'Bash(brain security-scan:*)'];
 /** Secrets are reached only through the brain secret tools (approval + Touch ID), never the managers' CLIs or the Keychain directly. */
 export const ALWAYS_DENIED = ['Bash(op:*)', 'Bash(bw:*)', 'Bash(bws:*)', 'Bash(security find-generic-password:*)', 'Bash(security find-internet-password:*)', 'Bash(security dump-keychain:*)'];
 
@@ -61,19 +61,11 @@ function systemPrompt(role: Role, conversationId: string): string {
   const roles = listRoles(db);
   const ws = currentWorkspace();
   const profile = getSetting<{ name: string | null }>(db, 'brain.profile', { name: null });
-  const lines = [
-    role.persona,
-    '',
-    '## Context',
-    `- Now: ${new Date().toString()}`,
-    `- User: ${profile.name ?? 'the user'}`,
-    `- Workspace folder: ${ws?.root ?? '(not set)'}; vault at vault/, projects at projects/`,
-    `- Team: ${roles.map((r) => `${r.name} (${r.scope})`).join(', ')}`,
-    conv.kind === 'dm'
-      ? `- This is your direct chat with the user.`
-      : `- This is the #${conv.name} channel. Members: ${members(db, conversationId).map((m) => roleName(m, roles)).join(', ')} and the user. Other members reply in turn after you; keep to your role.`,
-  ];
-  if (role.skill) lines.push(`- Use the ${role.skill} skill when it fits the task.`);
+  // Order matters for the prompt cache: the same text must come first on every
+  // run, so fixed parts lead and the parts that change (team, learnings, project
+  // memory) come last. No clock here: each turn's message carries the time.
+  const lines = [role.persona];
+  if (role.skill) lines.push('', `Use the ${role.skill} skill when it fits the task.`);
   lines.push(
     '',
     '## Secrets',
@@ -84,7 +76,19 @@ function systemPrompt(role: Role, conversationId: string): string {
     '- Need to use one? run_with_secrets runs your command with them as env vars, after the user approves and confirms on the Mac. Commit `.env.example` with names only, never `.env`.',
     '',
     '## Running the app on this Mac',
-    "Every runnable project needs a run recipe (save_run_recipe) so the user can start it from the project overview: services listen on $PORT at 127.0.0.1, databases come from needs (list_local_services shows the user's servers), keys from secrets. Once started it restarts by itself on each merge. Use live_status and live_logs to test the running app and to debug a crash.",
+    "Every runnable project needs a run recipe (save_run_recipe) so the user can start it from the project overview: services listen on $PORT at 127.0.0.1, databases come from needs (list_local_services shows the user's servers), keys from secrets, and verify is the check (tests, lint, typecheck) that must pass before a card merges. Once started it restarts by itself on each merge. After a merge, check the running app with live_check; use live_status and live_logs to debug a crash.",
+    '',
+    '## Working with tools and teammates',
+    '- Ask tools for what you need, not everything: prefer filters, limits and the concise format; open details only when needed.',
+    '- When you hand work to a teammate, write a short brief: the goal, what is known, what done looks like. Report back the result in a few lines, not the whole trace.',
+    '',
+    '## Context',
+    `- User: ${profile.name ?? 'the user'}`,
+    `- Workspace folder: ${ws?.root ?? '(not set)'}; vault at vault/, projects at projects/`,
+    conv.kind === 'dm'
+      ? `- This is your direct chat with the user.`
+      : `- This is the #${conv.name} channel. Members: ${members(db, conversationId).map((m) => roleName(m, roles)).join(', ')} and the user. Only members @mentioned reply (when nobody is, ${roleName(members(db, conversationId)[0] ?? '', roles)} answers). @mention a teammate to bring them in; keep to your role.`,
+    `- Team: ${roles.map((r) => `${r.name} (${r.scope})`).join(', ')}`,
   );
   // what this member has learned from repeated mistakes (capped, strongest first)
   const learned = activeLearnings(db, role.id);
@@ -98,6 +102,86 @@ function systemPrompt(role: Role, conversationId: string): string {
   return lines.join('\n');
 }
 
+// ── sessions: fresh start with a handover after many turns ───────
+
+export interface SessionLimits {
+  maxTurns: number;
+  /** tokens the latest model call read: the size of the context */
+  maxContextTokens: number;
+}
+export const sessionLimits = (db: import('../core/db.js').DB): SessionLimits => ({ maxTurns: 60, maxContextTokens: 400_000, ...getSetting<Partial<SessionLimits>>(db, 'brain.sessions', {}) });
+
+const HANDOVER =
+  'Your session is being refreshed to keep your context lean; this message is the last one in it. Write a handover note for your next session, under 600 words: what this conversation is about, decisions made and why, the current state of the work, open questions and next steps, and facts you would otherwise have to rediscover (file paths, ids, commands, names). Plain text, no pleasantries, no tool calls.';
+
+/** Ask the old session for its handover note, quietly (nothing is posted). Returns null if it fails. */
+async function handoverNote(base: string[], cwd: string, env: NodeJS.ProcessEnv, roleId: string, conversationId: string): Promise<string | null> {
+  const noTools = ['Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit', 'TodoWrite', 'mcp__brain', 'mcp__kankan'];
+  const child = spawn(CLAUDE_BIN, ['-p', HANDOVER, ...base, '--disallowedTools', ...noTools], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  running.set(conversationId, { child, roleId });
+  let out = '';
+  child.stdout!.setEncoding('utf8').on('data', (d: string) => (out += d));
+  await new Promise((res) => child.on('close', res).on('error', res));
+  running.delete(conversationId);
+  let final: any = null;
+  for (const line of out.split('\n')) {
+    try {
+      const ev = JSON.parse(line);
+      if (ev.type === 'result') final = ev;
+    } catch {
+      /* partial line */
+    }
+  }
+  if (final) recordUsage(getBus().db(), { role: roleId, conversation: conversationId, model: 'handover', effort: null, usage: final.usage, cost: final.total_cost_usd, turns: final.num_turns });
+  const text = typeof final?.result === 'string' ? final.result.trim() : '';
+  return final && !final.is_error && text ? text.slice(0, 8000) : null;
+}
+
+// ── usage per run: tokens, cache reads, cost ─────────────────────
+
+defineSchema(`
+CREATE TABLE IF NOT EXISTS agent_usage (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  role_id         TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  model           TEXT,
+  effort          TEXT,
+  input_tokens    INTEGER NOT NULL DEFAULT 0,  -- read at full price
+  cache_write     INTEGER NOT NULL DEFAULT 0,  -- written to the cache (a bit above full price)
+  cache_read      INTEGER NOT NULL DEFAULT 0,  -- read from the cache (about a tenth of the price)
+  output_tokens   INTEGER NOT NULL DEFAULT 0,
+  cost_usd        REAL,
+  turns           INTEGER,
+  created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agent_usage_at ON agent_usage (created_at);
+`);
+
+export function recordUsage(db: import('../core/db.js').DB, r: { role: string; conversation: string; model: string; effort: string | null; usage: any; cost: number | null | undefined; turns: number | null | undefined }): void {
+  const u = r.usage ?? {};
+  db.prepare('INSERT INTO agent_usage (role_id, conversation_id, model, effort, input_tokens, cache_write, cache_read, output_tokens, cost_usd, turns, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    r.role, r.conversation, r.model, r.effort, u.input_tokens ?? 0, u.cache_creation_input_tokens ?? 0, u.cache_read_input_tokens ?? 0, u.output_tokens ?? 0, r.cost ?? null, r.turns ?? null, Date.now(),
+  );
+}
+
+/** Per role since `since`: runs, tokens read, how much of it came from the cache, output, cost. */
+export function usageByRole(db: import('../core/db.js').DB, since: number) {
+  return (
+    db
+      .prepare(
+        `SELECT role_id, COUNT(*) AS runs, SUM(input_tokens) AS input, SUM(cache_write) AS cache_write, SUM(cache_read) AS cache_read, SUM(output_tokens) AS output, SUM(cost_usd) AS cost
+         FROM agent_usage WHERE created_at >= ? GROUP BY role_id ORDER BY SUM(input_tokens + cache_write + cache_read) DESC`,
+      )
+      .all(since) as { role_id: string; runs: number; input: number; cache_write: number; cache_read: number; output: number; cost: number | null }[]
+  ).map((r) => {
+    const read = r.input + r.cache_write + r.cache_read;
+    return { ...r, read, cacheHit: read ? Math.round((r.cache_read / read) * 100) : null };
+  });
+}
+
+/** The time, for the top of each turn's message (kept out of the system prompt so it stays cacheable). */
+const stamp = () => new Date().toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+
 /** What this role has not yet seen in the conversation, as a prompt. */
 function pendingPrompt(role: Role, conversationId: string, seen: number): { prompt: string; lastId: number } | null {
   const db = getBus().db();
@@ -106,10 +190,10 @@ function pendingPrompt(role: Role, conversationId: string, seen: number): { prom
   const fresh = listMessages(db, conversationId, 100).filter((m) => m.id > seen && m.author !== role.id && m.kind === 'text');
   if (!fresh.length) return null;
   const lastId = fresh[fresh.length - 1].id;
-  if (conv.kind === 'dm') return { prompt: fresh.map((m) => m.body).join('\n\n'), lastId };
+  if (conv.kind === 'dm') return { prompt: `[${stamp()}]\n${fresh.map((m) => m.body).join('\n\n')}`, lastId };
   const transcript = fresh.map((m) => `${roleName(m.author, roles)}: ${m.body}`).join('\n\n');
   return {
-    prompt: `New messages in #${conv.name}:\n\n${transcript}\n\nReply as ${role.name} if you have something useful to add from your role. If not, reply with exactly PASS.`,
+    prompt: `[${stamp()}] New messages in #${conv.name}:\n\n${transcript}\n\nReply as ${role.name} if you have something useful to add from your role. If not, reply with exactly PASS.`,
     lastId,
   };
 }
@@ -147,9 +231,9 @@ function shimDir(dataDir: string): string {
  * Whatever goes wrong, the agent process is stopped, the conversation stops
  * showing "working", and the error is posted where the user can see it.
  */
-async function runTurn(roleId: string, conversationId: string, modelOverride?: string, resumeNote?: string): Promise<string | null> {
+async function runTurn(roleId: string, conversationId: string, modelOverride?: string, resumeNote?: string, effortOverride?: string): Promise<string | null> {
   try {
-    return await runTurnInner(roleId, conversationId, modelOverride, resumeNote);
+    return await runTurnInner(roleId, conversationId, modelOverride, resumeNote, effortOverride);
   } catch (err) {
     const r = running.get(conversationId);
     if (r?.roleId === roleId) {
@@ -169,7 +253,7 @@ async function runTurn(roleId: string, conversationId: string, modelOverride?: s
   }
 }
 
-async function runTurnInner(roleId: string, conversationId: string, modelOverride?: string, resumeNote?: string): Promise<string | null> {
+async function runTurnInner(roleId: string, conversationId: string, modelOverride?: string, resumeNote?: string, effortOverride?: string): Promise<string | null> {
   const db = getBus().db();
   const role = getRole(db, roleId);
   const ws = currentWorkspace();
@@ -178,7 +262,7 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
     emitMessage(addMessage(db, conversationId, roleId, 'Set up a workspace folder first: agents only run inside it.', 'error'));
     return null;
   }
-  const session = getSession(db, roleId, conversationId);
+  let session = getSession(db, roleId, conversationId);
   // a resumed run continues its own session with a nudge instead of new messages
   const pending = resumeNote
     ? { prompt: resumeNote, lastId: session?.seen_message_id ?? 0 }
@@ -198,37 +282,50 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
   const globalDeny = Object.keys(policies).filter((t) => policies[t] === 'deny');
   const allowed = [...ALWAYS_ALLOWED, ...(projectRole ? PROJECT_ALLOWED : []), ...globalAllow, ...standingTools(db, roleId, 'allow')];
   const denied = [...ALWAYS_DENIED, ...globalDeny, ...blockedServers(db, roleId), ...standingTools(db, roleId, 'deny')];
-  const args = [
-    '-p',
-    pending.prompt,
+  const model = modelOverride ?? role.model;
+  const effort = effortOverride ?? effectiveEffort(role);
+  const base = [
     '--output-format', 'stream-json',
     '--verbose',
-    '--include-partial-messages',
-    '--model', modelOverride ?? role.model,
+    '--model', model,
+    ...(effort ? ['--effort', effort] : []),
     '--append-system-prompt', systemPrompt(role, conversationId),
     '--mcp-config', mcpConfig(roleId, conversationId, ws.data, projectRole),
     '--permission-prompt-tool', 'mcp__brain__approve',
-    '--allowedTools', ...allowed,
   ];
+  const env = {
+    ...process.env,
+    PATH: `${shimDir(ws.data)}:${process.env.PATH ?? ''}`,
+    DAEMON_URL: getBus().daemonUrl,
+    BRAIN_WORKSPACE: ws.root,
+    MCP_TOOL_TIMEOUT: String(24 * 3600 * 1000),
+  };
+
+  // A long session gets a fresh start: the old one writes a handover note,
+  // which opens the new one. Limits are generous; today's windows are large.
+  let prompt = pending.prompt;
+  const limits = sessionLimits(db);
+  if (session && !resumeNote && (session.turns >= limits.maxTurns || session.context_tokens >= limits.maxContextTokens)) {
+    emitStatus(conversationId, roleId, 'working');
+    const note = await handoverNote([...base, '--resume', session.session_id], cwd, env, roleId, conversationId);
+    if (note) {
+      prompt = `Handover from your previous session in this conversation (it had grown long, so you start fresh with this summary):\n\n${note}\n\n---\n\n${pending.prompt}`;
+      emitMessage(addMessage(db, conversationId, roleId, `Started a fresh session after ${session.turns} turns, with a handover summary.`, 'tool', { name: 'session_refresh', input: { turns: session.turns, context_tokens: session.context_tokens } }));
+      session = { ...session, session_id: '', fresh: true } as typeof session;
+    }
+  }
+
+  const args = ['-p', prompt, ...base, '--include-partial-messages', '--allowedTools', ...allowed];
   if (denied.length) args.push('--disallowedTools', ...denied);
-  if (session) args.push('--resume', session.session_id);
+  if (session?.session_id) args.push('--resume', session.session_id);
 
   emitStatus(conversationId, roleId, 'working');
-  const child = spawn(CLAUDE_BIN, args, {
-    cwd,
-    env: {
-      ...process.env,
-      PATH: `${shimDir(ws.data)}:${process.env.PATH ?? ''}`,
-      DAEMON_URL: getBus().daemonUrl,
-      BRAIN_WORKSPACE: ws.root,
-      MCP_TOOL_TIMEOUT: String(24 * 3600 * 1000),
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const child = spawn(CLAUDE_BIN, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   running.set(conversationId, { child, roleId });
-  markRun(conversationId, roleId, session?.session_id ?? null, modelOverride ?? null, pending.lastId);
+  markRun(conversationId, roleId, session?.session_id || null, modelOverride ?? null, pending.lastId);
 
-  let sessionId = session?.session_id ?? null;
+  let sessionId = session?.session_id || null;
+  let lastCall: any = null; // usage of the latest model call: how big the context is now
   let streamed = '';
   let lastEmit = 0;
   let final: any = null;
@@ -264,6 +361,7 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
     } else if (ev.type === 'stream_event' && ev.event?.type === 'message_start') {
       streamed = '';
     } else if (ev.type === 'assistant') {
+      if (ev.message?.usage) lastCall = ev.message.usage;
       for (const c of ev.message?.content ?? []) {
         if (c.type === 'tool_use') recordTools(getBus().db(), [c.name]);
         if (c.type === 'tool_use' && c.name !== 'mcp__brain__approve' && !String(c.name).startsWith('mcp__brain__log_')) {
@@ -302,7 +400,12 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
   clearRun(conversationId);
 
   const db2 = getBus().db();
-  if (sessionId) saveSession(db2, roleId, conversationId, sessionId, pending.lastId);
+  if (sessionId) {
+    saveSession(db2, roleId, conversationId, sessionId, pending.lastId);
+    const ctx = lastCall ? (lastCall.input_tokens ?? 0) + (lastCall.cache_read_input_tokens ?? 0) + (lastCall.cache_creation_input_tokens ?? 0) : 0;
+    countTurn(db2, roleId, conversationId, ctx);
+  }
+  if (final) recordUsage(db2, { role: roleId, conversation: conversationId, model, effort, usage: final.usage, cost: final.total_cost_usd, turns: final.num_turns });
   const text: string = typeof final?.result === 'string' ? final.result.trim() : streamed.trim();
   const meta = final ? { cost_usd: final.total_cost_usd ?? null, duration_ms: final.duration_ms ?? null, turns: final.num_turns ?? null, usage: final.usage ?? null } : null;
   if (final && !final.is_error && text && text !== 'PASS') {
@@ -350,15 +453,15 @@ export function toolSummary(name: string, input: any): string {
   return `Used ${name}`;
 }
 
-/**
- * Queue the conversation's members to answer: a DM's role, or each channel
- * member in turn (only those @mentioned, when anyone is).
- */
-export function respond(conversationId: string, mentionText = '', opts: { model?: string; onDone?: () => void } = {}): void {
+/** Queue the conversation's members to answer (who answers: see below). */
+export function respond(conversationId: string, mentionText = '', opts: { model?: string; effort?: string; onDone?: () => void } = {}): void {
   const db = getBus().db();
   const conv = getConversation(db, conversationId);
   if (!conv) return;
-  let who = conv.kind === 'dm' ? [conv.role_id!] : members(db, conversationId);
+  // A DM's role answers. In a channel only @mentioned members answer; with no
+  // mention, its first member (the lead) does and brings others in by @mention.
+  // Everyone answering every message multiplied the tokens for little gain.
+  let who = conv.kind === 'dm' ? [conv.role_id!] : members(db, conversationId).slice(0, 1);
   if (conv.kind === 'channel') {
     const mentioned = mentionedMembers(conversationId, mentionText);
     if (mentioned.length) who = mentioned;
@@ -372,7 +475,7 @@ export function respond(conversationId: string, mentionText = '', opts: { model?
       let handoffs = 0;
       while (queue.length) {
         const roleId = queue.shift()!;
-        const posted = await runTurn(roleId, conversationId, opts.model);
+        const posted = await runTurn(roleId, conversationId, opts.model, undefined, opts.effort);
         if (conv.kind !== 'channel' || !posted) continue;
         for (const next of mentionedMembers(conversationId, posted, [roleId, ...queue])) {
           if (handoffs >= MAX_HANDOFFS) break;

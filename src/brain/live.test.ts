@@ -130,6 +130,10 @@ describe('live apps on this Mac (fake password manager and database server)', ()
     assert.match(page.db, new RegExp(`^postgresql://${dbName(slug)}:.+@nas\\.local:5432/${dbName(slug)}$`));
     assert.equal(page.home, true);
     assert.deepEqual(page.brain, [], "AI Brain's own env is not passed to the app");
+    const check = await call('POST', `/api/projects/${id}/live/check`, { paths: ['/', 'health'] });
+    assert.equal(check.ok, true);
+    assert.equal(check.results[0].status, 200);
+    assert.equal(check.results[1].path, 'health');
     const log = (await call('GET', `/api/projects/${id}/live/logs`)).log;
     assert.match(log, /key is \[secret\]/);
     assert.ok(!log.includes('app-key-value-123'));
@@ -172,6 +176,7 @@ describe('live apps on this Mac (fake password manager and database server)', ()
   it('stop frees it; the proxy says it is not running', async () => {
     await call('POST', `/api/projects/${id}/live/stop`);
     assert.equal((await status()).status, 'stopped');
+    assert.match((await call('POST', `/api/projects/${id}/live/check`, {})).message, /Not live/);
     const r = await visit();
     assert.equal(r.status, 503);
     assert.match(r.body, /not running/);

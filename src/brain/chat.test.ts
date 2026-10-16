@@ -65,11 +65,11 @@ describe('team chat (fake claude)', () => {
   it('answers a DM and resumes the same session next time', async () => {
     await call('POST', '/api/conversations/dm:cto/messages', { text: 'hello cto' });
     const first = await waitFor('dm:cto', (m) => m.author === 'cto' && m.kind === 'text');
-    assert.equal(first.body, 'echo: hello cto');
+    assert.match(first.body, /^echo: \[.+\]\nhello cto$/, 'the time arrives with each message, not in the system prompt');
     assert.equal(first.meta.cost_usd, 0.001);
     await call('POST', '/api/conversations/dm:cto/messages', { text: 'again' });
     const second = await waitFor('dm:cto', (m) => m.author === 'cto' && m.body.includes('again'));
-    assert.equal(second.body, 'echo: again (resumed)');
+    assert.match(second.body, /\nagain \(resumed\)$/);
   });
 
   it('in a channel only @mentioned members answer, and PASS is not posted', async () => {
