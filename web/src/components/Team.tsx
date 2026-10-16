@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { api } from '../lib/api';
 import type { Conversation, Role } from '../lib/types';
 import { Avatar } from './Chat';
 import { AddMemberDialog } from './Dialogs';
@@ -10,50 +9,12 @@ function preview(c: Conversation): string {
   return (c.last.author === 'user' ? 'You: ' : '') + c.last.body.replace(/\s+/g, ' ');
 }
 
-function NewChannel({ roles, onDone }: { roles: Role[]; onDone: (id?: string) => void }) {
-  const [name, setName] = useState('');
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [error, setError] = useState<string | null>(null);
-  const create = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const c = await api<{ id: string }>('/api/channels', { body: { name, members: [...picked] } });
-      onDone(c.id);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-  return (
-    <form onSubmit={create} className="new-channel">
-      <input className="input" style={{ height: 32, fontSize: 13 }} placeholder="channel-name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-        {roles.filter((r) => r.id !== 'main').map((r) => (
-          <button
-            type="button"
-            key={r.id}
-            aria-pressed={picked.has(r.id)}
-            className={`chip${picked.has(r.id) ? ' on' : ''}`}
-            onClick={() => setPicked((s) => (s.has(r.id) ? (s.delete(r.id), new Set(s)) : new Set(s.add(r.id))))}
-          >
-            {r.name}
-          </button>
-        ))}
-      </div>
-      {error && <div className="error">{error}</div>}
-      <div style={{ display: 'flex', gap: 6 }}>
-        <button className="btn sm primary" disabled={!name.trim() || !picked.size}>Create</button>
-        <button type="button" className="btn sm" onClick={() => onDone()}>Cancel</button>
-      </div>
-    </form>
-  );
-}
-
-export function TeamList({ conversations, roles, current, select }: { conversations: Conversation[]; roles: Role[]; current: string | null; select: (id: string) => void }) {
-  const [adding, setAdding] = useState(false);
+export function TeamList({ conversations, roles, current, select, onNewThread }: { conversations: Conversation[]; roles: Role[]; current: string | null; select: (id: string) => void; onNewThread: () => void }) {
   const [addingMember, setAddingMember] = useState(false);
   const byId = new Map(roles.map((r) => [r.id, r]));
   const dms = conversations.filter((c) => c.kind === 'dm' && c.role_id !== 'main');
-  const channels = conversations.filter((c) => c.kind === 'channel');
+  // project threads live under their project in the tree; only general threads here
+  const channels = conversations.filter((c) => c.kind === 'channel' && !c.project_id);
   return (
     <div>
       <div className="side-label">
@@ -83,10 +44,9 @@ export function TeamList({ conversations, roles, current, select }: { conversati
         );
       })}
       <div className="side-label" style={{ marginTop: 10 }}>
-        <span>CHANNELS</span>
-        {dms.length > 0 && <button aria-label="New channel" onClick={() => setAdding(true)}>+</button>}
+        <span>THREADS</span>
+        <button aria-label="New thread" title="New thread" onClick={onNewThread}>+</button>
       </div>
-      {adding && <NewChannel roles={roles} onDone={(id) => (setAdding(false), id && select(id))} />}
       {channels.map((c) => (
         <button key={c.id} className={`nav-row${current === c.id ? ' on' : ''}`} onClick={() => select(c.id)}>
           <span style={{ width: 26, textAlign: 'center', color: 'var(--muted)', fontWeight: 600 }}>#</span>
@@ -95,7 +55,7 @@ export function TeamList({ conversations, roles, current, select }: { conversati
           {c.unread > 0 && <span className="badge">{c.unread}</span>}
         </button>
       ))}
-      {!channels.length && !adding && <div className="muted" style={{ fontSize: 12, padding: '2px 10px' }}>{dms.length ? 'Group chats with several team members.' : 'Add team members to start group chats.'}</div>}
+      {!channels.length && <div className="muted" style={{ fontSize: 12, padding: '2px 10px', lineHeight: 1.45 }}>{dms.length ? 'General threads with one or more members. Project threads live under each project’s Discussions.' : 'Add team members to start threads.'}</div>}
     </div>
   );
 }

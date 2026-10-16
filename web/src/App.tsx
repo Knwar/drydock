@@ -5,7 +5,7 @@ import { useTheme } from './lib/theme';
 import type { Conversation, ProjectSummary, Role, WorkspaceInfo } from './lib/types';
 import { ChatPanel } from './components/Chat';
 import { Header, Sidebar } from './components/Shell';
-import { NewProjectDialog } from './components/Dialogs';
+import { AddMemberDialog, NewProjectDialog, NewThreadDialog } from './components/Dialogs';
 import { RightRail } from './components/RightRail';
 import { TeamList } from './components/Team';
 import { Home } from './pages/Home';
@@ -49,6 +49,8 @@ export function App() {
   const [chatState, setChatState] = useStored('ai-brain-chat', 'open');
   const [newProject, setNewProject] = useState(false);
   const [draft, setDraft] = useState<string | undefined>();
+  const [newThread, setNewThread] = useState<{ project: string | null } | null>(null);
+  const [addingMember, setAddingMember] = useState(false);
 
   if (ws.error) return <main className="main"><div className="error">Can't reach the AI Brain daemon: {ws.error}</div></main>;
   if (!ws.data) return null;
@@ -70,7 +72,7 @@ export function App() {
   let page: React.ReactNode;
   if (parts.length === 0) page = <Home projects={list} />;
   else if (parts[0] === 'project' && parts[1])
-    page = <ProjectPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} openConversation={select} />;
+    page = <ProjectPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} openConversation={select} newThread={() => setNewThread({ project: parts[1] })} />;
   else if (parts[0] === 'personal') page = <Personal />;
   else if (parts[0] === 'settings') page = <Settings section={parts[1] ?? 'integrations'} roles={roles.data ?? []} />;
   else page = <div className="empty">Not found. <a href="/app/">Go home</a></div>;
@@ -87,16 +89,28 @@ export function App() {
           onMain={() => select('dm:main')}
           mainWorking={Boolean(conversations.find((c) => c.id === 'dm:main')?.working)}
           onNewProject={() => setNewProject(true)}
+          threads={{ conversations, current: chatState === 'open' ? current?.id ?? null : null, open: select, newThread: (project) => setNewThread({ project }) }}
         >
-          <TeamList conversations={conversations} roles={roles.data ?? []} current={current?.id ?? null} select={select} />
+          <TeamList conversations={conversations} roles={roles.data ?? []} current={current?.id ?? null} select={select} onNewThread={() => setNewThread({ project: null })} />
         </Sidebar>
         <main className="main">{page}</main>
         {chatState === 'open' ? (
-          <ChatPanel conversation={current} roles={roles.data ?? []} onSent={convs.reload} onClose={() => setChatState('closed')} draftText={draft} onDraftUsed={() => setDraft(undefined)} />
+          <ChatPanel conversation={current} roles={roles.data ?? []} projects={list} onSent={convs.reload} onClose={() => setChatState('closed')} draftText={draft} onDraftUsed={() => setDraft(undefined)} />
         ) : (
           <RightRail roles={roles.data ?? []} conversations={conversations} open={select} onExpand={() => setChatState('open')} />
         )}
         {newProject && <NewProjectDialog onClose={() => setNewProject(false)} askMain={askMain} />}
+        {newThread && (
+          <NewThreadDialog
+            roles={roles.data ?? []}
+            projects={list.map((p) => ({ id: p.id, name: p.name }))}
+            defaultProject={newThread.project}
+            onClose={() => setNewThread(null)}
+            onCreated={select}
+            onAddMember={() => (setNewThread(null), setAddingMember(true))}
+          />
+        )}
+        {addingMember && <AddMemberDialog onClose={() => setAddingMember(false)} onAdded={() => setAddingMember(false)} />}
       </div>
     </div>
   );

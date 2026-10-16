@@ -76,7 +76,7 @@ describe('team chat (fake claude)', () => {
     await call('POST', '/api/channels', { name: 'Launch Plan', members: ['marketing', 'cto'] });
     await call('POST', '/api/conversations/ch:launch-plan/messages', { text: '@Marketing draft the teaser' });
     const reply = await waitFor('ch:launch-plan', (m) => m.author === 'marketing' && m.kind === 'text');
-    assert.match(reply.body, /New messages in #launch-plan/);
+    assert.match(reply.body, /New messages in #Launch Plan/);
     const { messages } = await call('GET', '/api/conversations/ch:launch-plan/messages');
     assert.ok(!messages.some((m: any) => m.author === 'cto'));
   });
@@ -96,6 +96,22 @@ describe('team chat (fake claude)', () => {
     const { messages } = await call('GET', '/api/conversations/ch:relay/messages');
     const authors = messages.filter((m: any) => m.author !== 'user' && m.kind === 'text').map((m: any) => m.author);
     assert.deepEqual(authors, ['qc', 'cto', 'qc', 'cto', 'qc']); // 1 asked + 4 handoffs, then it stops
+  });
+
+  it('project threads are scoped per project and can open with a first message', async () => {
+    const proj = await call('POST', '/api/projects', { name: 'Pricing Lab', description: 'Test.' });
+    const t1 = await call('POST', '/api/channels', { name: 'Pricing ideas', members: ['cfo', 'marketing'], project_id: proj.id, message: '@CFO what should we charge?' });
+    assert.equal(t1.id, 'ch:pricing-lab-pricing-ideas');
+    assert.equal(t1.name, 'Pricing ideas');
+    assert.equal(t1.project_id, proj.id);
+    await waitFor(t1.id, (m) => m.author === 'cfo' && m.kind === 'text');
+    const { messages } = await call('GET', `/api/conversations/${encodeURIComponent(t1.id)}/messages`);
+    assert.ok(!messages.some((m: any) => m.author === 'marketing')); // only the @mentioned member answered
+    // the same topic is fine in another scope, not twice in one
+    const t2 = await call('POST', '/api/channels', { name: 'Pricing ideas', members: ['cfo'] });
+    assert.equal(t2.id, 'ch:pricing-ideas');
+    await assert.rejects(call('POST', '/api/channels', { name: 'pricing ideas', members: ['cfo'], project_id: proj.id }), /already exists in this project/);
+    await assert.rejects(call('POST', '/api/channels', { name: 'empty', members: [] }), /at least one team member/);
   });
 
   it('removing a member takes them out of channels and the team list but keeps history; Main cannot be removed', async () => {

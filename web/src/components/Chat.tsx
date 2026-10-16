@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { onLive } from '../lib/live';
 import { Markdown } from '../lib/md';
-import type { Conversation, Message, Role } from '../lib/types';
+import type { Conversation, Message, ProjectSummary, Role } from '../lib/types';
 import { Icon } from './Icon';
 
 const ALWAYS = ['Read and search files', 'Search the web', 'AI Brain tools'];
@@ -123,7 +123,7 @@ function ToolLines({ items }: { items: Message[] }) {
   );
 }
 
-export function ChatPanel({ conversation, roles, onSent, onClose, draftText, onDraftUsed }: { conversation: Conversation | null; roles: Role[]; onSent?: () => void; onClose: () => void; draftText?: string; onDraftUsed?: () => void }) {
+export function ChatPanel({ conversation, roles, projects = [], onSent, onClose, draftText, onDraftUsed }: { conversation: Conversation | null; roles: Role[]; projects?: ProjectSummary[]; onSent?: () => void; onClose: () => void; draftText?: string; onDraftUsed?: () => void }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [working, setWorking] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ role: string; text: string } | null>(null);
@@ -175,6 +175,10 @@ export function ChatPanel({ conversation, roles, onSent, onClose, draftText, onD
 
   const lead = conversation.kind === 'dm' ? byId.get(conversation.role_id!) : null;
   const memberNames = conversation.members.map((id) => byId.get(id)?.name ?? id).join(', ');
+  const project = conversation.project_id ? projects.find((x) => x.id === conversation.project_id) : null;
+  const slug = project?.root.split('/').pop();
+  const threadTitle = slug && conversation.name.startsWith(`${slug}-`) ? conversation.name.slice(slug.length + 1) : conversation.name;
+  const several = !lead && conversation.members.length > 1;
   const send = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const t = text.trim();
@@ -205,9 +209,9 @@ export function ChatPanel({ conversation, roles, onSent, onClose, draftText, onD
       <header className="chat-head">
         {lead ? <Avatar role={lead} size={30} /> : <span className="avatar t-n" style={{ width: 30, height: 30, flex: '0 0 30px' }}>#</span>}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{lead ? lead.name : `# ${conversation.name}`}</h2>
+          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{lead ? lead.name : `# ${threadTitle}`}</h2>
           <div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {lead ? `${lead.scope === 'global' ? 'Personal manager · all projects' : lead.scope === 'shared' ? 'Shared role · all projects' : 'Project role'} · ${lead.model}` : `${memberNames} and you`}
+            {lead ? `${lead.scope === 'global' ? 'Personal manager · all projects' : lead.scope === 'shared' ? 'Shared role · all projects' : 'Project role'} · ${lead.model}` : `${project ? `${project.name} · ` : ''}${memberNames} and you`}
           </div>
         </div>
         <div role="group" aria-label="View" className="seg">
@@ -286,11 +290,13 @@ export function ChatPanel({ conversation, roles, onSent, onClose, draftText, onD
               send();
             }
           }}
-          placeholder={lead?.id === 'main' ? 'Describe an idea, or ask anything…' : lead ? `Message ${lead.name}…` : `Message #${conversation.name} (@mention to ask one member)…`}
+          placeholder={lead?.id === 'main' ? 'Describe an idea, or ask anything…' : lead ? `Message ${lead.name}…` : several ? `Message #${threadTitle}: @${byId.get(conversation.members[0])?.name ?? 'name'} to ask just them…` : `Message #${threadTitle}…`}
         />
         {error && <div className="error">{error}</div>}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className="muted" style={{ fontSize: 11 }}>Enter to send · Shift+Enter for a new line</span>
+          <span className="muted" style={{ fontSize: 11 }} title={several ? 'Without an @mention each member answers in turn if they have something to add. With @mentions only those members answer.' : undefined}>
+            {several ? 'All members answer in turn · @mention to ask one' : 'Enter to send · Shift+Enter for a new line'}
+          </span>
           {working ? (
             <button type="button" className="btn sm" style={{ marginLeft: 'auto' }} onClick={stop}>Stop</button>
           ) : null}

@@ -256,7 +256,7 @@ function present(db: DB, ids: string[]): string[] {
 /** The project's channel for a stage, created on first use with its members. */
 function stageChannel(db: DB, ref: ProjectRef, suffix: string, memberIds: string[]): string {
   const id = `ch:${slugify(`${ref.slug}-${suffix}`)}`;
-  if (!getConversation(db, id)) createChannel(db, `${ref.slug}-${suffix}`, memberIds, ref.id);
+  if (!getConversation(db, id)) createChannel(db, suffix, memberIds, ref.id, ref.slug);
   getBus().emit({ type: 'conversations' });
   return id;
 }

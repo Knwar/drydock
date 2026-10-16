@@ -135,14 +135,19 @@ export function listConversations(db: DB) {
   }));
 }
 
-export function createChannel(db: DB, name: string, memberIds: string[], projectId: string | null = null): Conversation {
-  const clean = name.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
-  if (!clean) throw new Error('channel needs a name');
-  if (!memberIds.length) throw new Error('channel needs at least one member');
-  const id = `ch:${clean}`;
-  if (getConversation(db, id)) throw new Error(`#${clean} already exists`);
+/**
+ * A thread (channel) with one or more members. A project thread's id is
+ * scoped by the project's slug, so two projects can each have "pricing".
+ */
+export function createChannel(db: DB, name: string, memberIds: string[], projectId: string | null = null, scope: string | null = null): Conversation {
+  const display = name.trim().replace(/\s+/g, ' ').slice(0, 60);
+  const clean = display.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+  if (!clean) throw new Error('give the thread a topic');
+  if (!memberIds.length) throw new Error('add at least one team member to the thread');
+  const id = `ch:${scope ? `${scope}-` : ''}${clean}`;
+  if (getConversation(db, id)) throw new Error(`a thread called "${display}" already exists${projectId ? ' in this project' : ''}`);
   const now = Date.now();
-  db.prepare(`INSERT INTO conversations (id, kind, project_id, name, created_at, last_at) VALUES (?, 'channel', ?, ?, ?, ?)`).run(id, projectId, clean, now, now);
+  db.prepare(`INSERT INTO conversations (id, kind, project_id, name, created_at, last_at) VALUES (?, 'channel', ?, ?, ?, ?)`).run(id, projectId, display, now, now);
   const add = db.prepare('INSERT OR IGNORE INTO conversation_members (conversation_id, role_id) VALUES (?, ?)');
   for (const m of memberIds) add.run(id, m);
   return getConversation(db, id)!;

@@ -38,7 +38,12 @@ export function RightRail({ roles, conversations, open, onExpand }: { roles: Rol
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   };
-  const label = (id: string | null) => (id === 'dm:main' ? 'Main agent' : id?.startsWith('ch:') ? `#${id.slice(3)}` : byId.get(id?.replace(/^dm:/, '') ?? '')?.name ?? id ?? '');
+  const label = (id: string | null) => {
+    if (id === 'dm:main') return 'Main agent';
+    const c = conversations.find((x) => x.id === id);
+    if (c?.kind === 'channel') return `#${c.name}`;
+    return byId.get(id?.replace(/^dm:/, '') ?? '')?.name ?? id ?? '';
+  };
   return (
     <aside className="rail" aria-label="Overview">
       <div className="rail-head">

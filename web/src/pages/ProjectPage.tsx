@@ -169,12 +169,14 @@ function Gate({ p, openConversation }: { p: Detail; openConversation: (id: strin
   );
 }
 
-function Overview({ p, openConversation }: { p: Detail; openConversation: (id: string) => void }) {
+const shortThread = (name: string, slug: string) => (name.startsWith(`${slug}-`) ? name.slice(slug.length + 1) : name);
+
+function Overview({ p, openConversation, newThread }: { p: Detail; openConversation: (id: string) => void; newThread: () => void }) {
   const kpis = [
     { label: 'Stage', value: STAGE_NAMES[p.stage], sub: p.description ?? '' },
     { label: 'Current phase', value: p.phase ? `${p.phase.index} of ${p.phase.count}` : '—', sub: p.phase?.title ?? 'Not planned yet' },
     { label: 'Cards this phase', value: p.cards.total ? `${p.cards.done} / ${p.cards.total}` : '—', sub: `${p.inReview} in review · ${p.blocked} blocked` },
-    { label: 'Live agents', value: String(p.liveAgents), sub: p.channels.length ? `${p.channels.length} project channels` : 'No project channels yet' },
+    { label: 'Live agents', value: String(p.liveAgents), sub: p.channels.length ? `${p.channels.length} discussion${p.channels.length === 1 ? '' : 's'}` : 'No discussions yet' },
   ];
   return (
     <>
@@ -243,10 +245,10 @@ function Overview({ p, openConversation }: { p: Detail; openConversation: (id: s
             )}
           </section>
           <section className="panel">
-            <h2>Channels</h2>
+            <div className="panel-head"><h2>Discussions</h2><button className="btn sm" onClick={newThread}>+ New thread</button></div>
             {p.channels.length ? p.channels.map((c) => (
-              <button key={c.id} className="nav-row" onClick={() => openConversation(c.id)}><span className="muted">#</span><span className="label">{c.name}</span></button>
-            )) : <div className="muted" style={{ fontSize: 13 }}>Created as the project moves through its stages.</div>}
+              <button key={c.id} className="nav-row" onClick={() => openConversation(c.id)}><span className="muted">#</span><span className="label">{shortThread(c.name, p.slug)}</span></button>
+            )) : <div className="muted" style={{ fontSize: 13 }}>Threads about this project appear here: the stage threads the agents start, and any you open with your team.</div>}
           </section>
         </div>
       </div>
@@ -475,11 +477,10 @@ function Roles({ p, roles, openConversation }: { p: Detail; roles: Role[]; openC
   const [error, setError] = useState<string | null>(null);
   const bring = async (role: Role) => {
     setError(null);
-    const name = `${p.slug}-${role.id}`;
-    const existing = p.channels.find((c) => c.name === name);
+    const existing = p.channels.find((c) => c.id === `ch:${p.slug}-${role.id}` || c.name === role.name);
     if (existing) return openConversation(existing.id);
     try {
-      const c = await api<{ id: string }>('/api/channels', { body: { name, members: [role.id], project_id: p.id } });
+      const c = await api<{ id: string }>('/api/channels', { body: { name: role.name, members: [role.id], project_id: p.id } });
       openConversation(c.id);
     } catch (e) {
       setError((e as Error).message);
@@ -489,7 +490,7 @@ function Roles({ p, roles, openConversation }: { p: Detail; roles: Role[]; openC
     <>
       <section className="panel">
         <h2>Bring a role into {p.name}</h2>
-        <div className="muted" style={{ fontSize: 13 }}>Opens a project channel with that role. Shared roles keep their knowledge of your other projects.</div>
+        <div className="muted" style={{ fontSize: 13 }}>Opens a thread in this project's Discussions with that role. Shared roles keep their knowledge of your other projects.</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {roles.filter((r) => r.id !== 'main').map((r) => (
             <button key={r.id} className="btn" onClick={() => bring(r)}>{r.name}</button>
@@ -498,9 +499,9 @@ function Roles({ p, roles, openConversation }: { p: Detail; roles: Role[]; openC
         {error && <div className="error">{error}</div>}
       </section>
       <section className="panel">
-        <h2>Project channels</h2>
+        <h2>Project discussions</h2>
         {p.channels.length ? p.channels.map((c) => (
-          <button key={c.id} className="nav-row" onClick={() => openConversation(c.id)}><span className="muted">#</span><span className="label">{c.name}</span></button>
+          <button key={c.id} className="nav-row" onClick={() => openConversation(c.id)}><span className="muted">#</span><span className="label">{shortThread(c.name, p.slug)}</span></button>
         )) : <div className="muted" style={{ fontSize: 13 }}>None yet.</div>}
       </section>
     </>
@@ -577,7 +578,7 @@ function Docs({ p }: { p: Detail }) {
   );
 }
 
-export function ProjectPage({ id, tab, sub, roles, openConversation }: { id: string; tab: string; sub: string | null; roles: Role[]; openConversation: (id: string) => void }) {
+export function ProjectPage({ id, tab, sub, roles, openConversation, newThread }: { id: string; tab: string; sub: string | null; roles: Role[]; openConversation: (id: string) => void; newThread: () => void }) {
   const detail = useApi<Detail>(`/api/projects/${id}`, refresh(id));
   const p = detail.data;
   if (detail.error) return <div className="error">{detail.error}</div>;
@@ -607,7 +608,7 @@ export function ProjectPage({ id, tab, sub, roles, openConversation }: { id: str
           </a>
         ))}
       </div>
-      {tab === '' && <Overview p={p} openConversation={openConversation} />}
+      {tab === '' && <Overview p={p} openConversation={openConversation} newThread={newThread} />}
       {tab === 'requirements' && <Requirements p={p} />}
       {tab === 'design' && <SystemDesign p={p} focus={sub} openConversation={openConversation} />}
       {tab === 'board' && <Board p={p} />}

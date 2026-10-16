@@ -147,3 +147,80 @@ export function NewProjectDialog({ onClose, askMain }: { onClose: () => void; as
     </Modal>
   );
 }
+
+export function NewThreadDialog({
+  roles,
+  projects,
+  defaultProject,
+  onClose,
+  onCreated,
+  onAddMember,
+}: {
+  roles: Role[];
+  projects: { id: string; name: string }[];
+  defaultProject: string | null;
+  onClose: () => void;
+  onCreated: (conversationId: string) => void;
+  onAddMember: () => void;
+}) {
+  const [topic, setTopic] = useState('');
+  const [project, setProject] = useState<string>(defaultProject ?? '');
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const toggle = (id: string) => setPicked((s) => { const next = new Set(s); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const create = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const c = await api<{ id: string }>('/api/channels', { body: { name: topic, members: [...picked], project_id: project || null, message } });
+      onCreated(c.id);
+      onClose();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const many = picked.size > 1;
+  return (
+    <Modal title="New thread" onClose={onClose} width={560}>
+      <form onSubmit={create} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <label className="muted" style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }}>Topic
+          <input className="input" style={{ color: 'var(--text)' }} required value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. Pricing ideas" />
+        </label>
+        <label className="muted" style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }}>Project
+          <select className="input" style={{ color: 'var(--text)' }} value={project} onChange={(e) => setProject(e.target.value)}>
+            <option value="">None (general thread)</option>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </label>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span className="muted" style={{ fontSize: 12 }}>With</span>
+          {roles.length === 0 ? (
+            <div className="muted" style={{ fontSize: 12.5 }}>Your team is empty. <button type="button" className="link-btn" style={{ color: 'var(--accent)' }} onClick={onAddMember}>Add a team member</button> first.</div>
+          ) : (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {roles.map((r) => (
+                <button type="button" key={r.id} aria-pressed={picked.has(r.id)} className={`chip${picked.has(r.id) ? ' on' : ''}`} onClick={() => toggle(r.id)}>
+                  {picked.has(r.id) ? '✓ ' : '+ '}{r.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <label className="muted" style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }}>First message (optional)
+          <textarea className="input" rows={3} style={{ color: 'var(--text)', fontSize: 13 }} value={message} onChange={(e) => setMessage(e.target.value)} placeholder={many ? 'Everyone answers in turn; @mention someone to ask just them.' : 'What do you want to discuss?'} />
+        </label>
+        {many && <div className="muted" style={{ fontSize: 12 }}>With several members: without an @mention each one answers in turn if they have something to add; with @mentions only those answer.</div>}
+        {error && <div className="error">{error}</div>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn primary" disabled={busy || !topic.trim() || picked.size === 0}>{busy ? 'Starting…' : message.trim() ? 'Start thread and send' : 'Start thread'}</button>
+          <button type="button" className="btn" onClick={onClose}>Cancel</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}

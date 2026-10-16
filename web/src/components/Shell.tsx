@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useApi } from '../lib/api';
 import { go, href } from '../lib/router';
-import { STAGE_LABEL, type ProjectSummary } from '../lib/types';
+import { STAGE_LABEL, type Conversation, type ProjectSummary } from '../lib/types';
 import { Icon, type IconName } from './Icon';
 
 const STAGE_TONE: Record<string, string> = { build: 't-g', design: 't-v', plan: 't-b', requirements: 't-a', create: 't-n', idea: 't-n' };
@@ -63,12 +63,46 @@ interface TreeNode {
   label: string;
   icon: IconName;
   to?: string;
+  /** an action instead of navigation (open a thread, start one) */
+  onSelect?: () => void;
+  active?: boolean;
   badge?: { text: string; tone: string };
   children?: TreeNode[];
   bold?: boolean;
+  quiet?: boolean;
 }
 
-function projectTree(p: ProjectSummary): TreeNode {
+/** A project thread's name inside its project (older stage threads carried the project slug). */
+export const threadName = (c: Conversation, slug?: string) => (slug && c.name.startsWith(`${slug}-`) ? c.name.slice(slug.length + 1) : c.name);
+
+interface ThreadCtx {
+  conversations: Conversation[];
+  current: string | null;
+  open: (id: string) => void;
+  newThread: (projectId: string | null) => void;
+}
+
+function projectTree(p: ProjectSummary, t: ThreadCtx): TreeNode {
+  const slug = p.root.split('/').pop();
+  const threads = t.conversations.filter((c) => c.kind === 'channel' && c.project_id === p.id);
+  const unread = threads.reduce((n, c) => n + c.unread, 0);
+  const discussions: TreeNode = {
+    id: `${p.id}/discussions`,
+    label: 'Discussions',
+    icon: 'chat',
+    badge: unread ? { text: String(unread), tone: 't-b' } : threads.some((c) => c.working) ? { text: 'live', tone: 't-g' } : undefined,
+    children: [
+      ...threads.map((c) => ({
+        id: c.id,
+        label: `# ${threadName(c, slug)}`,
+        icon: 'chat' as IconName,
+        onSelect: () => t.open(c.id),
+        active: t.current === c.id,
+        badge: c.unread ? { text: String(c.unread), tone: 't-b' } : c.working ? { text: 'live', tone: 't-g' } : undefined,
+      })),
+      { id: `${p.id}/new-thread`, label: 'New thread', icon: 'plus' as IconName, onSelect: () => t.newThread(p.id), quiet: true },
+    ],
+  };
   const base = `/project/${p.id}`;
   const design: TreeNode = {
     id: `${p.id}/design`,
@@ -97,6 +131,7 @@ function projectTree(p: ProjectSummary): TreeNode {
       { id: `${p.id}/req`, label: 'Requirements', icon: 'doc', to: `${base}/requirements` },
       design,
       { id: `${p.id}/board`, label: p.phase ? `Board · phase ${p.phase.index}/${p.phase.count}` : 'Board', icon: 'board', to: `${base}/board`, badge: p.cards.total ? { text: `${p.cards.done}/${p.cards.total}`, tone: 't-n' } : undefined },
+      discussions,
       { id: `${p.id}/roles`, label: 'Roles', icon: 'role', to: `${base}/roles` },
       { id: `${p.id}/agents`, label: 'Live agents', icon: 'agent', to: `${base}/agents`, badge: p.liveAgents ? { text: String(p.liveAgents), tone: 't-g' } : undefined },
       { id: `${p.id}/docs`, label: 'Docs', icon: 'vault', to: `${base}/docs` },
@@ -110,18 +145,19 @@ function TreeRows({ nodes, depth, open, toggle, current }: { nodes: TreeNode[]; 
       {nodes.map((n) => {
         const kids = Boolean(n.children?.length);
         const isOpen = open.has(n.id);
-        const on = n.to !== undefined && n.to === current;
+        const on = n.active ?? (n.to !== undefined && n.to === current);
         return (
           <div key={n.id}>
             <a
               className={`nav-row${on ? ' on' : ''}`}
-              style={{ paddingLeft: 6 + depth * 14, fontWeight: n.bold ? 600 : undefined }}
+              style={{ paddingLeft: 6 + depth * 14, fontWeight: n.bold ? 600 : undefined, color: n.quiet ? 'var(--muted)' : undefined }}
               href={n.to ? href(n.to) : '#'}
               aria-expanded={kids ? isOpen : undefined}
               onClick={(e) => {
                 if (kids) toggle(n.id);
                 if (n.to) go(n.to)(e);
                 else e.preventDefault();
+                n.onSelect?.();
               }}
             >
               <Icon name="chevron" size={12} className={`chev${kids ? (isOpen ? ' open' : '') : ' none'}`} />
@@ -137,9 +173,9 @@ function TreeRows({ nodes, depth, open, toggle, current }: { nodes: TreeNode[]; 
   );
 }
 
-export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking, onNewProject }: { projects: ProjectSummary[]; path: string; children?: React.ReactNode; mainOn: boolean; onMain: () => void; mainWorking: boolean; onNewProject: () => void }) {
+export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking, onNewProject, threads }: { projects: ProjectSummary[]; path: string; children?: React.ReactNode; mainOn: boolean; onMain: () => void; mainWorking: boolean; onNewProject: () => void; threads: ThreadCtx }) {
   const [open, setOpen] = useState<Set<string>>(() => new Set(projects[0] ? [projects[0].id] : []));
-  const toggle = (id: string) => setOpen((s) => (s.has(id) ? (s.delete(id), new Set(s)) : new Set(s.add(id))));
+  const toggle = (id: string) => setOpen((s) => { const next = new Set(s); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   return (
     <nav className="sidebar" aria-label="Main">
       <button className={`nav-row${mainOn ? ' on' : ''}`} onClick={onMain} style={{ fontWeight: 600, fontSize: 14, padding: '8px 10px' }}>
@@ -155,7 +191,7 @@ export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking,
           </button>
         </div>
         {projects.length ? (
-          <TreeRows nodes={projects.map(projectTree)} depth={0} open={open} toggle={toggle} current={path} />
+          <TreeRows nodes={projects.map((p) => projectTree(p, threads))} depth={0} open={open} toggle={toggle} current={path} />
         ) : (
           <div className="muted" style={{ fontSize: 12.5, padding: '4px 10px' }}>
             No projects yet. <button className="link-btn" style={{ color: 'var(--accent)', fontSize: 12.5 }} onClick={onNewProject}>Start one</button> or describe an idea to the Main agent.

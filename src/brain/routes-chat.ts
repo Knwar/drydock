@@ -78,16 +78,32 @@ on('GET', '/api/conversations', (_q, res, _u, ctx) => {
   ctx.json(res, 200, listConversations(ctx.db()).map((c) => ({ ...c, working: working.get(c.id) ?? null })));
 });
 
+/** Start a thread with one or more members, optionally in a project, optionally with a first message. */
 on('POST', '/api/channels', async (req, res, _u, ctx) => {
+  const db = ctx.db();
   const b = await ctx.readBody(req);
-  const ids = Array.isArray(b?.members) ? b.members.filter((m: string) => getRole(ctx.db(), m)) : [];
+  const ids = Array.isArray(b?.members) ? b.members.filter((m: string) => getRole(db, m)) : [];
+  let projectId: string | null = null;
+  let scope: string | null = null;
+  if (b?.project_id) {
+    const p = db.prepare('SELECT id, root_path FROM projects WHERE id = ?').get(b.project_id) as { id: string; root_path: string } | undefined;
+    if (!p) throw new HttpError(404, 'unknown project');
+    projectId = p.id;
+    scope = basename(p.root_path);
+  }
   let conv;
   try {
-    conv = createChannel(ctx.db(), String(b?.name ?? ''), ids, b?.project_id ?? null);
+    conv = createChannel(db, String(b?.name ?? ''), ids, projectId, scope);
   } catch (err) {
     throw new HttpError(400, (err as Error).message);
   }
   ctx.broadcast({ type: 'conversations' });
+  const first = typeof b?.message === 'string' ? b.message.trim() : '';
+  if (first) {
+    const m = addMessage(db, conv.id, 'user', first);
+    ctx.broadcast({ type: 'chat', conversation: conv.id, message: m });
+    respond(conv.id, first);
+  }
   ctx.json(res, 200, conv);
 });
 
