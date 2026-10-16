@@ -19,3 +19,10 @@ export function getBus(): Bus {
   if (!bus) throw new Error('brain bus not bound');
   return bus;
 }
+
+let stopping = false;
+/** The daemon is shutting down: in-flight agent runs are being cut off, not finishing. */
+export function markShuttingDown(): void {
+  stopping = true;
+}
+export const isShuttingDown = () => stopping;

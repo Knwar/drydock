@@ -26,16 +26,19 @@ describe('agent runs survive a daemon restart', () => {
     await call('POST', '/api/roles', { template: 'cto' });
     await call('POST', '/api/conversations/dm:cto/messages', { text: 'SLOW job please' });
     // wait until the run has started (its session is recorded)
-    for (let i = 0; i < 100 && !(await call('GET', '/api/conversations/dm:cto/messages')).working; i++) await new Promise((r) => setTimeout(r, 100));
-    await new Promise((r) => setTimeout(r, 500));
+    for (let i = 0; i < 300 && !(await call('GET', '/api/conversations/dm:cto/messages')).working; i++) await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 1500)); // the fake has printed its session by now
+    const first = d;
     await d.stop(); // the restart kills the run mid-job
+    if (process.env.RESUME_DEBUG) console.log('FIRST DAEMON:\n' + first.output());
     d = await startDaemon({ dbPath: null, env });
     let messages: any[] = [];
-    for (let i = 0; i < 150; i++) {
+    for (let i = 0; i < 450; i++) {
       messages = (await call('GET', '/api/conversations/dm:cto/messages')).messages;
       if (messages.some((m) => m.author === 'cto' && m.kind === 'text')) break;
       await new Promise((r) => setTimeout(r, 100));
     }
+    if (process.env.RESUME_DEBUG) console.log('SECOND DAEMON:\n' + d.output() + '\nMESSAGES: ' + JSON.stringify(messages.map((m) => [m.author, m.kind, m.body.slice(0, 60)])));
     const note = messages.find((m) => m.kind === 'error');
     assert.match(note.body, /interrupted when AI Brain restarted/);
     const reply = messages.find((m) => m.author === 'cto' && m.kind === 'text');

@@ -30,7 +30,7 @@ import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js
 import { openDb } from '../core/db.js';
 import { handleApi, startBrain } from '../brain/api.js';
 import { serveApp } from '../brain/static.js';
-import { bindBus } from '../brain/bus.js';
+import { bindBus, markShuttingDown } from '../brain/bus.js';
 import { resolveDbPath } from '../brain/workspace.js';
 import { cardLines } from '../core/lines.js';
 import { cachedCodeVersion, readCodeVersion } from './code-version.js';
@@ -2887,6 +2887,7 @@ async function killSessions(sessions: PtySession[]): Promise<void> {
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  markShuttingDown(); // agent runs cut off now stay recorded, to resume on the next start
   setTimeout(() => process.exit(0), SHUTDOWN_DEADLINE_MS).unref();
 
   const sessions = [...ptySessions.values()];

@@ -7,7 +7,7 @@ import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getBus } from './bus.js';
+import { getBus, isShuttingDown } from './bus.js';
 import { defineSchema } from './schema.js';
 import { getSetting } from './settings.js';
 import { addMessage, getConversation, getSession, listMessages, members, saveSession, standingTools, type Message } from './chat.js';
@@ -257,6 +257,8 @@ async function runTurn(roleId: string, conversationId: string, modelOverride?: s
   });
   if (buf) onLine(buf);
   running.delete(conversationId);
+  // cut off by a shutdown: keep the run recorded (it resumes on the next start) and post nothing
+  if (isShuttingDown()) return null;
   clearRun(conversationId);
 
   const db2 = getBus().db();
@@ -378,9 +380,12 @@ function clearRun(conversationId: string): void {
  * On startup: runs still recorded were cut off by a restart. Say so in the
  * thread and resume each agent in its own session, so it keeps its work.
  */
+const PROCESS_STARTED = Date.now();
+
 export function resumeInterruptedRuns(): number {
   const db = getBus().db();
-  const rows = db.prepare('SELECT conversation_id, role_id, session_id, model, seen_upto FROM agent_runs').all() as { conversation_id: string; role_id: string; session_id: string | null; model: string | null; seen_upto: number }[];
+  // only runs left over from a previous process, never one running now
+  const rows = (db.prepare('SELECT conversation_id, role_id, session_id, model, seen_upto, started_at FROM agent_runs WHERE started_at < ?').all(PROCESS_STARTED) as any[]).filter((r) => !running.has(r.conversation_id)) as { conversation_id: string; role_id: string; session_id: string | null; model: string | null; seen_upto: number }[];
   for (const r of rows) {
     clearRun(r.conversation_id);
     if (!getConversation(db, r.conversation_id) || !getRole(db, r.role_id)) continue;
