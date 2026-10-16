@@ -13,11 +13,24 @@ import './routes-projects.js';
 import './routes-personal.js';
 import './routes-teamwork.js';
 import { startCheckins } from './checkins.js';
+import { resumeInterruptedRuns } from './runner.js';
+import { ensureSchema } from './schema.js';
 import { startDailyScheduler } from './daily.js';
 import { listServers } from './integrations.js';
 
 /** Background work the daemon starts once: the Daily scheduler and the MCP server list. */
-export function startBrain(): NodeJS.Timeout[] {
+export function startBrain(db: () => import('../core/db.js').DB, schedulers = true): NodeJS.Timeout[] {
+  // resume agent runs a restart cut off (after the DB schema exists)
+  setTimeout(() => {
+    try {
+      ensureSchema(db());
+      const n = resumeInterruptedRuns();
+      if (n) console.log(`resumed ${n} interrupted agent run(s)`);
+    } catch (err) {
+      console.error(`resume: ${(err as Error).message}`);
+    }
+  }, 1500);
+  if (!schedulers) return [];
   void listServers();
   return [startDailyScheduler(), startCheckins()];
 }

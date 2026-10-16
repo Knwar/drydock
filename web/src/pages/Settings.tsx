@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react';
 import { api, useApi } from '../lib/api';
 import { go, href } from '../lib/router';
 import type { Role, WorkspaceInfo } from '../lib/types';
-import { AddMemberDialog } from '../components/Dialogs';
+import { AddMemberDialog, Modal } from '../components/Dialogs';
 
 const SECTIONS = [
   ['integrations', 'Integrations'],
   ['daily', 'The Daily'],
   ['team', 'Team & permissions'],
   ['usage', 'Usage alerts'],
+  ['checkins', 'Check-ins'],
   ['workspace', 'Workspace'],
 ] as const;
 
@@ -216,6 +217,36 @@ function DailySettingsPage() {
   );
 }
 
+function MemberLearnings({ roleId }: { roleId: string }) {
+  const l = useApi<{ active: { id: number; rule: string; count: number }[]; all: { id: number; rule: string; count: number }[] }>(`/api/roles/${roleId}/learnings`, (m) => m?.type === 'memory');
+  const [removing, setRemoving] = useState<{ id: number; rule: string } | null>(null);
+  if (!l.data) return null;
+  const candidates = l.data.all.filter((x) => !l.data!.active.some((a) => a.id === x.id));
+  return (
+    <div className="field" style={{ gap: 6 }}>
+      <span className="muted">Learnings ({l.data.active.length}/15): added to this member's instructions when they repeat a mistake</span>
+      {l.data.active.length === 0 && <span className="muted" style={{ fontSize: 12.5 }}>None yet.</span>}
+      {l.data.active.map((x) => (
+        <div key={x.id} className="check-row" style={{ padding: '4px 0' }}>
+          <span style={{ flex: 1, fontSize: 12.5 }}>{x.rule}</span>
+          <span className="mono muted" style={{ fontSize: 11 }}>×{x.count}</span>
+          <button className="link-btn" style={{ color: 'var(--r-fg)', fontSize: 12 }} onClick={() => setRemoving(x)}>Remove</button>
+        </div>
+      ))}
+      {candidates.length > 0 && <span className="muted" style={{ fontSize: 11.5 }}>{candidates.length} mistake{candidates.length > 1 ? 's' : ''} seen once (become learnings if repeated).</span>}
+      {removing && (
+        <Modal title="Remove this learning?" onClose={() => setRemoving(null)} width={460}>
+          <div style={{ fontSize: 13 }}>“{removing.rule}” is removed from this member's instructions. If the mistake happens again it is counted afresh.</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn danger" onClick={async () => { await api(`/api/learnings/${removing.id}`, { method: 'DELETE' }); setRemoving(null); l.reload(); }}>Yes, remove</button>
+            <button className="btn" onClick={() => setRemoving(null)}>Cancel</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function RoleEditor({ role, onClose }: { role: Partial<Role> | null; onClose: () => void }) {
   const [form, setForm] = useState<Partial<Role>>(role ?? {});
   const [error, setError] = useState<string | null>(null);
@@ -247,6 +278,7 @@ function RoleEditor({ role, onClose }: { role: Partial<Role> | null; onClose: ()
       <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }} className="muted">Persona (system prompt)
         <textarea className="input" rows={8} style={{ fontSize: 13, color: 'var(--text)' }} value={form.persona ?? ''} onChange={(e) => set('persona', e.target.value)} placeholder="Who this team member is and how they work…" />
       </label>
+      {role.id && <MemberLearnings roleId={role.id} />}
       {error && <div className="error">{error}</div>}
       {confirming ? (
         <div className="confirm" role="alertdialog" aria-labelledby="rm-title" aria-describedby="rm-desc">
@@ -384,6 +416,47 @@ function Usage() {
   );
 }
 
+function Checkins() {
+  const c = useApi<{ pm: number; members: number; user: number }>('/api/settings/checkins');
+  const [form, setForm] = useState<{ pm: number; members: number; user: number } | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const v = form ?? c.data;
+  if (!v) return null;
+  const save = async () => {
+    setMsg(null);
+    try {
+      await api('/api/settings/checkins', { body: v });
+      setMsg('Saved.');
+      c.reload();
+    } catch (e) {
+      setMsg((e as Error).message);
+    }
+  };
+  const row = (k: 'pm' | 'members' | 'user', label: string, desc: string) => (
+    <div className="switch-row">
+      <span style={{ flex: 1 }}><strong style={{ fontSize: 13.5 }}>{label}</strong><br /><span className="muted" style={{ fontSize: 12 }}>{desc}</span></span>
+      <label className="sr-only" htmlFor={`ck-${k}`}>{label} (hours)</label>
+      <input id={`ck-${k}`} type="number" min={0.5} step={0.5} className="input mono" style={{ width: 90 }} value={v[k]} onChange={(e) => setForm({ ...v, [k]: Number(e.target.value) })} />
+      <span className="muted" style={{ fontSize: 12 }}>hours</span>
+    </div>
+  );
+  return (
+    <>
+      <div className="settings-head"><div><h1>Check-ins</h1><p className="muted">When a building project has had no activity (no card moves, agent messages, reviews or commits) the Main agent checks in. Any activity resets the clock. Paused and closed projects, projects in close-out, and projects waiting on you are skipped.</p></div></div>
+      <section className="panel" style={{ maxWidth: 720 }}>
+        {row('pm', 'Ask the PM for status', 'Green / amber / red, the blocker, and the next step.')}
+        {row('members', 'Ask everyone with open cards', 'Each owner reports status and what they need.')}
+        {row('user', 'Ask you', 'Pause, close, or have the Main agent dig in. Also a notification.')}
+        {msg && <div className={msg === 'Saved.' ? 'muted' : 'error'} style={{ fontSize: 12.5 }}>{msg}</div>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn primary" onClick={save}>Save</button>
+          <button className="btn" onClick={async () => { const r = await api<{ done: unknown[] }>('/api/checkins/run', { method: 'POST' }); setMsg(r.done.length ? `Checked in on ${r.done.length} project(s).` : 'Nothing needs a check-in right now.'); }}>Check now</button>
+        </div>
+      </section>
+    </>
+  );
+}
+
 function Workspace() {
   const ws = useApi<WorkspaceInfo>('/api/workspace');
   return (
@@ -414,6 +487,7 @@ export function Settings({ section, roles }: { section: string; roles: Role[] })
         {cur === 'daily' && <DailySettingsPage />}
         {cur === 'team' && <Team roles={roles} />}
         {cur === 'usage' && <Usage />}
+        {cur === 'checkins' && <Checkins />}
         {cur === 'workspace' && <Workspace />}
       </div>
     </div>

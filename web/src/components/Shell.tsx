@@ -125,14 +125,19 @@ function projectTree(p: ProjectSummary, t: ThreadCtx): TreeNode {
     label: p.name,
     icon: 'project',
     bold: true,
-    badge: { text: p.blocked ? 'Blocked' : STAGE_LABEL[p.stage], tone: p.blocked ? 't-r' : STAGE_TONE[p.stage] },
+    badge:
+      p.status === 'closed' ? { text: 'Closed', tone: 't-n' }
+      : p.status === 'paused' ? { text: 'Paused', tone: 't-a' }
+      : p.status === 'review' ? { text: 'Close-out', tone: 't-v' }
+      : { text: p.blocked ? 'Blocked' : STAGE_LABEL[p.stage], tone: p.blocked ? 't-r' : STAGE_TONE[p.stage] },
     children: [
       { id: `${p.id}/overview`, label: 'Overview', icon: 'overview', to: base },
       { id: `${p.id}/req`, label: 'Requirements', icon: 'doc', to: `${base}/requirements` },
       design,
       { id: `${p.id}/board`, label: p.phase ? `Board · phase ${p.phase.index}/${p.phase.count}` : 'Board', icon: 'board', to: `${base}/board`, badge: p.cards.total ? { text: `${p.cards.done}/${p.cards.total}`, tone: 't-n' } : undefined },
       discussions,
-      { id: `${p.id}/roles`, label: 'Roles', icon: 'role', to: `${base}/roles` },
+      { id: `${p.id}/roles`, label: 'Team', icon: 'role', to: `${base}/roles` },
+      { id: `${p.id}/memory`, label: 'Memory', icon: 'doc', to: `${base}/memory` },
       { id: `${p.id}/agents`, label: 'Live agents', icon: 'agent', to: `${base}/agents`, badge: p.liveAgents ? { text: String(p.liveAgents), tone: 't-g' } : undefined },
       { id: `${p.id}/docs`, label: 'Docs', icon: 'vault', to: `${base}/docs` },
     ],

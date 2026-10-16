@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Diagram, Legend, type Element, type Relation } from '../components/Diagram';
 import { Modal } from '../components/Dialogs';
+import { TeamPopup, type Recommendation } from '../components/TeamPopup';
 import { Icon } from '../components/Icon';
 import { StageSteps } from '../components/Shell';
 import { api, useApi } from '../lib/api';
@@ -13,7 +14,8 @@ const TABS = [
   ['requirements', 'Requirements'],
   ['design', 'System design'],
   ['board', 'Board'],
-  ['roles', 'Roles'],
+  ['roles', 'Team'],
+  ['memory', 'Memory'],
   ['agents', 'Live agents'],
   ['docs', 'Docs'],
 ] as const;
@@ -38,30 +40,59 @@ interface Detail {
   inReview: number;
   channels: { id: string; name: string }[];
   decisions: { id: number; title: string; why: string | null; role_id: string | null; created_at: number }[];
+  status: 'active' | 'paused' | 'review' | 'closed';
+  closed_reason: string | null;
+  rag: string | null;
+  requirementsFinal: boolean;
+  requirementsVersion: number | null;
+  team: { role_id: string; kind: string; reason: string | null; name: string; initials: string; tone: string; skill: string | null; scope: string }[];
+  recommendation: Recommendation | null;
+  last_activity: number;
 }
 
 const refresh = (id: string) => (m: any) =>
-  (['brain_project', 'requirements', 'design', 'decisions', 'conversations'].includes(m?.type) && (!m.project_id || m.project_id === id)) || ['card', 'phases', 'card_removed'].includes(m?.type);
+  (['brain_project', 'requirements', 'design', 'decisions', 'conversations', 'team', 'memory'].includes(m?.type) && (!m.project_id || m.project_id === id)) || ['card', 'phases', 'card_removed'].includes(m?.type);
 
 const ROLE_LABEL: Record<string, string> = { architect: 'Architect', pm: 'PM', cto: 'CTO' };
 
-function Gate({ p, openConversation }: { p: Detail; openConversation: (id: string) => void }) {
-  const [confirming, setConfirming] = useState(false);
+function ago(t: number): string {
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
+}
+
+interface GateAction {
+  label: string;
+  confirm: string;
+  hint: string;
+  path?: string;
+  body?: unknown;
+  steps: string[];
+  disabled?: boolean;
+  open?: 'team';
+  danger?: boolean;
+}
+
+function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: (id: string) => void; openTeam: () => void }) {
+  const [confirming, setConfirming] = useState<GateAction | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needs, setNeeds] = useState<string | null>(null);
-  const reqs = useApi<{ version: number }[]>(p.stage === 'requirements' ? `/api/projects/${p.id}/requirements` : null, (m) => m?.type === 'requirements');
+  const [reason, setReason] = useState<'completed' | 'cancelled'>('completed');
   const close = () => {
-    setConfirming(false);
+    setConfirming(null);
     setError(null);
     setNeeds(null);
   };
-  const run = async (path: string) => {
+  const run = async (a: GateAction) => {
     setBusy(true);
     setError(null);
-    setNeeds(null);
     try {
-      const res = await fetch(path, { method: 'POST' });
+      if (needs) await api('/api/roles', { body: { template: needs } });
+      const body = a.path?.endsWith('/status') && (a.body as any)?.status === 'closed' ? { ...(a.body as any), reason } : a.body;
+      const res = await fetch(a.path!, { method: 'POST', headers: body ? { 'content-type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
       const r = await res.json();
       if (res.status === 409 && r.needs_role) {
         setNeeds(r.needs_role);
@@ -69,97 +100,96 @@ function Gate({ p, openConversation }: { p: Detail; openConversation: (id: strin
         return;
       }
       if (!res.ok) throw new Error(r.error ?? res.statusText);
-      setConfirming(false);
+      close();
       if (r?.channel) openConversation(r.channel);
+      if (r?.recommendation) openTeam();
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
-  const confirm = async (path: string) => {
-    if (needs) {
-      setBusy(true);
-      try {
-        await api('/api/roles', { body: { template: needs } });
-      } catch (e) {
-        setError((e as Error).message);
-        setBusy(false);
-        return;
-      }
-    }
-    await run(path);
-  };
-  const v = reqs.data?.[0]?.version;
   const containers = p.containers ?? [];
-  const action =
-    p.stage === 'requirements'
-      ? {
-          label: 'Mark requirements final',
-          confirm: 'Mark requirements final',
-          hint: 'The Architect starts the system design.',
-          path: `/api/projects/${p.id}/requirements/final`,
-          steps: [
-            `Requirements${v ? ` v${v}` : ''} are locked. You can reopen them later from the Requirements tab.`,
-            `The Architect starts the system design in #${p.slug}-design, and the CTO reviews it if they are on your team.`,
-            'Agents start working, which uses your subscription.',
-          ],
-        }
-      : p.stage === 'design'
-        ? {
-            label: 'Finalise design',
-            confirm: 'Finalise design',
-            hint: 'Creates the verticals and asks the PM for a roadmap.',
-            path: `/api/projects/${p.id}/design/final`,
-            steps: [
-              'The current design is saved as a final version.',
-              containers.length
-                ? `A board vertical and folder are created for each app: ${containers.map((c) => c.name).join(', ')}.`
-                : 'A board vertical and folder are created for each app container in the design.',
-              `The PM drafts a roadmap of phases in #${p.slug}-build and waits for your approval before building.`,
-            ],
-          }
-        : p.stage === 'plan'
-          ? {
-              label: 'Approve roadmap and start building',
-              confirm: 'Approve and start building',
-              hint: p.phases.length ? `${p.phases.length} phases proposed.` : 'Waiting for the PM to propose phases.',
-              path: `/api/projects/${p.id}/start`,
-              disabled: !p.phases.length,
-              steps: [
-                `The PM starts the first of ${p.phases.length} phases: ${p.phases.map((x) => x.title).join(' → ')}.`,
-                'Builder and reviewer agents create and work cards on the board, in separate git worktrees.',
-                'Anything they are not allowed to do on their own still asks you first. This is the stage that uses the most of your subscription.',
-              ],
-            }
-          : null;
-  if (!action) return null;
+  const base = `/api/projects/${p.id}`;
+  const actions: GateAction[] = [];
+  if (p.status === 'closed') {
+    actions.push({ label: 'Reopen project', confirm: 'Reopen project', hint: `Closed${p.closed_reason ? ` (${p.closed_reason})` : ''}.`, path: `${base}/status`, body: { status: 'active' }, steps: ['The project becomes active again; check-ins resume while it is building.', 'Nothing else changes: its threads, board and memory are as you left them.'] });
+  } else if (p.status === 'paused') {
+    actions.push({ label: 'Resume project', confirm: 'Resume project', hint: 'Paused: no check-ins.', path: `${base}/status`, body: { status: 'active' }, steps: ['Check-ins resume: the Main agent asks for status after 2 hours without activity.', 'Agents do not restart on their own; continue in the build thread.'] });
+  } else if (p.status === 'review') {
+    actions.push({
+      label: 'Sign off and close',
+      confirm: 'Sign off and close',
+      hint: 'Close-out: readiness check, retrospective and enhancements.',
+      path: `${base}/status`,
+      body: { status: 'closed' },
+      steps: ['The project is marked Closed with the reason you choose, and check-ins stop.', 'Lessons stay in project memory; proposed enhancements stay listed on the Memory tab.', 'You can reopen it later.'],
+    });
+  } else if (p.stage === 'requirements' && !p.requirementsFinal) {
+    actions.push({
+      label: 'Mark requirements final',
+      confirm: 'Mark requirements final',
+      hint: 'Next: pick the team, then the design starts.',
+      path: `${base}/requirements/final`,
+      steps: [`Requirements${p.requirementsVersion ? ` v${p.requirementsVersion}` : ''} are locked. You can reopen them later from the Requirements tab.`, 'You get a recommended team: always Quality control and a Security Champion, plus specialists the Main agent picks from the requirements.', 'Nothing is designed or built until you start the design.'],
+    });
+  } else if (p.stage === 'requirements') {
+    actions.push({ label: 'Pick the team and start design', confirm: '', hint: 'Requirements are final.', open: 'team', steps: [] });
+  } else if (p.stage === 'design') {
+    actions.push({
+      label: 'Finalise design',
+      confirm: 'Finalise design',
+      hint: 'Creates the verticals and asks the PM for a roadmap.',
+      path: `${base}/design/final`,
+      steps: [
+        'The current design is saved as a final version.',
+        containers.length ? `A board vertical and folder are created for each app: ${containers.map((c) => c.name).join(', ')}.` : 'A board vertical and folder are created for each app container in the design.',
+        `The PM drafts a roadmap of phases in #${p.slug} › build and waits for your approval before building.`,
+      ],
+    });
+  } else if (p.stage === 'plan') {
+    actions.push({
+      label: 'Approve roadmap and start building',
+      confirm: 'Approve and start building',
+      hint: p.phases.length ? `${p.phases.length} phases proposed.` : 'Waiting for the PM to propose phases.',
+      path: `${base}/start`,
+      disabled: !p.phases.length,
+      steps: [`The PM starts the first of ${p.phases.length} phases: ${p.phases.map((x) => x.title).join(' → ')}.`, 'Builder and reviewer agents create and work cards on the board, in separate git worktrees. Security cards get a security scan and review.', 'Anything they are not allowed to do on their own still asks you first. This is the stage that uses the most of your subscription.'],
+    });
+  }
+  const pausable = p.status === 'active' && p.stage !== 'requirements';
   return (
-    <div className="gate">
+    <div className="gate" style={{ flexWrap: 'wrap' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <span style={{ fontWeight: 700, fontSize: 13 }}>Next gate</span>
-        <span className="muted" style={{ fontSize: 12 }}>{action.hint}</span>
+        <span style={{ fontWeight: 700, fontSize: 13 }}>{p.status === 'review' ? 'Close-out' : p.status === 'closed' ? 'Closed' : p.status === 'paused' ? 'Paused' : 'Next gate'}</span>
+        <span className="muted" style={{ fontSize: 12 }}>{actions[0]?.hint ?? `Building · last activity ${ago(p.last_activity)}`}</span>
       </div>
-      <button className="btn primary" disabled={action.disabled} onClick={() => setConfirming(true)}>
-        {action.label}
-      </button>
+      {actions.map((a) => (
+        <button key={a.label} className="btn primary" disabled={a.disabled} onClick={() => (a.open === 'team' ? openTeam() : setConfirming(a))}>
+          {a.label}
+        </button>
+      ))}
+      {pausable && (
+        <button className="btn sm" onClick={() => setConfirming({ label: 'Pause project', confirm: 'Pause project', hint: '', path: `${base}/status`, body: { status: 'paused' }, steps: ['Check-ins stop for this project.', 'Agents already working finish their current reply; nobody starts new work until you resume.', 'You can resume any time.'] })}>
+          Pause
+        </button>
+      )}
       {confirming && (
-        <Modal title={`${action.label}?`} onClose={close} width={520}>
-          <div style={{ fontSize: 13 }}>
-            <strong>{p.name}</strong> moves from <strong>{STAGE_NAMES[p.stage]}</strong> to the next stage. This will:
-          </div>
+        <Modal title={`${confirming.label}?`} onClose={close} width={520}>
+          <div style={{ fontSize: 13 }}><strong>{p.name}</strong>: this will</div>
           <ul className="md-list" style={{ fontSize: 13, lineHeight: 1.55, margin: 0 }}>
-            {action.steps.map((s) => <li key={s}>{s}</li>)}
+            {confirming.steps.map((s) => <li key={s}>{s}</li>)}
           </ul>
-          {needs && (
-            <div className="banner t-a" style={{ fontSize: 12.5 }}>
-              {error} Confirming adds {ROLE_LABEL[needs] ?? needs} to your team first.
-            </div>
+          {confirming.label === 'Sign off and close' && (
+            <label className="muted" style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12.5 }}>Reason
+              <select className="input" style={{ height: 32, color: 'var(--text)' }} value={reason} onChange={(e) => setReason(e.target.value as any)}><option value="completed">Completed</option><option value="cancelled">Cancelled</option></select>
+            </label>
           )}
+          {needs && <div className="banner t-a" style={{ fontSize: 12.5 }}>{error} Confirming adds {ROLE_LABEL[needs] ?? needs} to your team first.</div>}
           {error && !needs && <div className="error">{error}</div>}
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn primary" disabled={busy} onClick={() => confirm(action.path)}>
-              {busy ? 'Working…' : needs ? `Add ${ROLE_LABEL[needs] ?? needs} and continue` : `Yes, ${action.confirm.toLowerCase()}`}
+            <button className="btn primary" disabled={busy} onClick={() => run(confirming)}>
+              {busy ? 'Working…' : needs ? `Add ${ROLE_LABEL[needs] ?? needs} and continue` : `Yes, ${confirming.confirm.toLowerCase()}`}
             </button>
             <button className="btn" disabled={busy} onClick={close}>Cancel</button>
           </div>
@@ -473,7 +503,125 @@ function Board({ p }: { p: Detail }) {
   );
 }
 
-function Roles({ p, roles, openConversation }: { p: Detail; roles: Role[]; openConversation: (id: string) => void }) {
+function ProjectTeam({ p, openTeam }: { p: Detail; openTeam: () => void }) {
+  const [removing, setRemoving] = useState<string | null>(null);
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h2>Project team</h2>
+        {p.recommendation && <button className="btn sm" onClick={openTeam}>Recommended team</button>}
+      </div>
+      {p.team.length === 0 ? (
+        <div className="muted" style={{ fontSize: 13 }}>{p.requirementsFinal ? 'No members yet: open the recommended team.' : 'The team is recommended when the requirements are final.'}</div>
+      ) : (
+        p.team.map((m) => (
+          <div key={m.role_id} className="check-row">
+            <span className={`avatar t-${m.tone}`}>{m.initials}</span>
+            <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+              <span style={{ fontWeight: 600, fontSize: 13 }}>{m.name} <span className={`pill ${m.kind === 'core' ? 't-b' : 't-v'}`} style={{ marginLeft: 6 }}>{m.kind}</span></span>
+              {m.reason && <span className="muted" style={{ fontSize: 12 }}>{m.reason}</span>}
+            </span>
+            {m.skill && <span className="pill t-n mono" style={{ fontSize: 10.5 }}>{m.skill}</span>}
+            <button className="link-btn" style={{ color: 'var(--r-fg)', fontSize: 12 }} onClick={() => setRemoving(m.role_id)}>Remove</button>
+          </div>
+        ))
+      )}
+      {removing && (
+        <Modal title="Remove from this project?" onClose={() => setRemoving(null)} width={460}>
+          <div style={{ fontSize: 13 }}>{p.team.find((m) => m.role_id === removing)?.name} leaves {p.name}'s team. They stay on your team and keep their learnings; their threads here are kept.</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn danger" onClick={async () => { await api(`/api/projects/${p.id}/team/${removing}`, { method: 'DELETE' }); setRemoving(null); }}>Yes, remove</button>
+            <button className="btn" onClick={() => setRemoving(null)}>Cancel</button>
+          </div>
+        </Modal>
+      )}
+    </section>
+  );
+}
+
+function Memory({ p }: { p: Detail }) {
+  const m = useApi<{ lessons: any[]; digest: string; checklist: string[]; enhancements: any[]; learnings: { role_id: string; name: string; items: { id: number; rule: string; count: number }[] }[]; threatModel: string | null }>(
+    `/api/projects/${p.id}/memory`,
+    (x) => ['memory', 'brain_project', 'design'].includes(x?.type),
+  );
+  const [showThreat, setShowThreat] = useState(false);
+  if (!m.data) return null;
+  const d = m.data;
+  const active = d.lessons.filter((l) => l.status === 'active');
+  return (
+    <>
+      <div className="banner t-b" style={{ fontSize: 12.5 }}>
+        Blameless: every failed review is classified by cause. Process problems become project lessons with a check added; a member gets a personal learning only when they repeat a mistake. Every agent on {p.name} reads this memory.
+      </div>
+      <div className="row">
+        <section className="panel grow2">
+          <div className="panel-head"><h2>Lessons register</h2><span className="muted" style={{ fontSize: 12 }}>{active.length} active · {d.lessons.length - active.length} superseded</span></div>
+          {d.lessons.length === 0 ? (
+            <div className="muted" style={{ fontSize: 13 }}>No lessons yet. They are recorded when a review fails and in the close-out retrospective.</div>
+          ) : (
+            <div className="scroll-x">
+              <table className="table">
+                <thead><tr><th>ID</th><th>Cause</th><th>Lesson</th><th>Check added</th><th>Seen</th></tr></thead>
+                <tbody>
+                  {d.lessons.map((l) => (
+                    <tr key={l.id} style={{ opacity: l.status === 'active' ? 1 : 0.55 }}>
+                      <td className="mono">L{l.id}</td>
+                      <td><span className={`pill ${l.cause === 'agent-behavior' ? 't-a' : 't-n'}`}>{l.cause}</span></td>
+                      <td>{l.lesson}{l.status !== 'active' && <span className="muted"> (superseded)</span>}</td>
+                      <td className="muted" style={{ fontSize: 12 }}>{l.mechanism ?? '—'}</td>
+                      <td className="mono">×{l.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+        <aside className="panel grow1">
+          <h2>Member learnings</h2>
+          {d.learnings.every((x) => x.items.length === 0) && <div className="muted" style={{ fontSize: 13 }}>None: learnings appear when a member repeats the same mistake.</div>}
+          {d.learnings.filter((x) => x.items.length).map((x) => (
+            <div key={x.role_id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <strong style={{ fontSize: 13 }}>{x.name}</strong>
+              {x.items.map((l) => <div key={l.id} style={{ fontSize: 12.5 }}>· {l.rule} <span className="muted">×{l.count}</span></div>)}
+            </div>
+          ))}
+          {d.checklist.length > 0 && (
+            <>
+              <div className="eyebrow" style={{ fontWeight: 700, marginTop: 6 }}>Team checklist</div>
+              {d.checklist.map((c) => <div key={c} style={{ fontSize: 12.5 }}>· {c}</div>)}
+            </>
+          )}
+        </aside>
+      </div>
+      <div className="row">
+        <section className="panel grow2">
+          <div className="panel-head"><h2>Threat model</h2>{d.threatModel && <button className="btn sm" onClick={() => setShowThreat(!showThreat)}>{showThreat ? 'Hide' : 'Show'}</button>}</div>
+          {d.threatModel ? (showThreat ? <div className="doc"><Markdown text={d.threatModel} /></div> : <div className="muted" style={{ fontSize: 13 }}>STRIDE threat model by the Security Champion, saved in the vault.</div>) : <div className="muted" style={{ fontSize: 13 }}>Written by the Security Champion when the design is ready.</div>}
+        </section>
+        <aside className="panel grow1">
+          <h2>Enhancements</h2>
+          {d.enhancements.length === 0 && <div className="muted" style={{ fontSize: 13 }}>Proposed during the close-out.</div>}
+          {d.enhancements.map((e) => (
+            <div key={e.id} className="check-row">
+              <span style={{ flex: 1, fontSize: 13, opacity: e.status === 'dropped' ? 0.5 : 1 }}><strong>{e.title}</strong>{e.why && <span className="muted"> · {e.why}</span>}</span>
+              {e.status === 'proposed' ? (
+                <>
+                  <button className="btn sm" onClick={() => api(`/api/enhancements/${e.id}`, { body: { status: 'accepted' } }).then(m.reload)}>Accept</button>
+                  <button className="btn sm" style={{ borderColor: 'transparent' }} onClick={() => api(`/api/enhancements/${e.id}`, { body: { status: 'dropped' } }).then(m.reload)}>Drop</button>
+                </>
+              ) : (
+                <span className={`pill ${e.status === 'accepted' ? 't-g' : 't-n'}`}>{e.status}</span>
+              )}
+            </div>
+          ))}
+        </aside>
+      </div>
+    </>
+  );
+}
+
+function Roles({ p, roles, openConversation, openTeam }: { p: Detail; roles: Role[]; openConversation: (id: string) => void; openTeam: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const bring = async (role: Role) => {
     setError(null);
@@ -488,8 +636,9 @@ function Roles({ p, roles, openConversation }: { p: Detail; roles: Role[]; openC
   };
   return (
     <>
+      <ProjectTeam p={p} openTeam={openTeam} />
       <section className="panel">
-        <h2>Bring a role into {p.name}</h2>
+        <h2>Talk to a member about {p.name}</h2>
         <div className="muted" style={{ fontSize: 13 }}>Opens a thread in this project's Discussions with that role. Shared roles keep their knowledge of your other projects.</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {roles.filter((r) => r.id !== 'main').map((r) => (
@@ -581,6 +730,15 @@ function Docs({ p }: { p: Detail }) {
 export function ProjectPage({ id, tab, sub, roles, openConversation, newThread }: { id: string; tab: string; sub: string | null; roles: Role[]; openConversation: (id: string) => void; newThread: () => void }) {
   const detail = useApi<Detail>(`/api/projects/${id}`, refresh(id));
   const p = detail.data;
+  const [teamOpen, setTeamOpen] = useState(false);
+  const [autoShown, setAutoShown] = useState(false);
+  // the team step: open the recommendation once, as soon as requirements are final
+  useEffect(() => {
+    if (!autoShown && p && p.stage === 'requirements' && p.requirementsFinal && p.recommendation?.status === 'open') {
+      setTeamOpen(true);
+      setAutoShown(true);
+    }
+  }, [p, autoShown]);
   if (detail.error) return <div className="error">{detail.error}</div>;
   if (!p) return null;
   const base = `/project/${id}`;
@@ -592,13 +750,15 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread }
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>{p.name}</h1>
             <span className="pill t-g">{STAGE_NAMES[p.stage]}{p.phase ? ` · phase ${p.phase.index} of ${p.phase.count}` : ''}</span>
+            {p.status !== 'active' && <span className={`pill ${p.status === 'review' ? 't-v' : p.status === 'paused' ? 't-a' : 't-n'}`}>{p.status === 'review' ? 'Close-out' : p.status === 'paused' ? 'Paused' : `Closed${p.closed_reason ? ` · ${p.closed_reason}` : ''}`}</span>}
+            {p.rag && p.status === 'active' && <span className={`pill ${p.rag === 'green' ? 't-g' : p.rag === 'amber' ? 't-a' : 't-r'}`} title="Status reported by the PM">{p.rag}</span>}
             <span className="mono muted" style={{ fontSize: 12 }}>{p.root.split('/').slice(-2).join('/')}</span>
           </div>
           {p.description && <div className="muted" style={{ fontSize: 13 }}>{p.description}</div>}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
           <StageSteps stage={p.stage} />
-          <Gate p={p} openConversation={openConversation} />
+          <Gate p={p} openConversation={openConversation} openTeam={() => setTeamOpen(true)} />
         </div>
       </div>
       <div role="tablist" className="tabs">
@@ -612,7 +772,11 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread }
       {tab === 'requirements' && <Requirements p={p} />}
       {tab === 'design' && <SystemDesign p={p} focus={sub} openConversation={openConversation} />}
       {tab === 'board' && <Board p={p} />}
-      {tab === 'roles' && <Roles p={p} roles={roles} openConversation={openConversation} />}
+      {tab === 'roles' && <Roles p={p} roles={roles} openConversation={openConversation} openTeam={() => setTeamOpen(true)} />}
+      {tab === 'memory' && <Memory p={p} />}
+      {teamOpen && p.recommendation && (
+        <TeamPopup projectId={p.id} projectName={p.name} slug={p.slug} rec={p.recommendation} onClose={() => setTeamOpen(false)} onStarted={openConversation} />
+      )}
       {tab === 'agents' && <Agents p={p} openConversation={openConversation} />}
       {tab === 'docs' && <Docs p={p} />}
     </>

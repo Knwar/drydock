@@ -52,7 +52,7 @@ on('GET', '/api/projects/:id', (_q, res, _u, ctx, p) => {
   const r = ref(db, p.id);
   const summary = listProjects(db, null).find((s) => s.id === p.id);
   const phases = board.getPhases(db, p.id);
-  const channels = db.prepare(`SELECT id, name FROM conversations WHERE project_id = ? ORDER BY created_at`).all(p.id);
+  const channels = db.prepare(`SELECT id, name FROM conversations WHERE project_id = ? AND kind = 'channel' ORDER BY created_at`).all(p.id);
   const latest = listRequirements(db, p.id)[0];
   ctx.json(res, 200, {
     ...summary,

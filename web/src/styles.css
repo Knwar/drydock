@@ -333,3 +333,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .confirm { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--r-fg); background: var(--r-bg); }
 .btn.danger { border: 0; background: var(--r-fg); color: #fff; }
 .btn.danger:hover { filter: brightness(1.08); background: var(--r-fg); }
+.rec-list { display: flex; flex-direction: column; gap: 8px; }
+.rec-row { display: flex; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface2); }
+.rec-row.added { border-color: var(--g-line); }
+.status-banner { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 12px; font-size: 13px; flex-wrap: wrap; }

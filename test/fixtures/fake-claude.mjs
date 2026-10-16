@@ -11,6 +11,8 @@ const resumed = val('--resume');
 const session = resumed ?? 'sess-' + Math.random().toString(36).slice(2, 8);
 const out = (o) => process.stdout.write(JSON.stringify({ session_id: session, ...o }) + '\n');
 out({ type: 'system', subtype: 'init' });
+// a long job: lets a test kill the daemon mid-run
+if (prompt.includes('SLOW')) await new Promise((r) => setTimeout(r, 60_000));
 let reply = `echo: ${prompt.slice(0, 200)}${resumed ? ' (resumed)' : ''}`;
 if (prompt.includes('NEEDS_APPROVAL')) {
   const cfg = JSON.parse(readFileSync(val('--mcp-config'), 'utf8')).mcpServers.brain.env;

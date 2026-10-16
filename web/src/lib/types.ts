@@ -15,6 +15,8 @@ export interface ProjectSummary {
   liveAgents: number;
   blocked: number;
   inReview: number;
+  status: string;
+  rag: string | null;
 }
 
 export interface WorkspaceInfo {

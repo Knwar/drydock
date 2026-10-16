@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getBus } from './bus.js';
+import { defineSchema } from './schema.js';
 import { getSetting } from './settings.js';
 import { addMessage, getConversation, getSession, listMessages, members, saveSession, standingTools, type Message } from './chat.js';
 import { getRole, listRoles, type Role } from './roles.js';
@@ -128,7 +129,7 @@ function shimDir(dataDir: string): string {
 
 /** Run one turn for `roleId` in the conversation, if it has anything new to answer. */
 /** Runs one turn; resolves to the text the role posted (null if nothing). */
-async function runTurn(roleId: string, conversationId: string, modelOverride?: string): Promise<string | null> {
+async function runTurn(roleId: string, conversationId: string, modelOverride?: string, resumeNote?: string): Promise<string | null> {
   const db = getBus().db();
   const role = getRole(db, roleId);
   const ws = currentWorkspace();
@@ -138,7 +139,10 @@ async function runTurn(roleId: string, conversationId: string, modelOverride?: s
     return null;
   }
   const session = getSession(db, roleId, conversationId);
-  const pending = pendingPrompt(role, conversationId, session?.seen_message_id ?? 0);
+  // a resumed run continues its own session with a nudge instead of new messages
+  const pending = resumeNote
+    ? { prompt: resumeNote, lastId: session?.seen_message_id ?? 0 }
+    : pendingPrompt(role, conversationId, session?.seen_message_id ?? 0);
   if (!pending) return null;
 
   const conv = getConversation(db, conversationId)!;
@@ -182,6 +186,7 @@ async function runTurn(roleId: string, conversationId: string, modelOverride?: s
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   running.set(conversationId, { child, roleId });
+  markRun(conversationId, roleId, session?.session_id ?? null, modelOverride ?? null, pending.lastId);
 
   let sessionId = session?.session_id ?? null;
   let streamed = '';
@@ -205,7 +210,13 @@ async function runTurn(roleId: string, conversationId: string, modelOverride?: s
     } catch {
       return;
     }
-    if (ev.session_id) sessionId = ev.session_id;
+    if (ev.session_id && ev.session_id !== sessionId) {
+      const sid: string = ev.session_id;
+      sessionId = sid;
+      // remember the session at once, so a run cut off by a restart can resume it
+      saveSession(getBus().db(), roleId, conversationId, sid, session?.seen_message_id ?? 0);
+      markRun(conversationId, roleId, sid, modelOverride ?? null, pending.lastId);
+    }
     if (ev.type === 'system' && ev.subtype === 'init' && Array.isArray(ev.tools)) recordTools(getBus().db(), ev.tools);
     if (ev.type === 'stream_event' && ev.event?.type === 'content_block_delta' && ev.event.delta?.type === 'text_delta') {
       streamed += ev.event.delta.text;
@@ -246,6 +257,7 @@ async function runTurn(roleId: string, conversationId: string, modelOverride?: s
   });
   if (buf) onLine(buf);
   running.delete(conversationId);
+  clearRun(conversationId);
 
   const db2 = getBus().db();
   if (sessionId) saveSession(db2, roleId, conversationId, sessionId, pending.lastId);
@@ -333,3 +345,61 @@ export function respond(conversationId: string, mentionText = '', opts: { model?
 const MAX_HANDOFFS = 4;
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+
+// ── runs survive restarts ────────────────────────────────────────
+
+defineSchema(`
+CREATE TABLE IF NOT EXISTS agent_runs (
+  conversation_id TEXT PRIMARY KEY,
+  role_id         TEXT NOT NULL,
+  session_id      TEXT,
+  model           TEXT,
+  seen_upto       INTEGER NOT NULL DEFAULT 0, -- the last message this run was answering
+  started_at      INTEGER NOT NULL
+);
+`);
+
+function markRun(conversationId: string, roleId: string, sessionId: string | null, model: string | null, seenUpto = 0): void {
+  getBus()
+    .db()
+    .prepare(
+      `INSERT INTO agent_runs (conversation_id, role_id, session_id, model, seen_upto, started_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(conversation_id) DO UPDATE SET role_id = excluded.role_id, session_id = COALESCE(excluded.session_id, agent_runs.session_id),
+         model = excluded.model, seen_upto = MAX(agent_runs.seen_upto, excluded.seen_upto)`,
+    )
+    .run(conversationId, roleId, sessionId, model, seenUpto, Date.now());
+}
+
+function clearRun(conversationId: string): void {
+  getBus().db().prepare('DELETE FROM agent_runs WHERE conversation_id = ?').run(conversationId);
+}
+
+/**
+ * On startup: runs still recorded were cut off by a restart. Say so in the
+ * thread and resume each agent in its own session, so it keeps its work.
+ */
+export function resumeInterruptedRuns(): number {
+  const db = getBus().db();
+  const rows = db.prepare('SELECT conversation_id, role_id, session_id, model, seen_upto FROM agent_runs').all() as { conversation_id: string; role_id: string; session_id: string | null; model: string | null; seen_upto: number }[];
+  for (const r of rows) {
+    clearRun(r.conversation_id);
+    if (!getConversation(db, r.conversation_id) || !getRole(db, r.role_id)) continue;
+    const name = getRole(db, r.role_id)!.name;
+    emitMessage(addMessage(db, r.conversation_id, r.role_id, `${name} was interrupted when AI Brain restarted. Resuming where they left off…`, 'error', { interrupted: true }));
+    // the interrupted run had taken in everything up to seen_upto: mark it seen so it is not answered twice
+    if (r.session_id) saveSession(db, r.role_id, r.conversation_id, r.session_id, r.seen_upto);
+    const note = r.session_id
+      ? 'You were interrupted by an app restart. Continue exactly where you left off: finish your task, then post your reply (summary, hand-offs) as you intended.'
+      : undefined;
+    const prev = queues.get(r.conversation_id) ?? Promise.resolve();
+    queues.set(
+      r.conversation_id,
+      prev.then(async () => {
+        const posted = note ? await runTurn(r.role_id, r.conversation_id, r.model ?? undefined, note) : await runTurn(r.role_id, r.conversation_id, r.model ?? undefined);
+        // continue any hand-off the resumed reply makes, as a normal turn would
+        if (posted) respond(r.conversation_id, posted);
+      }).catch((err) => console.error(`resume failed in ${r.conversation_id}: ${(err as Error).message}`)),
+    );
+  }
+  return rows.length;
+}
