@@ -40,7 +40,7 @@ import { ptyGroups, shellInfo, stillOurs, ttyGroups, type ShellInfo } from './pt
 import { NEEDS_YOU_MAX_MS, SessionStates, type SessionView, type StatusEntry } from './session-state.js';
 import { suggestVerticals } from './vertical-suggest.js';
 
-const PORT = Number(process.env.PORT ?? 7890);
+const PORT = Number(process.env.PORT ?? 7900);
 // Bind loopback by DEFAULT so the daemon (incl. the unauthenticated overlay
 // routes) is not reachable from the LAN. Exposing it is an explicit opt-in:
 // set HOST=0.0.0.0 (all interfaces) or a specific IP.
@@ -445,7 +445,7 @@ function projectRoot(projectId: string): string | null {
   return row?.root_path ?? null;
 }
 
-/** Run the kit installer (`kankan init`) on a folder, registering it with THIS
+/** Run the kit installer (`brain init`) on a folder, registering it with THIS
  *  daemon (DAEMON_URL from our own PORT). Shared by /project/new and /vertical. */
 function runInit(root: string) {
   return execFileAsync('sh', [INIT_SCRIPT, root], { env: { ...process.env, DAEMON_URL: `http://localhost:${PORT}` } });
@@ -876,7 +876,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const root = url.searchParams.get('root');
     if (!root) return json(res, 400, { error: 'root required' });
     // create=0 → look up only (hooks use this so transient cwds, e.g. worktrees,
-    // never spawn junk projects). Default creates, for `kankan init` / the MCP tool.
+    // never spawn junk projects). Default creates, for `brain init` / the MCP tool.
     if (url.searchParams.get('create') === '0') {
       const found = board.findProject(db, root);
       return json(res, 200, found ? { project_id: found.id, name: found.name } : { project_id: null });
@@ -887,7 +887,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   if (method === 'GET' && pathname === '/projects') {
     // Show projects that are deliberately set up: they have cards OR a .mcp.json
-    // at their root (what `kankan init` writes). Stray cwds (neither) stay hidden.
+    // at their root (what `brain init` writes). Stray cwds (neither) stay hidden.
     const rows = db
       .prepare(
         `SELECT p.id, p.name, p.root_path AS root, p.parent_id,
@@ -908,7 +908,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const { stdout } = await execFileAsync('osascript', [
         '-e',
-        'POSIX path of (choose folder with prompt "Select or create a project folder for kankanban")',
+        'POSIX path of (choose folder with prompt "Select or create a project folder for AI Brain")',
       ]);
       const path = stdout.trim();
       return json(res, 200, path ? { path } : { cancelled: true });
@@ -956,7 +956,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const c = classifyVertical(root, workspace.root_path);
     if (c.kind === 'skip') kit = `skipped: folder is inside another repo (${c.top})`;
     else if (c.kind === 'install') {
-      // Separate repo → install the kit like `kankan init`. init registers the
+      // Separate repo → install the kit like `brain init`. init registers the
       // folder as a top-level project, which createVertical then adopts. If it
       // fails partway it may leave that stray top-level project behind.
       try {

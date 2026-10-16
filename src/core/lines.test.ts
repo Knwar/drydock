@@ -53,7 +53,7 @@ function fixtureRepo(t: TestContext): string {
   return repo;
 }
 
-/** kankan worktree add <id>, then commit `files` in the card worktree. */
+/** brain worktree add <id>, then commit `files` in the card worktree. */
 function buildCard(repo: string, id: string, files: Record<string, string>) {
   if (!git(repo, 'branch', '--list', `card/${id}`)) wt(repo, 'add', id);
   const tree = join(repo, '.trees', id);

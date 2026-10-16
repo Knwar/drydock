@@ -35,15 +35,15 @@ Any card touching shared/central files (package manifests, routing, DI container
 
 1. **Pick**: `get_next_card` (it respects `depends_on`). Discuss requirements with the user, then write the agreed spec into the card with `update_task` BEFORE any building — both `requirements` (description) and `subtasks` (acceptance criteria: small, verifiable steps the builder checks off). `move_task → queued` once it's ready for dispatch.
 2. **Dispatch**: create the isolation worktree, then record the assignment, then spawn the builder:
-   - `kankan worktree add <id>` (creates `.trees/<id>` on branch `card/<id>`)
+   - `brain worktree add <id>` (creates `.trees/<id>` on branch `card/<id>`)
    - `assign_card(task_id, <agent label>, .trees/<id>, card/<id>)` — pass a **team member's name/id** as the agent (see `get_team`) and the card picks up that persona's `skill`. The assign response and the card carry the resolved `skill`.
    - Spawn `builder` with: card id, the full requirements text, the worktree path, **and, if the card has a `skill`, that skill name** so the builder loads it.
 3. **Parallelism**: dispatch two builders at once only when their cards have disjoint `depends_on` AND disjoint file scope — spawn both Task calls in a single message so they run concurrently. Never two builders in one worktree.
 4. **Review**: when a card reaches `in_review`, get the real diff yourself — `git -C .trees/<id> diff main...card/<id>` — and spawn `reviewer` with: card id, requirements, that diff, and the worktree path. The reviewer judges the diff, never the builder's self-report.
 5. **Route the verdict** (your judgment):
-   - **pass** → `kankan worktree merge <id>` (merges `card/<id>` into main and cleans up), then `move_task → done`. If the merge conflicts, resolve it in the main checkout like any merge conflict — the worktree and branch stay until it's resolved.
+   - **pass** → `brain worktree merge <id>` (merges `card/<id>` into main and cleans up), then `move_task → done`. If the merge conflicts, resolve it in the main checkout like any merge conflict — the worktree and branch stay until it's resolved.
    - **fail** → fold the findings into the card's requirements (`update_task`), `move_task → in_progress`, redispatch `builder` into the same worktree (do NOT remove it).
-   - Hard cap: 2 review rounds. After a second fail, stop and surface the findings to the user. Abandoning a card: `kankan worktree remove <id> --force`.
+   - Hard cap: 2 review rounds. After a second fail, stop and surface the findings to the user. Abandoning a card: `brain worktree remove <id> --force`.
 6. **Blockers**: a builder that hits a decision it can't make (ambiguous/contradictory spec, a destructive action to confirm, a missing secret, an unresolved architectural fork) calls `raise_blocker` and stops — the card stays put but jumps to the top of Attention flagged `blocked`. Get the human's decision, then clear it: `resolve_blocker` after folding the answer into the card's `requirements`, or `redirect_task` for a new direction, or just re-dispatch the builder (`assign_card`) — the last two clear the flag automatically.
 
 ## Workspace mode (projects with verticals)
@@ -83,11 +83,11 @@ blocker instead of guessing.
 **Monitoring**: `get_workspace_summary` (not `get_board` per vertical). A board in
 `needs_you` has a session waiting on the human: tell the user which vertical.
 
-**Merging**: each vertical merges its own cards (`kankan worktree merge`; merges are
+**Merging**: each vertical merges its own cards (`brain worktree merge`; merges are
 serialized by a lock). While verticals are active, nobody edits files directly in
 the main checkout: all changes go through worktrees.
 A merge conflict is resolved in the card's own worktree: merge the current main
-branch into `card/<id>` there, fix, commit, then re-run `kankan worktree merge`.
+branch into `card/<id>` there, fix, commit, then re-run `brain worktree merge`.
 
 ## Rules
 

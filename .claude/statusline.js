@@ -9,7 +9,7 @@ import { join } from 'node:path';
 
 const THROTTLE_MS = 120_000;
 const STATE = join(tmpdir(), 'knwr-usage-last.json');
-const DAEMON = process.env.DAEMON_URL ?? 'http://localhost:7890';
+const DAEMON = process.env.DAEMON_URL ?? 'http://localhost:7900';
 
 let raw = '';
 for await (const chunk of process.stdin) raw += chunk;

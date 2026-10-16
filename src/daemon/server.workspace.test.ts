@@ -65,7 +65,7 @@ describe('daemon workspace/vertical routes', () => {
     wsRoot = join(dir, 'workspace');
     vRoot = join(wsRoot, 'api');
     mkdirSync(vRoot, { recursive: true });
-    // a set-up workspace (what `kankan init` writes) → visible in /projects
+    // a set-up workspace (what `brain init` writes) → visible in /projects
     writeFileSync(join(wsRoot, '.mcp.json'), '{}');
     const res = await get(`/project?root=${encodeURIComponent(wsRoot)}`);
     workspaceId = ((await res.json()) as { project_id: string }).project_id;

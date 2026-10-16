@@ -4,7 +4,7 @@
 # Adapts to what's already there — appends and merges, never skips a
 # needed piece and never overwrites user content. Idempotent.
 #
-# Update mode (KANKAN_UPDATE=1, via `kankan update`): re-sync kit-owned files
+# Update mode (KANKAN_UPDATE=1, via `brain update`): re-sync kit-owned files
 # into a project that's already set up — overwrites the files users don't edit
 # (hooks, agents, statusline) and refreshes the CLAUDE.md protocol block.
 set -e
@@ -12,7 +12,7 @@ set -e
 KNWR_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="$1"
 NAME="${2:-$(basename "${TARGET:-}")}"
-DAEMON_URL="${DAEMON_URL:-http://localhost:7890}"
+DAEMON_URL="${DAEMON_URL:-http://localhost:7900}"
 UPDATE="${KANKAN_UPDATE:-}"
 
 if [ -z "$TARGET" ]; then
@@ -122,7 +122,7 @@ if command -v curl > /dev/null; then
   fi
 fi
 
-[ -n "$UPDATE" ] && echo "kankan updated in $TARGET" || echo "kankan ready in $TARGET"
+[ -n "$UPDATE" ] && echo "brain updated in $TARGET" || echo "kankan ready in $TARGET"
 [ -n "$installed" ] && echo "  installed:$installed"
 [ -n "$updated" ]   && echo "  updated:$updated"
 [ -n "$merged" ]    && echo "  merged into existing:$merged"

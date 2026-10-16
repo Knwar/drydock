@@ -5,7 +5,7 @@
 //
 //   node test/overlay/filters.check.mjs
 //
-// Env: PORT (default 7968; never 7890), CHROME (browser binary; default macOS Google Chrome),
+// Env: PORT (default 7968; never 7890 or 7900), CHROME (browser binary; default macOS Google Chrome),
 // PLAYWRIGHT_CORE (path to a playwright-core package; default: resolved from the repo, else
 // the npx cache: `npx playwright-core --version` fills it), OUT (screenshot dir; none by default).
 import { createRequire } from 'node:module';
@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const PORT = Number(process.env.PORT ?? 7968);
-if (PORT === 7890) throw new Error('refusing port 7890 (the live daemon)');
+if (PORT === 7890 || PORT === 7900) throw new Error('refusing a live daemon port (7890 kankanban, 7900 AI Brain)');
 const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const OUT = process.env.OUT ?? null;
 if (OUT) mkdirSync(OUT, { recursive: true });

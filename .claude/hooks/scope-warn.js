@@ -20,7 +20,7 @@ if (!vertical?.parent_id || !vertical.root_path) process.exit(0);
 
 const abs = isAbsolute(raw) ? raw : resolve(String(data.cwd ?? process.cwd()), raw);
 let target = abs;
-// a kankan worktree path maps back to the repo path it mirrors
+// a brain worktree path maps back to the repo path it mirrors
 const m = target.match(/^(.*?)\/\.trees\/[^/]+\/(.*)$/);
 if (m) target = `${m[1]}/${m[2]}`;
 

@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
-const DAEMON = process.env.DAEMON_URL ?? 'http://localhost:7890';
+const DAEMON = process.env.DAEMON_URL ?? 'http://localhost:7900';
 
 export async function readStdin() {
   let raw = '';
@@ -33,7 +33,7 @@ export async function api(method, path, body) {
  * A KANKAN_PROJECT_ID env binding wins when the daemon knows it (several
  * sessions can share one cwd); an unknown id or a down daemon falls back to
  * the cwd lookup. create=0: hooks must never create a project — only the
- * orchestrator / `kankan init` do.
+ * orchestrator / `brain init` do.
  */
 export async function resolveProject(cwd) {
   const envId = process.env.KANKAN_PROJECT_ID;
@@ -51,7 +51,7 @@ export async function projectIdFor(cwd) {
 }
 
 /**
- * Resolve { projectId, cardId } for a cwd, mapping a kankan worktree back to
+ * Resolve { projectId, cardId } for a cwd, mapping a brain worktree back to
  * its parent project. Inside .../.trees/<id>/... the card is <id> and (absent
  * an env binding) the project is the parent repo; otherwise the project owns
  * the cwd directly. Never creates a project — so builder activity surfaces on

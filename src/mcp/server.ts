@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-const DAEMON_URL = process.env.DAEMON_URL ?? 'http://localhost:7890';
+const DAEMON_URL = process.env.DAEMON_URL ?? 'http://localhost:7900';
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
@@ -169,7 +169,7 @@ server.registerTool(
   'redirect_task',
   {
     description:
-      'Abandon a card’s current approach and reset it for a fresh start: clears the assignment/worktree/branch, resets the review-round counter and acceptance criteria, and returns it to the backlog. Pass requirements to set the new direction. Use when the approach is wrong (not just buggy) — then remove the stale worktree (kankan worktree remove <id> --force) and re-plan before redispatching.',
+      'Abandon a card’s current approach and reset it for a fresh start: clears the assignment/worktree/branch, resets the review-round counter and acceptance criteria, and returns it to the backlog. Pass requirements to set the new direction. Use when the approach is wrong (not just buggy) — then remove the stale worktree (brain worktree remove <id> --force) and re-plan before redispatching.',
     inputSchema: { task_id: z.string(), requirements: z.string().optional(), note: z.string().optional() },
   },
   ({ task_id, ...rest }) => api('POST', `/task/${task_id}/redirect`, rest),

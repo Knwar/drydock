@@ -5,7 +5,7 @@
 //   1. the card's merge commit ("Merge card/<id>"): diff against its first parent
 //      is exactly what the card brought in (final numbers);
 //   2. the unmerged card branch: `<base>...card/<id>`, where <base> is the branch
-//      the worktree was created from (recorded by `kankan worktree add` in the
+//      the worktree was created from (recorded by `brain worktree add` in the
 //      git config key branch.card/<id>.kankanbase; falls back to the repo's
 //      current branch for worktrees created before it was recorded).
 // Lockfiles, dist/, build/, node_modules/ and binary files are not counted.
@@ -96,7 +96,7 @@ export async function mergeCommit(repo: string, taskId: string): Promise<string 
   return null;
 }
 
-/** The branch a card worktree was created from, as recorded by `kankan worktree add`. */
+/** The branch a card worktree was created from, as recorded by `brain worktree add`. */
 async function recordedBase(repo: string, branch: string): Promise<string | null> {
   try {
     return (await git(repo, 'config', '--get', `branch.${branch}.kankanbase`)).trim() || null;
@@ -137,7 +137,7 @@ export async function cardLines(
   }
 }
 
-// ── history recount (`kankan recount-lines`) ────────────────────────
+// ── history recount (`brain recount-lines`) ────────────────────────
 
 export interface RecountRow {
   task_id: string;

@@ -97,7 +97,7 @@ describe('hook project resolution', () => {
     }
   });
 
-  it('kankan init installs scope-warn.js and its PostToolUse entry', () => {
+  it('brain init installs scope-warn.js and its PostToolUse entry', () => {
     const target = mkdtempSync(join(tmpdir(), 'kankan-init-'));
     try {
       const script = join(HOOKS, '..', '..', 'scripts', 'init-project.sh');
@@ -353,7 +353,7 @@ describe('init-project.sh: first commit + registration', { timeout: 180_000 }, (
     );
   });
 
-  it('kankan update refreshes the protocol block (workspace mode) and the kit agents', () => {
+  it('brain update refreshes the protocol block (workspace mode) and the kit agents', () => {
     const target = join(tmp, 'updated');
     mkdirSync(target);
     assert.equal(init(target).status, 0);

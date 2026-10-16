@@ -1,7 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(kankan worktree:*)",
+      "Bash(brain worktree:*)",
       "Bash(node scripts/worktree.js:*)"
     ]
   },

@@ -1,4 +1,4 @@
-// `kankan recount-lines [--dry-run] [--db <path>]`: recompute every card's line
+// `brain recount-lines [--dry-run] [--db <path>]`: recompute every card's line
 // counts from git history (merge commits, else live card branches) and flag the
 // rest `estimated`. Explicit and idempotent; --dry-run opens the database
 // read-only and prints what would change without writing anything.

@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// kankan CLI
-//   kankan init [dir] [name]   set up a project (auto-starts the daemon)
-//   kankan update [dir]        re-sync kit files into a set-up project (overwrites kit-owned files)
-//   kankan info                project details for this folder
-//   kankan start               start daemon + show project details (set-up folders only)
-//   kankan stop                stop the daemon (set-up folders only)
-//   kankan restart             restart + show project details (set-up folders only)
-//   kankan worktree add|remove|merge <id> [--force]   per-card git worktree, run in the project
-//   kankan recount-lines [--dry-run] [--db <path>]    recompute lines written per card from git history
-//   kankan daemon start|stop|restart|status|run   machine-level daemon management
+// brain CLI (AI Brain, forked from kankanban)
+//   brain init [dir] [name]   set up a project (auto-starts the daemon)
+//   brain update [dir]        re-sync kit files into a set-up project (overwrites kit-owned files)
+//   brain info                project details for this folder
+//   brain start               start daemon + show project details (set-up folders only)
+//   brain stop                stop the daemon (set-up folders only)
+//   brain restart             restart + show project details (set-up folders only)
+//   brain worktree add|remove|merge <id> [--force]   per-card git worktree, run in the project
+//   brain recount-lines [--dry-run] [--db <path>]    recompute lines written per card from git history
+//   brain daemon start|stop|restart|status|run   machine-level daemon management
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -16,9 +16,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const DAEMON_URL = process.env.DAEMON_URL ?? 'http://localhost:7890';
-const PORT = new URL(DAEMON_URL).port || '7890';
-const DATA_DIR = join(homedir(), '.kankan');
+const DAEMON_URL = process.env.DAEMON_URL ?? 'http://localhost:7900';
+const PORT = new URL(DAEMON_URL).port || '7900';
+const DATA_DIR = join(homedir(), '.ai-brain');
 const PID_FILE = join(DATA_DIR, 'daemon.pid');
 const LOG_FILE = join(DATA_DIR, 'daemon.log');
 
@@ -133,7 +133,7 @@ async function fetchJson(path) {
 async function info(dir) {
   console.log(`root:      ${dir}`);
   if (!(await up())) {
-    console.log(`daemon:    down — start it with: kankan start`);
+    console.log(`daemon:    down — start it with: brain start`);
     return;
   }
   const project = await fetchJson(`/project?root=${encodeURIComponent(dir)}`);
@@ -157,7 +157,7 @@ async function main() {
   if (['info', 'start', 'stop', 'restart'].includes(cmd)) {
     const dir = process.cwd();
     if (!isSetup(dir)) {
-      console.error(`this folder is not set up for kankan — run: kankan init`);
+      console.error(`this folder is not set up for AI Brain — run: brain init`);
       process.exit(1);
     }
     if (cmd === 'stop') {
@@ -186,7 +186,7 @@ async function main() {
   if (cmd === 'update') {
     const target = resolve(rest[0] ?? process.cwd());
     if (!isSetup(target)) {
-      console.error(`this folder is not set up for kankan — run: kankan init`);
+      console.error(`this folder is not set up for AI Brain — run: brain init`);
       process.exit(1);
     }
     const res = spawnSync('sh', [join(ROOT, 'scripts', 'init-project.sh'), target], {
@@ -240,14 +240,14 @@ async function main() {
   }
 
   console.log(`usage:
-  kankan init [dir] [name]                 set up a project (auto-starts daemon)
-  kankan update [dir]                      re-sync kit files into a set-up project
-  kankan info                              project details for this folder
-  kankan start|stop|restart                daemon + project details (set-up folders)
-  kankan worktree add|remove|merge <id>    per-card git worktree, run in the project
-  kankan recount-lines [--dry-run]         recompute lines written per card from git history
-  kankan daemon start|stop|restart|status  machine-level daemon management
-  kankan daemon run                        run daemon in the foreground`);
+  brain init [dir] [name]                 set up a project (auto-starts daemon)
+  brain update [dir]                      re-sync kit files into a set-up project
+  brain info                              project details for this folder
+  brain start|stop|restart                daemon + project details (set-up folders)
+  brain worktree add|remove|merge <id>    per-card git worktree, run in the project
+  brain recount-lines [--dry-run]         recompute lines written per card from git history
+  brain daemon start|stop|restart|status  machine-level daemon management
+  brain daemon run                        run daemon in the foreground`);
 }
 
 await main();

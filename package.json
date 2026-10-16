@@ -1,37 +1,15 @@
 {
-  "name": "kankanban",
+  "name": "ai-brain",
   "version": "0.1.0",
-  "description": "A live Kanban board that orchestrates Claude Code — plans features into cards and runs builder/reviewer subagents in isolated git worktrees.",
-  "keywords": [
-    "claude-code",
-    "claude",
-    "kanban",
-    "orchestration",
-    "agents",
-    "subagents",
-    "mcp",
-    "model-context-protocol",
-    "cli",
-    "git-worktree",
-    "ai",
-    "automation"
-  ],
+  "description": "AI Brain: a second brain and project studio. Plans projects, designs systems (C4), and runs a team of Claude Code agents on a live board. Forked from kankanban.",
   "license": "Apache-2.0",
   "author": "Kanwar Singh <hello@knwar.com> (https://knwar.com)",
-  "homepage": "https://github.com/Knwar/kankanban#readme",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Knwar/kankanban.git"
-  },
-  "bugs": {
-    "url": "https://github.com/Knwar/kankanban/issues"
-  },
   "engines": {
     "node": ">=20"
   },
   "type": "module",
   "bin": {
-    "kankan": "bin/kankan.js"
+    "brain": "bin/brain.js"
   },
   "files": [
     "bin",
@@ -48,10 +26,11 @@
     "test": "node --import tsx --test \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
     "test:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-exclude=\"**/*.test.ts\" --test-coverage-exclude=\"src/overlay/**\" \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "postinstall": "node scripts/fix-node-pty.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "better-sqlite3": "^12.10.0",
     "tsx": "^4.22.4",
     "ws": "^8.21.0",
@@ -67,5 +46,6 @@
   },
   "optionalDependencies": {
     "node-pty": "^1.1.0"
-  }
+  },
+  "private": "true"
 }

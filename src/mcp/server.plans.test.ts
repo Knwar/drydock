@@ -148,7 +148,7 @@ describe('MCP plan-draft tools', () => {
     assert.match(bad, /unknown_node/);
 
     const malformed = await fail('edit_plan', { plan_id: id, ops: [{ op: 'explode' }] });
-    assert.match(malformed, /No matching discriminator/);
+    assert.match(malformed, /No matching discriminator|Invalid discriminator value/);
 
     assert.match(await fail('get_plan', { plan_id: 'nope' }), /unknown draft/);
     assert.match(await fail('preview_plan_commit', { plan_id: 'nope' }), /no such draft/);
