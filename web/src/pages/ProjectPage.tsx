@@ -45,6 +45,7 @@ interface Detail {
   rag: string | null;
   requirementsFinal: boolean;
   requirementsVersion: number | null;
+  requirementsOpen: string[];
   team: { role_id: string; kind: string; reason: string | null; name: string; initials: string; tone: string; skill: string | null; scope: string }[];
   recommendation: Recommendation | null;
   last_activity: number;
@@ -73,6 +74,7 @@ interface GateAction {
   disabled?: boolean;
   open?: 'team';
   danger?: boolean;
+  warning?: string;
 }
 
 function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: (id: string) => void; openTeam: () => void }) {
@@ -131,6 +133,7 @@ function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: 
       confirm: 'Mark requirements final',
       hint: 'Next: pick the team, then the design starts.',
       path: `${base}/requirements/final`,
+      warning: p.requirementsOpen.length ? `Still marked “To discuss”: ${p.requirementsOpen.join(', ')}. The Architect will have to guess these; consider filling them in with the Main agent first.` : undefined,
       steps: [`Requirements${p.requirementsVersion ? ` v${p.requirementsVersion}` : ''} are locked. You can reopen them later from the Requirements tab.`, 'You get a recommended team: always Quality control and a Security Champion, plus specialists the Main agent picks from the requirements.', 'Nothing is designed or built until you start the design.'],
     });
   } else if (p.stage === 'requirements') {
@@ -185,6 +188,7 @@ function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: 
               <select className="input" style={{ height: 32, color: 'var(--text)' }} value={reason} onChange={(e) => setReason(e.target.value as any)}><option value="completed">Completed</option><option value="cancelled">Cancelled</option></select>
             </label>
           )}
+          {confirming.warning && <div className="banner t-a" style={{ fontSize: 12.5 }}>{confirming.warning}</div>}
           {needs && <div className="banner t-a" style={{ fontSize: 12.5 }}>{error} Confirming adds {ROLE_LABEL[needs] ?? needs} to your team first.</div>}
           {error && !needs && <div className="error">{error}</div>}
           <div style={{ display: 'flex', gap: 8 }}>
@@ -411,37 +415,33 @@ function SystemDesign({ p, focus, openConversation }: { p: Detail; focus: string
         <span className="pill t-n" style={{ marginLeft: 'auto' }}>{design.data.finalVersion ? `v${design.data.finalVersion} final` : 'draft'}</span>
         {designChannel && <button className="btn sm primary" onClick={() => openConversation(designChannel.id)}>Discuss with Architect</button>}
       </div>
-      <div className="row">
-        <section className="panel" style={{ flex: '999 1 480px', minWidth: 0, padding: 0, gap: 0 }}>
-          <div style={{ padding: '14px 18px 0' }}>
-            <div style={{ fontWeight: 700, fontSize: 15 }}>{level} — {focus ? byId.get(focus)?.name : p.name}</div>
-            <div className="muted" style={{ fontSize: 12 }}>C4 · generated from the design model · {elements.length} elements, {relations.length} relations</div>
-          </div>
-          <Diagram elements={elements} relations={relations} focus={focus} selected={selected} onSelect={setSelected} onDrill={(id) => navigate(`${base}/${id}`)} focusName={focus ? byId.get(focus)?.name ?? '' : p.name} />
-          <Legend />
-        </section>
-        <aside className="panel" style={{ flex: '1 1 240px', maxWidth: 300, minWidth: 0 }}>
-          <div className="eyebrow">Selected</div>
-          {sel ? (
-            <>
-              <div><div style={{ fontSize: 18, fontWeight: 700 }}>{sel.name}</div><div className="mono muted" style={{ fontSize: 11.5 }}>[{sel.kind}{sel.technology ? `: ${sel.technology}` : ''}]</div></div>
-              {sel.description && <div style={{ fontSize: 13 }}>{sel.description}</div>}
-              {([['Responsibilities', sel.responsibilities], ['Interfaces', sel.interfaces], ['Risks', sel.risks], ['Status', sel.status]] as const).filter(([, v]) => v).map(([k, v]) => (
-                <div key={k} className="field"><span className="muted">{k}</span><span>{v}</span></div>
-              ))}
-              {rels.length > 0 && (
-                <div className="field">
-                  <span className="muted">Connections</span>
-                  {rels.map((r) => <span key={r.id} style={{ fontSize: 12.5 }}>{r.source === sel.id ? '→' : '←'} {byId.get(r.source === sel.id ? r.target : r.source)?.name}: {r.label}{r.technology ? ` [${r.technology}]` : ''}</span>)}
-                </div>
-              )}
-              {elements.some((e) => e.parent_id === sel.id) && <button className="btn primary" onClick={() => navigate(`${base}/${sel.id}`)}>Open components ⤵</button>}
-            </>
-          ) : (
-            <div className="muted" style={{ fontSize: 13 }}>Select an element to see its details. Elements with components open when clicked.</div>
-          )}
-        </aside>
-      </div>
+      <section className="panel design-panel" style={{ padding: 0, gap: 0 }}>
+        <div style={{ padding: '14px 18px 0' }}>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>{level} — {focus ? byId.get(focus)?.name : p.name}</div>
+          <div className="muted" style={{ fontSize: 12 }}>C4 · generated from the design model · click an element for details, double-click to open its components</div>
+        </div>
+        <Diagram elements={elements} relations={relations} focus={focus} selected={selected} onSelect={setSelected} onDrill={(id) => navigate(`${base}/${id}`)} focusName={focus ? byId.get(focus)?.name ?? '' : p.name} />
+        <Legend />
+        {sel && (
+          <aside className="design-inspector" aria-label={`${sel.name} details`}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 17, fontWeight: 700 }}>{sel.name}</div><div className="mono muted" style={{ fontSize: 11.5 }}>[{sel.kind}{sel.technology ? `: ${sel.technology}` : ''}]</div></div>
+              <button className="icon-btn" style={{ width: 28, height: 28, flex: '0 0 28px', borderRadius: 8, fontSize: 13 }} aria-label="Close details" title="Close details" onClick={() => setSelected(null)}>✕</button>
+            </div>
+            {sel.description && <div style={{ fontSize: 13 }}>{sel.description}</div>}
+            {([['Responsibilities', sel.responsibilities], ['Interfaces', sel.interfaces], ['Risks', sel.risks], ['Status', sel.status]] as const).filter(([, v]) => v).map(([k, v]) => (
+              <div key={k} className="field"><span className="muted">{k}</span><span>{v}</span></div>
+            ))}
+            {rels.length > 0 && (
+              <div className="field">
+                <span className="muted">Connections</span>
+                {rels.map((r) => <span key={r.id} style={{ fontSize: 12.5 }}>{r.source === sel.id ? '→' : '←'} {byId.get(r.source === sel.id ? r.target : r.source)?.name}: {r.label}{r.technology ? ` [${r.technology}]` : ''}</span>)}
+              </div>
+            )}
+            {elements.some((e) => e.parent_id === sel.id) && <button className="btn primary" onClick={() => navigate(`${base}/${sel.id}`)}>Open components ⤵</button>}
+          </aside>
+        )}
+      </section>
     </>
   );
 }
@@ -727,7 +727,7 @@ function Docs({ p }: { p: Detail }) {
   );
 }
 
-export function ProjectPage({ id, tab, sub, roles, openConversation, newThread }: { id: string; tab: string; sub: string | null; roles: Role[]; openConversation: (id: string) => void; newThread: () => void }) {
+export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, side }: { id: string; tab: string; sub: string | null; roles: Role[]; openConversation: (id: string) => void; newThread: () => void; side: { open: boolean; toggle: () => void } }) {
   const detail = useApi<Detail>(`/api/projects/${id}`, refresh(id));
   const p = detail.data;
   const [teamOpen, setTeamOpen] = useState(false);
@@ -757,17 +757,22 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread }
           {p.description && <div className="muted" style={{ fontSize: 13 }}>{p.description}</div>}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-          <StageSteps stage={p.stage} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <StageSteps stage={p.stage} />
+            <button className={`btn sm${side.open ? ' on' : ''}`} aria-pressed={side.open} onClick={side.toggle} title={side.open ? 'Hide the chat panel' : tab ? 'Show the chat panel over this page' : 'Show the chat panel'}>
+              <Icon name="chat" size={14} /> {side.open ? 'Hide chat' : 'Chat'}
+            </button>
+          </div>
           <Gate p={p} openConversation={openConversation} openTeam={() => setTeamOpen(true)} />
         </div>
       </div>
-      <div role="tablist" className="tabs">
+      <nav aria-label="Project sections" className="tabs">
         {TABS.map(([t, label]) => (
-          <a key={t} role="tab" aria-selected={tab === t} className={`tab${tab === t ? ' on' : ''}`} href={href(t ? `${base}/${t}` : base)} onClick={go(t ? `${base}/${t}` : base)}>
+          <a key={t} aria-current={tab === t ? 'page' : undefined} className={`tab${tab === t ? ' on' : ''}`} href={href(t ? `${base}/${t}` : base)} onClick={go(t ? `${base}/${t}` : base)}>
             {label}
           </a>
         ))}
-      </div>
+      </nav>
       {tab === '' && <Overview p={p} openConversation={openConversation} newThread={newThread} />}
       {tab === 'requirements' && <Requirements p={p} />}
       {tab === 'design' && <SystemDesign p={p} focus={sub} openConversation={openConversation} />}

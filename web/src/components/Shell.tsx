@@ -220,10 +220,11 @@ export function StageSteps({ stage }: { stage: string }) {
   const order = ['idea', 'create', 'requirements', 'design', 'plan', 'build'];
   const cur = order.indexOf(stage);
   return (
-    <div className="steps" aria-label={`Stage: ${stage}`}>
+    <div className="steps" aria-label={`Stage: ${stage}, ${cur + 1} of ${order.length}`}>
       {order.map((s, i) => (
-        <span key={s} title={s} className={`step${i < cur ? ' done' : i === cur ? ' cur' : ''}`} />
+        <span key={s} title={s[0].toUpperCase() + s.slice(1)} className={`step${i < cur ? ' done' : i === cur ? ' cur' : ''}`} />
       ))}
+      {cur >= 0 && <span className="muted" style={{ fontSize: 11.5, marginLeft: 4 }}>{cur + 1} of {order.length}</span>}
     </div>
   );
 }

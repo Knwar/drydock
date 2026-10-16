@@ -72,7 +72,7 @@ export function DailyCard({ edition, generating, compact = false }: { edition: E
         <div className="daily-lead">
           <div className="daily-headline">{edition.headline}</div>
           {edition.summary && <p style={{ margin: 0, color: 'var(--text2)', lineHeight: 1.6 }}>{edition.summary}</p>}
-          {edition.focus && <span className="pill t-b" style={{ alignSelf: 'flex-start', fontSize: 12 }}>Focus: {edition.focus}</span>}
+          {edition.focus && <span className="pill t-b" style={{ alignSelf: 'flex-start', fontSize: 12, whiteSpace: 'normal' }}>Focus: {edition.focus}</span>}
         </div>
         {!compact &&
           edition.sections.map((s) => (

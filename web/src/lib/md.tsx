@@ -5,7 +5,7 @@ import { Fragment, type ReactNode } from 'react';
 
 function inline(text: string, key = 0): ReactNode[] {
   const out: ReactNode[] = [];
-  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*\s][^*]*\*)|(\[[^\]]+\]\((https?:\/\/[^)\s]+)\))/g;
+  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*\s][^*]*\*|(?<![\w])_[^_\s][^_]*_(?![\w]))|(\[[^\]]+\]\((https?:\/\/[^)\s]+)\))/g;
   let last = 0;
   let m: RegExpExecArray | null;
   let i = key;

@@ -77,7 +77,7 @@ export function buildView(elements: Element[], relations: Relation[], focus: str
     neighbours: [...neighbours].map((id) => byId.get(id)!).filter(Boolean),
     edges: [...edges.values()].map((e) => {
       const full = [...e.labels].join('; ');
-      return { ...e, full, label: full.length > 30 ? full.slice(0, 29).trimEnd() + '…' : full, techLabel: [...e.tech].join(', ').slice(0, 30) || null };
+      return { ...e, full, label: full.length > 30 ? full.slice(0, 29).trimEnd() + '…' : full, techLabel: ((t) => (t.length > 30 ? t.slice(0, 29).trimEnd() + '…' : t))([...e.tech].join(', ')) || null };
     }),
     childCount,
   };
@@ -195,7 +195,7 @@ export function Diagram({ elements, relations, focus, selected, onSelect, onDril
   const scale = fit && avail > 0 ? Math.max(0.75, Math.min(1, avail / W)) : 1;
   return (
     <div className="c4-scroll" ref={boxRef}>
-      <button className="btn sm c4-zoom" onClick={() => setFit(!fit)} title={fit ? 'Show at full size' : 'Fit to width'}>{fit ? '100%' : 'Fit'}</button>
+      <button className="btn sm c4-zoom" onClick={() => setFit(!fit)} title={`Zoom ${Math.round(scale * 100)}%`}>{fit ? 'Actual size' : 'Fit to width'}</button>
       <div style={{ width: W * scale, height: H * scale, margin: '0 auto' }}>
       <div className="c4-canvas" style={{ width: W, height: H, transform: `scale(${scale})`, transformOrigin: '0 0' }}>
         {lay.boundary && (
@@ -233,14 +233,17 @@ export function Diagram({ elements, relations, focus, selected, onSelect, onDril
             key={n.el.id}
             className={`c4-node ${shapeClass(n.el.kind)}${n.out || n.el.kind === 'external' ? ' c4-out' : ''}${selected === n.el.id ? ' c4-sel' : ''}`}
             style={{ left: n.x + pad, top: n.y + pad, width: NODE_W, height: NODE_H }}
-            onClick={() => (n.drill && !n.out ? onDrill(n.el.id) : onSelect(n.el.id))}
+            onClick={() => onSelect(n.el.id)}
+            onDoubleClick={() => n.drill && !n.out && onDrill(n.el.id)}
             onFocus={() => onSelect(n.el.id)}
-            title={n.drill && !n.out ? `Open ${n.el.name} (${n.drill} components)` : n.el.name}
+            title={[n.el.name, n.el.description, n.drill && !n.out ? `Double-click to open its ${n.drill} components` : ''].filter(Boolean).join('\n\n')}
           >
             <span className="c4-name">{n.el.name}</span>
             <span className="c4-type mono">[{KIND_LABEL[n.el.kind]}{n.el.technology ? `: ${n.el.technology}` : ''}]</span>
-            <span className="c4-desc">{n.el.description}</span>
-            {n.drill > 0 && !n.out && <span className="c4-drill">Open {n.drill} ⤵</span>}
+            <span className={`c4-desc${n.drill > 0 && !n.out ? ' short' : ''}`}>{n.el.description}</span>
+            {n.drill > 0 && !n.out && (
+              <span className="c4-drill" role="link" onClick={(e) => (e.stopPropagation(), onDrill(n.el.id))}>Open {n.drill} ⤵</span>
+            )}
           </button>
         ))}
       </div>

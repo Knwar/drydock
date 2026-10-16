@@ -63,6 +63,7 @@ on('GET', '/api/projects/:id', (_q, res, _u, ctx, p) => {
     ...projectStatus(db, p.id),
     requirementsFinal: Boolean(latest?.final),
     requirementsVersion: latest?.version ?? null,
+    requirementsOpen: latest ? [...latest.markdown.matchAll(/^## (.+)\n+_To discuss\._/gm)].map((m) => m[1].trim()) : [],
     team: projectMembers(db, p.id),
     recommendation: getRecommendation(db, p.id),
     last_activity: lastActivity(db, p.id),
