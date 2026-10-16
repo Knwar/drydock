@@ -60,9 +60,10 @@ function waitForUp(base: string, exited: () => boolean, timeoutMs = START_TIMEOU
 /**
  * opts.env overrides the child env; a value of `undefined` DELETES that var.
  * opts.dbPath runs on that DB file instead of a fresh one (e.g. to restart on
- * the same DB); the caller owns it, stop() leaves it in place.
+ * the same DB); the caller owns it, stop() leaves it in place. `null` sets no
+ * DB_PATH at all, so the daemon resolves it from BRAIN_HOME's workspace.
  */
-export async function startDaemon(opts: { env?: Record<string, string | undefined>; dbPath?: string } = {}): Promise<TestDaemon> {
+export async function startDaemon(opts: { env?: Record<string, string | undefined>; dbPath?: string | null } = {}): Promise<TestDaemon> {
   const port = await freePort();
   const dbDir = mkdtempSync(join(tmpdir(), 'kankan-test-daemon-'));
   const env: Record<string, string | undefined> = {
@@ -73,7 +74,7 @@ export async function startDaemon(opts: { env?: Record<string, string | undefine
     KANKAN_AUTOPILOT: '0', // never type into a pty unless a test opts in
     ...opts.env,
     PORT: String(port),
-    DB_PATH: opts.dbPath ?? join(dbDir, 'board.db'),
+    DB_PATH: opts.dbPath === null ? undefined : (opts.dbPath ?? join(dbDir, 'board.db')),
   };
   for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
   const proc = spawn(process.execPath, ['--import', 'tsx', SERVER], {

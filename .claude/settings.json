@@ -81,6 +81,12 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Glob|Grep|LS|Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/boundary.js\"" }
+        ]
+      },
+      {
         "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-readonly.js\"" }

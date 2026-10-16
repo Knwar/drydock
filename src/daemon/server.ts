@@ -28,6 +28,8 @@ import * as snapshots from '../core/snapshots.js';
 import { agentHistory, type AgentHistoryOptions } from '../core/agent-history.js';
 import { layoutColumns, longestChain, validatePlan } from '../core/plan-graph.js';
 import { openDb } from '../core/db.js';
+import { handleApi } from '../brain/api.js';
+import { resolveDbPath } from '../brain/workspace.js';
 import { cardLines } from '../core/lines.js';
 import { cachedCodeVersion, readCodeVersion } from './code-version.js';
 import { parseCompare, withPrevious, type WindowedFilter, type WithPrevious } from '../core/compare.js';
@@ -45,7 +47,8 @@ const PORT = Number(process.env.PORT ?? 7900);
 // routes) is not reachable from the LAN. Exposing it is an explicit opt-in:
 // set HOST=0.0.0.0 (all interfaces) or a specific IP.
 const HOST = process.env.HOST ?? '127.0.0.1';
-const DB_PATH = process.env.DB_PATH ?? join(process.cwd(), 'data', 'board.db');
+// DB_PATH env wins (tests); else the workspace DB, else a bootstrap DB until onboarding.
+let DB_PATH = resolveDbPath();
 const OVERLAY_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'overlay');
 const INIT_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'init-project.sh');
 
@@ -54,7 +57,7 @@ const CODE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RUNNING_VERSION = await readCodeVersion(CODE_ROOT);
 const diskVersion = cachedCodeVersion(CODE_ROOT);
 
-const db = openDb(DB_PATH);
+let db = openDb(DB_PATH);
 const broadcaster = new Broadcaster();
 // live agent session state per project: memory only, never persisted; its
 // needs_you intervals are (wait_intervals). A restart closes the ones left open.
@@ -66,6 +69,17 @@ const states = new SessionStates((change) => {
     console.error(`wait interval not recorded: ${(err as Error).message}`);
   }
 });
+
+/** Point the daemon at another DB file (onboarding moves it into the workspace). */
+function switchDb(path: string): void {
+  if (path === DB_PATH) return;
+  const next = openDb(path);
+  db.close();
+  db = next;
+  DB_PATH = path;
+  waitTime.closeOpenWaits(db, Date.now(), NEEDS_YOU_MAX_MS);
+  console.log(`db switched to ${path}`);
+}
 
 // ── embedded terminal (on by default; KANKAN_TERMINAL=0 disables) ───
 // node-pty is an OPTIONAL native dep: the board runs fine without it, and a
@@ -812,7 +826,7 @@ async function readRawBody(req: IncomingMessage, max: number): Promise<Buffer> {
 }
 
 // ── agent avatars: uploaded images stored beside the DB ─────────────
-const AVATAR_DIR = join(dirname(DB_PATH), 'avatars');
+const avatarDir = () => join(dirname(DB_PATH), 'avatars');
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024; // 2 MB
 const AVATAR_NAME = /^[A-Za-z0-9_-]+\.(png|jpg|webp)$/;
 const AVATAR_TYPES: Record<string, { ext: string; matches: (b: Buffer) => boolean }> = {
@@ -830,7 +844,7 @@ const AVATAR_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg
 
 /** Delete an avatar file by stored name (ignores missing / malformed names). */
 function removeAvatarFile(name: string | null | undefined): void {
-  if (name && AVATAR_NAME.test(name)) rmSync(join(AVATAR_DIR, name), { force: true });
+  if (name && AVATAR_NAME.test(name)) rmSync(join(avatarDir(), name), { force: true });
 }
 
 const MIME: Record<string, string> = {
@@ -856,6 +870,19 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
   const { pathname } = url;
   const method = req.method ?? 'GET';
+
+  if (pathname.startsWith('/api/')) {
+    const handled = await handleApi(req, res, url, {
+      db: () => db,
+      dbPath: () => DB_PATH,
+      switchDb,
+      explicitDb: Boolean(process.env.DB_PATH),
+      broadcast: (msg) => broadcaster.sendAll(msg),
+      json,
+      readBody,
+    });
+    if (handled) return;
+  }
 
   if (method === 'GET' && pathname === '/config') {
     // token goes to loopback callers only (a LAN host could otherwise curl it),
@@ -2154,8 +2181,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!current) return json(res, 404, { error: `no such team member: ${id}` });
     const fileName = `${id}-${randomBytes(8).toString('hex')}.${type.ext}`;
     if (!AVATAR_NAME.test(fileName)) return json(res, 400, { error: 'invalid member id' });
-    mkdirSync(AVATAR_DIR, { recursive: true });
-    writeFileSync(join(AVATAR_DIR, fileName), bytes);
+    mkdirSync(avatarDir(), { recursive: true });
+    writeFileSync(join(avatarDir(), fileName), bytes);
     let updated;
     try {
       updated = board.setTeamAvatar(db, id, fileName);
@@ -2171,7 +2198,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const m = name.match(AVATAR_NAME);
     if (!m) return json(res, 404, { error: 'not found' });
     try {
-      const content = await readFile(join(AVATAR_DIR, name));
+      const content = await readFile(join(avatarDir(), name));
       res.writeHead(200, {
         'content-type': AVATAR_MIME[m[1]],
         'cache-control': 'no-cache',
