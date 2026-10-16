@@ -11,6 +11,7 @@ import { Icon } from './Icon';
 interface NeedsYou {
   approvals: { id: string; role: string; tool: string; summary: string; conversation: string | null }[];
   proposals: { message_id: number; conversation: string; title: string; reason: string | null }[];
+  secrets?: { message_id: number; conversation: string; name: string }[];
 }
 
 export function RightRail({ roles, conversations, open, onExpand, onHide }: { roles: Role[]; conversations: Conversation[]; open: (conversationId: string) => void; onExpand: () => void; onHide?: () => void }) {
@@ -23,7 +24,7 @@ export function RightRail({ roles, conversations, open, onExpand, onHide }: { ro
   const working = conversations.filter((c) => c.working);
   const unread = conversations.filter((c) => c.unread > 0);
   const n = needs.data;
-  const waiting = (n?.approvals.length ?? 0) + (n?.proposals.length ?? 0);
+  const waiting = (n?.approvals.length ?? 0) + (n?.proposals.length ?? 0) + (n?.secrets?.length ?? 0);
   const today = personal.data;
   const agenda = today
     ? [
@@ -61,6 +62,12 @@ export function RightRail({ roles, conversations, open, onExpand, onHide }: { ro
           <button key={a.id} className="rail-row" onClick={() => a.conversation && open(a.conversation)}>
             <span className="pill t-a">{a.tool}</span>
             <span className="label">{byId.get(a.role)?.name ?? a.role}: {a.summary}</span>
+          </button>
+        ))}
+        {n?.secrets?.map((x) => (
+          <button key={x.message_id} className="rail-row" onClick={() => open(x.conversation)}>
+            <span className="pill t-v">Key</span>
+            <span className="label mono">{x.name}</span>
           </button>
         ))}
         {n?.proposals.map((p) => (

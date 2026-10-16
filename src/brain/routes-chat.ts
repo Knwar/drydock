@@ -142,25 +142,29 @@ const wake = (id: string) => {
 };
 
 /** From the brain MCP server: an agent wants to run a tool that is not pre-allowed. */
-on('POST', '/api/approvals', async (req, res, _u, ctx) => {
-  const b = await ctx.readBody(req);
+/** Ask the user to allow something: an approval card in the conversation (or only in "Needs you"). Standing rules answer at once. */
+export function openApproval(ctx: ApiCtx, roleId: string, conversationId: string | null, tool: string, input: unknown): { id: string | null; status: string; note?: string } {
   const db = ctx.db();
-  const roleId = String(b?.role ?? '');
-  const tool = String(b?.tool ?? '');
-  if (!getRole(db, roleId) || !tool) throw new HttpError(400, 'role and tool required');
-  const conversation = b?.conversation && getConversation(db, b.conversation) ? String(b.conversation) : null;
+  const conversation = conversationId && getConversation(db, conversationId) ? conversationId : null;
   // a standing decision answers without asking
-  if (standingTools(db, roleId, 'allow').includes(tool)) return ctx.json(res, 200, { id: null, status: 'allowed' });
-  if (standingTools(db, roleId, 'deny').includes(tool)) return ctx.json(res, 200, { id: null, status: 'denied', note: 'blocked by a standing rule in Settings' });
-
-  const a = createApproval(db, roleId, conversation, tool, b?.input);
+  if (standingTools(db, roleId, 'allow').includes(tool)) return { id: null, status: 'allowed' };
+  if (standingTools(db, roleId, 'deny').includes(tool)) return { id: null, status: 'denied', note: 'blocked by a standing rule in Settings' };
+  const a = createApproval(db, roleId, conversation, tool, input);
   if (conversation) {
-    const m = addMessage(db, conversation, roleId, toolSummary(tool, b?.input), 'approval', { approval_id: a.id, tool, input: b?.input ?? null, status: 'pending' });
+    const m = addMessage(db, conversation, roleId, toolSummary(tool, input), 'approval', { approval_id: a.id, tool, input: input ?? null, status: 'pending' });
     linkApprovalMessage(db, a.id, m.id);
     ctx.broadcast({ type: 'chat', conversation, message: m });
   }
   ctx.broadcast({ type: 'approvals' });
-  ctx.json(res, 200, { id: a.id, status: a.status });
+  return { id: a.id, status: a.status };
+}
+
+on('POST', '/api/approvals', async (req, res, _u, ctx) => {
+  const b = await ctx.readBody(req);
+  const roleId = String(b?.role ?? '');
+  const tool = String(b?.tool ?? '');
+  if (!getRole(ctx.db(), roleId) || !tool) throw new HttpError(400, 'role and tool required');
+  ctx.json(res, 200, openApproval(ctx, roleId, b?.conversation ? String(b.conversation) : null, tool, b?.input));
 });
 
 /** Long poll (≤25 s) until the approval is decided; the MCP tool loops on it. */
@@ -326,5 +330,8 @@ on('GET', '/api/needs-you', (_q, res, _u, ctx) => {
   const proposals = (
     db.prepare(`SELECT id, conversation_id, body, meta, created_at FROM messages WHERE kind = 'proposal' AND json_extract(meta, '$.status') = 'pending' ORDER BY id`).all() as any[]
   ).map((m) => ({ message_id: m.id, conversation: m.conversation_id, title: m.body, reason: JSON.parse(m.meta).reason ?? null, created_at: m.created_at }));
-  ctx.json(res, 200, { approvals, proposals });
+  const secrets = (
+    db.prepare(`SELECT id, conversation_id, meta, created_at FROM messages WHERE kind = 'secret_request' AND json_extract(meta, '$.status') = 'pending' ORDER BY id`).all() as any[]
+  ).map((m) => ({ message_id: m.id, conversation: m.conversation_id, name: JSON.parse(m.meta).name, created_at: m.created_at }));
+  ctx.json(res, 200, { approvals, proposals, secrets });
 });

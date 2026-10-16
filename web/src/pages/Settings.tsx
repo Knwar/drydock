@@ -1,4 +1,5 @@
 import { SETTINGS_SECTIONS } from '../components/CommandBar';
+import { SecretsSettings } from './SecretsSettings';
 import { useEffect, useState } from 'react';
 import { api, useApi } from '../lib/api';
 import { go, href } from '../lib/router';
@@ -480,6 +481,7 @@ export function Settings({ section, roles }: { section: string; roles: Role[] })
         {cur === 'integrations' && <Integrations />}
         {cur === 'daily' && <DailySettingsPage />}
         {cur === 'team' && <Team roles={roles} />}
+        {cur === 'secrets' && <SecretsSettings />}
         {cur === 'usage' && <Usage />}
         {cur === 'checkins' && <Checkins />}
         {cur === 'workspace' && <Workspace />}

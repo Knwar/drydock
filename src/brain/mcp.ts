@@ -423,6 +423,87 @@ server.registerTool(
   async ({ conversation }) => text(JSON.stringify(await call(`/api/threads/${encodeURIComponent(conversation)}`), null, 2)),
 );
 
+// ── secrets (values never come back to you) ──────────────────────
+
+const SECRET_NAME = z.string().regex(/^[A-Z][A-Z0-9_]{1,63}$/).describe('UPPER_SNAKE env var name, e.g. STRIPE_API_KEY');
+
+server.registerTool(
+  'list_secrets',
+  { description: "Names of the secrets in the user's password manager that you can use (never their values).", inputSchema: { project_id: z.string().optional() } },
+  async ({ project_id }) => {
+    const rows = await call(`/api/secrets/names${project_id ? `?project=${encodeURIComponent(project_id)}` : ''}`);
+    return text(rows.length ? rows.map((r: any) => `${r.name} (${r.kind}, ${r.provider}${r.note ? `: ${r.note}` : ''})`).join('\n') : 'No secrets saved yet.');
+  },
+);
+
+server.registerTool(
+  'save_secret',
+  {
+    description:
+      "Store a secret in the user's password manager and refer to it by name from then on. Give exactly one of: generate (a new random value you never see, for DB passwords, signing keys, webhook secrets), from_file (move KEY=value out of a .env-style file without reading it; the line becomes a pointer), or value (only when the value is already in front of you, e.g. the user pasted it).",
+    inputSchema: {
+      name: SECRET_NAME,
+      generate: z.object({ bytes: z.number().int().min(16).max(128).optional() }).optional(),
+      from_file: z.object({ path: z.string().describe('Path inside the workspace, e.g. projects/kusic/.env'), key: z.string() }).optional(),
+      value: z.string().optional(),
+      project_id: z.string().optional(),
+      note: z.string().optional().describe('What it is for, e.g. "Postgres password for kusic dev"'),
+    },
+  },
+  async ({ name, generate, from_file, value, project_id, note }) => {
+    if ([generate, from_file, value].filter((x) => x !== undefined).length !== 1) throw new Error('Give exactly one of generate, from_file or value.');
+    const r = await call('/api/secrets', { name, generate, from_file, value, project_id, note });
+    return text(`Saved ${r.name} to ${r.provider}.${from_file ? ` The line in ${from_file.path} now points to it.` : ''} Use it by name with run_with_secrets; never write the value anywhere.`);
+  },
+);
+
+server.registerTool(
+  'request_secret',
+  {
+    description: 'Ask the user for a key only they can get (from another service, e.g. Stripe). They paste it into a card and it goes straight to their password manager; you are told when it is saved.',
+    inputSchema: { name: SECRET_NAME, purpose: z.string().describe('One line: what it is for'), url: z.string().optional().describe("https link to the service's key page"), project_id: z.string().optional() },
+  },
+  async (b) => {
+    await call('/api/secrets/request', { ...b, role: ROLE, conversation: CONVERSATION });
+    return text(`Asked the user for ${b.name}. Carry on with other work; a message appears in this thread once it is saved.`);
+  },
+);
+
+/** Open a ticket, wait for the user's answer on the card, then execute it once. */
+async function ticketed(path: string, body: unknown): Promise<any> {
+  let t = await call(path, { ...(body as object), role: ROLE, conversation: CONVERSATION });
+  if (t.status === 'denied') throw new Error(t.note ? `The user denied this: ${t.note}` : 'The user denied this.');
+  let a = { status: t.status };
+  while (t.approval && a.status === 'pending') a = await call(`/api/approvals/${t.approval}/wait`);
+  return call(`/api/secrets/tickets/${t.ticket}/execute`, {});
+}
+
+server.registerTool(
+  'run_with_secrets',
+  {
+    description:
+      'Run one shell command with secrets as environment variables (e.g. `npm run migrate` with DATABASE_URL). The user approves the exact command and confirms on their Mac; the output comes back with secret values blanked. Reference them as $NAME in the command; never echo them.',
+    inputSchema: {
+      command: z.string(),
+      secrets: z.array(SECRET_NAME).min(1),
+      cwd: z.string().optional().describe("Folder inside the workspace; defaults to this thread's project folder"),
+    },
+  },
+  async (b) => {
+    const r = await ticketed('/api/secrets/run', b);
+    return text(`Exit ${r.code}\n${r.output}`);
+  },
+);
+
+server.registerTool(
+  'rotate_secret',
+  { description: 'Replace a generated secret with a new random value (after the user approves). Anything using it needs restarting.', inputSchema: { name: SECRET_NAME } },
+  async (b) => {
+    const r = await ticketed('/api/secrets/rotate-request', b);
+    return text(`Rotated ${r.rotated}.`);
+  },
+);
+
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop()!)) {
   await server.connect(new StdioServerTransport());
 }

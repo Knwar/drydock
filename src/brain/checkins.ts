@@ -42,7 +42,7 @@ export function lastActivity(db: DB, projectId: string): number {
 /** Waiting on the user: an approval or team proposal pending in one of the project's threads. */
 function waitingOnUser(db: DB, projectId: string): boolean {
   const approvals = db.prepare(`SELECT 1 FROM approvals a JOIN conversations c ON c.id = a.conversation_id WHERE c.project_id = ? AND a.status = 'pending' LIMIT 1`).get(projectId);
-  const proposals = db.prepare(`SELECT 1 FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.project_id = ? AND m.kind = 'proposal' AND json_extract(m.meta, '$.status') = 'pending' LIMIT 1`).get(projectId);
+  const proposals = db.prepare(`SELECT 1 FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.project_id = ? AND m.kind IN ('proposal', 'secret_request') AND json_extract(m.meta, '$.status') = 'pending' LIMIT 1`).get(projectId);
   return Boolean(approvals || proposals);
 }
 

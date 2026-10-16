@@ -28,6 +28,8 @@ const CLAUDE_BIN = process.env.BRAIN_CLAUDE_BIN ?? 'claude';
 export const ALWAYS_ALLOWED = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'mcp__brain'];
 /** Project roles also run the board, its subagents and per-card worktrees without asking. */
 export const PROJECT_ALLOWED = ['mcp__kankan', 'Task', 'Bash(brain worktree:*)', 'Bash(brain security-scan:*)'];
+/** Secrets are reached only through the brain secret tools (approval + Touch ID), never the managers' CLIs or the Keychain directly. */
+export const ALWAYS_DENIED = ['Bash(op:*)', 'Bash(bw:*)', 'Bash(bws:*)', 'Bash(security find-generic-password:*)', 'Bash(security find-internet-password:*)', 'Bash(security dump-keychain:*)'];
 
 const running = new Map<string, { child: ChildProcess; roleId: string }>();
 const queues = new Map<string, Promise<void>>();
@@ -72,6 +74,15 @@ function systemPrompt(role: Role, conversationId: string): string {
       : `- This is the #${conv.name} channel. Members: ${members(db, conversationId).map((m) => roleName(m, roles)).join(', ')} and the user. Other members reply in turn after you; keep to your role.`,
   ];
   if (role.skill) lines.push(`- Use the ${role.skill} skill when it fits the task.`);
+  lines.push(
+    '',
+    '## Secrets',
+    "Never write a password, API key or token into a file, a message, a commit or a command line. Keys live in the user's password manager; you only ever handle their names (UPPER_SNAKE env var names).",
+    '- Found one (in a file, an error, a paste)? Move it with save_secret (from_file for .env files) and refer to it by name from then on.',
+    '- Need a new random secret (DB password, signing key)? save_secret with generate: you never see the value.',
+    '- Need a key from another service? request_secret: the user pastes it into a card.',
+    '- Need to use one? run_with_secrets runs your command with them as env vars, after the user approves and confirms on the Mac. Commit `.env.example` with names only, never `.env`.',
+  );
   // what this member has learned from repeated mistakes (capped, strongest first)
   const learned = activeLearnings(db, role.id);
   if (learned.length) lines.push('', '## Your learnings', 'You made these mistakes more than once before. Follow these rules:', ...learned.map((l) => `- ${l.rule}`));
@@ -183,7 +194,7 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
   const globalAllow = Object.keys(policies).filter((t) => policies[t] === 'allow');
   const globalDeny = Object.keys(policies).filter((t) => policies[t] === 'deny');
   const allowed = [...ALWAYS_ALLOWED, ...(projectRole ? PROJECT_ALLOWED : []), ...globalAllow, ...standingTools(db, roleId, 'allow')];
-  const denied = [...globalDeny, ...blockedServers(db, roleId), ...standingTools(db, roleId, 'deny')];
+  const denied = [...ALWAYS_DENIED, ...globalDeny, ...blockedServers(db, roleId), ...standingTools(db, roleId, 'deny')];
   const args = [
     '-p',
     pending.prompt,
@@ -330,6 +341,8 @@ export function toolSummary(name: string, input: any): string {
   if (name === 'Glob' || name === 'Grep') return `Searched ${short(input?.pattern)}`;
   if (name === 'WebSearch') return `Searched the web: ${short(input?.query)}`;
   if (name === 'WebFetch') return `Opened ${short(input?.url)}`;
+  if (name === 'run_with_secrets') return `Run a command with ${short((input?.secrets ?? []).join(', '), 60)}`;
+  if (name === 'rotate_secret') return `Replace ${short(input?.name)} with a new random value`;
   if (name.startsWith('mcp__')) return `Used ${name.replace(/^mcp__/, '').replace(/__/, ' › ')}`;
   return `Used ${name}`;
 }

@@ -1,3 +1,4 @@
+import { AddSecretDialog } from '../pages/SecretsSettings';
 import { when } from '../lib/time';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
@@ -52,6 +53,31 @@ function ApprovalCard({ m, role }: { m: Message; role?: Role }) {
           {status === 'allowed' ? (m.meta?.always ? 'Always allowed' : 'Allowed') : 'Denied'}
         </span>
       )}
+    </div>
+  );
+}
+
+function SecretRequestCard({ m, role }: { m: Message; role?: Role }) {
+  const [open, setOpen] = useState(false);
+  const saved = m.meta?.status === 'saved';
+  return (
+    <div className="card-approval" data-status={saved ? 'allowed' : 'pending'}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className="pill t-v">secret</span>
+        <span className="muted" style={{ fontSize: 12 }}>{role?.name ?? m.author} needs a key</span>
+      </div>
+      <div style={{ fontWeight: 600, fontSize: 13 }}><span className="mono">{m.meta?.name}</span>{m.meta?.purpose ? `: ${m.meta.purpose}` : ''}</div>
+      {m.meta?.exists && !saved && <div className="muted" style={{ fontSize: 12 }}>One is already saved under this name; adding replaces it.</div>}
+      {saved ? (
+        <span className="pill t-g" style={{ alignSelf: 'flex-start' }}>Saved to your password manager</span>
+      ) : (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="btn sm primary" onClick={() => setOpen(true)}>Add it</button>
+          {m.meta?.url && <a className="btn sm" href={m.meta.url} target="_blank" rel="noreferrer">Get the key ↗</a>}
+          <span className="muted" style={{ fontSize: 11.5 }}>It goes straight to your password manager; agents never see it.</span>
+        </div>
+      )}
+      {open && <AddSecretDialog projects={[]} preset={{ name: m.meta.name, project_id: m.meta.project_id ?? null, request: m.id, purpose: m.meta.purpose, url: m.meta.url }} onClose={() => setOpen(false)} onSaved={() => setOpen(false)} />}
     </div>
   );
 }
@@ -250,6 +276,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
             );
           const role = byId.get(m.author);
           if (m.kind === 'approval') return <ApprovalCard key={m.id} m={m} role={role} />;
+          if (m.kind === 'secret_request') return <SecretRequestCard key={m.id} m={m} role={role} />;
           if (m.kind === 'decision') return <DecisionCard key={m.id} m={m} />;
           if (m.kind === 'proposal') return <ProposalCard key={m.id} m={m} proposer={role} />;
           return (
