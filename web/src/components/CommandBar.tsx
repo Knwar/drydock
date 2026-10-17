@@ -107,7 +107,7 @@ export function CommandBar({ projects, conversations, roles, onClose, openLink, 
   roles: Role[];
   onClose: () => void;
   openLink: (link: string) => void;
-  actions: { newProject: () => void; newThread: () => void; addMember: () => void; toggleTheme: () => void; askMain: (text: string) => void };
+  actions: { newProject: () => void; importProject: () => void; newThread: () => void; addMember: () => void; toggleTheme: () => void; askMain: (text: string) => void };
 }) {
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
@@ -163,6 +163,7 @@ export function CommandBar({ projects, conversations, roles, onClose, openLink, 
   const doThen = (fn: () => void) => () => (onClose(), fn());
   const quick: Omit<Item, 'group'>[] = [
     { id: 'a/new-project', label: 'New project', icon: 'plus', run: doThen(actions.newProject) },
+    { id: 'a/import', label: 'Import a project (folder or Git)', icon: 'project', run: doThen(actions.importProject) },
     { id: 'a/new-thread', label: 'New thread', icon: 'plus', run: doThen(actions.newThread) },
     { id: 'a/add-member', label: 'Add team member', icon: 'role', run: doThen(actions.addMember) },
     { id: 'a/theme', label: 'Switch light / dark theme', icon: 'moon', run: doThen(actions.toggleTheme) },

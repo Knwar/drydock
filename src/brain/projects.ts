@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS brain_projects (
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
-`, (db) => addMissingColumns(db, 'brain_projects', { type: "TEXT NOT NULL DEFAULT 'software'", plugins: 'TEXT' }));
+`, (db) => addMissingColumns(db, 'brain_projects', { type: "TEXT NOT NULL DEFAULT 'software'", plugins: 'TEXT', origin: "TEXT NOT NULL DEFAULT 'new'" }));
 
 export interface ProjectSummary {
   id: string;
@@ -35,6 +35,7 @@ export interface ProjectSummary {
   rag: string | null;
   type: ProjectType;
   plugins: string[];
+  origin: 'new' | 'imported';
 }
 
 interface Row {
@@ -132,6 +133,7 @@ export function listProjects(db: DB, insideRoot: string | null): ProjectSummary[
         rag: (r as any).rag ?? null,
         type: isType((r as any).type) ? (r as any).type : 'software',
         plugins: projectPlugins(db, r.id),
+        origin: (r as any).origin === 'imported' ? 'imported' : 'new',
       };
     });
 }

@@ -109,7 +109,7 @@ export function AddMemberDialog({ onClose, onAdded }: { onClose: () => void; onA
   );
 }
 
-export function NewProjectDialog({ onClose, askMain }: { onClose: () => void; askMain: (draft: string) => void }) {
+export function NewProjectDialog({ onClose, askMain, onImport }: { onClose: () => void; askMain: (draft: string) => void; onImport?: () => void }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [type, setType] = useState<'software' | 'general'>('software');
@@ -158,6 +158,7 @@ export function NewProjectDialog({ onClose, askMain }: { onClose: () => void; as
           >
             Discuss it with the Main agent first
           </button>
+          {onImport && <button type="button" className="link-btn" style={{ fontSize: 12.5, color: 'var(--accent)', marginLeft: 'auto' }} onClick={onImport}>Import an existing project…</button>}
         </div>
       </form>
     </Modal>

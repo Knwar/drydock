@@ -42,6 +42,7 @@ interface Detail {
   requirementsOpen: string[];
   stages: string[];
   type?: 'software' | 'general';
+  origin?: 'new' | 'imported';
   plugins?: string[];
   typeName: string;
   pluginList: { id: string; name: string; icon: string; description: string; suggested: boolean; on: boolean; overviewCard: boolean }[];
@@ -131,7 +132,7 @@ function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: 
     actions.push({
       label: 'Mark requirements final',
       confirm: 'Mark requirements final',
-      hint: design ? 'Next: pick the team, then the design starts.' : 'Next: pick the team, then the PM plans the work.',
+      hint: p.origin === 'imported' ? 'Imported: check what the Main agent wrote about what exists, then mark it final.' : design ? 'Next: pick the team, then the design starts.' : 'Next: pick the team, then the PM plans the work.',
       path: `${base}/requirements/final`,
       warning: p.requirementsOpen.length ? `Still marked “To discuss”: ${p.requirementsOpen.join(', ')}. The team will have to guess these; consider filling them in with the Main agent first.` : undefined,
       steps: [

@@ -15,6 +15,7 @@ import './routes-teamwork.js';
 import './search.js';
 import './routes-secrets.js';
 import './routes-live.js';
+import './routes-import.js';
 import { restoreApps, startLiveWatcher } from './live.js';
 import { startCheckins } from './checkins.js';
 import { resumeInterruptedRuns } from './runner.js';

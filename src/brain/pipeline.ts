@@ -339,7 +339,9 @@ export function startDesign(db: DB, projectId: string): string {
     db,
     ch,
     `@Architect the requirements for ${ref.name} are final (v${latest.version}, project_id ${ref.id}, saved at ${join(ref.vault, 'requirements', 'current.md')}). ` +
-      `Read them and create the system design with the design tools: containers first (the verticals), then the components inside the important ones. Then summarise the design here in a few lines` +
+      (getDesign(db, projectId).elements.length
+        ? `A design was already drawn from the existing code: check it against the requirements with get_design, fix what is missing or wrong, and mark what the requirements change. Then summarise it here in a few lines`
+        : `Read them and create the system design with the design tools: containers first (the verticals), then the components inside the important ones. Then summarise the design here in a few lines`) +
       (security ? ` and ask @Security Champion for the STRIDE threat model` : '') +
       (members.includes('cto') ? `, and the CTO for review.` : '.'),
     '@Architect',

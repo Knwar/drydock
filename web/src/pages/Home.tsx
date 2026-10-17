@@ -4,13 +4,21 @@ import { go, href } from '../lib/router';
 import { DailyCard, personalEvents, type PersonalData } from './Personal';
 import type { ProjectSummary } from '../lib/types';
 
-function ProjectsPanel({ projects }: { projects: ProjectSummary[] }) {
+function ProjectsPanel({ projects, onImport }: { projects: ProjectSummary[]; onImport: () => void }) {
+  const found = useApi<{ candidates: { name: string }[] }>('/api/import/candidates', (m) => ['workspace', 'brain_project'].includes(m?.type));
+  const waiting = found.data?.candidates ?? [];
   return (
     <section className="panel" aria-labelledby="proj-h">
       <div className="panel-head">
         <h2 id="proj-h">Projects</h2>
-        <span className="eyebrow">Idea · Create · Reqs · Design · Plan · Build</span>
+        <button className="btn sm" onClick={onImport}>Import a project</button>
       </div>
+      {waiting.length > 0 && (
+        <div className="banner t-b" style={{ fontSize: 12.5, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ flex: 1 }}>Found {waiting.length === 1 ? <span className="mono">projects/{waiting[0].name}</span> : `${waiting.length} folders`} in the workspace that {waiting.length === 1 ? 'is' : 'are'} not a project yet.</span>
+          <button className="btn sm" onClick={onImport}>Review</button>
+        </div>
+      )}
       {projects.length === 0 ? (
         <div className="empty">No projects yet. Tell the main agent about an idea and it will offer to set one up.</div>
       ) : (
@@ -91,12 +99,12 @@ function Today({ data }: { data: PersonalData }) {
   );
 }
 
-export function Home({ projects }: { projects: ProjectSummary[] }) {
+export function Home({ projects, onImport }: { projects: ProjectSummary[]; onImport: () => void }) {
   const personal = useApi<PersonalData>('/api/personal', personalEvents);
   return (
     <>
       {personal.data && <DailyCard edition={personal.data.edition} generating={personal.data.generating} compact />}
-      <ProjectsPanel projects={projects} />
+      <ProjectsPanel projects={projects} onImport={onImport} />
       {personal.data && <Today data={personal.data} />}
     </>
   );

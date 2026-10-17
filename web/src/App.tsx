@@ -7,6 +7,7 @@ import { ChatPanel } from './components/Chat';
 import { CommandBar } from './components/CommandBar';
 import { Header, Sidebar } from './components/Shell';
 import { AddMemberDialog, NewProjectDialog, NewThreadDialog } from './components/Dialogs';
+import { ImportDialog } from './components/ImportDialog';
 import { RightRail } from './components/RightRail';
 import { TeamList } from './components/Team';
 import { Home } from './pages/Home';
@@ -49,6 +50,7 @@ export function App() {
   const [convId, setConvId] = useStored('ai-brain-conversation', 'dm:main');
   const [chatState, setChatState] = useStored('ai-brain-chat', 'open');
   const [newProject, setNewProject] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [draft, setDraft] = useState<string | undefined>();
   const [newThread, setNewThread] = useState<{ project: string | null } | null>(null);
   const [addingMember, setAddingMember] = useState(false);
@@ -108,7 +110,7 @@ export function App() {
   };
 
   let page: React.ReactNode;
-  if (parts.length === 0) page = <Home projects={list} />;
+  if (parts.length === 0) page = <Home projects={list} onImport={() => setImporting(true)} />;
   else if (parts[0] === 'project' && parts[1])
     page = <ProjectPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} openConversation={select} newThread={() => setNewThread({ project: parts[1] })} side={{ open: sideOpen, toggle: () => setSide(!sideOpen) }} />;
   else if (parts[0] === 'personal') page = <Personal />;
@@ -141,7 +143,8 @@ export function App() {
             )}
           </div>
         )}
-        {newProject && <NewProjectDialog onClose={() => setNewProject(false)} askMain={askMain} />}
+        {newProject && <NewProjectDialog onClose={() => setNewProject(false)} askMain={askMain} onImport={() => (setNewProject(false), setImporting(true))} />}
+        {importing && <ImportDialog onClose={() => setImporting(false)} onImported={(id, channel) => (setImporting(false), openLink(`/project/${id}?thread=${encodeURIComponent(channel)}`))} />}
         {newThread && (
           <NewThreadDialog
             roles={roles.data ?? []}
@@ -161,6 +164,7 @@ export function App() {
             openLink={openLink}
             actions={{
               newProject: () => setNewProject(true),
+              importProject: () => setImporting(true),
               newThread: () => setNewThread({ project: onProject ? parts[1] : null }),
               addMember: () => setAddingMember(true),
               toggleTheme,
