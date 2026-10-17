@@ -197,6 +197,15 @@ export function countTurn(db: DB, roleId: string, conversationId: string, contex
   db.prepare('UPDATE agent_sessions SET turns = turns + 1, context_tokens = ? WHERE role_id = ? AND conversation_id = ?').run(contextTokens, roleId, conversationId);
 }
 
+/**
+ * Restart a member's session in a conversation: their next reply starts a new
+ * Claude session (with a short recap of the recent messages) instead of
+ * resuming the long one. What they have already answered stays answered.
+ */
+export function resetSession(db: DB, roleId: string, conversationId: string): void {
+  db.prepare(`UPDATE agent_sessions SET session_id = '', turns = 0, context_tokens = 0, updated_at = ? WHERE role_id = ? AND conversation_id = ?`).run(Date.now(), roleId, conversationId);
+}
+
 export function saveSession(db: DB, roleId: string, conversationId: string, sessionId: string, seen: number): void {
   db.prepare(
     `INSERT INTO agent_sessions (role_id, conversation_id, session_id, seen_message_id, updated_at) VALUES (?, ?, ?, ?, ?)

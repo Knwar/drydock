@@ -6,6 +6,7 @@ import { onLive } from '../lib/live';
 import { Markdown } from '../lib/md';
 import type { Conversation, Message, ProjectSummary, Role } from '../lib/types';
 import { Icon } from './Icon';
+import { ConversationInfo } from './ConversationInfo';
 
 const ALWAYS = ['Read and search files', 'Search the web', 'AI Brain tools'];
 
@@ -203,6 +204,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<'chat' | 'activity'>('chat');
+  const [info, setInfo] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const convId = conversation?.id ?? null;
   useEffect(() => {
@@ -290,19 +292,22 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
   return (
     <aside className="chat" aria-label="Conversation">
       <header className="chat-head">
-        {lead ? <Avatar role={lead} size={30} /> : <span className="avatar t-n" style={{ width: 30, height: 30, flex: '0 0 30px' }}>#</span>}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{lead ? lead.name : `# ${threadTitle}`}</h2>
-          <div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {lead ? `${lead.scope === 'global' ? 'Personal manager · all projects' : lead.scope === 'shared' ? 'Shared role · all projects' : 'Project role'} · ${lead.model}` : `${project ? `${project.name} · ` : ''}${memberNames} and you`}
-          </div>
-        </div>
+        <button className="chat-title" onClick={() => setInfo(true)} title="Members, sessions and usage" aria-haspopup="dialog">
+          {lead ? <Avatar role={lead} size={30} /> : <span className="avatar t-n" style={{ width: 30, height: 30, flex: '0 0 30px' }}>#</span>}
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{lead ? lead.name : `# ${threadTitle}`}</h2>
+            <span className="muted" style={{ display: 'block', fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {lead ? `${lead.scope === 'global' ? 'Personal manager · all projects' : lead.scope === 'shared' ? 'Shared role · all projects' : 'Project role'} · ${lead.model}` : `${project ? `${project.name} · ` : ''}${memberNames} and you`}
+            </span>
+          </span>
+        </button>
         <div role="group" aria-label="View" className="seg">
           <button aria-pressed={view === 'chat'} onClick={() => setView('chat')}>Chat</button>
           <button aria-pressed={view === 'activity'} onClick={() => setView('activity')}>Activity</button>
         </div>
         <button className="icon-btn" style={{ width: 30, height: 30, flex: '0 0 30px', borderRadius: 8, fontSize: 13 }} aria-label="Minimise chat" title="Minimise chat" onClick={onClose}>✕</button>
       </header>
+      {info && <ConversationInfo id={conversation.id} title={lead ? lead.name : `# ${threadTitle}`} roles={roles} onClose={() => setInfo(false)} />}
       {lead && (
         <div className="perm-strip">
           <span className="muted">Can do on its own:</span>

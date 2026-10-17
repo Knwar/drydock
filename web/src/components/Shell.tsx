@@ -82,12 +82,16 @@ interface ThreadCtx {
   current: string | null;
   open: (id: string) => void;
   newThread: (projectId: string | null) => void;
+  /** fold or unfold a tree group (the sidebar fills this in) */
+  toggle?: (id: string) => void;
 }
 
 function projectTree(p: ProjectSummary, t: ThreadCtx, path: string): TreeNode {
   const slug = p.root.split('/').pop();
   const base = `/project/${p.id}`;
   const threads = t.conversations.filter((c) => c.kind === 'channel' && c.project_id === p.id);
+  const unread = threads.reduce((n, c) => n + (c.unread ?? 0), 0);
+  const live = threads.some((c) => c.working);
   return {
     id: p.id,
     label: p.name,
@@ -105,15 +109,25 @@ function projectTree(p: ProjectSummary, t: ThreadCtx, path: string): TreeNode {
         const m = PLUGIN_META[id];
         return m ? [{ id: `${p.id}/plugin/${id}`, label: m.name, icon: m.icon, to: `${base}/${id}`, active: path === `${base}/${id}` || path.startsWith(`${base}/${id}/`) }] : [];
       }),
-      ...threads.map((c) => ({
-        id: c.id,
-        label: `# ${threadName(c, slug)}`,
+      // the project's discussions fold into one group, so a long list doesn't push everything else down
+      {
+        id: `${p.id}/discussions`,
+        label: 'Discussions',
         icon: 'chat' as IconName,
-        onSelect: () => t.open(c.id),
-        thread: t.current === c.id,
-        badge: c.unread ? { text: String(c.unread), tone: 't-b' } : c.working ? { text: 'live', tone: 't-g' } : undefined,
-      })),
-      { id: `${p.id}/new-thread`, label: 'New thread', icon: 'plus' as IconName, onSelect: () => t.newThread(p.id), quiet: true },
+        onSelect: () => t.toggle?.(`${p.id}/discussions`),
+        badge: unread ? { text: String(unread), tone: 't-b' } : live ? { text: 'live', tone: 't-g' } : threads.length ? { text: String(threads.length), tone: 't-n' } : undefined,
+        children: [
+          ...threads.map((c) => ({
+            id: c.id,
+            label: `# ${threadName(c, slug)}`,
+            icon: 'chat' as IconName,
+            onSelect: () => t.open(c.id),
+            thread: t.current === c.id,
+            badge: c.unread ? { text: String(c.unread), tone: 't-b' } : c.working ? { text: 'live', tone: 't-g' } : undefined,
+          })),
+          { id: `${p.id}/new-thread`, label: 'New thread', icon: 'plus' as IconName, onSelect: () => t.newThread(p.id), quiet: true },
+        ],
+      },
     ],
   };
 }
@@ -169,6 +183,11 @@ export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking,
   useEffect(() => {
     if (here) setOpen((s) => (s.has(here) ? s : new Set(s).add(here)));
   }, [here]);
+  // the chat open on the right shows where it lives: its project and its Discussions group unfold
+  const currentProject = threads.conversations.find((c) => c.id === threads.current)?.project_id;
+  useEffect(() => {
+    if (currentProject) setOpen((s) => (s.has(currentProject) && s.has(`${currentProject}/discussions`) ? s : new Set(s).add(currentProject).add(`${currentProject}/discussions`)));
+  }, [currentProject, threads.current]);
   // small screens: the icon rail expands on hover and folds away again once you pick something
   const [hold, setHold] = useState(false);
   return (
@@ -212,7 +231,7 @@ export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking,
           </button>
         </div>
         {projects.length ? (
-          <TreeRows nodes={projects.map((p) => projectTree(p, threads, path))} depth={0} open={open} toggle={toggle} />
+          <TreeRows nodes={projects.map((p) => projectTree(p, { ...threads, toggle }, path))} depth={0} open={open} toggle={toggle} />
         ) : (
           <div className="muted side-note" style={{ fontSize: 12.5, padding: '4px 10px' }}>
             No projects yet. <button className="link-btn" style={{ color: 'var(--accent)', fontSize: 12.5 }} onClick={onNewProject}>Start one</button> or describe an idea to the Main agent.

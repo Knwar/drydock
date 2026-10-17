@@ -346,6 +346,16 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
     }
   }
 
+  // restarted by the user: a fresh session, opened with a short recap of what was said before
+  if (session && !session.session_id && !resumeNote && !(session as { fresh?: boolean }).fresh) {
+    const before = listMessages(db, conversationId, 60).filter((m) => m.kind === 'text' && m.id <= session!.seen_message_id).slice(-20);
+    if (before.length) {
+      const roles = listRoles(db);
+      const recap = before.map((m) => `${m.author === 'user' ? 'User' : roleName(m.author, roles)}: ${m.body.length > 600 ? `${m.body.slice(0, 600)}…` : m.body}`).join('\n\n');
+      prompt = `The user restarted your session in this conversation, so you start fresh. The recent conversation, for context (already answered):\n\n${recap}\n\n---\n\n${prompt}`;
+    }
+  }
+
   const args = ['-p', prompt, ...base, '--include-partial-messages', '--allowedTools', ...allowed];
   if (denied.length) args.push('--disallowedTools', ...denied);
   if (session?.session_id) args.push('--resume', session.session_id);

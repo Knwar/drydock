@@ -19,6 +19,8 @@ import {
   listStanding,
   markRead,
   members,
+  resetSession,
+  getSession,
   recordDecision,
   setStanding,
   standingTools,
@@ -26,7 +28,7 @@ import {
 } from './chat.js';
 import { addFromTemplate, deleteRole, effectiveEffort, getRole, listRoles, ROLE_TEMPLATES, saveRole } from './roles.js';
 import { HttpError, on, type ApiCtx } from './router.js';
-import { activeRuns, respond, stopRun, toolSummary } from './runner.js';
+import { activeRuns, respond, sessionLimits, stopRun, toolSummary } from './runner.js';
 import { currentWorkspace } from './workspace.js';
 import { contractFor } from './contracts.js';
 import { defaultSkills, roleSkills } from './skills.js';
@@ -75,6 +77,58 @@ on('DELETE', '/api/roles/:id', (_q, res, _u, ctx, p) => {
     throw new HttpError(400, (err as Error).message);
   }
   ctx.broadcast({ type: 'roles' });
+  ctx.broadcast({ type: 'conversations' });
+  ctx.json(res, 200, { ok: true });
+});
+
+// ── a conversation's details: members, their sessions, usage ─────
+
+on('GET', '/api/conversations/:id/info', (_q, res, _u, ctx, p) => {
+  const db = ctx.db();
+  const conv = need(getConversation(db, p.id), 'conversation');
+  const ids = conv.kind === 'dm' ? [conv.role_id!] : members(db, conv.id);
+  const running = activeRuns().filter((r) => r.conversation === conv.id).map((r) => r.role);
+  const usage = db.prepare(
+    `SELECT role_id, COUNT(*) AS runs, SUM(input_tokens) AS input, SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write, SUM(output_tokens) AS output, SUM(cost_usd) AS cost, MAX(created_at) AS last_at
+     FROM agent_usage WHERE conversation_id = ? GROUP BY role_id`,
+  ).all(conv.id) as { role_id: string; runs: number; input: number; cache_read: number; cache_write: number; output: number; cost: number | null; last_at: number }[];
+  const first = db.prepare(`SELECT MIN(created_at) AS at, COUNT(*) AS n FROM messages WHERE conversation_id = ? AND kind = 'text'`).get(conv.id) as { at: number | null; n: number };
+  ctx.json(res, 200, {
+    id: conv.id,
+    kind: conv.kind,
+    name: conv.name,
+    project_id: conv.project_id,
+    idea_id: conv.idea_id ?? null,
+    created_at: conv.created_at,
+    messages: first.n,
+    limits: sessionLimits(db),
+    members: ids.map((id, i) => {
+      const role = getRole(db, id);
+      const s = getSession(db, id, conv.id);
+      const u = usage.find((x) => x.role_id === id);
+      return {
+        id,
+        name: role?.name ?? id,
+        model: role?.model ?? null,
+        effort: role ? effectiveEffort(role) : null,
+        lead: conv.kind === 'channel' && i === 0,
+        working: running.includes(id),
+        session: s ? { active: Boolean(s.session_id), turns: s.turns, context_tokens: s.context_tokens } : null,
+        usage: u ? { runs: u.runs, input: u.input, cache_read: u.cache_read, cache_write: u.cache_write, output: u.output, cost: u.cost, last_at: u.last_at } : null,
+      };
+    }),
+  });
+});
+
+/** Restart one member's session in this conversation (their next reply starts fresh, with a short recap). */
+on('POST', '/api/conversations/:id/sessions/:role/reset', (_q, res, _u, ctx, p) => {
+  const db = ctx.db();
+  need(getConversation(db, p.id), 'conversation');
+  if (!getSession(db, p.role, p.id)?.session_id) throw new HttpError(400, 'there is no session to restart yet');
+  if (activeRuns().some((r) => r.conversation === p.id && r.role === p.role)) throw new HttpError(409, 'they are working right now: stop them first, or wait until they finish');
+  resetSession(db, p.role, p.id);
+  const m = addMessage(db, p.id, 'system', `${getRole(db, p.role)?.name ?? p.role}'s session was restarted: their next reply starts fresh, with a recap of the recent messages.`);
+  ctx.broadcast({ type: 'chat', conversation: p.id, message: m });
   ctx.broadcast({ type: 'conversations' });
   ctx.json(res, 200, { ok: true });
 });
