@@ -2,9 +2,10 @@ import { SETTINGS_SECTIONS } from '../components/CommandBar';
 import { SkillsSettings, type Skill } from './SkillsSettings';
 import { SecretsSettings } from './SecretsSettings';
 import { LocalServicesSettings } from './LocalServicesSettings';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, useApi } from '../lib/api';
-import { go, href } from '../lib/router';
+import { openSettings } from '../lib/router';
+import { Icon, type IconName } from '../components/Icon';
 import type { Role, WorkspaceInfo } from '../lib/types';
 import { AddMemberDialog, Modal } from '../components/Dialogs';
 
@@ -559,26 +560,71 @@ function Workspace() {
   );
 }
 
-export function Settings({ section, roles }: { section: string; roles: Role[] }) {
+const SECTION_ICON: Record<string, IconName> = {
+  integrations: 'graph',
+  daily: 'doc',
+  team: 'role',
+  skills: 'check',
+  secrets: 'vault',
+  services: 'board',
+  usage: 'overview',
+  checkins: 'chat',
+  workspace: 'project',
+};
+
+/**
+ * Settings, in a window over whatever page you are on (macOS style: sections
+ * on the left, the chosen one on the right), so closing it brings you back to
+ * exactly what you were doing.
+ */
+export function SettingsWindow({ section, roles, onClose }: { section: string; roles: Role[]; onClose: () => void }) {
   const cur = SECTIONS.some(([id]) => id === section) ? section : 'integrations';
+  const ref = useRef<HTMLDivElement>(null);
+  const body = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    ref.current?.querySelector<HTMLElement>('.settings-nav button[aria-current="page"]')?.focus();
+    // Esc closes the window, unless a dialog opened from inside it is up (that one closes first)
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !document.querySelector('.modal-back') && onClose();
+    document.addEventListener('keydown', onKey);
+    document.body.classList.add('no-scroll');
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.classList.remove('no-scroll');
+      prev?.focus();
+    };
+  }, [onClose]);
+  useEffect(() => {
+    // a block body: scrollTo returns a promise in newer browsers, which an effect must not return
+    body.current?.scrollTo({ top: 0 });
+  }, [cur]);
+  const label = SECTIONS.find(([id]) => id === cur)?.[1] ?? 'Settings';
   return (
-    <div className="settings">
-      <div className="eyebrow">Settings</div>
-      <nav className="tabs" aria-label="Settings">
-        {SECTIONS.map(([id, label]) => (
-          <a key={id} className={`tab${cur === id ? ' on' : ''}`} aria-current={cur === id ? 'page' : undefined} href={href(`/settings/${id}`)} onClick={go(`/settings/${id}`)}>{label}</a>
-        ))}
-      </nav>
-      <div className="settings-body">
-        {cur === 'integrations' && <Integrations />}
-        {cur === 'daily' && <DailySettingsPage />}
-        {cur === 'team' && <Team roles={roles} />}
-        {cur === 'skills' && <SkillsSettings roles={roles} />}
-        {cur === 'secrets' && <SecretsSettings />}
-        {cur === 'services' && <LocalServicesSettings />}
-        {cur === 'usage' && <Usage />}
-        {cur === 'checkins' && <Checkins />}
-        {cur === 'workspace' && <Workspace />}
+    <div className="settings-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="settings-window" role="dialog" aria-modal="true" aria-label={`Settings: ${label}`} ref={ref}>
+        <nav className="settings-nav" aria-label="Settings sections">
+          <div className="settings-nav-title">Settings</div>
+          {SECTIONS.map(([id, text]) => (
+            <button key={id} aria-current={cur === id ? 'page' : undefined} onClick={() => openSettings(id)}>
+              <Icon name={SECTION_ICON[id] ?? 'settings'} size={15} />
+              <span>{text}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="settings-pane">
+          <button className="icon-btn settings-close" aria-label="Close settings" title="Close (Esc)" onClick={onClose}>✕</button>
+          <div className="settings-body" ref={body}>
+            {cur === 'integrations' && <Integrations />}
+            {cur === 'daily' && <DailySettingsPage />}
+            {cur === 'team' && <Team roles={roles} />}
+            {cur === 'skills' && <SkillsSettings roles={roles} />}
+            {cur === 'secrets' && <SecretsSettings />}
+            {cur === 'services' && <LocalServicesSettings />}
+            {cur === 'usage' && <Usage />}
+            {cur === 'checkins' && <Checkins />}
+            {cur === 'workspace' && <Workspace />}
+          </div>
+        </div>
       </div>
     </div>
   );

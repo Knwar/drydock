@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useApi } from './lib/api';
-import { navigate, threadParam, usePath } from './lib/router';
+import { closeSettings, navigate, openSettings, settingsParam, threadParam, usePath } from './lib/router';
 import { useTheme } from './lib/theme';
 import type { Conversation, IdeaCard, ProjectSummary, Role, WorkspaceInfo } from './lib/types';
 import { ChatPanel } from './components/Chat';
@@ -16,7 +16,7 @@ import { Personal } from './pages/Personal';
 import { ProjectPage } from './pages/ProjectPage';
 import { IdeaPage } from './pages/IdeaPage';
 import { CaptureIdeaDialog, ideaEvents } from './components/Ideas';
-import { Settings } from './pages/Settings';
+import { SettingsWindow } from './pages/Settings';
 
 const projectEvents = (m: any) => ['card', 'card_removed', 'phases', 'project_removed', 'workspace', 'brain_project', 'design'].includes(m?.type);
 const convEvents = (m: any) => ['chat', 'chat_status', 'conversations', 'roles', 'chat_update'].includes(m?.type);
@@ -43,6 +43,13 @@ export function App() {
   const [theme, toggleTheme] = useTheme();
   const parts = usePath();
   const path = '/' + parts.join('/');
+  const settings = settingsParam();
+  // old /settings/<section> addresses open the settings window over Home
+  useEffect(() => {
+    if (parts[0] !== 'settings') return;
+    const section = parts[1] ?? 'integrations';
+    navigate(`/?settings=${encodeURIComponent(section)}`, { replace: true });
+  }, [parts[0], parts[1]]);
   const ws = useApi<WorkspaceInfo>('/api/workspace', (m) => m?.type === 'workspace');
   const ready = Boolean(ws.data?.configured);
   const profile = useApi<{ name: string | null }>('/api/profile', (m) => m?.type === 'profile');
@@ -99,6 +106,7 @@ export function App() {
   };
   /** Open an app path; a ?thread= in it opens that thread in the chat panel. */
   const openLink = (link: string) => {
+    if (link.startsWith('/settings')) return openSettings(link.split('/')[2] || 'integrations');
     const thread = new URL(link, location.origin).searchParams.get('thread');
     if (thread) (setConvId(thread), setChatState('open'));
     navigate(link);
@@ -121,7 +129,6 @@ export function App() {
     page = <ProjectPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} openConversation={select} newThread={() => setNewThread({ project: parts[1] })} side={{ open: sideOpen, toggle: () => setSide(!sideOpen) }} />;
   else if (onIdea) page = <IdeaPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} conversations={conversations} projects={list} />;
   else if (parts[0] === 'personal') page = <Personal />;
-  else if (parts[0] === 'settings') page = <Settings section={parts[1] ?? 'integrations'} roles={roles.data ?? []} />;
   else page = <div className="empty">Not found. <a href="/app/">Go home</a></div>;
 
   return (
@@ -138,6 +145,7 @@ export function App() {
           onNewProject={() => setNewProject(true)}
           ideas={ideas.data ?? []}
           onNewIdea={() => setCapturing(true)}
+          settingsOpen={Boolean(settings)}
           threads={{ conversations, current: chatState === 'open' && sideOpen ? current?.id ?? null : null, open: select, newThread: (project) => setNewThread({ project }) }}
         >
           <TeamList conversations={conversations} roles={roles.data ?? []} current={chatState === 'open' && sideOpen ? current?.id ?? null : null} select={select} onNewThread={() => setNewThread({ project: null })} />
@@ -152,6 +160,7 @@ export function App() {
             )}
           </div>
         )}
+        {settings && <SettingsWindow section={settings} roles={roles.data ?? []} onClose={closeSettings} />}
         {capturing && <CaptureIdeaDialog onClose={() => setCapturing(false)} />}
         {newProject && <NewProjectDialog onClose={() => setNewProject(false)} askMain={askMain} onImport={() => (setNewProject(false), setImporting(true))} />}
         {importing && <ImportDialog onClose={() => setImporting(false)} onImported={(id, channel) => (setImporting(false), openLink(`/project/${id}?thread=${encodeURIComponent(channel)}`))} />}

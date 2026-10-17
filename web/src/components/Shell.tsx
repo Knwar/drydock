@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useApi } from '../lib/api';
-import { go, href } from '../lib/router';
+import { go, href, openSettings } from '../lib/router';
 import { STAGE_LABEL, type Conversation, type IdeaCard, type ProjectSummary } from '../lib/types';
 import { Icon, type IconName } from './Icon';
 import { LiveCount } from './LiveCard';
@@ -48,7 +48,7 @@ function UsageMeter() {
   const u = useApi<{ five_hour: { pct: number } | null; seven_day: { pct: number } | null; threshold: number; high: boolean }>('/api/usage', (m) => m?.type === 'usage');
   const week = u.data?.seven_day;
   return (
-    <a className={`usage${u.data?.high ? ' high' : ''}`} href={href('/settings/usage')} onClick={go('/settings/usage')} style={{ textDecoration: 'none' }} title="Claude subscription usage this week">
+    <a className={`usage${u.data?.high ? ' high' : ''}`} href={href('/?settings=usage')} onClick={(e) => (e.preventDefault(), openSettings('usage'))} style={{ textDecoration: 'none' }} title="Claude subscription usage this week">
       <div className="usage-top">
         <span style={{ fontWeight: 600, color: u.data?.high ? 'var(--a-fg)' : 'var(--muted)' }}>{u.data?.high ? 'Usage high' : 'Usage this week'}</span>
         <span className="mono">{week ? `${week.pct}%` : '—'}</span>
@@ -159,7 +159,7 @@ function TreeRows({ nodes, depth, open, toggle }: { nodes: TreeNode[]; depth: nu
   );
 }
 
-export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking, onNewProject, threads, ideas, onNewIdea }: { projects: ProjectSummary[]; path: string; children?: React.ReactNode; mainOn: boolean; onMain: () => void; mainWorking: boolean; onNewProject: () => void; threads: ThreadCtx; ideas: IdeaCard[]; onNewIdea: () => void }) {
+export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking, onNewProject, threads, ideas, onNewIdea, settingsOpen }: { projects: ProjectSummary[]; path: string; children?: React.ReactNode; mainOn: boolean; onMain: () => void; mainWorking: boolean; onNewProject: () => void; threads: ThreadCtx; ideas: IdeaCard[]; onNewIdea: () => void; settingsOpen: boolean }) {
   const active = ideas.filter((i) => i.status !== 'parked' && i.status !== 'promoted');
   const parked = ideas.length - active.length;
   const [open, setOpen] = useState<Set<string>>(() => new Set(projects[0] ? [projects[0].id] : []));
@@ -224,7 +224,7 @@ export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking,
         <a className={`nav-row${path === '/personal' ? ' on' : ''}`} href={href('/personal')} onClick={go('/personal')}>
           <Icon name="person" /> <span className="label">Personal</span>
         </a>
-        <a className={`nav-row${path.startsWith('/settings') ? ' on' : ''}`} href={href('/settings')} onClick={go('/settings')}>
+        <a className={`nav-row${settingsOpen ? ' on' : ''}`} href={href('/?settings=integrations')} onClick={(e) => (e.preventDefault(), openSettings())}>
           <Icon name="settings" /> <span className="label">Settings</span>
         </a>
       </div>
