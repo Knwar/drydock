@@ -1,0 +1,27 @@
+{
+  "id": "content-review",
+  "title": "Content review",
+  "summary": "Reviews a chapter, article, script, post or outline against its brief, quoting evidence for every judgment, checking facts and AI-writing tells, and returning a clear pass/fail with must-fix notes.",
+  "roles": [
+    "qc",
+    "editor",
+    "reviewer"
+  ],
+  "types": [
+    "general"
+  ],
+  "source": null,
+  "basedOn": [
+    {
+      "repo": "haowjy/creative-writing-skills",
+      "path": "cw/skills/story-review",
+      "commit": "340b6838c961c9e87e63dfb12a5d8d56b080ad1f",
+      "license": "Apache-2.0",
+      "url": "https://github.com/haowjy/creative-writing-skills/tree/340b6838c961c9e87e63dfb12a5d8d56b080ad1f/cw/skills/story-review"
+    }
+  ],
+  "changes": [
+    "Written for AI Brain.",
+    "Borrowed from haowjy story-review (resources/editorial-review.md, developmental-edit.md, line-edit.md, copyedit.md): the editorial memo shape (overall diagnosis, priority order, major notes, recurring line patterns, surface patterns, revision order), the big-before-small edit-level order, the structural-action vocabulary (cut, move, expand, combine, split, reframe, seed earlier, delay payoff), and the protect-the-voice / query-before-overriding / name-patterns-not-instances discipline, paraphrased and generalized from fiction to any written or spoken piece."
+  ]
+}

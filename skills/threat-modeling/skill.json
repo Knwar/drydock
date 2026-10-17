@@ -1,0 +1,28 @@
+{
+  "id": "threat-modeling",
+  "title": "Threat Modeling",
+  "summary": "Runs STRIDE threat modeling, turns threats into testable security requirements, and maps them to controls to find gaps and prioritise mitigations.",
+  "roles": [
+    "security"
+  ],
+  "types": [
+    "software"
+  ],
+  "source": {
+    "repo": "wshobson/agents",
+    "path": "plugins/security-scanning/skills",
+    "commit": "044b4b21f083948e69ec878a7b07c8d0951a6ffa",
+    "license": "MIT",
+    "url": "https://github.com/wshobson/agents/tree/044b4b21f083948e69ec878a7b07c8d0951a6ffa/plugins/security-scanning/skills"
+  },
+  "basedOn": [],
+  "changes": [
+    "Merged three upstream skills (stride-analysis-patterns, security-requirement-extraction, threat-mitigation-mapping) into one, in the order identify threats, extract requirements, map mitigations; their concept sections kept near verbatim",
+    "Added STRIDE-per-element, risk scoring and gap rules to the body, stated in prose from the upstream Python templates (impact x likelihood thresholds, 50% coverage, 2+ layers, 2+ control types)",
+    "Converted the upstream Python class templates into markdown references (question lists, mitigations, requirement patterns, acceptance criteria, test cases, control library, coverage and roadmap formulas, report templates); no code kept",
+    "Kept the STRIDE threat model document template verbatim, fixing its broken nested code fences and the misaligned risk matrix",
+    "Removed the compliance control-ID mappings (PCI DSS, HIPAA, GDPR, OWASP ASVS 4.x numbers) because they could not be kept accurate; replaced with an instruction to look IDs up in the framework",
+    "Dropped stakeholder/collaboration items (involve stakeholders, don't work in isolation) for a solo user; merged the three Do's/Don'ts lists and removed duplicates",
+    "Replaced check/cross symbols in report templates with words"
+  ]
+}

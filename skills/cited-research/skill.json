@@ -1,0 +1,32 @@
+{
+  "id": "cited-research",
+  "title": "Cited research",
+  "summary": "Researches any question so every claim traces to source material that was actually inspected, with honest counts, attribution and gaps, plus an optional deep mode with triangulation and an adversarial pass.",
+  "roles": ["researcher", "main"],
+  "types": ["any"],
+  "source": {
+    "repo": "wshobson/agents",
+    "path": "plugins/content-marketing/skills/social-evidence-research",
+    "commit": "044b4b21f083948e69ec878a7b07c8d0951a6ffa",
+    "license": "MIT",
+    "url": "https://github.com/wshobson/agents/tree/044b4b21f083948e69ec878a7b07c8d0951a6ffa/plugins/content-marketing/skills/social-evidence-research"
+  },
+  "basedOn": [
+    {
+      "repo": "alirezarezvani/claude-skills",
+      "path": "research/deep-research/skills/deep-research",
+      "commit": "19392f7a08264ed00486a251f5b2098321771f94",
+      "license": "MIT",
+      "url": "https://github.com/alirezarezvani/claude-skills/tree/19392f7a08264ed00486a251f5b2098321771f94/research/deep-research/skills/deep-research"
+    }
+  ],
+  "changes": [
+    "Renamed from social-evidence-research to cited-research and widened it beyond social platforms: sources now include web pages, articles, papers, documents, datasets and supplied files; the workflow and rules wording was generalized (e.g. 'platforms' became 'source types and places', reposts now include syndicated copies and press-release rewrites, quoted people are attributed separately from the writer quoting them).",
+    "Added a boundary line: never invent a source, URL, quote, author, date or number.",
+    "references/evidence-record.md: generalized the platform, author, locator and duplicate-role fields, and added body-section, abstract, table/figure and dataset rows to the inspected-part list.",
+    "references/report-template.md: retitled 'Research report', generalized the protocol block, and added a 'Deep mode only' section.",
+    "references/acceptance-examples.md: unchanged apart from one sentence noting the social-post examples apply to any source.",
+    "Added an optional 'Deep mode' adapted from alirezarezvani's deep-research: existing-work check, reframing, falsifiable hypotheses, sourcing plan with opposition queries, credibility/recency/bias scoring, triangulation (3+ independent, differently-typed sources), adversarial pass, citation check and refresh targets. Dropped its per-source file/folder layout, parallel sub-agent fan-out, model selection, API-key capability discovery and cross-references to other skills.",
+    "The self-critique questions in the adversarial pass are written for this skill; upstream mentions four questions without listing them."
+  ]
+}

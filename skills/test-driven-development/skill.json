@@ -1,0 +1,24 @@
+{
+  "id": "test-driven-development",
+  "title": "Test-Driven Development",
+  "summary": "Writes the failing test first, watches it fail, then writes minimal code, and keeps tests honest (no mock assertions, no change detectors).",
+  "roles": [
+    "builder"
+  ],
+  "types": [
+    "software"
+  ],
+  "source": {
+    "repo": "obra/superpowers",
+    "path": "skills/test-driven-development",
+    "commit": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
+    "license": "MIT",
+    "url": "https://github.com/obra/superpowers/tree/bb92a77741419a4ab5f06e711a283343f1ada0c3/skills/test-driven-development"
+  },
+  "basedOn": [],
+  "changes": [
+    "'your human partner' -> 'the user'",
+    "Moved writing-good-tests.md into references/ and updated the link",
+    "references/writing-good-tests.md: replaced emoji markers with Good:/Bad:, removed the superpowers:writing-skills cross-reference"
+  ]
+}

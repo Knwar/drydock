@@ -28,6 +28,7 @@ export const SETTINGS_SECTIONS = [
   ['integrations', 'Integrations'],
   ['daily', 'The Daily'],
   ['team', 'Team & permissions'],
+  ['skills', 'Skills'],
   ['secrets', 'Secrets'],
   ['services', 'Local services'],
   ['usage', 'Usage alerts'],

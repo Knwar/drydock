@@ -1,0 +1,23 @@
+{
+  "id": "social-listening",
+  "title": "Social Listening",
+  "summary": "Researches how a product, brand, competitor or topic is discussed on social platforms and writes a cited report where every claim traces to inspected evidence.",
+  "roles": [
+    "social"
+  ],
+  "types": [
+    "any"
+  ],
+  "source": {
+    "repo": "wshobson/agents",
+    "path": "plugins/content-marketing/skills/social-evidence-research",
+    "commit": "044b4b21f083948e69ec878a7b07c8d0951a6ffa",
+    "license": "MIT",
+    "url": "https://github.com/wshobson/agents/tree/044b4b21f083948e69ec878a7b07c8d0951a6ffa/plugins/content-marketing/skills/social-evidence-research"
+  },
+  "basedOn": [],
+  "changes": [
+    "Renamed from social-evidence-research to social-listening and rewrote the description to start \"Use when\" (under 300 characters)",
+    "Body and references otherwise unchanged (upstream is already read-only: no posting, liking, messaging or logging in)"
+  ]
+}

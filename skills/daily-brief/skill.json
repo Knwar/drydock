@@ -1,0 +1,41 @@
+{
+  "id": "daily-brief",
+  "title": "Daily Brief",
+  "summary": "Acts as one person's chief of staff: inbox triage with reply drafts, calendar review, commitment tracking, note capture, a one-screen daily brief, a weekly review and delegation briefs, never sending anything itself.",
+  "roles": [
+    "main"
+  ],
+  "types": [
+    "any"
+  ],
+  "source": null,
+  "basedOn": [
+    {
+      "repo": "alirezarezvani/claude-skills",
+      "path": "productivity/email/skills/inbox-triage/references/triage_decision_framework.md",
+      "commit": "19392f7a08264ed00486a251f5b2098321771f94",
+      "license": "MIT",
+      "url": "https://github.com/alirezarezvani/claude-skills/tree/19392f7a08264ed00486a251f5b2098321771f94/productivity/email/skills/inbox-triage/references/triage_decision_framework.md"
+    },
+    {
+      "repo": "alirezarezvani/claude-skills",
+      "path": "productivity/capture/skills/capture",
+      "commit": "19392f7a08264ed00486a251f5b2098321771f94",
+      "license": "MIT",
+      "url": "https://github.com/alirezarezvani/claude-skills/tree/19392f7a08264ed00486a251f5b2098321771f94/productivity/capture/skills/capture"
+    },
+    {
+      "repo": "alirezarezvani/claude-skills",
+      "path": "productivity/weekly-review/skills/weekly-review",
+      "commit": "19392f7a08264ed00486a251f5b2098321771f94",
+      "license": "MIT",
+      "url": "https://github.com/alirezarezvani/claude-skills/tree/19392f7a08264ed00486a251f5b2098321771f94/productivity/weekly-review/skills/weekly-review"
+    }
+  ],
+  "changes": [
+    "Written for AI Brain",
+    "references/triage-framework.md adapts the inbox-triage triage decision framework (take it / worth considering / pass / flag, draft tones, VIP override, other email types); removed its KB-file, setup-question and logging references and citation list",
+    "Note-capture rules and references/capture-voice.md adapt the capture skill's principles and voice-preservation reference",
+    "The weekly review steps and checklist adapt the weekly-review skill's GTD get clear / get current / get creative loop, without its scripts or gate"
+  ]
+}

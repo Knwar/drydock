@@ -1,0 +1,24 @@
+{
+  "id": "story-planning",
+  "title": "Story planning",
+  "summary": "Brainstorms with the author without overwriting their ideas, and turns chosen direction into arc, chapter and scene structure.",
+  "roles": ["writer"],
+  "types": ["general"],
+  "source": {
+    "repo": "haowjy/creative-writing-skills",
+    "path": "cw/skills/story-planning",
+    "commit": "340b6838c961c9e87e63dfb12a5d8d56b080ad1f",
+    "license": "Apache-2.0",
+    "url": "https://github.com/haowjy/creative-writing-skills/tree/340b6838c961c9e87e63dfb12a5d8d56b080ad1f/cw/skills/story-planning"
+  },
+  "basedOn": [],
+  "changes": [
+    "Flattened the upstream router SKILL.md: the bodies of resources/creative-direction.md, resources/brainstorming.md and resources/story-architecture.md are now the SKILL.md body (headings demoted one level), with their per-file frontmatter removed.",
+    "Moved the seven sub-resources (brainstorming/* and story-architecture/*) into references/ unchanged apart from the worldbuilding edits below.",
+    "Rewrote the frontmatter description to start with 'Use when'.",
+    "Removed references to the story-memory skill, the KB decisions layer, vocab files and 'File Placement' conventions; replaced with 'durable decisions get recorded as decisions'.",
+    "Removed delegation and hand-off wording ('delegate', 'hand off to drafting', reader-sim signal before committing); kept the scaling-ceremony levels.",
+    "references/worldbuilding.md: replaced mentions of the non-existent wiki-docs skill with 'reference (canon) document / reference page'.",
+    "Updated resource links to the new references/ paths."
+  ]
+}

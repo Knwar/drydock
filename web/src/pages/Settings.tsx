@@ -1,4 +1,5 @@
 import { SETTINGS_SECTIONS } from '../components/CommandBar';
+import { SkillsSettings, type Skill } from './SkillsSettings';
 import { SecretsSettings } from './SecretsSettings';
 import { LocalServicesSettings } from './LocalServicesSettings';
 import { useEffect, useState } from 'react';
@@ -245,18 +246,21 @@ function MemberLearnings({ roleId }: { roleId: string }) {
 
 function RoleEditor({ role, onClose }: { role: Partial<Role> | null; onClose: () => void }) {
   const [form, setForm] = useState<Partial<Role>>(role ?? {});
+  const library = useApi<Skill[]>('/api/skills', (m) => m?.type === 'skills');
+  const [picked, setPicked] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
   useEffect(() => {
     setForm(role ?? {});
+    setPicked(null);
     setConfirming(false);
   }, [role]);
   if (!role) return null;
   const set = (k: keyof Role, v: string) => setForm((f) => ({ ...f, [k]: v }));
   const save = async () => {
     try {
-      await api('/api/roles', { body: form });
+      await api('/api/roles', { body: { ...form, ...(picked ? { skills: picked } : {}) } });
       onClose();
     } catch (e) {
       setError((e as Error).message);
@@ -273,11 +277,32 @@ function RoleEditor({ role, onClose }: { role: Partial<Role> | null; onClose: ()
           <option value="">Default{form.default_effort ? ` (${form.default_effort})` : ''}</option>
           {['low', 'medium', 'high', 'xhigh', 'max'].map((e) => <option key={e} value={e}>{e[0].toUpperCase() + e.slice(1)}</option>)}
         </select></label>
-        <label>Skill<input className="input mono" placeholder="e.g. marketing:campaign-plan" value={form.skill ?? ''} onChange={(e) => set('skill', e.target.value)} /></label>
+        <label>Your own Claude Code skill (optional)<input className="input mono" placeholder="e.g. marketing:campaign-plan" value={form.skill ?? ''} onChange={(e) => set('skill', e.target.value)} /></label>
       </div>
-      <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }} className="muted">Persona (system prompt)
-        <textarea className="input" rows={8} style={{ fontSize: 13, color: 'var(--text)' }} value={form.persona ?? ''} onChange={(e) => set('persona', e.target.value)} placeholder="Who this team member is and how they work…" />
+      {role.contract && (
+        <details className="contract">
+          <summary>How {role.name} works in AI Brain <span className="muted">· built in, always applies</span></summary>
+          <pre>{role.contract}</pre>
+        </details>
+      )}
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }} className="muted">About this member: character, focus, extra rules (yours to change)
+        <textarea className="input" rows={5} style={{ fontSize: 13, color: 'var(--text)' }} value={form.persona ?? ''} onChange={(e) => set('persona', e.target.value)} placeholder="How they should come across and what to focus on…" />
       </label>
+      {(library.data ?? []).length > 0 && (
+        <fieldset className="skill-pick">
+          <legend className="muted">Skills <span style={{ fontWeight: 400 }}>· loaded when the work calls for it; edit them under Settings › Skills</span></legend>
+          {(library.data ?? []).map((k) => {
+            const list = picked ?? role.skill_list ?? [];
+            const on = list.includes(k.id);
+            return (
+              <label key={k.id} title={k.summary}>
+                <input type="checkbox" checked={on} onChange={() => setPicked(on ? list.filter((x) => x !== k.id) : [...list, k.id])} />
+                <span>{k.title}{role.default_skills?.includes(k.id) && <span className="muted"> · default</span>}</span>
+              </label>
+            );
+          })}
+        </fieldset>
+      )}
       {role.id && <MemberLearnings roleId={role.id} />}
       {error && <div className="error">{error}</div>}
       {confirming ? (
@@ -346,21 +371,21 @@ function Team({ roles }: { roles: Role[] }) {
   return (
     <>
       <div className="settings-head">
-        <div><h1>Team &amp; permissions</h1><p className="muted">Each role is a Claude Code session started with its persona and skill. Shared roles see every project; project roles see only theirs.</p></div>
+        <div><h1>Team &amp; permissions</h1><p className="muted">Each member is a Claude Code session: how it works in AI Brain is built in; its character and skills are yours to change. Shared roles see every project; project roles see only theirs.</p></div>
         <button className="btn primary" onClick={() => setAdding(true)}>+ Add member</button>
       </div>
       {adding && <AddMemberDialog onClose={() => setAdding(false)} onAdded={() => setAdding(false)} />}
       <RoleEditor role={editing} onClose={() => setEditing(null)} />
       <section className="panel scroll-x" style={{ padding: '6px 18px 10px' }}>
         <table className="table">
-          <thead><tr><th>Role</th><th>Scope</th><th>Model</th><th>Skill</th><th /></tr></thead>
+          <thead><tr><th>Role</th><th>Scope</th><th>Model</th><th>Skills</th><th /></tr></thead>
           <tbody>
             {roles.map((r) => (
               <tr key={r.id}>
                 <td><span style={{ display: 'flex', alignItems: 'center', gap: 10 }}><span className={`avatar t-${r.tone}`}>{r.initials}</span><strong>{r.name}</strong></span></td>
                 <td><span className={`pill ${r.scope === 'shared' ? 't-v' : r.scope === 'global' ? 't-b' : 't-g'}`}>{r.scope}</span></td>
                 <td className="muted">{r.model}</td>
-                <td className="mono" style={{ fontSize: 12 }}>{r.skill ?? '—'}</td>
+                <td style={{ fontSize: 12 }}>{r.skill_list?.length ? `${r.skill_list.length} skill${r.skill_list.length === 1 ? '' : 's'}` : '—'}{r.skill ? <span className="mono muted"> + {r.skill}</span> : null}</td>
                 <td style={{ textAlign: 'right' }}><button className="btn sm" onClick={() => setEditing(r)}>Edit</button></td>
               </tr>
             ))}
@@ -548,6 +573,7 @@ export function Settings({ section, roles }: { section: string; roles: Role[] })
         {cur === 'integrations' && <Integrations />}
         {cur === 'daily' && <DailySettingsPage />}
         {cur === 'team' && <Team roles={roles} />}
+        {cur === 'skills' && <SkillsSettings roles={roles} />}
         {cur === 'secrets' && <SecretsSettings />}
         {cur === 'services' && <LocalServicesSettings />}
         {cur === 'usage' && <Usage />}

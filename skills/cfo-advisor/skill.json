@@ -1,0 +1,28 @@
+{
+  "id": "cfo-advisor",
+  "title": "CFO Advisor",
+  "summary": "Gives a founder CFO-level judgment on burn, runway, unit economics, cash management, cut-vs-invest calls, fundraising, valuation, dilution and term sheets.",
+  "roles": [
+    "cfo"
+  ],
+  "types": [
+    "any"
+  ],
+  "source": {
+    "repo": "alirezarezvani/claude-skills",
+    "path": "c-level-advisor/skills/cfo-advisor",
+    "commit": "19392f7a08264ed00486a251f5b2098321771f94",
+    "license": "MIT",
+    "url": "https://github.com/alirezarezvani/claude-skills/tree/19392f7a08264ed00486a251f5b2098321771f94/c-level-advisor/skills/cfo-advisor"
+  },
+  "basedOn": [],
+  "changes": [
+    "Rewrote the frontmatter (removed license and metadata keys) and the description; reframed for a founder acting as their own CFO",
+    "Replaced the Python script Quick Start and script resources with a Core Calculations section stating the formulas the scripts computed (runway month by month, burn multiple, cohort churn, LTV, CAC payback, blended CAC/LTV, option pool top-up, price per share, simple exit)",
+    "Removed the C-suite integration table, the agent-protocol quality loop, company-context.md, board-meeting and [INVOKE] instructions, and emoji confidence markers (kept the output format and verified/medium/assumed tags)",
+    "Replaced board-pack framing with investor updates (responsibilities table, output artifacts)",
+    "references/cash_management.md: removed dated bank, fund and yield specifics and vendor credit amounts; replaced AR team/CSM/CFO roles with solo-founder wording; board became investors",
+    "references/financial_planning.md: cut the Series B and Series C+ stage blocks and board reporting roles; removed company names from NDR benchmarks; cut a pipeline-meetings line and a runway row whose arithmetic didn't hold; corrected the Magic Number formula (upstream multiplied net new ARR by 4)",
+    "references/fundraising_playbook.md: cut Series B/C sections and dated round-size, valuation and revenue-multiple ranges (pointing to current market data); replaced the inconsistent fund-math example with the principle; labelled the comps example as illustrative; reworded the 409A line; investor updates are drafted for the founder to send"
+  ]
+}

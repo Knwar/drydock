@@ -1,0 +1,29 @@
+{
+  "id": "launch-planning",
+  "title": "Launch Planning",
+  "summary": "Plans product and feature launches (readiness gate, ORB channels, five phases, Product Hunt, checklists) and turns shipped work into changelog and announcement drafts.",
+  "roles": [
+    "marketing"
+  ],
+  "types": [
+    "any"
+  ],
+  "source": {
+    "repo": "coreyhaines31/marketingskills",
+    "path": "skills/launch",
+    "commit": "365b412152b9542499ca1439426f7fc3cc92bb65",
+    "license": "MIT",
+    "url": "https://github.com/coreyhaines31/marketingskills/tree/365b412152b9542499ca1439426f7fc3cc92bb65/skills/launch"
+  },
+  "basedOn": [],
+  "changes": [
+    "Renamed from launch to launch-planning, rewrote the description, removed the metadata/version key",
+    "Added one line stating every email, post, listing and announcement is a draft for the user's approval; the user sends, posts, schedules or publishes",
+    "Launch Day checklist: added a note that the user publishes, and changed \"Social posts scheduled and posted\" to \"Social posts drafted and approved\"",
+    "Replaced the .agents/product-marketing.md path with the project's product marketing note",
+    "Removed the Introw affiliate-tool link; replaced the Related Skills list with skills in this library",
+    "references/shipped-changes.md: replaced the git log command with a plain description of the inputs; removed references to marketing-loops, content-strategy, competitors, copywriting, emails",
+    "references/site-launch-qa.md: removed references to conversion-tracking and site-architecture skills, and the Ploy verified-partner promotion and its disclosure line",
+    "Moved the Product Hunt Launch Strategy section verbatim into references/product-hunt.md to keep the body under ~350 lines, leaving a short pointer"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "id": "architecture-decisions",
+  "title": "Architecture Decision Records",
+  "summary": "Writes clear ADRs and RFCs that capture the context, options, decision and consequences of significant technical choices.",
+  "roles": [
+    "architect",
+    "cto"
+  ],
+  "types": [
+    "software"
+  ],
+  "source": {
+    "repo": "wshobson/agents",
+    "path": "plugins/documentation-generation/skills/architecture-decision-records",
+    "commit": "044b4b21f083948e69ec878a7b07c8d0951a6ffa",
+    "license": "MIT",
+    "url": "https://github.com/wshobson/agents/tree/044b4b21f083948e69ec878a7b07c8d0951a6ffa/plugins/documentation-generation/skills/architecture-decision-records"
+  },
+  "basedOn": [],
+  "changes": [
+    "Renamed from architecture-decision-records to architecture-decisions and rewrote the description to start with \"Use when\"",
+    "Replaced the fixed docs/adr/ directory layout with neutral wording (record ADRs where the role's instructions say), keeping the numbering, index and superseding rules",
+    "Changed \"Submit PR for review\" to \"Have it reviewed\" in the index instructions",
+    "Removed the adr-tools automation section (brew install and CLI commands)",
+    "Trimmed team-process items from the review checklist (2 senior engineers, affected teams consulted, team notified, tickets created) to fit a solo founder: review by someone other than the author, implementation work identified",
+    "References copied unchanged"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "id": "social-content",
+  "title": "Social Content",
+  "summary": "Drafts social posts, threads, carousels and short-form video scripts, plans a content calendar, repurposes long content, and builds a daily list of posts to comment on, all as drafts for the user to post.",
+  "roles": [
+    "social"
+  ],
+  "types": [
+    "any"
+  ],
+  "source": {
+    "repo": "coreyhaines31/marketingskills",
+    "path": "skills/social",
+    "commit": "365b412152b9542499ca1439426f7fc3cc92bb65",
+    "license": "MIT",
+    "url": "https://github.com/coreyhaines31/marketingskills/tree/365b412152b9542499ca1439426f7fc3cc92bb65/skills/social"
+  },
+  "basedOn": [],
+  "changes": [
+    "Renamed from social to social-content, rewrote the description (no scheduling), removed the metadata/version key",
+    "Removed the Scheduling Best Practices section and the Publishing From Your Agent section (posting/scheduling through MCP or APIs)",
+    "Added one line that every post, comment, reply and DM is a draft for the user, who publishes or schedules it; engagement routine and batching steps now hand drafts to the user; \"Schedule across\" became \"Plan across\"",
+    "Moved the Short-Form Video section verbatim into references/short-form-basics.md to keep the body under ~350 lines, leaving a pointer",
+    "Replaced the .agents/product-marketing.md path; replaced references to copywriting, cold-email, ad-creative, influencer-marketing and other upstream skills with skills in this library or removed them",
+    "references/listening.md: replaced the curl/jq recipes and install steps with a prose list of the same public sources and fields; replaced dev-browser/Playwright instructions with a tool-agnostic logged-in browser session (never entering credentials); replaced .agents/ paths and cp commands",
+    "references/listening-sources-template.md: same path, dev-browser and curl replacements",
+    "references/short-form-video.md: removed the ad-creative cross-reference; batch step 5 now has the user queue posts",
+    "references/platforms.md: removed the influencer-marketing link",
+    "references/reverse-engineering.md: replaced the emoji do/don't markers with \"Weak:\" and \"Strong:\"",
+    "references/short-form-basics.md: cut the unsourced \"captions increase watch time by 25-40%\" statistic"
+  ]
+}

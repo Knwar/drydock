@@ -1,0 +1,37 @@
+{
+  "id": "cto-advisor",
+  "title": "CTO Advisor",
+  "summary": "Gives grounded technical leadership advice: tech debt priorities, build vs buy, architecture pressure-tests and the biggest technical risks.",
+  "roles": [
+    "cto"
+  ],
+  "types": [
+    "any"
+  ],
+  "source": {
+    "repo": "alirezarezvani/claude-skills",
+    "path": "c-level-advisor/skills/cto-advisor",
+    "commit": "19392f7a08264ed00486a251f5b2098321771f94",
+    "license": "MIT",
+    "url": "https://github.com/alirezarezvani/claude-skills/tree/19392f7a08264ed00486a251f5b2098321771f94/c-level-advisor/skills/cto-advisor"
+  },
+  "basedOn": [
+    {
+      "repo": "alirezarezvani/claude-skills",
+      "path": "c-level-agents/skills/cto-review",
+      "commit": "19392f7a08264ed00486a251f5b2098321771f94",
+      "license": "MIT",
+      "url": "https://github.com/alirezarezvani/claude-skills/tree/19392f7a08264ed00486a251f5b2098321771f94/c-level-agents/skills/cto-review"
+    }
+  ],
+  "changes": [
+    "Removed metadata and license frontmatter keys; rewrote the description to start with \"Use when\"",
+    "Removed the Quick Start and the tech_debt_analyzer.py step; the tech debt workflow now builds the inventory by hand and keeps the upstream priority formula (Severity x Blast Radius) / Cost-to-fix",
+    "Removed big-company content: engineering team leadership and scaling ratios, C-suite integration table, CTO metrics dashboard, team-scaling output, stakeholder sign-offs, all-hands communication",
+    "Removed the agent-protocol quality loop, company-context.md, [INVOKE] and board-meeting instructions; kept the output format line and replaced emoji confidence tags with words",
+    "Shortened the ADR workflow to a checkpoint that points to the architecture-decisions skill",
+    "Added cto-review's six questions and review output format, with scripts, /cs: routing, cs-ciso-advisor sign-off and emoji verdicts removed; team-scaling question reworded for a solo builder",
+    "Kept references/technology_evaluation_framework.md unchanged; dropped engineering_metrics.md and architecture_decision_records.md (big-org dashboards; ADRs covered by architecture-decisions)",
+    "Scripts not copied"
+  ]
+}

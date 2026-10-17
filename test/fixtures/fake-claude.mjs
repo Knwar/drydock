@@ -24,12 +24,12 @@ if (prompt.includes('NEEDS_APPROVAL')) {
 if (prompt.includes('Reply as') && prompt.includes('nothing to add')) reply = 'PASS';
 // handover chain for tests: "HANDOFF to @X" makes this role mention X back; never-ending on purpose
 const handoff = /HANDOFF/.test(prompt);
-if (handoff) reply = `done, over to you HANDOFF to ${args[args.indexOf('--append-system-prompt') + 1].includes('You are the CTO') ? '@QC' : '@CTO'}`;
+if (handoff) reply = `done, over to you HANDOFF to ${args[args.indexOf('--append-system-prompt') + 1].includes('Your job: CTO') ? '@QC' : '@CTO'}`;
 out({ type: 'stream_event', event: { type: 'message_start' } });
 out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: reply } } });
 // a session refresh asks for a handover note; record what the system prompt and effort were for the tests
 if (prompt.includes('Your session is being refreshed')) reply = `HANDOVER NOTE for ${resumed}`;
-if (process.env.FAKE_CLAUDE_LOG) (await import('node:fs')).appendFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify({ prompt: prompt.slice(0, 300), resumed, effort: val('--effort'), system: val('--append-system-prompt'), disabled: (() => { try { return JSON.parse(readFileSync(val('--mcp-config'), 'utf8')).mcpServers.brain.env.BRAIN_DISABLED_TOOLS; } catch { return null; } })() }) + '\n');
+if (process.env.FAKE_CLAUDE_LOG) (await import('node:fs')).appendFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify({ prompt: prompt.slice(0, 300), resumed, effort: val('--effort'), system: val('--append-system-prompt'), plugin: val('--plugin-dir'), disabled: (() => { try { return JSON.parse(readFileSync(val('--mcp-config'), 'utf8')).mcpServers.brain.env.BRAIN_DISABLED_TOOLS; } catch { return null; } })() }) + '\n');
 // usage like the real CLI: the first call writes the cache, resumed ones read it
 const usage = resumed ? { input_tokens: 50, cache_creation_input_tokens: 100, cache_read_input_tokens: 5000, output_tokens: 20 } : { input_tokens: 50, cache_creation_input_tokens: 5000, cache_read_input_tokens: 0, output_tokens: 20 };
 out({ type: 'assistant', message: { content: [{ type: 'text', text: reply }], usage } });

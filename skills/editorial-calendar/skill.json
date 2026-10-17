@@ -1,0 +1,21 @@
+{
+  "id": "editorial-calendar",
+  "title": "Editorial calendar",
+  "summary": "Plans a sustainable publishing schedule for books, newsletters, podcasts, blogs or social: pillars, realistic cadence, back-scheduled dependencies, buffers, key dates and repurposing.",
+  "roles": ["social", "podcast", "writer"],
+  "types": ["any"],
+  "source": null,
+  "basedOn": [
+    {
+      "repo": "coreyhaines31/marketingskills",
+      "path": "skills/content-strategy",
+      "commit": "365b412152b9542499ca1439426f7fc3cc92bb65",
+      "license": "MIT",
+      "url": "https://github.com/coreyhaines31/marketingskills/tree/365b412152b9542499ca1439426f7fc3cc92bb65/skills/content-strategy"
+    }
+  ],
+  "changes": [
+    "Written for AI Brain.",
+    "Borrowed from coreyhaines31 content-strategy: the 3-5 content pillars idea and ways to find them (product/audience/search/competitor-led), the weighted idea-scoring table (40/30/20/10, renamed to neutral factors), the 60/30/10 starting mix, and the create-once/distribute-many repurposing principle."
+  ]
+}

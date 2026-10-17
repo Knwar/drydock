@@ -1,0 +1,27 @@
+{
+  "id": "sharp-edges",
+  "title": "Sharp Edges",
+  "summary": "Finds error-prone APIs, dangerous defaults and configuration footguns that make security mistakes easy, and rates how severe each one is.",
+  "roles": [
+    "security",
+    "reviewer"
+  ],
+  "types": [
+    "software"
+  ],
+  "source": {
+    "repo": "trailofbits/skills",
+    "path": "plugins/sharp-edges/skills/sharp-edges",
+    "commit": "5c99c03fb8a9ea568432ecbcba5d86e9f4ac2bf0",
+    "license": "CC-BY-SA-4.0",
+    "url": "https://github.com/trailofbits/skills/tree/5c99c03fb8a9ea568432ecbcba5d86e9f4ac2bf0/plugins/sharp-edges/skills/sharp-edges"
+  },
+  "basedOn": [],
+  "changes": [
+    "Removed the allowed-tools frontmatter key and rewrote the description to start with \"Use when\"",
+    "Removed the Agent section that pointed to the sharp-edges-analyzer agent",
+    "Added the CC BY-SA attribution line at the end of the body; the adapted SKILL.md stays under CC BY-SA 4.0",
+    "Did not copy agents/openai.yaml or the logo asset",
+    "References copied unchanged"
+  ]
+}

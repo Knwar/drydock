@@ -1,0 +1,26 @@
+{
+  "id": "financial-modeling",
+  "title": "Financial Modeling",
+  "summary": "Builds startup financial models: cohort revenue, costs, headcount, cash flow, burn and runway, unit economics, scenarios and funding rounds.",
+  "roles": [
+    "cfo"
+  ],
+  "types": [
+    "any"
+  ],
+  "source": {
+    "repo": "wshobson/agents",
+    "path": "plugins/startup-business-analyst/skills/startup-financial-modeling",
+    "commit": "044b4b21f083948e69ec878a7b07c8d0951a6ffa",
+    "license": "MIT",
+    "url": "https://github.com/wshobson/agents/tree/044b4b21f083948e69ec878a7b07c8d0951a6ffa/plugins/startup-business-analyst/skills/startup-financial-modeling"
+  },
+  "basedOn": [],
+  "changes": [
+    "Renamed from startup-financial-modeling, rewrote the description, removed the version key",
+    "Fixed the sign of the burn formula (Monthly Burn = Expenses - Revenue; upstream had it reversed)",
+    "Replaced the note about moving a section to fit Codex's 8 KB cap with a pointer summarising references/details.md",
+    "Changed \"Used for board reporting\" to \"Used for reporting to investors\"",
+    "references/details.md: retitled only"
+  ]
+}

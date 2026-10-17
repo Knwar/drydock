@@ -1,0 +1,23 @@
+{
+  "id": "podcast-production",
+  "title": "Podcast episode production",
+  "summary": "Structures podcast episodes as stories, using Ira Glass's anecdote-plus-reflection method, episode arcs, good-tape selection and writing for the ear.",
+  "roles": ["podcast"],
+  "types": ["any"],
+  "source": {
+    "repo": "guia-matthieu/clawfu-skills",
+    "path": "skills/audio/podcast-production",
+    "commit": "4108f5c010ccaa8b5707fa05ca1d888ae167e548",
+    "license": "MIT",
+    "url": "https://github.com/guia-matthieu/clawfu-skills/tree/4108f5c010ccaa8b5707fa05ca1d888ae167e548/skills/audio/podcast-production"
+  },
+  "basedOn": [],
+  "changes": [
+    "Frontmatter reduced to name and description; removed license, metadata and the mcp-server entry; description rewritten to start with 'Use when'.",
+    "Removed the closing 'Skill Metadata (Internal Use)' block (vendor metadata, including an 'estimated value' claim).",
+    "Cut an unverifiable Alex Blumberg quote and the '30+ years and thousands of episodes' claim from 'Why This Matters'; the good-tape checklist is no longer attributed to Blumberg by name.",
+    "Removed '(Gimlet Academy)' from the Blumberg course reference because the venue could not be confirmed.",
+    "Moved the three worked examples to references/examples.md and the checklists and templates to references/templates.md (unchanged text), with pointers in SKILL.md.",
+    "Related Skills now lists only podcast-interview and show-notes; dropped remote-interview, transcription-to-content and audio-editing, which are not in this library."
+  ]
+}

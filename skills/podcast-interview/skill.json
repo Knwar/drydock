@@ -1,0 +1,23 @@
+{
+  "id": "podcast-interview",
+  "title": "Podcast interviewing",
+  "summary": "Prepares and runs podcast interviews that get stories rather than talking points: guest research, question design, follow-ups and handling difficult moments.",
+  "roles": ["podcast"],
+  "types": ["any"],
+  "source": {
+    "repo": "guia-matthieu/clawfu-skills",
+    "path": "skills/audio/podcast-interview",
+    "commit": "4108f5c010ccaa8b5707fa05ca1d888ae167e548",
+    "license": "MIT",
+    "url": "https://github.com/guia-matthieu/clawfu-skills/tree/4108f5c010ccaa8b5707fa05ca1d888ae167e548/skills/audio/podcast-interview"
+  },
+  "basedOn": [],
+  "changes": [
+    "Frontmatter reduced to name and description; removed license, metadata and the mcp-server entry; description rewritten to start with 'Use when'.",
+    "Removed the closing 'Skill Metadata (Internal Use)' block (vendor metadata, including an 'estimated value' claim).",
+    "Removed emoji markers from the question-types hierarchy and the examples.",
+    "Unsourced quotations turned into plain statements: the core-principle quote lost its quote marks, 'Tim Ferriss's Rule' became 'Rule' and 'NPR Rule' became 'Rule of thumb', because the attributions could not be verified.",
+    "Moved the two worked examples to references/examples.md (with a note that the example guest and deal are invented) and the checklists and question bank to references/templates.md, with pointers in SKILL.md.",
+    "Related Skills now lists only podcast-production and show-notes; dropped remote-interview, voiceover-direction and transcription-to-content, which are not in this library."
+  ]
+}

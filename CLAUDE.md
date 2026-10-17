@@ -37,7 +37,7 @@ Any card touching shared/central files (package manifests, routing, DI container
 2. **Dispatch**: create the isolation worktree, then record the assignment, then spawn the builder:
    - `brain worktree add <id>` (creates `.trees/<id>` on branch `card/<id>`)
    - `assign_card(task_id, <agent label>, .trees/<id>, card/<id>)` — pass a **team member's name/id** as the agent (see `get_team`) and the card picks up that persona's `skill`. The assign response and the card carry the resolved `skill`.
-   - Spawn `builder` with: card id, the full requirements text, the worktree path, **and, if the card has a `skill`, that skill name** so the builder loads it.
+   - Spawn `builder` with: card id, the full requirements text, the worktree path, **and the skills to load**: the card's `skill` if it has one, plus any your own instructions name for builders.
 3. **Parallelism**: dispatch two builders at once only when their cards have disjoint `depends_on` AND disjoint file scope — spawn both Task calls in a single message so they run concurrently. Never two builders in one worktree.
 4. **Review**: when a card reaches `in_review`, first run `brain verify <id>` (the project's tests, lint and typecheck). If it fails, skip the review: fold the failure into the card and send it back to the builder (as a fail below). If it passes, get the real diff yourself — `git -C .trees/<id> diff main...card/<id>` — and spawn `reviewer` with: card id, requirements, that diff, and the worktree path. The reviewer judges the diff, never the builder's self-report.
 5. **Route the verdict** (your judgment):

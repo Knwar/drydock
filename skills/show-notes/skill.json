@@ -1,0 +1,12 @@
+{
+  "id": "show-notes",
+  "title": "Show notes and episode packaging",
+  "summary": "Writes show notes, titles, descriptions, chapter markers, episode scripts and repurposing plans from a transcript, without fabricating quotes, timestamps or links.",
+  "roles": ["podcast"],
+  "types": ["any"],
+  "source": null,
+  "basedOn": [],
+  "changes": [
+    "Written for AI Brain."
+  ]
+}

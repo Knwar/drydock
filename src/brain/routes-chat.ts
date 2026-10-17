@@ -27,6 +27,8 @@ import { addFromTemplate, deleteRole, effectiveEffort, getRole, listRoles, ROLE_
 import { HttpError, on, type ApiCtx } from './router.js';
 import { activeRuns, respond, stopRun, toolSummary } from './runner.js';
 import { currentWorkspace } from './workspace.js';
+import { contractFor } from './contracts.js';
+import { defaultSkills, roleSkills } from './skills.js';
 
 const need = <T>(v: T | undefined | null, what: string): T => {
   if (v === undefined || v === null) throw new HttpError(404, `unknown ${what}`);
@@ -35,7 +37,10 @@ const need = <T>(v: T | undefined | null, what: string): T => {
 
 // ── roles ─────────────────────────────────────────────────────────
 
-on('GET', '/api/roles', (_q, res, _u, ctx) => ctx.json(res, 200, listRoles(ctx.db()).map((r) => ({ ...r, default_effort: effectiveEffort({ id: r.id, effort: null }) }))));
+// each role with its app-owned contract (read-only in the app) and its resolved skills
+on('GET', '/api/roles', (_q, res, _u, ctx) =>
+  ctx.json(res, 200, listRoles(ctx.db()).map((r) => ({ ...r, default_effort: effectiveEffort({ id: r.id, effort: null }), contract: contractFor(r), skill_list: roleSkills(r), default_skills: defaultSkills(r.id) }))),
+);
 
 on('GET', '/api/role-templates', (_q, res, _u, ctx) => {
   const have = new Set(listRoles(ctx.db()).map((r) => r.id));
@@ -47,7 +52,9 @@ on('POST', '/api/roles', async (req, res, _u, ctx) => {
   if (!b?.name && !b?.template) throw new HttpError(400, 'name or template required');
   let role;
   try {
-    role = b.template ? addFromTemplate(ctx.db(), String(b.template)) : saveRole(ctx.db(), b);
+    // skills: a list of library ids, or null for the role's defaults
+    const skills = b.skills === undefined ? undefined : Array.isArray(b.skills) ? JSON.stringify(b.skills.map(String)) : null;
+    role = b.template ? addFromTemplate(ctx.db(), String(b.template)) : saveRole(ctx.db(), { ...b, skills });
   } catch (err) {
     throw new HttpError(400, (err as Error).message);
   }

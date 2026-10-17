@@ -1,0 +1,16 @@
+{
+  "id": "c4-system-design",
+  "title": "C4 System Design",
+  "summary": "Models a system's architecture with the C4 model: context, containers, components, deployment and dynamic views, traced to requirements.",
+  "roles": [
+    "architect"
+  ],
+  "types": [
+    "software"
+  ],
+  "source": null,
+  "basedOn": [],
+  "changes": [
+    "Written for AI Brain"
+  ]
+}

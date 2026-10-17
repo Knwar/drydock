@@ -1,0 +1,22 @@
+{
+  "id": "writing-craft",
+  "title": "Fiction writing craft",
+  "summary": "Writes and revises fiction on the page: distance, voice, rhythm, interiority, POV, scenes, dialogue and pacing, with genre and continuity checks.",
+  "roles": ["writer"],
+  "types": ["general"],
+  "source": {
+    "repo": "haowjy/creative-writing-skills",
+    "path": "cw/skills/creative-writing-craft",
+    "commit": "340b6838c961c9e87e63dfb12a5d8d56b080ad1f",
+    "license": "Apache-2.0",
+    "url": "https://github.com/haowjy/creative-writing-skills/tree/340b6838c961c9e87e63dfb12a5d8d56b080ad1f/cw/skills/creative-writing-craft"
+  },
+  "basedOn": [],
+  "changes": [
+    "Renamed the skill from creative-writing-craft to writing-craft and rewrote the frontmatter description to start with 'Use when'.",
+    "Flattened the upstream router SKILL.md: the bodies of resources/prose-writing.md and resources/scene-construction.md are now the SKILL.md body, with their per-file frontmatter removed.",
+    "Removed references to the /writing-principles and /creative-writing-modes skills; replaced the /creative-writing-craft and /story-planning cross-links with in-file pointers and the story-planning skill.",
+    "Moved resources/style-analysis.md and resources/genre/* into references/; style-analysis.md lost its frontmatter, and its orchestrator/'-f' file-passing and 'issues directory' wording became tool-neutral.",
+    "Added cw/skills/story-review/resources/prose-critique/continuity.md as references/continuity.md, unchanged."
+  ]
+}

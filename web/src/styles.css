@@ -417,3 +417,15 @@ button.chev-btn:hover { background: var(--hover); }
 .live-count { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .live-count .live-dot { width: 8px; height: 8px; flex-basis: 8px; }
 @media (max-width: 900px) { .live-count { display: none; } }
+
+/* Settings › Team: the built-in contract and the skill picker; Settings › Skills: diffs */
+.contract { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; font-size: 13px; }
+.contract summary { cursor: pointer; font-weight: 600; }
+.contract pre { white-space: pre-wrap; font-family: inherit; font-size: 12.5px; line-height: 1.5; color: var(--muted); margin: 8px 0 0; max-height: 320px; overflow: auto; }
+.skill-pick { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px 10px; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 14px; }
+.skill-pick legend { font-size: 12px; font-weight: 600; padding: 0 4px; }
+.skill-pick label { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.diff { margin: 0; max-height: 440px; overflow: auto; font-size: 12px; line-height: 1.45; border: 1px solid var(--border); border-radius: 10px; padding: 8px 0; white-space: pre-wrap; word-break: break-word; }
+.diff > div { padding: 0 10px; }
+.diff .add { background: var(--g-bg, rgba(40, 160, 80, 0.12)); }
+.diff .del { background: var(--r-bg, rgba(200, 60, 60, 0.12)); text-decoration: line-through; text-decoration-color: rgba(200, 60, 60, 0.4); }

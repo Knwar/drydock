@@ -1,0 +1,29 @@
+{
+  "id": "systematic-debugging",
+  "title": "Systematic Debugging",
+  "summary": "Finds the root cause before fixing anything: reproduce, trace, compare, test one hypothesis, fix at the source.",
+  "roles": [
+    "builder"
+  ],
+  "types": [
+    "software"
+  ],
+  "source": {
+    "repo": "obra/superpowers",
+    "path": "skills/systematic-debugging",
+    "commit": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
+    "license": "MIT",
+    "url": "https://github.com/obra/superpowers/tree/bb92a77741419a4ab5f06e711a283343f1ada0c3/skills/systematic-debugging"
+  },
+  "basedOn": [],
+  "changes": [
+    "'your human partner' -> 'the user'",
+    "superpowers:test-driven-development and superpowers:verification-before-completion -> this library's test-driven-development and verification-before-completion skills",
+    "Moved supporting technique files into references/ and updated paths",
+    "Replaced the unsourced '95%' figure with 'Most'",
+    "references/root-cause-tracing.md: replaced the find-polluter.sh script with a prose description of the same one-test-at-a-time check; removed the Real-World Impact anecdote",
+    "references/condition-based-waiting.md: replaced emoji markers with Good:/Bad:, removed the pointer to the .ts example and the Real-World Impact anecdote",
+    "references/defense-in-depth.md: removed the '1847 tests' figure",
+    "Did not copy find-polluter.sh, condition-based-waiting-example.ts, CREATION-LOG.md or test-pressure/test-academic files"
+  ]
+}

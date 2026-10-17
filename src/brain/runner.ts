@@ -14,7 +14,9 @@ import { addMessage, countTurn, getConversation, getSession, listMessages, membe
 import { effectiveEffort, getRole, listRoles, type Role } from './roles.js';
 import { blockedServers, listServers, recordTools, toolPolicies } from './integrations.js';
 import { activeLearnings, memoryDigest, projectMembers } from './teamwork.js';
-import { disabledTools, projectPlugins } from './plugins.js';
+import { disabledTools, projectPlugins, projectType } from './plugins.js';
+import { contractFor } from './contracts.js';
+import { PLUGIN, pluginDir, runSkills, skillById, subagentSkills } from './skills.js';
 import { onRateLimit } from './usage.js';
 import { currentWorkspace } from './workspace.js';
 
@@ -26,7 +28,7 @@ const TSX_LOADER = createRequire(import.meta.url).resolve('tsx/esm');
 const CLAUDE_BIN = process.env.BRAIN_CLAUDE_BIN ?? 'claude';
 
 /** Tools every role may use without asking: reading, searching, and AI Brain's own tools. */
-export const ALWAYS_ALLOWED = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'mcp__brain'];
+export const ALWAYS_ALLOWED = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'Skill', 'mcp__brain'];
 /** Project roles also run the board, its subagents and per-card worktrees without asking. */
 export const PROJECT_ALLOWED = ['mcp__kanban', 'Task', 'Bash(brain worktree:*)', 'Bash(brain verify:*)', 'Bash(brain security-scan:*)'];
 /** Secrets are reached only through the brain secret tools (approval + Touch ID), never the managers' CLIs or the Keychain directly. */
@@ -65,8 +67,17 @@ function systemPrompt(role: Role, conversationId: string): string {
   // Order matters for the prompt cache: the same text must come first on every
   // run, so fixed parts lead and the parts that change (team, learnings, project
   // memory) come last. No clock here: each turn's message carries the time.
-  const lines = [role.persona];
-  if (role.skill) lines.push('', `Use the ${role.skill} skill when it fits the task.`);
+  // the contract (app-owned) leads; the user's persona and the skills follow and never override it
+  const lines = [contractFor(role)];
+  if (role.persona.trim()) lines.push('', '## About you (set by the user)', role.persona.trim());
+  const sk = agentSkills(role, conv.project_id);
+  if (sk.own.length || role.skill) {
+    lines.push('', '## Your skills', 'Load the matching skill with the Skill tool before you do that kind of work. Where a skill disagrees with the rules above, the rules above win.');
+    lines.push(...sk.own.map((id) => `- ${PLUGIN}:${id}: ${skillById(id)?.summary ?? ''}`));
+    if (role.skill) lines.push(`- ${role.skill} (one of the user's own skills): use it when it fits.`);
+  }
+  if (sk.builder.length || sk.reviewer.length)
+    lines.push('', 'When you dispatch subagents, name these skills in the brief so they load them:', ...(sk.builder.length ? [`- builder: ${sk.builder.map((id) => `${PLUGIN}:${id}`).join(', ')}`] : []), ...(sk.reviewer.length ? [`- reviewer: ${sk.reviewer.map((id) => `${PLUGIN}:${id}`).join(', ')}`] : []));
   lines.push(
     '',
     '## Secrets',
@@ -106,6 +117,13 @@ function systemPrompt(role: Role, conversationId: string): string {
     lines.push('', memoryDigest(db, conv.project_id));
   }
   return lines.join('\n');
+}
+
+/** The library skills a run gets: the role's own, plus (for the PM) those it hands its builders and reviewers. */
+function agentSkills(role: Role, projectId: string | null): { own: string[]; builder: string[]; reviewer: string[] } {
+  const type = projectId ? projectType(getBus().db(), projectId) : null;
+  const pm = role.id === 'pm' && Boolean(projectId);
+  return { own: runSkills(role, type), builder: pm ? subagentSkills('builder', type) : [], reviewer: pm ? subagentSkills('reviewer', type) : [] };
 }
 
 // ── sessions: fresh start with a handover after many turns ───────
@@ -299,6 +317,9 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
     '--mcp-config', mcpConfig(roleId, conversationId, ws.data, projectRole),
     '--permission-prompt-tool', 'mcp__brain__approve',
   ];
+  const sk = agentSkills(role, conv.project_id);
+  const plugin = pluginDir(ws.data, [...sk.own, ...sk.builder, ...sk.reviewer]);
+  if (plugin) base.push('--plugin-dir', plugin);
   const env = {
     ...process.env,
     PATH: `${shimDir(ws.data)}:${process.env.PATH ?? ''}`,

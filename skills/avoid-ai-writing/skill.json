@@ -1,0 +1,28 @@
+{
+  "id": "avoid-ai-writing",
+  "title": "Avoid AI writing",
+  "summary": "Finds and removes the patterns that make prose read as machine-generated, without adding a fake voice or invented facts.",
+  "roles": [
+    "editor",
+    "writer",
+    "social",
+    "marketing",
+    "builder"
+  ],
+  "types": [
+    "any"
+  ],
+  "source": {
+    "repo": "wshobson/agents",
+    "path": "plugins/avoid-ai-writing/skills/avoid-ai-writing",
+    "commit": "044b4b21f083948e69ec878a7b07c8d0951a6ffa",
+    "license": "MIT",
+    "url": "https://github.com/wshobson/agents/tree/044b4b21f083948e69ec878a7b07c8d0951a6ffa/plugins/avoid-ai-writing/skills/avoid-ai-writing"
+  },
+  "basedOn": [],
+  "changes": [
+    "Rewrote the frontmatter description to start with 'Use when' and fit 300 characters; it now names articles, newsletters, scripts and stories alongside docs.",
+    "Added a 'fiction' context profile: listed in SKILL.md step 1 and the --context options, plus an auto-detection row and a 'Fiction and dialogue profile' section in references/profiles.md that protects dialogue and relaxes the em-dash, rhythm, rule-of-three and rhetorical-question rules for narrative prose.",
+    "references/pattern-catalog.md and references/word-tiers.md copied unchanged."
+  ]
+}

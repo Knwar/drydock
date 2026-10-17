@@ -1,0 +1,27 @@
+{
+  "id": "product-marketing",
+  "title": "Product Marketing Context",
+  "summary": "Builds and maintains one product marketing context (positioning, ICP, competitors, customer language, brand voice, proof, learnings) that all other marketing work draws on.",
+  "roles": [
+    "marketing",
+    "social"
+  ],
+  "types": [
+    "any"
+  ],
+  "source": {
+    "repo": "coreyhaines31/marketingskills",
+    "path": "skills/product-marketing",
+    "commit": "365b412152b9542499ca1439426f7fc3cc92bb65",
+    "license": "MIT",
+    "url": "https://github.com/coreyhaines31/marketingskills/tree/365b412152b9542499ca1439426f7fc3cc92bb65/skills/product-marketing"
+  },
+  "basedOn": [],
+  "changes": [
+    "Renamed frontmatter, rewrote the description to start \"Use when\", removed the metadata/version key",
+    "Replaced the .agents/product-marketing.md path (and legacy .claude/ locations and the offer to move files) with \"the project's product marketing note (where your role's instructions say)\"",
+    "Replaced mentions of other upstream skills (ads, marketing-loops, copywriting, copy-editing) with generic wording or skills in this library (avoid-ai-writing, social-content, launch-planning)",
+    "Removed the /product-marketing slash-command line and the scheduled-loop sentence in Maintaining Learnings",
+    "references/brand-voice.md: same path and skill-reference replacements; per-person voice guides now stored alongside the product marketing note"
+  ]
+}

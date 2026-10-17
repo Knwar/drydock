@@ -1,0 +1,26 @@
+{
+  "id": "api-design",
+  "title": "API Design",
+  "summary": "Designs and reviews consistent, well-structured REST and GraphQL APIs: resources, status codes, pagination, versioning, errors and schemas.",
+  "roles": [
+    "architect"
+  ],
+  "types": [
+    "software"
+  ],
+  "source": {
+    "repo": "wshobson/agents",
+    "path": "plugins/backend-development/skills/api-design-principles",
+    "commit": "044b4b21f083948e69ec878a7b07c8d0951a6ffa",
+    "license": "MIT",
+    "url": "https://github.com/wshobson/agents/tree/044b4b21f083948e69ec878a7b07c8d0951a6ffa/plugins/backend-development/skills/api-design-principles"
+  },
+  "basedOn": [],
+  "changes": [
+    "Renamed from api-design-principles to api-design and rewrote the description to start with \"Use when\"",
+    "Added pointers in the body to rest-best-practices.md, graphql-schema-design.md and the design checklist so they are used",
+    "Moved assets/api-design-checklist.md into references/ unchanged",
+    "Did not copy assets/rest-api-template.py (code template, not know-how)",
+    "Body and references otherwise unchanged"
+  ]
+}

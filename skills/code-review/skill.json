@@ -1,0 +1,27 @@
+{
+  "id": "code-review",
+  "title": "Code Review",
+  "summary": "Reviews a change against its requirements and gives severity-graded findings with file:line references and a clear verdict.",
+  "roles": [
+    "reviewer",
+    "qc"
+  ],
+  "types": [
+    "software"
+  ],
+  "source": {
+    "repo": "obra/superpowers",
+    "path": "skills/requesting-code-review/code-reviewer.md",
+    "commit": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
+    "license": "MIT",
+    "url": "https://github.com/obra/superpowers/tree/bb92a77741419a4ab5f06e711a283343f1ada0c3/skills/requesting-code-review/code-reviewer.md"
+  },
+  "basedOn": [],
+  "changes": [
+    "Turned the reviewer prompt template into the skill body: dropped the subagent dispatch wrapper and placeholder list; placeholders became an Inputs section",
+    "Removed the 'You Do Not Dispatch Subagents' section",
+    "Read-Only Review: dropped the git commands and the /tmp worktree example, kept the read-only rule",
+    "'The executor rules on each line' -> 'Whoever requested the review rules on each line'",
+    "Kept the example output as-is; did not copy the parent requesting-code-review SKILL.md (dispatch workflow)"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "personal-finance",
+  "title": "Personal Finance",
+  "summary": "Keeps an individual's money organised: categorised spend, budget vs actual, bills calendar, subscription audit, emergency and sinking funds, net worth, anomalies and a monthly review, without giving regulated advice or moving money.",
+  "roles": [
+    "cfo"
+  ],
+  "types": [
+    "any"
+  ],
+  "source": null,
+  "basedOn": [],
+  "changes": [
+    "Written for AI Brain"
+  ]
+}

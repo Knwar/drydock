@@ -1,0 +1,17 @@
+{
+  "id": "asvs-card-review",
+  "title": "ASVS Change Review",
+  "summary": "Reviews a single change for security against OWASP ASVS and reports located findings with severity, the related ASVS chapter and a concrete fix.",
+  "roles": [
+    "security",
+    "reviewer"
+  ],
+  "types": [
+    "software"
+  ],
+  "source": null,
+  "basedOn": [],
+  "changes": [
+    "Written for AI Brain"
+  ]
+}

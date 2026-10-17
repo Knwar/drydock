@@ -1,0 +1,26 @@
+{
+  "id": "task-planning",
+  "title": "Task Planning",
+  "summary": "Breaks a spec into right-sized, independently testable tasks with exact files, interfaces (consumes/produces), a review focus and a self-review.",
+  "roles": [
+    "pm"
+  ],
+  "types": [
+    "software"
+  ],
+  "source": {
+    "repo": "obra/superpowers",
+    "path": "skills/writing-plans",
+    "commit": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
+    "license": "MIT",
+    "url": "https://github.com/obra/superpowers/tree/bb92a77741419a4ab5f06e711a283343f1ada0c3/skills/writing-plans"
+  },
+  "basedOn": [],
+  "changes": [
+    "Renamed to task-planning; description broadened to mention right-sizing, interfaces and review focus",
+    "Removed the announce line, worktree context, plan save location (docs/superpowers/plans) and the Execution Handoff section (execution method choice, sub-skills)",
+    "Removed 'Frequent commits', the 'Commit' step and the commit code block from the task template",
+    "Removed the 'For agentic workers' sub-skill line from the plan header; 'path to the spec' -> 'the spec'; 'executors' -> 'implementers'",
+    "Removed reference to brainstorming in Scope Check and the 'not a subagent dispatch' note in Self-Review"
+  ]
+}
