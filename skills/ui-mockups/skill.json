@@ -1,0 +1,47 @@
+{
+  "id": "ui-mockups",
+  "title": "UI mockups",
+  "summary": "Designs an app's screens as distinctive, accessible, static HTML mockups that click through: one self-contained file per screen, token-driven CSS, mobile and desktop layouts, real content and every key state.",
+  "roles": ["designer"],
+  "types": ["software"],
+  "source": {
+    "repo": "anthropics/skills",
+    "path": "skills/frontend-design",
+    "commit": "dbd4588f9e1033efb41dad4bef2f7947c8993d44",
+    "license": "Apache-2.0",
+    "url": "https://github.com/anthropics/skills/tree/dbd4588f9e1033efb41dad4bef2f7947c8993d44/skills/frontend-design"
+  },
+  "basedOn": [
+    {
+      "repo": "wshobson/agents",
+      "path": "plugins/ui-design/skills/visual-design-foundations",
+      "commit": "044b4b21f083948e69ec878a7b07c8d0951a6ffa",
+      "license": "MIT",
+      "url": "https://github.com/wshobson/agents/tree/044b4b21f083948e69ec878a7b07c8d0951a6ffa/plugins/ui-design/skills/visual-design-foundations"
+    },
+    {
+      "repo": "wshobson/agents",
+      "path": "plugins/ui-design/skills/responsive-design",
+      "commit": "044b4b21f083948e69ec878a7b07c8d0951a6ffa",
+      "license": "MIT",
+      "url": "https://github.com/wshobson/agents/tree/044b4b21f083948e69ec878a7b07c8d0951a6ffa/plugins/ui-design/skills/responsive-design"
+    },
+    {
+      "repo": "wshobson/agents",
+      "path": "plugins/ui-design/skills/accessibility-compliance",
+      "commit": "044b4b21f083948e69ec878a7b07c8d0951a6ffa",
+      "license": "MIT",
+      "url": "https://github.com/wshobson/agents/tree/044b4b21f083948e69ec878a7b07c8d0951a6ffa/plugins/ui-design/skills/accessibility-compliance"
+    }
+  ],
+  "changes": [
+    "Renamed from frontend-design to ui-mockups; new 'Use when' description; dropped the license frontmatter key (Apache-2.0 text is in LICENSE.txt).",
+    "Kept the upstream aesthetic guidance near verbatim: grounding in the subject, typography, structure-as-information, the calibration list of AI-design defaults, the two-pass plan/review process, restraint and self-critique, and the writing-in-design section.",
+    "Adapted for static HTML with no JavaScript: the hero options drop animation, live demo and interactive moments; typeface choice is limited to system font stacks (new references/system-font-stacks.md); the motion paragraph now covers CSS-only hover/focus states and reduced motion; 'write the code' became 'build screens'; 'confirm with the client' became 'confirm with the user'; existing brand tokens are treated as the visual direction.",
+    "Added 'Mockup rules: static HTML, no JavaScript' (self-contained files, no script, no external resources, identical token block as CSS custom properties, relative links between screens, forms that navigate, native details/:target interactivity, mobile-first media queries, realistic content, designed empty/loading/error states) and 'The screen set' (flows, file naming, an index page, reachability, identical shared components).",
+    "Merged from wshobson visual-design-foundations: spacing values for components, line-height ranges, limiting weights/families, missing-states and magic-number failure modes; dropped its Tailwind, React/TSX, @font-face and web-font pairing examples.",
+    "Merged from wshobson responsive-design: mobile-first, content-driven breakpoints, fluid values, 44px touch targets, horizontal overflow and 100vh pitfalls; dropped container-query and image-loading material that does not apply to the format.",
+    "Merged from wshobson accessibility-compliance: semantic HTML first, visible focus, labels, 200% zoom, reduced motion; corrected the large-text threshold to WCAG's 24px regular / about 18.7px bold (upstream visual-design-foundations says 18px+) and dropped the testing-tools list and screen-reader/live-region items that need scripting.",
+    "Added references/screen-skeleton.md (an example screen file) and references/mockup-checklist.md (pre-delivery checklist), written for AI Brain."
+  ]
+}

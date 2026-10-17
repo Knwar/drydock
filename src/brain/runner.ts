@@ -15,7 +15,8 @@ import { effectiveEffort, getRole, listRoles, type Role } from './roles.js';
 import { blockedServers, listServers, recordTools, toolPolicies } from './integrations.js';
 import { activeLearnings, memoryDigest, projectMembers } from './teamwork.js';
 import { disabledTools, projectPlugins, projectType } from './plugins.js';
-import { contractFor } from './contracts.js';
+import { contractFor, ideaChatRules } from './contracts.js';
+import { getIdea, ideaDir } from './ideas.js';
 import { PLUGIN, pluginDir, runSkills, skillById, subagentSkills } from './skills.js';
 import { onRateLimit } from './usage.js';
 import { currentWorkspace } from './workspace.js';
@@ -69,8 +70,10 @@ function systemPrompt(role: Role, conversationId: string): string {
   // memory) come last. No clock here: each turn's message carries the time.
   // the contract (app-owned) leads; the user's persona and the skills follow and never override it
   const lines = [contractFor(role)];
+  const idea = conv.idea_id ? getIdea(db, conv.idea_id) : undefined;
+  if (idea) lines.push('', ideaChatRules(idea, members(db, conversationId)[0] === role.id, ideaDir(db, idea.id)));
   if (role.persona.trim()) lines.push('', '## About you (set by the user)', role.persona.trim());
-  const sk = agentSkills(role, conv.project_id);
+  const sk = agentSkills(role, conv.project_id, conv.idea_id);
   if (sk.own.length || role.skill) {
     lines.push('', '## Your skills', 'Load the matching skill with the Skill tool before you do that kind of work. Where a skill disagrees with the rules above, the rules above win.');
     lines.push(...sk.own.map((id) => `- ${PLUGIN}:${id}: ${skillById(id)?.summary ?? ''}`));
@@ -120,8 +123,9 @@ function systemPrompt(role: Role, conversationId: string): string {
 }
 
 /** The library skills a run gets: the role's own, plus (for the PM) those it hands its builders and reviewers. */
-function agentSkills(role: Role, projectId: string | null): { own: string[]; builder: string[]; reviewer: string[] } {
-  const type = projectId ? projectType(getBus().db(), projectId) : null;
+function agentSkills(role: Role, projectId: string | null, ideaId?: string | null): { own: string[]; builder: string[]; reviewer: string[] } {
+  const db = getBus().db();
+  const type = projectId ? projectType(db, projectId) : ideaId ? getIdea(db, ideaId)?.type ?? null : null;
   const pm = role.id === 'pm' && Boolean(projectId);
   return { own: runSkills(role, type), builder: pm ? subagentSkills('builder', type) : [], reviewer: pm ? subagentSkills('reviewer', type) : [] };
 }
@@ -317,7 +321,7 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
     '--mcp-config', mcpConfig(roleId, conversationId, ws.data, projectRole),
     '--permission-prompt-tool', 'mcp__brain__approve',
   ];
-  const sk = agentSkills(role, conv.project_id);
+  const sk = agentSkills(role, conv.project_id, conv.idea_id);
   const plugin = pluginDir(ws.data, [...sk.own, ...sk.builder, ...sk.reviewer]);
   if (plugin) base.push('--plugin-dir', plugin);
   const env = {
@@ -488,11 +492,12 @@ export function respond(conversationId: string, mentionText = '', opts: { model?
   // A DM's role answers. In a channel only @mentioned members answer; with no
   // mention, its first member (the lead) does and brings others in by @mention.
   // Everyone answering every message multiplied the tokens for little gain.
-  let who = conv.kind === 'dm' ? [conv.role_id!] : members(db, conversationId).slice(0, 1);
+  let who: string[] = conv.kind === 'dm' ? [conv.role_id!] : [replyTarget(conversationId)].filter((x): x is string => Boolean(x));
   if (conv.kind === 'channel') {
     const mentioned = mentionedMembers(conversationId, mentionText);
     if (mentioned.length) who = mentioned;
   }
+  const maxHandoffs = conv.idea_id ? 6 : MAX_HANDOFFS;
   const prev = queues.get(conversationId) ?? Promise.resolve();
   const next = prev
     .then(async () => {
@@ -505,7 +510,7 @@ export function respond(conversationId: string, mentionText = '', opts: { model?
         const posted = await runTurn(roleId, conversationId, opts.model, undefined, opts.effort);
         if (conv.kind !== 'channel' || !posted) continue;
         for (const next of mentionedMembers(conversationId, posted, [roleId, ...queue])) {
-          if (handoffs >= MAX_HANDOFFS) break;
+          if (handoffs >= maxHandoffs) break;
           queue.push(next);
           handoffs++;
         }
@@ -517,6 +522,23 @@ export function respond(conversationId: string, mentionText = '', opts: { model?
 }
 
 const MAX_HANDOFFS = 4;
+
+/**
+ * Who answers an un-mentioned message in a channel: the member whose latest
+ * message asked the user a question (the user is answering them), else the
+ * lead (the first member).
+ */
+export function replyTarget(conversationId: string): string | undefined {
+  const db = getBus().db();
+  const ids = members(db, conversationId);
+  const recent = listMessages(db, conversationId, 30).filter((m) => m.kind === 'text');
+  // the agent message just before the user's latest one(s)
+  let i = recent.length - 1;
+  while (i >= 0 && recent[i].author === 'user') i--;
+  const last = recent[i];
+  if (last && last.author !== ids[0] && ids.includes(last.author) && /\?\s*$/.test(last.body.trim().split('\n').filter(Boolean).pop() ?? '')) return last.author;
+  return ids[0];
+}
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 

@@ -5,13 +5,15 @@ import type { DB } from '../core/db.js';
 import { listRoles } from './roles.js';
 import { addMissingColumns, defineSchema } from './schema.js';
 
-export type MessageKind = 'text' | 'tool' | 'decision' | 'approval' | 'proposal' | 'secret_request' | 'error';
+export type MessageKind = 'text' | 'tool' | 'decision' | 'approval' | 'proposal' | 'secret_request' | 'change_request' | 'error';
 
 export interface Conversation {
   id: string;
   kind: 'dm' | 'channel';
   role_id: string | null;
   project_id: string | null;
+  /** set on an idea's shaping chat */
+  idea_id?: string | null;
   name: string;
   created_at: number;
   last_at: number;
@@ -128,8 +130,8 @@ export function listConversations(db: DB) {
   const rows = db
     .prepare(`SELECT * FROM conversations c WHERE c.kind != 'dm' OR EXISTS (SELECT 1 FROM roles r WHERE r.id = c.role_id) ORDER BY kind, created_at`)
     .all() as Conversation[];
-  const last = db.prepare(`SELECT body, kind, author FROM messages WHERE conversation_id = ? AND kind IN ('text', 'decision', 'approval', 'proposal', 'secret_request') ORDER BY id DESC LIMIT 1`);
-  const unread = db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND author != 'user' AND kind IN ('text', 'decision', 'approval', 'proposal', 'secret_request') AND created_at > ?`);
+  const last = db.prepare(`SELECT body, kind, author FROM messages WHERE conversation_id = ? AND kind IN ('text', 'decision', 'approval', 'proposal', 'secret_request', 'change_request') ORDER BY id DESC LIMIT 1`);
+  const unread = db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND author != 'user' AND kind IN ('text', 'decision', 'approval', 'proposal', 'secret_request', 'change_request') AND created_at > ?`);
   return rows.map((c) => ({
     ...c,
     members: members(db, c.id),

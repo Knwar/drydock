@@ -26,6 +26,7 @@ import { activeRuns } from './runner.js';
 import { lastActivity } from './checkins.js';
 import { getRecommendation, projectMembers, projectStatus } from './teamwork.js';
 import { currentWorkspace, isInside } from './workspace.js';
+import { getIdea, isIdeaId } from './ideas.js';
 
 const ref = (db: any, id: string) => {
   try {
@@ -33,6 +34,14 @@ const ref = (db: any, id: string) => {
   } catch {
     throw new HttpError(404, 'unknown project');
   }
+};
+/** A project, or an idea being shaped (ideas keep requirements and a design too). */
+const subject = (db: any, id: string) => {
+  if (isIdeaId(id)) {
+    if (!getIdea(db, id)) throw new HttpError(404, 'unknown idea');
+    return;
+  }
+  ref(db, id);
 };
 const bad = (err: unknown) =>
   err instanceof NeedsRole ? new HttpError(409, err.message, { needs_role: err.role }) : new HttpError(400, (err as Error).message);
@@ -89,12 +98,12 @@ on('GET', '/api/projects/:id', (_q, res, _u, ctx, p) => {
 // ── requirements ──
 
 on('GET', '/api/projects/:id/requirements', (_q, res, _u, ctx, p) => {
-  ref(ctx.db(), p.id);
+  subject(ctx.db(), p.id);
   ctx.json(res, 200, listRequirements(ctx.db(), p.id));
 });
 
 on('POST', '/api/projects/:id/requirements', async (req, res, _u, ctx, p) => {
-  ref(ctx.db(), p.id);
+  subject(ctx.db(), p.id);
   const b = await ctx.readBody(req);
   if (typeof b?.markdown !== 'string' || !b.markdown.trim()) throw new HttpError(400, 'markdown required');
   try {
@@ -122,12 +131,12 @@ on('POST', '/api/projects/:id/requirements/reopen', (_q, res, _u, ctx, p) => {
 // ── design ──
 
 on('GET', '/api/projects/:id/design', (_q, res, _u, ctx, p) => {
-  ref(ctx.db(), p.id);
+  subject(ctx.db(), p.id);
   ctx.json(res, 200, getDesign(ctx.db(), p.id));
 });
 
 on('POST', '/api/projects/:id/design/elements', async (req, res, _u, ctx, p) => {
-  ref(ctx.db(), p.id);
+  subject(ctx.db(), p.id);
   const b = await ctx.readBody(req);
   try {
     upsertElement(ctx.db(), p.id, b);
@@ -139,7 +148,7 @@ on('POST', '/api/projects/:id/design/elements', async (req, res, _u, ctx, p) => 
 });
 
 on('POST', '/api/projects/:id/design/relations', async (req, res, _u, ctx, p) => {
-  ref(ctx.db(), p.id);
+  subject(ctx.db(), p.id);
   const b = await ctx.readBody(req);
   try {
     upsertRelation(ctx.db(), p.id, b);
@@ -151,7 +160,7 @@ on('POST', '/api/projects/:id/design/relations', async (req, res, _u, ctx, p) =>
 });
 
 on('DELETE', '/api/projects/:id/design/:item', (_q, res, _u, ctx, p) => {
-  ref(ctx.db(), p.id);
+  subject(ctx.db(), p.id);
   removeDesignItem(ctx.db(), p.id, p.item);
   designChanged(ctx.db(), p.id);
   ctx.json(res, 200, getDesign(ctx.db(), p.id));

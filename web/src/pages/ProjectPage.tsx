@@ -424,7 +424,8 @@ function Requirements({ p }: { p: Detail }) {
   );
 }
 
-function SystemDesign({ p, focus, openConversation }: { p: Detail; focus: string | null; openConversation: (id: string) => void }) {
+/** The C4 design view; ideas use it too (with their own base path and empty text). */
+export function SystemDesign({ p, focus, openConversation, base: baseIn, empty }: { p: Pick<Detail, 'id' | 'name' | 'stage' | 'channels'>; focus: string | null; openConversation: (id: string) => void; base?: string; empty?: string }) {
   const design = useApi<{ elements: Element[]; relations: Relation[]; finalVersion: number | null }>(`/api/projects/${p.id}/design`, (m) => m?.type === 'design' && m.project_id === p.id);
   const elParam = new URLSearchParams(location.search).get('el');
   const [selected, setSelected] = useState<string | null>(elParam);
@@ -435,7 +436,7 @@ function SystemDesign({ p, focus, openConversation }: { p: Detail; focus: string
   const crumbs: Element[] = [];
   for (let cur = focus ? byId.get(focus) : undefined; cur; cur = cur.parent_id ? byId.get(cur.parent_id) : undefined) crumbs.unshift(cur);
   const sel = selected ? byId.get(selected) : null;
-  const base = `/project/${p.id}/design`;
+  const base = baseIn ?? `/project/${p.id}/design`;
   const designChannel = p.channels.find((c) => c.name.endsWith('-design'));
   const level = focus ? (byId.get(focus)?.kind === 'container' ? 'Component view' : 'Detail view') : 'Container view';
 
@@ -443,7 +444,7 @@ function SystemDesign({ p, focus, openConversation }: { p: Detail; focus: string
   if (!elements.length)
     return (
       <div className="empty" style={{ padding: 36 }}>
-        {p.stage === 'requirements' ? 'The system design starts when you mark the requirements final.' : 'The Architect has not added anything yet. Follow along in the design channel.'}
+        {empty ?? (p.stage === 'requirements' ? 'The system design starts when you mark the requirements final.' : 'The Architect has not added anything yet. Follow along in the design channel.')}
         {designChannel && <div style={{ marginTop: 10 }}><button className="btn sm" onClick={() => openConversation(designChannel.id)}>Open #{designChannel.name}</button></div>}
       </div>
     );

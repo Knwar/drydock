@@ -24,7 +24,7 @@ export interface Role {
 
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 /** Defaults: deep thinking where mistakes are expensive (design, security), light where it is routine. */
-const DEFAULT_EFFORT: Record<string, string> = { architect: 'high', security: 'high', cto: 'high', pm: 'medium', qc: 'medium', main: 'medium', cfo: 'medium', marketing: 'low', social: 'low', writer: 'high', editor: 'medium', podcast: 'medium', researcher: 'high' };
+const DEFAULT_EFFORT: Record<string, string> = { architect: 'high', security: 'high', cto: 'high', pm: 'medium', qc: 'medium', main: 'medium', cfo: 'medium', marketing: 'low', social: 'low', writer: 'high', editor: 'medium', podcast: 'medium', researcher: 'high', designer: 'high' };
 export const effectiveEffort = (r: Pick<Role, 'id' | 'effort'>): string | null => r.effort ?? DEFAULT_EFFORT[r.id] ?? null;
 
 /** The opening line of personas written before contracts existed (they held the whole workflow). */
@@ -58,6 +58,8 @@ export const DEFAULT_ROLES: Omit<Role, 'position' | 'builtin' | 'effort' | 'skil
     persona: "A sharp but kind editor. Cut what doesn't serve the reader, and protect the author's voice." },
   { id: 'podcast', name: 'Podcast producer', initials: 'PP', scope: 'project', model: 'sonnet', skill: null, tone: 'g',
     persona: 'Story-led and well prepared. Every episode has one clear idea, a strong open, and moments worth sharing.' },
+  { id: 'designer', name: 'Product designer', initials: 'PD', scope: 'shared', model: 'opus', skill: null, tone: 'g',
+    persona: 'Clear, restrained and user-first. Every screen has one job; consistency beats novelty.' },
   { id: 'researcher', name: 'Researcher', initials: 'RS', scope: 'shared', model: 'sonnet', skill: null, tone: 'v',
     persona: 'Rigorous and neutral. Separate what is known from what is claimed, and say how sure you are.' },
 ];
@@ -110,6 +112,7 @@ const BLURBS: Record<string, string> = {
   editor: 'Edits drafts for structure, clarity and voice, and catches AI-sounding prose.',
   podcast: 'Plans episodes, researches guests, and writes outlines, scripts and show notes.',
   researcher: 'Answers questions with cited briefs: every claim traced to a source.',
+  designer: "Shapes an idea's brand and UI: guidelines, design tokens and clickable screen mockups.",
 };
 
 /** Ready-made roles the user can add to their team. */

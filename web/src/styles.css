@@ -429,3 +429,27 @@ button.chev-btn:hover { background: var(--hover); }
 .diff > div { padding: 0 10px; }
 .diff .add { background: var(--g-bg, rgba(40, 160, 80, 0.12)); }
 .diff .del { background: var(--r-bg, rgba(200, 60, 60, 0.12)); text-decoration: line-through; text-decoration-color: rgba(200, 60, 60, 0.4); }
+
+/* Idea board and idea page */
+.idea-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.idea-card { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; color: var(--text); text-decoration: none; min-width: 0; }
+.idea-card:hover { border-color: var(--accent); }
+.main.main-idea { padding: 0; overflow: hidden; }
+.idea-page { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); height: 100%; min-height: 0; }
+.idea-main { display: flex; flex-direction: column; gap: 14px; padding: 22px 26px 40px; overflow: auto; min-width: 0; }
+.idea-chat { border-left: 1px solid var(--border); min-height: 0; display: flex; flex-direction: column; }
+.idea-chat > .chat { flex: 1; min-height: 0; }
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.swatch { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.swatch > span:first-child { height: 52px; border-radius: 10px; border: 1px solid var(--border); }
+.mockup-stage { display: flex; justify-content: center; background: var(--bg2, rgba(127, 127, 127, 0.08)); border-radius: 12px; padding: 12px; }
+.mockup-stage iframe { height: 640px; max-width: 100%; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+@media (max-width: 900px) {
+  .idea-page { grid-template-columns: 1fr; height: auto; }
+  .main.main-idea { overflow: auto; }
+  .idea-chat { border-left: 0; border-top: 1px solid var(--border); height: 70vh; }
+}
+.md-table-wrap { overflow-x: auto; margin: 6px 0; }
+.md-table { border-collapse: collapse; font-size: 13px; min-width: 50%; }
+.md-table th, .md-table td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+.md-table th { font-weight: 600; background: var(--bg2, rgba(127, 127, 127, 0.08)); }

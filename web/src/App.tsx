@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useApi } from './lib/api';
 import { navigate, threadParam, usePath } from './lib/router';
 import { useTheme } from './lib/theme';
-import type { Conversation, ProjectSummary, Role, WorkspaceInfo } from './lib/types';
+import type { Conversation, IdeaCard, ProjectSummary, Role, WorkspaceInfo } from './lib/types';
 import { ChatPanel } from './components/Chat';
 import { CommandBar } from './components/CommandBar';
 import { Header, Sidebar } from './components/Shell';
@@ -14,6 +14,8 @@ import { Home } from './pages/Home';
 import { Onboarding } from './pages/Onboarding';
 import { Personal } from './pages/Personal';
 import { ProjectPage } from './pages/ProjectPage';
+import { IdeaPage } from './pages/IdeaPage';
+import { CaptureIdeaDialog, ideaEvents } from './components/Ideas';
 import { Settings } from './pages/Settings';
 
 const projectEvents = (m: any) => ['card', 'card_removed', 'phases', 'project_removed', 'workspace', 'brain_project', 'design'].includes(m?.type);
@@ -47,6 +49,8 @@ export function App() {
   const projects = useApi<ProjectSummary[]>(ready ? '/api/projects' : null, projectEvents);
   const roles = useApi<Role[]>(ready ? '/api/roles' : null, (m) => m?.type === 'roles');
   const convs = useApi<Conversation[]>(ready ? '/api/conversations' : null, convEvents);
+  const ideas = useApi<IdeaCard[]>(ready ? '/api/ideas' : null, ideaEvents);
+  const [capturing, setCapturing] = useState(false);
   const [convId, setConvId] = useStored('ai-brain-conversation', 'dm:main');
   const [chatState, setChatState] = useStored('ai-brain-chat', 'open');
   const [newProject, setNewProject] = useState(false);
@@ -85,7 +89,9 @@ export function App() {
   const current = conversations.find((c) => c.id === (linked ?? convId)) ?? conversations.find((c) => c.id === 'dm:main') ?? null;
   const onProject = parts[0] === 'project' && Boolean(parts[1]);
   const onOverview = onProject && !parts[2];
-  const sideOpen = !onProject || (onOverview ? projectSide === 'open' || Boolean(linked) : drawer);
+  // an idea page has its own chat beside it
+  const onIdea = parts[0] === 'idea' && Boolean(parts[1]);
+  const sideOpen = !onIdea && (!onProject || (onOverview ? projectSide === 'open' || Boolean(linked) : drawer));
   const setSide = (open: boolean) => {
     if (onOverview) setProjectSide(open ? 'open' : 'closed');
     else setDrawer(open);
@@ -113,6 +119,7 @@ export function App() {
   if (parts.length === 0) page = <Home projects={list} onImport={() => setImporting(true)} />;
   else if (parts[0] === 'project' && parts[1])
     page = <ProjectPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} openConversation={select} newThread={() => setNewThread({ project: parts[1] })} side={{ open: sideOpen, toggle: () => setSide(!sideOpen) }} />;
+  else if (onIdea) page = <IdeaPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} conversations={conversations} projects={list} />;
   else if (parts[0] === 'personal') page = <Personal />;
   else if (parts[0] === 'settings') page = <Settings section={parts[1] ?? 'integrations'} roles={roles.data ?? []} />;
   else page = <div className="empty">Not found. <a href="/app/">Go home</a></div>;
@@ -129,11 +136,13 @@ export function App() {
           onMain={() => select('dm:main')}
           mainWorking={Boolean(conversations.find((c) => c.id === 'dm:main')?.working)}
           onNewProject={() => setNewProject(true)}
+          ideas={ideas.data ?? []}
+          onNewIdea={() => setCapturing(true)}
           threads={{ conversations, current: chatState === 'open' && sideOpen ? current?.id ?? null : null, open: select, newThread: (project) => setNewThread({ project }) }}
         >
           <TeamList conversations={conversations} roles={roles.data ?? []} current={chatState === 'open' && sideOpen ? current?.id ?? null : null} select={select} onNewThread={() => setNewThread({ project: null })} />
         </Sidebar>
-        <main className="main">{page}</main>
+        <main className={`main${onIdea ? ' main-idea' : ''}`}>{page}</main>
         {sideOpen && (
           <div className={onProject && !onOverview ? 'side-drawer' : 'side-dock'}>
             {chatState === 'open' ? (
@@ -143,6 +152,7 @@ export function App() {
             )}
           </div>
         )}
+        {capturing && <CaptureIdeaDialog onClose={() => setCapturing(false)} />}
         {newProject && <NewProjectDialog onClose={() => setNewProject(false)} askMain={askMain} onImport={() => (setNewProject(false), setImporting(true))} />}
         {importing && <ImportDialog onClose={() => setImporting(false)} onImported={(id, channel) => (setImporting(false), openLink(`/project/${id}?thread=${encodeURIComponent(channel)}`))} />}
         {newThread && (
@@ -163,6 +173,7 @@ export function App() {
             onClose={() => setCmd(false)}
             openLink={openLink}
             actions={{
+              newIdea: () => setCapturing(true),
               newProject: () => setNewProject(true),
               importProject: () => setImporting(true),
               newThread: () => setNewThread({ project: onProject ? parts[1] : null }),

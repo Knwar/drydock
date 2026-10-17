@@ -18,6 +18,7 @@ import { respond } from './runner.js';
 import { defineSchema } from './schema.js';
 import { getRecommendation, setProjectStatus, setRecommendation } from './teamwork.js';
 import { currentWorkspace, isInside } from './workspace.js';
+import { getIdea, handOver, ideaChanged, ideaDir, isIdeaId } from './ideas.js';
 
 const execFileAsync = promisify(execFile);
 const INIT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'init-project.sh');
@@ -83,6 +84,11 @@ export interface ProjectRef {
   vault: string;
 }
 
+/** Where a project's (or an idea's) requirements and design documents are kept. */
+function docsDir(db: DB, id: string): string {
+  return isIdeaId(id) ? ideaDir(db, id) : projectRef(db, id).vault;
+}
+
 export function projectRef(db: DB, projectId: string): ProjectRef {
   const p = db.prepare('SELECT id, name, root_path FROM projects WHERE id = ?').get(projectId) as { id: string; name: string; root_path: string } | undefined;
   if (!p) throw new Error(`unknown project ${projectId}`);
@@ -118,6 +124,37 @@ export async function createProject(db: DB, name: string, description: string, t
   return ref;
 }
 
+/**
+ * Promote an idea: create its project and hand over everything shaped so far
+ * (requirements marked final, the design model, brand and UI in docs/). The
+ * project then opens at the team step and goes from there to the PM's plan.
+ */
+export async function promoteIdea(db: DB, ideaId: string): Promise<ProjectRef> {
+  const idea = getIdea(db, ideaId);
+  if (!idea) throw new Error(`unknown idea ${ideaId}`);
+  if (idea.status === 'promoted') throw new Error('this idea is already a project');
+  const ref = await createProject(db, idea.title, idea.pitch || idea.title, idea.type);
+  handOver(db, ideaId, ref);
+  await execFileAsync('git', ['-C', ref.root, 'add', '-A'], { timeout: 30_000 });
+  await execFileAsync('git', ['-C', ref.root, '-c', 'user.name=AI Brain', '-c', 'user.email=ai-brain@localhost', 'commit', '-qm', 'Add what was shaped on the Idea board: requirements, brand and UI'], { timeout: 30_000 }).catch(() => undefined);
+  if (listRequirements(db, ref.id)[0]) finalizeRequirements(db, ref.id);
+  getBus().emit({ type: 'brain_project', project_id: ref.id });
+  return ref;
+}
+
+/** For the PM's kickoff: what was shaped before the project existed, and the rule for changing it. */
+function shapedNote(db: DB, ref: ProjectRef): string {
+  const origin = (db.prepare('SELECT origin FROM brain_projects WHERE project_id = ?').get(ref.id) as { origin: string } | undefined)?.origin;
+  if (origin !== 'idea') return '';
+  const docs = join(ref.root, 'docs');
+  const have = [
+    existsSync(join(docs, 'requirements.md')) && 'requirements (docs/requirements.md)',
+    existsSync(join(docs, 'brand.md')) && 'brand guidelines and tokens (docs/brand.md, docs/brand-tokens.json)',
+    existsSync(join(docs, 'ui', 'index.html')) && 'UI mockups (docs/ui/, start at index.html)',
+  ].filter(Boolean);
+  return ` This project was shaped on the Idea board, so ${have.length ? have.join(', ') : 'its requirements'} already exist: plan from them, and make builders follow the brand and mockups. If anything is unclear, ask me here; if the answer changes the requirements, design, brand or UI, use propose_change.`;
+}
+
 // ── requirements ─────────────────────────────────────────────────
 
 export interface RequirementsVersion {
@@ -138,10 +175,11 @@ export function saveRequirements(db: DB, projectId: string, markdown: string, au
   if (latest?.final) throw new Error('requirements are final; reopen them first');
   const version = (latest?.version ?? 0) + 1;
   db.prepare('INSERT INTO requirements (project_id, version, markdown, author, created_at) VALUES (?, ?, ?, ?, ?)').run(projectId, version, markdown, author, Date.now());
-  const ref = projectRef(db, projectId);
-  mkdirSync(join(ref.vault, 'requirements'), { recursive: true });
-  writeFileSync(join(ref.vault, 'requirements', `v${version}.md`), markdown);
-  writeFileSync(join(ref.vault, 'requirements', 'current.md'), markdown);
+  const dir = join(docsDir(db, projectId), 'requirements');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `v${version}.md`), markdown);
+  writeFileSync(join(dir, 'current.md'), markdown);
+  if (isIdeaId(projectId)) ideaChanged(db, projectId);
   getBus().emit({ type: 'requirements', project_id: projectId });
   return listRequirements(db, projectId)[0];
 }
@@ -219,24 +257,26 @@ export function removeDesignItem(db: DB, projectId: string, id: string): void {
 
 /** A Markdown copy of the model in the vault, so the design is readable outside the app. */
 function writeDesignDoc(db: DB, projectId: string): void {
-  const ref = projectRef(db, projectId);
+  const name_ = isIdeaId(projectId) ? (db.prepare('SELECT title FROM ideas WHERE id = ?').get(projectId) as { title: string }).title : projectRef(db, projectId).name;
+  const vault = docsDir(db, projectId);
   const { elements, relations } = getDesign(db, projectId);
   const name = (id: string) => elements.find((e) => e.id === id)?.name ?? id;
   const top = elements.filter((e) => !e.parent_id);
-  const lines = [`# ${ref.name} — System design (C4)`, '', '## Containers and external systems', ''];
+  const lines = [`# ${name_} — System design (C4)`, '', '## Containers and external systems', ''];
   for (const e of top) {
     lines.push(`### ${e.name} [${e.kind}${e.technology ? `: ${e.technology}` : ''}]`, '', e.description ?? '', '');
     const kids = elements.filter((k) => k.parent_id === e.id);
     if (kids.length) lines.push(...kids.map((k) => `- **${k.name}** [${k.technology ?? k.kind}]: ${k.description ?? ''}`), '');
   }
   lines.push('## Relationships', '', ...relations.map((r) => `- ${name(r.source)} → ${name(r.target)}: ${r.label}${r.technology ? ` [${r.technology}]` : ''}${r.interaction === 'async' ? ' (async)' : ''}`), '');
-  mkdirSync(join(ref.vault, 'design'), { recursive: true });
-  writeFileSync(join(ref.vault, 'design', 'system-design.md'), lines.join('\n'));
-  writeFileSync(join(ref.vault, 'design', 'model.json'), JSON.stringify({ elements, relations }, null, 2));
+  mkdirSync(join(vault, 'design'), { recursive: true });
+  writeFileSync(join(vault, 'design', 'system-design.md'), lines.join('\n'));
+  writeFileSync(join(vault, 'design', 'model.json'), JSON.stringify({ elements, relations }, null, 2));
 }
 
 export function designChanged(db: DB, projectId: string): void {
   writeDesignDoc(db, projectId);
+  if (isIdeaId(projectId)) ideaChanged(db, projectId);
   getBus().emit({ type: 'design', project_id: projectId });
 }
 
@@ -364,8 +404,8 @@ export function startPlanning(db: DB, projectId: string): string {
     db,
     ch,
     `@PM the requirements for ${ref.name} are final (v${latest.version}, project_id ${ref.id}, saved at ${join(ref.vault, 'requirements', 'current.md')}). ` +
-      `This is not a software project: the work is documents and other files in the project folder, and the checks are reviews against each card's acceptance criteria. ` +
-      `Follow the project kickoff in CLAUDE.md: draft the phases with the manager subagent, then post them here for my approval. Do not create cards or start the work until I approve.`,
+      `${projectType(db, projectId) === 'general' ? `This is not a software project: the work is documents and other files in the project folder, and the checks are reviews against each card's acceptance criteria. ` : ''}` +
+      `Follow the project kickoff in CLAUDE.md: draft the phases with the manager subagent, then post them here for my approval. Do not create cards or start the work until I approve.${shapedNote(db, ref)}`,
     '@PM',
   );
   getBus().emit({ type: 'brain_project', project_id: projectId });
@@ -408,7 +448,7 @@ export async function finalizeDesign(db: DB, projectId: string): Promise<string>
     db,
     ch,
     `@PM the system design for ${ref.name} is final (v${version}); it is in ${join(ref.vault, 'design', 'system-design.md')} and the verticals are set up on the board. ` +
-      `Follow the project kickoff in CLAUDE.md: draft the phases with the manager subagent, then post them here for my approval. Do not create cards or start building until I approve.`,
+      `Follow the project kickoff in CLAUDE.md: draft the phases with the manager subagent, then post them here for my approval. Do not create cards or start building until I approve.${shapedNote(db, ref)}`,
     '@PM',
   );
   getBus().emit({ type: 'brain_project', project_id: projectId });

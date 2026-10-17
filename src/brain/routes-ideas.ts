@@ -1,0 +1,221 @@
+// /api/ideas: the Idea board (capture, shape in one chat, promote), brands,
+// UI mockups, and change requests (a PM proposes a change to what was
+// settled; the user approves it on a card).
+import { addMessage, getConversation, getMessage, members, recordDecision, updateMessageMeta } from './chat.js';
+import {
+  captureIdea,
+  deleteIdea,
+  getBrand,
+  getIdea,
+  ideaSummary,
+  ideaThread,
+  listBrands,
+  listIdeas,
+  removeScreen,
+  saveBrand,
+  saveScreen,
+  screenHtml,
+  updateIdea,
+  useBrand,
+} from './ideas.js';
+import { listRequirements, NeedsRole, projectRef, promoteIdea, saveRequirements } from './pipeline.js';
+import { getRole } from './roles.js';
+import { HttpError, on } from './router.js';
+import { activeRuns, respond } from './runner.js';
+
+const need = (db: any, id: string) => {
+  const idea = getIdea(db, id);
+  if (!idea) throw new HttpError(404, 'unknown idea');
+  return idea;
+};
+const bad = (err: unknown) => (err instanceof HttpError ? err : err instanceof NeedsRole ? new HttpError(409, err.message, { needs_role: err.role }) : new HttpError(400, (err as Error).message));
+const attempt = <T>(fn: () => T): T => {
+  try {
+    return fn();
+  } catch (err) {
+    throw bad(err);
+  }
+};
+
+/** A card's worth of an idea: what exists so far, and whether its chat is busy. */
+function card(db: any, id: string) {
+  const s = ideaSummary(db, id);
+  const working = Boolean(s.idea.conversation_id && activeRuns().some((r) => r.conversation === s.idea.conversation_id));
+  return { ...s.idea, requirementsVersion: s.requirementsVersion, designElements: s.designElements, brand: s.brand ? { id: s.brand.id, name: s.brand.name } : null, screens: s.screens.length, missing: s.missing, working };
+}
+
+on('GET', '/api/ideas', (_q, res, url, ctx) => {
+  const db = ctx.db();
+  ctx.json(res, 200, listIdeas(db, { all: url.searchParams.get('all') === '1' }).map((i) => card(db, i.id)));
+});
+
+on('POST', '/api/ideas', async (req, res, _u, ctx) => {
+  const b = await ctx.readBody(req);
+  if (!b?.title) throw new HttpError(400, 'title required');
+  const idea = attempt(() => captureIdea(ctx.db(), { title: String(b.title), pitch: b.pitch, type: b.type, source: b.source ?? null }));
+  ctx.json(res, 200, card(ctx.db(), idea.id));
+});
+
+on('GET', '/api/ideas/:id', (_q, res, _u, ctx, p) => {
+  const db = ctx.db();
+  need(db, p.id);
+  const s = ideaSummary(db, p.id);
+  ctx.json(res, 200, { ...card(db, p.id), requirements: listRequirements(db, p.id)[0] ?? null, brand: s.brand, screenList: s.screens });
+});
+
+on('POST', '/api/ideas/:id', async (req, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  const b = await ctx.readBody(req);
+  attempt(() => updateIdea(ctx.db(), p.id, b ?? {}));
+  ctx.json(res, 200, card(ctx.db(), p.id));
+});
+
+on('DELETE', '/api/ideas/:id', (_q, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  attempt(() => deleteIdea(ctx.db(), p.id));
+  ctx.broadcast({ type: 'conversations' });
+  ctx.json(res, 200, { ok: true });
+});
+
+/** The idea's one shaping chat (opened on first use). */
+on('POST', '/api/ideas/:id/thread', (_q, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  ctx.json(res, 200, { conversation: attempt(() => ideaThread(ctx.db(), p.id)) });
+});
+
+on('POST', '/api/ideas/:id/promote', async (_q, res, _u, ctx, p) => {
+  const db = ctx.db();
+  need(db, p.id);
+  try {
+    const ref = await promoteIdea(db, p.id);
+    ctx.broadcast({ type: 'conversations' });
+    ctx.json(res, 200, { project_id: ref.id, root: ref.root });
+  } catch (err) {
+    throw bad(err);
+  }
+});
+
+// ── brand ──
+
+on('GET', '/api/brands', (_q, res, _u, ctx) => ctx.json(res, 200, listBrands(ctx.db())));
+
+on('POST', '/api/ideas/:id/brand', async (req, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  const b = await ctx.readBody(req);
+  if (b?.tokens !== undefined && (typeof b.tokens !== 'object' || Array.isArray(b.tokens))) throw new HttpError(400, 'tokens must be an object');
+  ctx.json(res, 200, attempt(() => saveBrand(ctx.db(), p.id, { name: b?.name, guidelines: b?.guidelines, tokens: b?.tokens })));
+});
+
+on('POST', '/api/ideas/:id/brand/use', async (req, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  const b = await ctx.readBody(req);
+  attempt(() => useBrand(ctx.db(), p.id, b?.brand_id ?? null));
+  ctx.json(res, 200, getBrand(ctx.db(), b?.brand_id ?? null));
+});
+
+// ── UI mockups ──
+
+on('POST', '/api/ideas/:id/screens', async (req, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  const b = await ctx.readBody(req);
+  if (typeof b?.html !== 'string') throw new HttpError(400, 'html required');
+  ctx.json(res, 200, attempt(() => saveScreen(ctx.db(), p.id, { id: String(b.id ?? ''), title: String(b.title ?? ''), html: b.html, position: b.position })));
+});
+
+on('DELETE', '/api/ideas/:id/screens/:screen', (_q, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  attempt(() => removeScreen(ctx.db(), p.id, p.screen));
+  ctx.json(res, 200, { ok: true });
+});
+
+/**
+ * A mockup screen, served so it can only be looked at: no scripts, nothing
+ * fetched from anywhere (inline styles, data: images), framed by the app only.
+ * Links between screens are relative (settings.html), so they resolve here.
+ */
+on('GET', '/api/ideas/:id/ui/:screen', (_q, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  const html = screenHtml(ctx.db(), p.id, p.screen.replace(/\.html$/, ''));
+  if (html === null) throw new HttpError(404, 'no such screen');
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+    'x-content-type-options': 'nosniff',
+    'cache-control': 'no-store',
+  });
+  res.end(html);
+});
+
+// ── change requests: what was settled changes only with the user's yes ──
+
+const AREAS = ['requirements', 'design', 'brand', 'ui'] as const;
+/** Who applies an approved change to each area (falls back to the Main agent). */
+const OWNER: Record<string, string> = { design: 'architect', brand: 'designer', ui: 'designer', requirements: 'main' };
+
+on('POST', '/api/change-requests', async (req, res, _u, ctx) => {
+  const db = ctx.db();
+  const b = await ctx.readBody(req);
+  const conversation = b?.conversation && getConversation(db, b.conversation) ? String(b.conversation) : null;
+  if (!conversation) throw new HttpError(400, 'conversation required');
+  if (!AREAS.includes(b?.area)) throw new HttpError(400, `area must be one of ${AREAS.join(', ')}`);
+  if (!String(b?.summary ?? '').trim()) throw new HttpError(400, 'say what should change');
+  try {
+    projectRef(db, String(b?.project_id ?? ''));
+  } catch {
+    throw new HttpError(404, 'unknown project');
+  }
+  if (b.area === 'requirements' && typeof b.requirements_markdown !== 'string') throw new HttpError(400, 'a requirements change needs the full new requirements as requirements_markdown');
+  const meta = { status: 'pending', project_id: b.project_id, area: b.area, summary: String(b.summary).trim(), why: b.why ?? null, requirements_markdown: b.requirements_markdown ?? null, proposer: b.role ?? null };
+  const m = addMessage(db, conversation, String(b.role ?? 'pm'), `Change the ${b.area === 'ui' ? 'UI' : b.area}: ${meta.summary}`, 'change_request', meta);
+  ctx.broadcast({ type: 'chat', conversation, message: m });
+  ctx.json(res, 200, { status: 'proposed', message_id: m.id });
+});
+
+on('POST', '/api/change-requests/:id', async (req, res, _u, ctx, p) => {
+  const db = ctx.db();
+  const m = getMessage(db, Number(p.id));
+  if (!m || m.kind !== 'change_request') throw new HttpError(404, 'unknown change request');
+  if (m.meta?.status !== 'pending') throw new HttpError(409, `already ${m.meta?.status}`);
+  const b = await ctx.readBody(req);
+  const mt = m.meta;
+  const conv = m.conversation_id;
+  if (!b?.accept) {
+    const updated = updateMessageMeta(db, m.id, { ...mt, status: 'declined' });
+    ctx.broadcast({ type: 'chat_update', conversation: conv, message: updated });
+    const note = addMessage(db, conv, 'system', `The user declined the change to the ${mt.area}: ${mt.summary}. Keep to what was settled.`);
+    ctx.broadcast({ type: 'chat', conversation: conv, message: note });
+    return ctx.json(res, 200, { status: 'declined' });
+  }
+  const ref = projectRef(db, mt.project_id);
+  let applied = '';
+  if (mt.area === 'requirements') {
+    try {
+      // unlock for the new version without moving the project's stage back
+      db.prepare('UPDATE requirements SET final = 0 WHERE project_id = ?').run(ref.id);
+      const v = saveRequirements(db, ref.id, mt.requirements_markdown, mt.proposer ?? 'pm');
+      // final again, without re-running the team step (the project is past it)
+      db.prepare('UPDATE requirements SET final = 1 WHERE project_id = ? AND version = ?').run(ref.id, v.version);
+      applied = `Requirements v${v.version} are now final.`;
+    } catch (err) {
+      throw bad(err);
+    }
+  }
+  recordDecision(db, { conversationId: conv, projectId: ref.id, roleId: mt.proposer, title: `Change to the ${mt.area}: ${mt.summary}`, why: mt.why, followUps: [] });
+  const updated = updateMessageMeta(db, m.id, { ...mt, status: 'approved' });
+  ctx.broadcast({ type: 'chat_update', conversation: conv, message: updated });
+  ctx.broadcast({ type: 'decisions' });
+  if (applied) {
+    const note = addMessage(db, conv, 'system', `Approved: ${mt.summary}. ${applied}`);
+    ctx.broadcast({ type: 'chat', conversation: conv, message: note });
+  } else {
+    // design, brand and UI changes go to whoever owns them; they apply it and report back here
+    const owner = getRole(db, OWNER[mt.area]) ? OWNER[mt.area] : 'main';
+    db.prepare('INSERT OR IGNORE INTO conversation_members (conversation_id, role_id) VALUES (?, ?)').run(conv, owner);
+    const name = getRole(db, owner)?.name ?? 'Main agent';
+    const where = mt.area === 'design' ? `the design model (get_design / set_element, project_id ${ref.id})` : `docs/${mt.area === 'brand' ? 'brand.md and docs/brand-tokens.json' : 'ui/ (one HTML file per screen; keep index.html linking them)'} in the project folder`;
+    const note = addMessage(db, conv, 'system', `The user approved a change to the ${mt.area === 'ui' ? 'UI' : mt.area}: ${mt.summary}${mt.why ? ` (why: ${mt.why})` : ''}. @${name}: apply it to ${where}, then reply here with what changed.`);
+    ctx.broadcast({ type: 'chat', conversation: conv, message: note });
+    if (members(db, conv).includes(owner)) respond(conv, `@${name}`);
+  }
+  ctx.json(res, 200, { status: 'approved' });
+});

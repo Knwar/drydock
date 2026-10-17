@@ -98,7 +98,8 @@ server.registerTool(
     description:
       'Suggest adding a team member. The user sees an "Add to your team?" card and decides; you never add members yourself. Use a template id when one fits, otherwise give a name, skill and short persona.',
     inputSchema: {
-      template: z.enum(['architect', 'pm', 'cto', 'cfo', 'marketing', 'social', 'qc']).optional(),
+      template: z.enum(['architect', 'pm', 'cto', 'cfo', 'marketing', 'social', 'qc', 'security', 'designer', 'writer', 'editor', 'podcast', 'researcher']).optional(),
+      join: z.boolean().optional().describe('Also bring them into this chat (for an idea chat: when you need their part done here). Works for members already on the team too.'),
       name: z.string().optional().describe('For a custom member, e.g. "Legal advisor"'),
       skill: z.string().optional().describe('A Claude Code skill name, e.g. "marketing:seo-audit"'),
       scope: z.enum(['shared', 'project']).optional(),
@@ -108,7 +109,7 @@ server.registerTool(
   },
   async (b) => {
     const r = await call('/api/role-proposals', { ...b, role: ROLE, conversation: CONVERSATION });
-    return text(r.status === 'exists' ? 'That member is already on the team.' : 'Proposed. The user will choose Add or Not now on the card.');
+    return text(r.status === 'exists' ? (b.join ? 'They are already in this chat: @mention them.' : 'That member is already on the team.') : 'Proposed. The user will choose Add or Not now on the card; if they add them, you will be asked to brief them.');
   },
 );
 
@@ -151,7 +152,7 @@ server.registerTool(
 
 server.registerTool(
   'get_requirements',
-  { description: "Read a project's current requirements (Markdown) and version history.", inputSchema: { project_id: z.string() } },
+  { description: "Read a project's (or an idea's) current requirements (Markdown) and version history. For an idea, pass its idea_id as project_id.", inputSchema: { project_id: z.string() } },
   async ({ project_id }) => {
     const versions = await call(`/api/projects/${project_id}/requirements`);
     if (!versions.length) return text('No requirements yet.');
@@ -162,7 +163,7 @@ server.registerTool(
 server.registerTool(
   'save_requirements',
   {
-    description: 'Save a new version of the requirements document (the whole Markdown document, not a diff). Sections: Goal, Users, Features (table with ID, feature, priority Must/Should/Could), Non-functional, Out of scope, Open questions.',
+    description: 'Save a new version of the requirements document (the whole Markdown document, not a diff). Sections: Goal, Users, Features (table with ID, feature, priority Must/Should/Could), Non-functional, Out of scope, Open questions. For an idea, pass its idea_id as project_id (add Problem and Approach & tech sections).',
     inputSchema: { project_id: z.string(), markdown: z.string() },
   },
   async ({ project_id, markdown }) => {
@@ -245,6 +246,128 @@ server.registerTool(
     const res = await fetch(`${DAEMON}/api/projects/${project_id}/design/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`remove failed: ${res.status}`);
     return text(`Removed ${id}.`);
+  },
+);
+
+// ── the Idea board ───────────────────────────────────────────────
+
+server.registerTool(
+  'list_ideas',
+  { description: 'The ideas on the Idea board (not yet projects): id, title, pitch, kind and how far they are shaped. Check it before capturing, to avoid duplicates.', inputSchema: {} },
+  async () => {
+    const ideas = await call('/api/ideas');
+    if (!ideas.length) return text('The Idea board is empty.');
+    return text(ideas.map((i: any) => `${i.title} (idea_id ${i.id}, ${i.type}, ${i.status}): ${clip(i.pitch, 100)}${i.requirementsVersion ? ` · requirements v${i.requirementsVersion}` : ''}${i.designElements ? ` · design ${i.designElements} elements` : ''}${i.brand ? ' · brand' : ''}${i.screens ? ` · ${i.screens} screens` : ''}`).join('\n'));
+  },
+);
+
+server.registerTool(
+  'capture_idea',
+  {
+    description: 'Save a new idea to the Idea board: a short title, a one-line pitch and its kind. Cheap: no project, folder or team is created. Tell the user in one line that you saved it.',
+    inputSchema: { title: z.string(), pitch: z.string().describe('One sentence: what it is and for whom'), type: z.enum(['software', 'general']).describe('software for apps, sites, APIs, tools; general for anything else') },
+  },
+  async (b) => {
+    const i = await call('/api/ideas', { ...b, source: CONVERSATION });
+    return text(`Saved to the Idea board: ${i.title} (idea_id ${i.id}).`);
+  },
+);
+
+server.registerTool(
+  'get_idea',
+  { description: "An idea's state: requirements (current text), design size, brand and UI screens.", inputSchema: { idea_id: z.string() } },
+  async ({ idea_id }) => {
+    const i = await call(`/api/ideas/${idea_id}`);
+    return text(
+      [
+        `${i.title} (${i.type}, ${i.status}): ${i.pitch}`,
+        `Design: ${i.designElements} elements · Brand: ${i.brand ? i.brand.name : 'none'} · Screens: ${i.screenList.map((x: any) => x.id).join(', ') || 'none'}${i.missing.length ? ` · Missing: ${i.missing.join(', ')}` : ''}`,
+        i.requirements ? `\nRequirements v${i.requirements.version}:\n${i.requirements.markdown}` : 'No requirements yet.',
+      ].join('\n'),
+    );
+  },
+);
+
+server.registerTool(
+  'save_brand',
+  {
+    description: "Save an idea's brand: the guidelines (Markdown: positioning, personality, voice and tone with do/don't, colour and type with reasons, imagery, usage) and the design tokens. Creates the brand on first save; later saves update it.",
+    inputSchema: {
+      idea_id: z.string(),
+      name: z.string().optional(),
+      guidelines: z.string().optional(),
+      tokens: z.record(z.string(), z.any()).optional().describe('e.g. {"color":{"primary":"#3355ff","surface":"#ffffff","text":"#111111"},"font":{"body":"system-ui, sans-serif"},"radius":{"md":"8px"},"space":{"1":"4px","2":"8px"}}'),
+    },
+  },
+  async ({ idea_id, ...b }) => {
+    const r = await call(`/api/ideas/${idea_id}/brand`, b);
+    return text(`Saved brand "${r.name}".`);
+  },
+);
+
+server.registerTool(
+  'list_brands',
+  { description: 'Brands already made for other ideas or projects (the user may want to reuse one).', inputSchema: {} },
+  async () => {
+    const bs = await call('/api/brands');
+    return text(bs.length ? bs.map((b: any) => `${b.name} (brand_id ${b.id})`).join('\n') : 'No brands yet.');
+  },
+);
+
+server.registerTool(
+  'use_brand',
+  { description: 'Use an existing brand for this idea (only when the user wants to reuse it). Edits to a shared brand show everywhere it is used.', inputSchema: { idea_id: z.string(), brand_id: z.string() } },
+  async ({ idea_id, brand_id }) => {
+    await call(`/api/ideas/${idea_id}/brand/use`, { brand_id });
+    return text('Brand linked.');
+  },
+);
+
+server.registerTool(
+  'save_screen',
+  {
+    description:
+      'Save one UI mockup screen for an idea (creates or replaces it). Static HTML with inline CSS only: no <script>, no event handlers, nothing loaded from elsewhere (no remote fonts, images or stylesheets; use system fonts and inline SVG). Link screens with relative links like href="settings.html". Use the brand tokens as CSS custom properties, real content, and media queries for mobile and desktop.',
+    inputSchema: {
+      idea_id: z.string(),
+      id: z.string().describe('Screen id: lowercase-with-dashes, e.g. "home", "settings"'),
+      title: z.string(),
+      html: z.string().describe('The whole HTML document'),
+      position: z.number().int().optional(),
+    },
+  },
+  async ({ idea_id, ...b }) => {
+    const s = await call(`/api/ideas/${idea_id}/screens`, b);
+    return text(`Saved screen ${s.id} (${s.title}).`);
+  },
+);
+
+server.registerTool(
+  'remove_screen',
+  { description: 'Remove a UI mockup screen from an idea.', inputSchema: { idea_id: z.string(), id: z.string() } },
+  async ({ idea_id, id }) => {
+    const res = await fetch(`${DAEMON}/api/ideas/${idea_id}/screens/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? String(res.status));
+    return text(`Removed screen ${id}.`);
+  },
+);
+
+server.registerTool(
+  'propose_change',
+  {
+    description:
+      "Propose a change to something the user settled for a project (its requirements, system design, brand or UI). The user sees a card and approves or declines; on approval a requirements change is applied as a new final version, and design, brand and UI changes go to their owner to apply. Never change these yourself.",
+    inputSchema: {
+      project_id: z.string(),
+      area: z.enum(['requirements', 'design', 'brand', 'ui']),
+      summary: z.string().describe('One sentence: what changes'),
+      why: z.string().describe('The reason (usually the user\'s answer to your question)'),
+      requirements_markdown: z.string().optional().describe('For a requirements change: the whole new document'),
+    },
+  },
+  async (b) => {
+    await call('/api/change-requests', { ...b, role: ROLE, conversation: CONVERSATION });
+    return text('Proposed. The user approves or declines it on the card; wait for that before relying on the change.');
   },
 );
 

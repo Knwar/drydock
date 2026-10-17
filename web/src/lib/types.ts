@@ -51,6 +51,8 @@ export interface Conversation {
   kind: 'dm' | 'channel';
   role_id: string | null;
   project_id: string | null;
+  /** set on an idea's shaping chat */
+  idea_id?: string | null;
   name: string;
   members: string[];
   last: { body: string; kind: string; author: string } | null;
@@ -62,8 +64,27 @@ export interface Message {
   id: number;
   conversation_id: string;
   author: string;
-  kind: 'text' | 'tool' | 'decision' | 'approval' | 'proposal' | 'secret_request' | 'error';
+  kind: 'text' | 'tool' | 'decision' | 'approval' | 'proposal' | 'secret_request' | 'change_request' | 'error';
   body: string;
   meta: any;
   created_at: number;
+}
+
+export interface IdeaCard {
+  id: string;
+  slug: string;
+  title: string;
+  pitch: string;
+  type: 'software' | 'general';
+  status: 'raw' | 'shaping' | 'parked' | 'promoted';
+  conversation_id: string | null;
+  brand_id: string | null;
+  project_id: string | null;
+  updated_at: number;
+  requirementsVersion: number | null;
+  designElements: number;
+  brand: { id: string; name: string } | null;
+  screens: number;
+  missing: string[];
+  working: boolean;
 }

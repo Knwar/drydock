@@ -101,19 +101,65 @@ function ProposalCard({ m, proposer }: { m: Message; proposer?: Role }) {
       </div>
       <div style={{ fontWeight: 700, fontSize: 14 }}>{m.body}</div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {(m.meta?.skills ?? []).map((k: string) => <span key={k} className="pill t-n" style={{ fontSize: 11 }}>{k.replace(/-/g, ' ')}</span>)}
         {m.meta?.skill && <span className="pill t-n mono" style={{ fontSize: 11 }}>skill: {m.meta.skill}</span>}
-        <span className="pill t-n" style={{ fontSize: 11 }}>{m.meta?.scope === 'project' ? 'per project' : 'all projects'}</span>
-        <span className="pill t-n" style={{ fontSize: 11 }}>{m.meta?.model}</span>
+        {!m.meta?.existing && <span className="pill t-n" style={{ fontSize: 11 }}>{m.meta?.scope === 'project' ? 'per project' : 'all projects'}</span>}
+        {m.meta?.model && <span className="pill t-n" style={{ fontSize: 11 }}>{m.meta.model}</span>}
       </div>
       {m.meta?.reason && <div style={{ fontSize: 12.5, color: 'var(--text2)' }}>{m.meta.reason}</div>}
       {m.meta?.persona && <div className="muted" style={{ fontSize: 12 }}>{m.meta.persona}</div>}
       {status === 'pending' ? (
         <div style={{ display: 'flex', gap: 6 }}>
-          <button className="btn sm primary" disabled={busy} onClick={() => answer(true)}>Add to team</button>
+          <button className="btn sm primary" disabled={busy} onClick={() => answer(true)}>{m.meta?.existing ? 'Add to this chat' : m.meta?.join ? 'Add to team and chat' : 'Add to team'}</button>
           <button className="btn sm" disabled={busy} onClick={() => answer(false)}>Not now</button>
         </div>
       ) : (
-        <span className={`pill ${status === 'added' ? 't-g' : 't-n'}`} style={{ alignSelf: 'flex-start' }}>{status === 'added' ? 'Added to your team' : 'Not added'}</span>
+        <span className={`pill ${status === 'added' ? 't-g' : 't-n'}`} style={{ alignSelf: 'flex-start' }}>{status === 'added' ? (m.meta?.existing ? 'Added to this chat' : m.meta?.join ? 'Added to your team and this chat' : 'Added to your team') : 'Not added'}</span>
+      )}
+    </div>
+  );
+}
+
+/** A PM's proposed change to settled requirements, design, brand or UI: nothing changes without the user's yes. */
+function ChangeRequestCard({ m, role }: { m: Message; role?: Role }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const status = m.meta?.status ?? 'pending';
+  const area = m.meta?.area === 'ui' ? 'UI' : m.meta?.area;
+  const answer = async (accept: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/change-requests/${m.id}`, { body: { accept } });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="card-proposal" data-status={status === 'approved' ? 'added' : status}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className="pill t-a">Change to {area}</span>
+        <span className="muted" style={{ fontSize: 12 }}>{role?.name ?? m.author} proposes</span>
+      </div>
+      <div style={{ fontWeight: 700, fontSize: 14 }}>{m.meta?.summary}</div>
+      {m.meta?.why && <div style={{ fontSize: 12.5, color: 'var(--text2)' }}>Why: {m.meta.why}</div>}
+      {m.meta?.requirements_markdown && (
+        <details style={{ fontSize: 12.5 }}>
+          <summary style={{ cursor: 'pointer' }}>The new requirements</summary>
+          <Markdown text={m.meta.requirements_markdown} />
+        </details>
+      )}
+      {error && <div className="error">{error}</div>}
+      {status === 'pending' ? (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="btn sm primary" disabled={busy} onClick={() => answer(true)}>Approve change</button>
+          <button className="btn sm" disabled={busy} onClick={() => answer(false)}>Keep as is</button>
+          <span className="muted" style={{ fontSize: 11.5 }}>{m.meta?.area === 'requirements' ? 'Approving saves a new final version.' : 'Approving asks its owner to apply it here.'} It is recorded as a decision.</span>
+        </div>
+      ) : (
+        <span className={`pill ${status === 'approved' ? 't-g' : 't-n'}`} style={{ alignSelf: 'flex-start' }}>{status === 'approved' ? 'Approved' : 'Kept as is'}</span>
       )}
     </div>
   );
@@ -206,6 +252,16 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
   const slug = project?.root.split('/').pop();
   const threadTitle = slug && conversation.name.startsWith(`${slug}-`) ? conversation.name.slice(slug.length + 1) : conversation.name;
   const several = !lead && conversation.members.length > 1;
+  // who answers an un-mentioned message: a member who just asked a question, else the lead (as the daemon decides)
+  const replyTo = (() => {
+    const texts = messages.filter((m) => m.kind === 'text');
+    let i = texts.length - 1;
+    while (i >= 0 && texts[i].author === 'user') i--;
+    const last = texts[i];
+    const lastLine = last?.body.trim().split('\n').filter(Boolean).pop() ?? '';
+    return last && last.author !== conversation.members[0] && conversation.members.includes(last.author) && /\?\s*$/.test(lastLine) ? last.author : conversation.members[0];
+  })();
+  const replyName = byId.get(replyTo)?.name ?? 'the lead';
   const send = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const t = text.trim();
@@ -260,7 +316,9 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
               ? 'Tell me about an idea, ask about a project, or ask me to plan your day.'
               : lead
                 ? `Message ${lead.name}. They keep their own memory of this conversation.`
-                : 'Start the discussion. @mention a member to ask just them.'}
+                : conversation.idea_id
+                  ? 'Talk the idea through. Each message can change the requirements, design, brand and UI at once; the Main agent brings in specialists (it asks you first).'
+                  : 'Start the discussion. @mention a member to ask just them.'}
           </div>
         )}
         {visible.map((row) => {
@@ -279,6 +337,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
           if (m.kind === 'secret_request') return <SecretRequestCard key={m.id} m={m} role={role} />;
           if (m.kind === 'decision') return <DecisionCard key={m.id} m={m} />;
           if (m.kind === 'proposal') return <ProposalCard key={m.id} m={m} proposer={role} />;
+          if (m.kind === 'change_request') return <ChangeRequestCard key={m.id} m={m} role={role} />;
           return (
             <div key={m.id} className="msg">
               <Avatar role={role} />
@@ -318,12 +377,12 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
               send();
             }
           }}
-          placeholder={lead?.id === 'main' ? 'Describe an idea, or ask anything…' : lead ? `Message ${lead.name}…` : several ? `Message #${threadTitle}: ${byId.get(conversation.members[0])?.name ?? 'the lead'} answers, or @mention someone…` : `Message #${threadTitle}…`}
+          placeholder={lead?.id === 'main' ? 'Describe an idea, or ask anything…' : lead ? `Message ${lead.name}…` : several ? `Message #${threadTitle}: ${replyName} answers, or @mention someone…` : `Message #${threadTitle}…`}
         />
         {error && <div className="error">{error}</div>}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span className="muted" style={{ fontSize: 11 }} title={several ? `Without an @mention, ${byId.get(conversation.members[0])?.name ?? 'the first member'} (the lead) answers and brings others in. With @mentions only those members answer.` : undefined}>
-            {several ? `${byId.get(conversation.members[0])?.name ?? 'The lead'} answers · @mention to ask others` : 'Enter to send · Shift+Enter for a new line'}
+            {several ? (replyTo !== conversation.members[0] ? `Replying to ${replyName} (they asked) · @mention to ask others` : `${replyName} answers · @mention to ask others`) : 'Enter to send · Shift+Enter for a new line'}
           </span>
           {working ? (
             <button type="button" className="btn sm" style={{ marginLeft: 'auto' }} onClick={stop}>Stop</button>

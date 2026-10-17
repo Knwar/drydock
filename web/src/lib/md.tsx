@@ -1,5 +1,5 @@
 // Minimal Markdown for agent messages: paragraphs, lists, headings, code
-// blocks, **bold**, *italic*, `code` and links. Builds React elements only;
+// blocks, tables, **bold**, *italic*, `code` and links. Builds React elements only;
 // never injects HTML.
 import { Fragment, type ReactNode } from 'react';
 
@@ -45,6 +45,23 @@ export function Markdown({ text }: { text: string }) {
       blocks.push(<List key={k++} className="md-list">{items.map((t, j) => <li key={j}>{inline(t)}</li>)}</List>);
       continue;
     }
+    // a table: a header row, a |---| separator, then rows
+    if (/^\s*\|.*\|\s*$/.test(line) && /^\s*\|?\s*:?-{2,}/.test(lines[i + 1] ?? '')) {
+      const cells = (l: string) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+      const head = cells(line);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) rows.push(cells(lines[i++]));
+      blocks.push(
+        <div key={k++} className="md-table-wrap">
+          <table className="md-table">
+            <thead><tr>{head.map((c, j) => <th key={j}>{inline(c)}</th>)}</tr></thead>
+            <tbody>{rows.map((r, ri) => <tr key={ri}>{r.map((c, j) => <td key={j}>{inline(c)}</td>)}</tr>)}</tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
     const h = /^(#{1,4})\s+(.*)$/.exec(line);
     if (h) {
       blocks.push(<div key={k++} className="md-h">{inline(h[2])}</div>);
@@ -55,8 +72,9 @@ export function Markdown({ text }: { text: string }) {
       i++;
       continue;
     }
-    const para: string[] = [];
-    while (i < lines.length && lines[i].trim() && !/^(```|#{1,4}\s|\s*([-*]|\d+\.)\s+)/.test(lines[i])) para.push(lines[i++]);
+    // the first line always belongs to the paragraph (a lone |row| that is not a table is just text)
+    const para: string[] = [lines[i++]];
+    while (i < lines.length && lines[i].trim() && !/^(```|#{1,4}\s|\s*([-*]|\d+\.)\s+|\s*\|.*\|\s*$)/.test(lines[i])) para.push(lines[i++]);
     blocks.push(
       <p key={k++} className="md-p">
         {para.map((p, j) => (

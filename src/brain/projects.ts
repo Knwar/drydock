@@ -35,7 +35,7 @@ export interface ProjectSummary {
   rag: string | null;
   type: ProjectType;
   plugins: string[];
-  origin: 'new' | 'imported';
+  origin: 'new' | 'imported' | 'idea';
 }
 
 interface Row {
@@ -133,7 +133,7 @@ export function listProjects(db: DB, insideRoot: string | null): ProjectSummary[
         rag: (r as any).rag ?? null,
         type: isType((r as any).type) ? (r as any).type : 'software',
         plugins: projectPlugins(db, r.id),
-        origin: (r as any).origin === 'imported' ? 'imported' : 'new',
+        origin: ['imported', 'idea'].includes((r as any).origin) ? (r as any).origin : 'new',
       };
     });
 }

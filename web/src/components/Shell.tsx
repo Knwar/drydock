@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useApi } from '../lib/api';
 import { go, href } from '../lib/router';
-import { STAGE_LABEL, type Conversation, type ProjectSummary } from '../lib/types';
+import { STAGE_LABEL, type Conversation, type IdeaCard, type ProjectSummary } from '../lib/types';
 import { Icon, type IconName } from './Icon';
 import { LiveCount } from './LiveCard';
 import { PLUGIN_META } from './CommandBar';
@@ -159,7 +159,9 @@ function TreeRows({ nodes, depth, open, toggle }: { nodes: TreeNode[]; depth: nu
   );
 }
 
-export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking, onNewProject, threads }: { projects: ProjectSummary[]; path: string; children?: React.ReactNode; mainOn: boolean; onMain: () => void; mainWorking: boolean; onNewProject: () => void; threads: ThreadCtx }) {
+export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking, onNewProject, threads, ideas, onNewIdea }: { projects: ProjectSummary[]; path: string; children?: React.ReactNode; mainOn: boolean; onMain: () => void; mainWorking: boolean; onNewProject: () => void; threads: ThreadCtx; ideas: IdeaCard[]; onNewIdea: () => void }) {
+  const active = ideas.filter((i) => i.status !== 'parked' && i.status !== 'promoted');
+  const parked = ideas.length - active.length;
   const [open, setOpen] = useState<Set<string>>(() => new Set(projects[0] ? [projects[0].id] : []));
   const toggle = (id: string) => setOpen((s) => { const next = new Set(s); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   // the project you are on shows its threads
@@ -176,6 +178,32 @@ export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking,
         <span className="label">Main agent</span>
         <span className="dot" style={{ background: mainWorking ? 'var(--g-fg)' : 'var(--n-fg)' }} title={mainWorking ? 'working' : 'idle'} />
       </button>
+      <div>
+        <div className="side-label">
+          <span>IDEAS</span>
+          <button aria-label="New idea" title="New idea" onClick={onNewIdea}>
+            +
+          </button>
+        </div>
+        {active.length ? (
+          <TreeRows
+            nodes={active.map((i) => ({
+              id: i.id,
+              label: i.title,
+              icon: 'idea' as IconName,
+              to: `/idea/${i.id}`,
+              active: path === `/idea/${i.id}` || path.startsWith(`/idea/${i.id}/`),
+              badge: i.working ? { text: 'live', tone: 't-g' } : i.status === 'raw' ? { text: 'New', tone: 't-n' } : undefined,
+            }))}
+            depth={0}
+            open={open}
+            toggle={toggle}
+          />
+        ) : (
+          <div className="muted side-note" style={{ fontSize: 12.5, padding: '4px 10px' }}>Ideas you mention to the Main agent land here.</div>
+        )}
+        {parked > 0 && <a className="nav-row muted side-note" style={{ fontSize: 12 }} href={href('/')} onClick={go('/')}><span className="chev-btn" aria-hidden="true" /><span className="label">{parked} parked on the board</span></a>}
+      </div>
       <div>
         <div className="side-label">
           <span>PROJECTS</span>

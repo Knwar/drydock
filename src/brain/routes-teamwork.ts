@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { addMessage, createChannel, getConversation, listMessages, members as convMembers } from './chat.js';
 import { checkinSettings, lastActivity, runCheckins } from './checkins.js';
-import { projectRef, reportWorkComplete, saveThreatModel, slugify, startDesign, startPlanning, NeedsRole } from './pipeline.js';
+import { finalizeDesign, getDesign, projectRef, reportWorkComplete, saveThreatModel, slugify, startDesign, startPlanning, NeedsRole } from './pipeline.js';
 import { projectPlugins } from './plugins.js';
 import { getRole, listRoles } from './roles.js';
 import { HttpError, on } from './router.js';
@@ -78,11 +78,15 @@ on('DELETE', '/api/projects/:id/team/:role', (_q, res, _u, ctx, p) => {
 });
 
 /** After the team step: the design stage when the project has System design, else straight to planning. */
-on('POST', '/api/projects/:id/design/start', (_q, res, _u, ctx, p) => {
+on('POST', '/api/projects/:id/design/start', async (_q, res, _u, ctx, p) => {
   project(ctx.db(), p.id);
   try {
-    const design = projectPlugins(ctx.db(), p.id).includes('design');
-    ctx.json(res, 200, { channel: design ? startDesign(ctx.db(), p.id) : startPlanning(ctx.db(), p.id), stage: design ? 'design' : 'plan' });
+    const db = ctx.db();
+    const design = projectPlugins(db, p.id).includes('design');
+    // shaped on the Idea board: the design is already done, so it is frozen and the PM plans
+    const shaped = (db.prepare('SELECT origin FROM brain_projects WHERE project_id = ?').get(p.id) as { origin: string } | undefined)?.origin === 'idea';
+    if (shaped && design && getDesign(db, p.id).elements.length) return ctx.json(res, 200, { channel: await finalizeDesign(db, p.id), stage: 'plan' });
+    ctx.json(res, 200, { channel: design && !shaped ? startDesign(db, p.id) : startPlanning(db, p.id), stage: design && !shaped ? 'design' : 'plan' });
   } catch (err) {
     if (err instanceof NeedsRole) throw new HttpError(409, err.message, { needs_role: err.role });
     throw new HttpError(400, (err as Error).message);

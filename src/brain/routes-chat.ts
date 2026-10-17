@@ -18,6 +18,7 @@ import {
   listPendingApprovals,
   listStanding,
   markRead,
+  members,
   recordDecision,
   setStanding,
   standingTools,
@@ -285,9 +286,19 @@ on('POST', '/api/role-proposals', async (req, res, _u, ctx) => {
   if (b?.template && !template) throw new HttpError(400, `unknown template ${b.template}; templates: ${ROLE_TEMPLATES.map((t) => t.id).join(', ')}`);
   const name = template?.name ?? String(b?.name ?? '').trim();
   if (!name) throw new HttpError(400, 'name or template required');
-  if (getRole(db, template?.id ?? name.toLowerCase().replace(/[^a-z0-9]+/g, '-'))) return ctx.json(res, 200, { status: 'exists' });
   if (!conversation) throw new HttpError(400, 'conversation required');
+  // join: also bring them into this chat (the user decides on the same card)
+  const join = b?.join && getConversation(db, conversation)?.kind === 'channel' ? conversation : null;
+  const existing = getRole(db, template?.id ?? name.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+  if (existing) {
+    if (!join || members(db, conversation).includes(existing.id)) return ctx.json(res, 200, { status: 'exists' });
+    const m = addMessage(db, conversation, String(b?.role ?? 'main'), `Add ${existing.name} to this chat?`, 'proposal', { status: 'pending', existing: true, role_id: existing.id, name: existing.name, join, reason: b?.reason ?? null, skills: roleSkills(existing) });
+    ctx.broadcast({ type: 'chat', conversation, message: m });
+    return ctx.json(res, 200, { status: 'proposed', message_id: m.id });
+  }
   const meta = {
+    join,
+    skills: template ? defaultSkills(template.id) : [],
     status: 'pending',
     template: template?.id ?? null,
     name,
@@ -297,7 +308,7 @@ on('POST', '/api/role-proposals', async (req, res, _u, ctx) => {
     persona: b?.persona ?? null,
     reason: b?.reason ?? null,
   };
-  const m = addMessage(db, conversation, String(b?.role ?? 'main'), `Add ${name} to your team?`, 'proposal', meta);
+  const m = addMessage(db, conversation, String(b?.role ?? 'main'), join ? `Add ${name} to your team and this chat?` : `Add ${name} to your team?`, 'proposal', meta);
   ctx.broadcast({ type: 'chat', conversation, message: m });
   ctx.json(res, 200, { status: 'proposed', message_id: m.id });
 });
@@ -311,10 +322,20 @@ on('POST', '/api/role-proposals/:id', async (req, res, _u, ctx, p) => {
   let role = null;
   if (b?.accept) {
     const mt = m.meta;
-    role = mt.template
-      ? addFromTemplate(db, mt.template)
-      : saveRole(db, { name: mt.name, skill: mt.skill, scope: mt.scope, model: mt.model, ...(mt.persona ? { persona: mt.persona } : {}) });
+    role = mt.existing
+      ? getRole(db, mt.role_id) ?? null
+      : mt.template
+        ? addFromTemplate(db, mt.template)
+        : saveRole(db, { name: mt.name, skill: mt.skill, scope: mt.scope, model: mt.model, ...(mt.persona ? { persona: mt.persona } : {}) });
     ensureDms(db);
+    if (role && mt.join && getConversation(db, mt.join)) {
+      db.prepare('INSERT OR IGNORE INTO conversation_members (conversation_id, role_id) VALUES (?, ?)').run(mt.join, role.id);
+      const lead = members(db, mt.join)[0];
+      const leadName = getRole(db, lead)?.name ?? 'Main agent';
+      const note = addMessage(db, mt.join, 'system', `${role.name} joined this chat. @${leadName}: brief them on what you need from them.`);
+      ctx.broadcast({ type: 'chat', conversation: mt.join, message: note });
+      respond(mt.join, `@${leadName}`);
+    }
   }
   const updated = updateMessageMeta(db, m.id, { ...m.meta, status: b?.accept ? 'added' : 'declined', role_id: role?.id ?? null });
   ctx.broadcast({ type: 'chat_update', conversation: m.conversation_id, message: updated });

@@ -2,6 +2,7 @@ import { StageSteps } from '../components/Shell';
 import { api, useApi } from '../lib/api';
 import { go, href } from '../lib/router';
 import { DailyCard, personalEvents, type PersonalData } from './Personal';
+import { IdeaBoard } from '../components/Ideas';
 import type { ProjectSummary } from '../lib/types';
 
 function ProjectsPanel({ projects, onImport }: { projects: ProjectSummary[]; onImport: () => void }) {
@@ -104,6 +105,7 @@ export function Home({ projects, onImport }: { projects: ProjectSummary[]; onImp
   return (
     <>
       {personal.data && <DailyCard edition={personal.data.edition} generating={personal.data.generating} compact />}
+      <IdeaBoard />
       <ProjectsPanel projects={projects} onImport={onImport} />
       {personal.data && <Today data={personal.data} />}
     </>

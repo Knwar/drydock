@@ -14,7 +14,7 @@ export function TeamList({ conversations, roles, current, select, onNewThread }:
   const byId = new Map(roles.map((r) => [r.id, r]));
   const dms = conversations.filter((c) => c.kind === 'dm' && c.role_id !== 'main');
   // project threads live under their project in the tree; only general threads here
-  const channels = conversations.filter((c) => c.kind === 'channel' && !c.project_id);
+  const channels = conversations.filter((c) => c.kind === 'channel' && !c.project_id && !c.idea_id);
   return (
     <div>
       <div className="side-label">

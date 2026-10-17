@@ -22,6 +22,8 @@ if (prompt.includes('NEEDS_APPROVAL')) {
   reply = `write ${a.status}`;
 }
 if (prompt.includes('Reply as') && prompt.includes('nothing to add')) reply = 'PASS';
+// a member asking the user something (tests that the answer goes back to them)
+if (prompt.includes('ASKME')) reply = 'Which database should we use?';
 // handover chain for tests: "HANDOFF to @X" makes this role mention X back; never-ending on purpose
 const handoff = /HANDOFF/.test(prompt);
 if (handoff) reply = `done, over to you HANDOFF to ${args[args.indexOf('--append-system-prompt') + 1].includes('Your job: CTO') ? '@QC' : '@CTO'}`;
