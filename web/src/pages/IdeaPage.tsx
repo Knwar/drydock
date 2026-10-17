@@ -29,7 +29,7 @@ function colours(tokens: Record<string, any>, prefix = ''): [string, string][] {
 }
 
 function Brand({ d }: { d: Detail }) {
-  if (!d.brand) return <div className="empty" style={{ padding: 30 }}>No brand yet. Ask in the chat (for example "give it a calm, friendly brand"); the Product designer writes the guidelines and tokens.</div>;
+  if (!d.brand) return <div className="empty" style={{ padding: 30 }}>No brand yet. Ask in the chat (for example "give it a calm, friendly brand"); the Main agent writes the guidelines and tokens.</div>;
   const sw = colours(d.brand.tokens);
   const fonts = Object.entries((d.brand.tokens?.font ?? d.brand.tokens?.typography ?? {}) as Record<string, any>).filter(([, v]) => typeof v === 'string');
   return (
@@ -56,7 +56,7 @@ function Screens({ d }: { d: Detail }) {
   const [stamp, setStamp] = useState(0);
   useEffect(() => setStamp(Date.now()), [d.screens, d.updated_at]);
   const screen = d.screenList.find((s) => s.id === cur) ?? d.screenList[0];
-  if (!screen) return <div className="empty" style={{ padding: 30 }}>No screens yet. Ask in the chat (for example "sketch the home and settings screens"); the Product designer draws them as clickable mockups.</div>;
+  if (!screen) return <div className="empty" style={{ padding: 30 }}>No screens yet. Ask in the chat (for example "sketch the home and settings screens"); the Main agent draws them as clickable mockups.</div>;
   return (
     <section className="panel" style={{ gap: 10 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -152,7 +152,7 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
             {d.requirements ? <Markdown text={d.requirements.markdown} /> : <div className="muted" style={{ fontSize: 13.5, lineHeight: 1.6 }}>Tell the Main agent about the idea in the chat: the problem, who it is for, how you see it working. The requirements appear here and grow with every message. The system design, brand and UI fill in as the conversation touches them.</div>}
           </section>
         )}
-        {tab === 'design' && software && <SystemDesign p={{ id, name: d.title, stage: 'idea', channels: [] }} focus={sub} openConversation={() => undefined} base={`${base}/design`} empty={'No system design yet. Ask in the chat (for example "how would this be built?"); the Architect draws it here.'} />}
+        {tab === 'design' && software && <SystemDesign p={{ id, name: d.title, stage: 'idea', channels: [] }} focus={sub} openConversation={() => undefined} base={`${base}/design`} empty={'No system design yet. Ask in the chat (for example "how would this be built?"); the Main agent draws it here.'} />}
         {tab === 'brand' && <Brand d={d} />}
         {tab === 'ui' && software && <Screens d={d} />}
       </div>

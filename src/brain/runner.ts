@@ -17,7 +17,7 @@ import { activeLearnings, memoryDigest, projectMembers } from './teamwork.js';
 import { disabledTools, projectPlugins, projectType } from './plugins.js';
 import { contractFor, ideaChatRules } from './contracts.js';
 import { getIdea, ideaDir } from './ideas.js';
-import { PLUGIN, pluginDir, runSkills, skillById, subagentSkills } from './skills.js';
+import { fits, PLUGIN, pluginDir, runSkills, skillById, subagentSkills } from './skills.js';
 import { onRateLimit } from './usage.js';
 import { currentWorkspace } from './workspace.js';
 
@@ -122,12 +122,19 @@ function systemPrompt(role: Role, conversationId: string): string {
   return lines.join('\n');
 }
 
+/** What the lead of an idea's chat uses to shape it (each still filtered by the idea's type). */
+const IDEA_LEAD_SKILLS = ['spec-writing', 'c4-system-design', 'architecture-decisions', 'brand-guidelines', 'design-system-tokens', 'ui-mockups', 'cited-research', 'story-planning', 'editorial-calendar'];
+const conversationIdFor = (ideaId: string) => getIdea(getBus().db(), ideaId)?.conversation_id ?? '';
+
 /** The library skills a run gets: the role's own, plus (for the PM) those it hands its builders and reviewers. */
 function agentSkills(role: Role, projectId: string | null, ideaId?: string | null): { own: string[]; builder: string[]; reviewer: string[] } {
   const db = getBus().db();
   const type = projectId ? projectType(db, projectId) : ideaId ? getIdea(db, ideaId)?.type ?? null : null;
   const pm = role.id === 'pm' && Boolean(projectId);
-  return { own: runSkills(role, type), builder: pm ? subagentSkills('builder', type) : [], reviewer: pm ? subagentSkills('reviewer', type) : [] };
+  // the lead of an idea's chat shapes every part itself, so it carries the shaping skills too
+  const lead = ideaId ? members(db, conversationIdFor(ideaId))[0] === role.id : false;
+  const own = lead ? [...new Set([...runSkills(role, type), ...IDEA_LEAD_SKILLS.filter((id) => skillById(id) && fits(id, type))])] : runSkills(role, type);
+  return { own, builder: pm ? subagentSkills('builder', type) : [], reviewer: pm ? subagentSkills('reviewer', type) : [] };
 }
 
 // ── sessions: fresh start with a handover after many turns ───────

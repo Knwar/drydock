@@ -173,7 +173,8 @@ export function roleSkills(role: Pick<Role, 'id' | 'skills'>): string[] {
   return list.filter((id) => skillById(id));
 }
 
-const fits = (id: string, type: ProjectType | null) => {
+/** Whether a library skill applies to this kind of project (any skill outside projects). */
+export const fits = (id: string, type: ProjectType | null) => {
   const t = skillById(id)?.types ?? [];
   return !type || t.includes('any') || t.includes(type);
 };

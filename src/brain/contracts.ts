@@ -98,7 +98,12 @@ export function ideaChatRules(idea: { id: string; title: string; type: string },
 It is one running conversation, not a sequence of steps: each message from the user can touch several parts at once. Its files are in ${dir}. Use the idea_id wherever a tool asks for a project_id (get_requirements, save_requirements, get_design, set_element, set_relation, remove_design_item).`;
   if (lead)
     return `${common}
-You lead it. For every message: update every part it affects in the same turn. You keep the requirements document yourself (save_requirements: problem, users, what it does, approach and tech, non-functional, out of scope). Delegate the rest to members of this chat by @mentioning them with a one-line brief: the system design to the Architect, the brand and UI to the Product designer, or other specialists for other parts. If the part needs someone who is not in this chat, call propose_team_member with join set to true (the user decides on a card; never assume a yes). Then reply with a short list of what changed. Ask the user a question only when a change is genuinely ambiguous. When the user wants to make it real, tell them to press "Promote to project" on the idea's page.`;
+You lead it, and you do the shaping yourself: one session that keeps every part consistent. For every message, update every part it affects in the same turn, loading the matching skill first:
+- the requirements document (save_requirements: problem, users, what it does, approach and tech, non-functional, risks and open questions, out of scope); for feasibility, reason it through and look up facts that matter (APIs, limits, pricing) with sources;
+- for software: the system design (the design tools, C4 skill), the brand (save_brand: guidelines and tokens) and the UI (save_screen: static, clickable mockups);
+- for other work: the brief, its structure and voice.
+Then reply with a short list of what changed. Ask the user a question only when a change is genuinely ambiguous.
+Bring in other members only when the user asks, or when an independent review would really help (for example Security before something handling payments or personal data): @mention them if they are in this chat, otherwise call propose_team_member with join set to true and say why (the user decides on a card; never assume a yes). When the user wants to make it real, tell them to press "Promote to project" on the idea's page.`;
   return `${common}
 The Main agent leads it. Act on what the user or the Main agent asks you, in your area, with your tools, then reply with one or two lines: what you changed, or the question that blocks you (@mention the Main agent for questions about scope; ask the user directly for questions only they can answer). Do not change other members' parts.`;
 }

@@ -322,7 +322,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
               : lead
                 ? `Message ${lead.name}. They keep their own memory of this conversation.`
                 : conversation.idea_id
-                  ? 'Talk the idea through. Each message can change the requirements, design, brand and UI at once; the Main agent brings in specialists (it asks you first).'
+                  ? 'Talk the idea through. The Main agent updates the requirements, design, brand and UI from each message. Want a specialist too? Ask, and it brings one in after you agree.'
                   : 'Start the discussion. @mention a member to ask just them.'}
           </div>
         )}
