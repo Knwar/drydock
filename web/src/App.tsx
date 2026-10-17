@@ -102,6 +102,8 @@ export function App() {
   const setSide = (open: boolean) => {
     if (onOverview) setProjectSide(open ? 'open' : 'closed');
     else setDrawer(open);
+    // the panel opens on the chat: a glance view minimised earlier (on Home) must not come back in its place
+    if (open) setChatState('open');
     if (!open && linked) navigate(path);
   };
   /** Open an app path; a ?thread= in it opens that thread in the chat panel. */
