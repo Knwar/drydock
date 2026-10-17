@@ -28,7 +28,7 @@ const root = vertical.root_path;
 if (target === root || target.startsWith(`${root}/`)) process.exit(0);
 
 process.stderr.write(
-  `[kankan] scope: ${abs} is outside vertical "${vertical.name}" (${root}). ` +
+  `[board] scope: ${abs} is outside vertical "${vertical.name}" (${root}). ` +
     'If this is cross-cutting work it belongs on the workspace board — raise_blocker or leave a note instead of continuing.\n',
 );
 process.exit(2);

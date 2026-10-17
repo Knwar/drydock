@@ -124,10 +124,10 @@ async function stop() {
   return stopped;
 }
 
-/** A folder counts as set up when its .mcp.json wires the kankan server. */
+/** A folder counts as set up when its .mcp.json wires the board server (kankan in older installs). */
 function isSetup(dir) {
   try {
-    return Boolean(JSON.parse(readFileSync(join(dir, '.mcp.json'), 'utf8')).mcpServers?.kankan);
+    return Object.keys(JSON.parse(readFileSync(join(dir, '.mcp.json'), 'utf8')).mcpServers ?? {}).some((n) => n === 'kanban' || n === 'kankan');
   } catch {
     return false;
   }

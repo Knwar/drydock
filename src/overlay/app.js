@@ -84,7 +84,7 @@ const projectMenu = document.getElementById('project-menu');
 
 function setProject(project) {
   document.getElementById('project-name').textContent = project?.name ?? 'no project yet';
-  document.title = project?.name ? `${project.name} - KanKanBan` : 'KanKanBan';
+  document.title = project?.name ? `${project.name} - Board` : 'Board';
 }
 
 // Turn the name into a dropdown only when more than one project lives on this daemon.
@@ -6661,9 +6661,9 @@ function openSplitDialog(prefill) {
       k.classList.toggle('warn', typeof kit === 'string' && kit.startsWith('skipped'));
       k.textContent =
         kit === 'installed'
-          ? 'separate repo — kankan will be set up there'
+          ? 'separate repo — the board kit will be set up there'
           : typeof kit === 'string' && kit.startsWith('skipped')
-            ? `⚠ ${kit.replace(/^skipped:\s*/, 'kankan setup skipped: ')}`
+            ? `⚠ ${kit.replace(/^skipped:\s*/, 'board kit setup skipped: ')}`
             : '';
     }
   }

@@ -1,8 +1,8 @@
-# Kankan protocol
+# Kanban protocol
 
 This project orchestrates app development on a live Kanban board. You are the orchestrator: you plan, dispatch builder/reviewer subagents, and route cards by judgment. The board is a mirror of real agent activity.
 
-Board access is ONLY through the `kankan` MCP tools. Never open `data/board.db` directly. The daemon must be running (`scripts/dev.sh`); if board tools report it unreachable, keep working and ask the user to start it.
+Board access is ONLY through the `kanban` MCP tools. Never open `data/board.db` directly. The daemon must be running (`scripts/dev.sh`); if board tools report it unreachable, keep working and ask the user to start it.
 
 Lanes: `backlog → queued → in_progress → in_review → done`
 

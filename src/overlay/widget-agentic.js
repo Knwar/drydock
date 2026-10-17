@@ -468,7 +468,7 @@ function agExpNote(root) {
   for (const head of root.querySelectorAll(AG_WIDGETS.map((t) => `.dw-widget[data-widget-type="${t}"] > .dw-head`).join(','))) {
     if (head.querySelector('.ag-exp')) continue;
     const tag = node('span', 'ag-exp', 'Experimental');
-    tag.title = 'Experimental metric: built only on what kankan already records; see each figure’s tooltip for its caveats.';
+    tag.title = 'Experimental metric: built only on what the board already records; see each figure’s tooltip for its caveats.';
     head.querySelector('.dw-title')?.after(tag);
   }
 }

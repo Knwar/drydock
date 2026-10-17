@@ -71,7 +71,7 @@ describe('hook project resolution', () => {
     const file = join(wsRoot, 'web', 'x.ts');
     const r = scopeWarn(file, verticalId);
     assert.equal(r.status, 2);
-    assert.ok(r.stderr.includes(`[kankan] scope: ${file} is outside vertical "api" (${vRoot}).`), r.stderr);
+    assert.ok(r.stderr.includes(`[board] scope: ${file} is outside vertical "api" (${vRoot}).`), r.stderr);
     assert.match(r.stderr, /belongs on the workspace board/);
   });
 
@@ -80,7 +80,7 @@ describe('hook project resolution', () => {
     assert.equal(inTree.status, 0, inTree.stderr);
     const outTree = scopeWarn(join(wsRoot, '.trees', 'abc123', 'other', 'x.ts'), verticalId);
     assert.equal(outTree.status, 2);
-    assert.match(outTree.stderr, /\[kankan\] scope:/);
+    assert.match(outTree.stderr, /\[board\] scope:/);
   });
 
   it('scope-warn: a sibling folder sharing the prefix is out of scope', () => {
@@ -137,8 +137,8 @@ describe('hook project resolution', () => {
     const r = injectBoard(wsRoot);
     assert.equal(r.status, 0);
     assert.match(r.stdout, new RegExp(`project_id=${workspaceId} `));
-    assert.match(r.stdout, /\[kankan\] workspace verticals:/);
-    assert.ok(r.stdout.includes(`[kankan]   api (${verticalId}) — ${vRoot}`));
+    assert.match(r.stdout, /\[board\] workspace verticals:/);
+    assert.ok(r.stdout.includes(`[board]   api (${verticalId}) — ${vRoot}`));
   });
 
   it('a bogus KANKAN_PROJECT_ID falls back to the cwd', () => {
@@ -361,11 +361,20 @@ describe('init-project.sh: first commit + registration', { timeout: 180_000 }, (
     const md = join(target, 'CLAUDE.md');
     writeFileSync(md, '# mine\n\n<!-- kankan:begin -->\n# Kankan protocol\nold\n<!-- kankan:end -->\n');
     for (const a of ['manager.md', 'planner.md']) writeFileSync(join(target, '.claude', 'agents', a), 'old\n');
+    writeFileSync(join(target, '.mcp.json'), JSON.stringify({ mcpServers: { kankan: { command: 'node', args: ['old.js'] }, other: { command: 'x' } } }));
+    const settingsPath = join(target, '.claude', 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify({ ...JSON.parse(readFileSync(settingsPath, 'utf8')), enabledMcpjsonServers: ['kankan', 'other'] }));
     const r = init(target, '1');
     assert.equal(r.status, 0, r.stderr);
     const text = readFileSync(md, 'utf8');
     assert.ok(text.includes('## Workspace mode (projects with verticals)'));
     assert.ok(text.startsWith('# mine'));
+    // the old engine name is gone from everything the agents read
+    assert.ok(!/kankan/i.test(text), text);
+    assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(target, '.mcp.json'), 'utf8')).mcpServers).sort(), ['kanban', 'other']);
+    assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')).enabledMcpjsonServers, ['kanban', 'other']);
+    for (const f of ['agents/builder.md', 'agents/planner.md', 'agents/reviewer.md', 'hooks/inject-board.js', 'hooks/on-status.js'])
+      assert.ok(!readFileSync(join(target, '.claude', f), 'utf8').includes('mcp__kankan'), f);
     for (const a of ['manager.md', 'planner.md'])
       assert.match(readFileSync(join(target, '.claude', 'agents', a), 'utf8'), /vertical/);
   });

@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Read-only QC. Reviews a card's real diff against its requirements and records a pass/fail verdict on the board. Cannot modify code.
-tools: Read, Grep, Glob, mcp__kankan__record_review
+tools: Read, Grep, Glob, mcp__kanban__record_review
 model: inherit
 ---
 

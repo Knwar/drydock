@@ -12,4 +12,4 @@ const cards = active.map((c) => {
   const who = [c.agent, c.skill && `skill:${c.skill}`].filter(Boolean).join(' · ');
   return `${c.id} "${c.title}"${who ? ` (${who})` : ''}`;
 });
-console.log(`[kankan] active: ${cards.join('; ')}`);
+console.log(`[board] active: ${cards.join('; ')}`);

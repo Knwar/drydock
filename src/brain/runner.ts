@@ -28,7 +28,7 @@ const CLAUDE_BIN = process.env.BRAIN_CLAUDE_BIN ?? 'claude';
 /** Tools every role may use without asking: reading, searching, and AI Brain's own tools. */
 export const ALWAYS_ALLOWED = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'mcp__brain'];
 /** Project roles also run the board, its subagents and per-card worktrees without asking. */
-export const PROJECT_ALLOWED = ['mcp__kankan', 'Task', 'Bash(brain worktree:*)', 'Bash(brain verify:*)', 'Bash(brain security-scan:*)'];
+export const PROJECT_ALLOWED = ['mcp__kanban', 'Task', 'Bash(brain worktree:*)', 'Bash(brain verify:*)', 'Bash(brain security-scan:*)'];
 /** Secrets are reached only through the brain secret tools (approval + Touch ID), never the managers' CLIs or the Keychain directly. */
 export const ALWAYS_DENIED = ['Bash(op:*)', 'Bash(bw:*)', 'Bash(bws:*)', 'Bash(security find-generic-password:*)', 'Bash(security find-internet-password:*)', 'Bash(security dump-keychain:*)'];
 
@@ -122,7 +122,7 @@ const HANDOVER =
 
 /** Ask the old session for its handover note, quietly (nothing is posted). Returns null if it fails. */
 async function handoverNote(base: string[], cwd: string, env: NodeJS.ProcessEnv, roleId: string, conversationId: string): Promise<string | null> {
-  const noTools = ['Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit', 'TodoWrite', 'mcp__brain', 'mcp__kankan'];
+  const noTools = ['Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit', 'TodoWrite', 'mcp__brain', 'mcp__kanban'];
   const child = spawn(CLAUDE_BIN, ['-p', HANDOVER, ...base, '--disallowedTools', ...noTools], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   running.set(conversationId, { child, roleId });
   let out = '';
@@ -215,13 +215,13 @@ function mcpConfig(roleId: string, conversationId: string, dataDir: string, with
       env: { BRAIN_DAEMON_URL: getBus().daemonUrl, BRAIN_ROLE: roleId, BRAIN_CONVERSATION: conversationId, BRAIN_DISABLED_TOOLS: disabledTools(getBus().db(), getConversation(getBus().db(), conversationId)?.project_id ?? null).join(',') },
     },
   };
-  // project roles drive the kankanban board (phases, cards, worktrees)
-  if (withBoard) servers.kankan = { command: process.execPath, args: ['--import', TSX_LOADER, KANKAN_MCP], env: { DAEMON_URL: getBus().daemonUrl } };
+  // project roles drive the kanban board (phases, cards, worktrees)
+  if (withBoard) servers.kanban = { command: process.execPath, args: ['--import', TSX_LOADER, KANKAN_MCP], env: { DAEMON_URL: getBus().daemonUrl } };
   writeFileSync(file, JSON.stringify({ mcpServers: servers }));
   return file;
 }
 
-/** A `brain` command on the agents' PATH (the kankan protocol runs `brain worktree …`). */
+/** A `brain` command on the agents' PATH (the board protocol runs `brain worktree …`). */
 function shimDir(dataDir: string): string {
   const dir = join(dataDir, 'bin');
   mkdirSync(dir, { recursive: true });

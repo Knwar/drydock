@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "kankan": {
+    "kanban": {
       "command": "node",
       "args": ["dist/mcp/server.js"],
       "env": { "DAEMON_URL": "http://localhost:7900" }

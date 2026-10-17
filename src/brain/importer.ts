@@ -123,7 +123,7 @@ export async function inspect(db: DB, dir: string): Promise<Inspection> {
     git,
     risks: {
       claudeSettings,
-      mcpServers: Object.keys(mcp?.mcpServers ?? {}).filter((n) => n !== 'kankan'),
+      mcpServers: Object.keys(mcp?.mcpServers ?? {}).filter((n) => n !== 'kanban' && n !== 'kankan'),
       installScripts: Object.entries(pkg?.scripts ?? {}).filter(([k]) => ['preinstall', 'install', 'postinstall', 'prepare'].includes(k)).map(([k, v]) => `${k}: ${String(v).slice(0, 120)}`),
       envFiles: readdirSync(dir).filter((f) => /^\.env(\..+)?$/.test(f) && !f.endsWith('.example') && !f.endsWith('.sample')),
     },

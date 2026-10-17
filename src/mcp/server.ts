@@ -24,7 +24,7 @@ async function api(method: string, path: string, body?: unknown): Promise<ToolRe
   }
 }
 
-const server = new McpServer({ name: 'kankan', version: '0.1.0' });
+const server = new McpServer({ name: 'kanban', version: '0.1.0' });
 
 const WORK_TYPE = z.enum(['feature', 'defect', 'debt', 'risk']);
 const ESTIMATE = z.number().gt(0).max(1000);

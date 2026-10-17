@@ -24,7 +24,7 @@ function fromTool() {
   if (tool === 'Bash') return ['running', short(input.command)];
   if (tool === 'Task') return ['dispatching', short(input.subagent_type ?? 'agent')];
   if (/^(WebSearch|WebFetch)$/.test(tool)) return ['researching', short(input.query ?? input.url)];
-  if (tool.startsWith('mcp__kankan__')) return ['updating board', tool.slice('mcp__kankan__'.length)];
+  if (tool.startsWith('mcp__kanban__')) return ['updating board', tool.slice('mcp__kanban__'.length)];
   return ['using', tool];
 }
 

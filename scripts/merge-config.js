@@ -44,6 +44,13 @@ if (mode === 'settings') {
     }
   }
 
+  // a server approved under its old name stays approved under the new one
+  const enabled = theirs.enabledMcpjsonServers;
+  if (Array.isArray(enabled) && enabled.includes('kankan')) {
+    theirs.enabledMcpjsonServers = [...new Set(enabled.map((n) => (n === 'kankan' ? 'kanban' : n)))];
+    changed = true;
+  }
+
   // permissions.allow: union our rules in (deduped); theirs are preserved
   for (const rule of ours.permissions?.allow ?? []) {
     theirs.permissions ??= {};
@@ -61,10 +68,13 @@ if (mode === 'settings') {
   const existed = existsSync(theirsPath);
   const theirs = load(theirsPath, {});
   theirs.mcpServers ??= {};
-  if (theirs.mcpServers.kankan) {
+  // older installs named the board server kankan: rename it
+  const legacy = Boolean(theirs.mcpServers.kankan);
+  delete theirs.mcpServers.kankan;
+  if (theirs.mcpServers.kanban && !legacy) {
     console.log('unchanged');
   } else {
-    theirs.mcpServers.kankan = { command: 'node', args: [serverJs], env: { DAEMON_URL: daemonUrl } };
+    theirs.mcpServers.kanban = { command: 'node', args: [serverJs], env: { DAEMON_URL: daemonUrl } };
     save(theirsPath, theirs);
     console.log(existed ? 'merged' : 'installed');
   }

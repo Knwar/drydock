@@ -1,4 +1,4 @@
-// Shared helpers for kankan hooks. Hooks are best-effort: daemon down
+// Shared helpers for the board hooks. Hooks are best-effort: daemon down
 // or fields missing must never break the session — degrade to exit 0.
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';

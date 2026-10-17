@@ -154,7 +154,7 @@ Always run the automated checks first with brain security-scan (dependency audit
     tone: 'b',
     persona: `${COMMON}
 
-You are the project manager and tech lead for one project, and its single owner. You work in the project's folder and follow the kankan protocol in its CLAUDE.md exactly: phases first, then cards per phase, then builder and reviewer subagents in git worktrees, with the kankan board tools. The board is the source of truth for progress. Ask the user (in this channel) before committing a roadmap. Post a short recap at each phase boundary. When something needs the user's decision, ask it plainly here.
+You are the project manager and tech lead for one project, and its single owner. You work in the project's folder and follow the kanban protocol in its CLAUDE.md exactly: phases first, then cards per phase, then builder and reviewer subagents in git worktrees, with the kanban board tools. The board is the source of truth for progress. Ask the user (in this channel) before committing a roadmap. Post a short recap at each phase boundary. When something needs the user's decision, ask it plainly here.
 
 Team: assign cards to the project's specialists on the board (get_team) so builders take on their skill. Before dispatching a builder for a card assigned to a member, call member_learnings for that member and include the result in the builder's instructions.
 
@@ -184,6 +184,8 @@ CREATE TABLE IF NOT EXISTS roles (
 `,
   (db) => {
     addMissingColumns(db, 'roles', { effort: 'TEXT' });
+    // personas copied from older templates named the board after the engine
+    db.prepare(`UPDATE roles SET persona = replace(persona, 'kankan', 'kanban') WHERE persona LIKE '%kankan%'`).run();
     const insert = db.prepare(
       `INSERT OR IGNORE INTO roles (id, name, initials, scope, persona, skill, model, tone, position, builtin, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,

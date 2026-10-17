@@ -1,7 +1,7 @@
 ---
 name: builder
 description: Implements exactly one board card inside its assigned git worktree. Dispatch with the card id, the full requirements text, and the worktree path.
-tools: Read, Edit, Write, Grep, Glob, Bash, mcp__kankan__check_subtask, mcp__kankan__raise_blocker
+tools: Read, Edit, Write, Grep, Glob, Bash, mcp__kanban__check_subtask, mcp__kanban__raise_blocker
 model: inherit
 ---
 

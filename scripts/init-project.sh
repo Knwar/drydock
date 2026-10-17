@@ -1,5 +1,5 @@
 #!/bin/sh
-# One-command kankan setup for a new OR existing project.
+# One-command AI Brain kit setup for a new OR existing project.
 #   scripts/init-project.sh <target-dir> [project-name]
 # Adapts to what's already there — appends and merges, never skips a
 # needed piece and never overwrites user content. Idempotent.
@@ -36,24 +36,24 @@ kept=""
 #    installs are always wrapped in markers so future updates can refresh in place.
 if [ ! -f "$TARGET/CLAUDE.md" ]; then
   {
-    printf '<!-- kankan:begin -->\n'
+    printf '<!-- kanban:begin -->\n'
     cat "$KNWR_ROOT/CLAUDE.md"
-    printf '<!-- kankan:end -->\n'
+    printf '<!-- kanban:end -->\n'
   } > "$TARGET/CLAUDE.md"
   installed="$installed CLAUDE.md"
-elif grep -q 'kankan:begin' "$TARGET/CLAUDE.md"; then
+elif grep -qE 'kan(kan|ban):begin' "$TARGET/CLAUDE.md"; then
   if [ -n "$UPDATE" ] && [ "$(node "$KNWR_ROOT/scripts/replace-block.js" "$TARGET/CLAUDE.md" "$KNWR_ROOT/CLAUDE.md")" = "updated" ]; then
     updated="$updated CLAUDE.md"
   else
     kept="$kept CLAUDE.md"
   fi
-elif grep -q '# Kankan protocol' "$TARGET/CLAUDE.md"; then
+elif grep -qE '# Kan(kan|ban) protocol' "$TARGET/CLAUDE.md"; then
   kept="$kept CLAUDE.md" # legacy unmarked protocol — left as-is to avoid duplication
 else
   {
-    printf '\n\n<!-- kankan:begin -->\n'
+    printf '\n\n<!-- kanban:begin -->\n'
     cat "$KNWR_ROOT/CLAUDE.md"
-    printf '<!-- kankan:end -->\n'
+    printf '<!-- kanban:end -->\n'
   } >> "$TARGET/CLAUDE.md"
   merged="$merged CLAUDE.md"
 fi
@@ -105,7 +105,7 @@ if ! git rev-parse HEAD > /dev/null 2>&1; then
     installed="$installed .gitignore"
   fi
   git add -A
-  git commit -qm "Bootstrap kankan orchestration kit"
+  git commit -qm "Set up the AI Brain project kit"
   installed="$installed (initial commit)"
 fi
 
@@ -122,7 +122,7 @@ if command -v curl > /dev/null; then
   fi
 fi
 
-[ -n "$UPDATE" ] && echo "brain updated in $TARGET" || echo "kankan ready in $TARGET"
+[ -n "$UPDATE" ] && echo "brain updated in $TARGET" || echo "AI Brain kit ready in $TARGET"
 [ -n "$installed" ] && echo "  installed:$installed"
 [ -n "$updated" ]   && echo "  updated:$updated"
 [ -n "$merged" ]    && echo "  merged into existing:$merged"
@@ -131,5 +131,5 @@ echo "  $PROJECT_LINE"
 if [ -n "$UPDATE" ]; then
   echo "  next:      restart Claude Code in $TARGET to load the refreshed hooks"
 else
-  echo "  next:      cd $TARGET && claude   (approve the kankan MCP server + hooks on first run)"
+  echo "  next:      cd $TARGET && claude   (approve the kanban MCP server + hooks on first run)"
 fi

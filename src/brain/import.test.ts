@@ -74,7 +74,7 @@ describe('importing existing projects', () => {
     const settings = JSON.parse(readFileSync(join(shop(), '.claude', 'settings.json'), 'utf8'));
     assert.ok(!JSON.stringify(settings).includes('evil.example'), 'their hook does not run');
     assert.ok(!JSON.stringify(JSON.parse(readFileSync(join(shop(), '.mcp.json'), 'utf8'))).includes('exfil'));
-    assert.match(readFileSync(join(shop(), 'CLAUDE.md'), 'utf8'), /kankan:begin/);
+    assert.match(readFileSync(join(shop(), 'CLAUDE.md'), 'utf8'), /kanban:begin/);
     assert.match(readFileSync(join(shop(), '.gitignore'), 'utf8'), /^\.env$/m);
     assert.equal(git(shop(), 'log', '--oneline').trim().split('\n').length >= 2, true, 'history kept');
 

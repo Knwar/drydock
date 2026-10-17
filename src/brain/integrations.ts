@@ -35,7 +35,7 @@ export const prefixOf = (name: string) => `mcp__${name.replace(/[^A-Za-z0-9_-]/g
 
 const BUILT_IN: Server[] = [
   { name: 'brain', prefix: 'mcp__brain', url: 'built in', status: 'built_in', detail: 'AI Brain itself: approvals, decisions, projects, requirements, design, personal data' },
-  { name: 'kankan', prefix: 'mcp__kankan', url: 'built in', status: 'built_in', detail: 'The board: phases, cards, worktrees (project roles)' },
+  { name: 'kanban', prefix: 'mcp__kanban', url: 'built in', status: 'built_in', detail: 'The board: phases, cards, worktrees (project roles)' },
 ];
 
 /** Which roles may use a server when nobody has said otherwise. */
@@ -69,7 +69,8 @@ export async function listServers(force = false): Promise<Server[]> {
   if (!inflight)
     inflight = execFileAsync(CLAUDE_BIN, ['mcp', 'list'], { timeout: 90_000, maxBuffer: 1_000_000 })
       .then(({ stdout }) => {
-        cache = { at: Date.now(), servers: [...BUILT_IN, ...parseMcpList(stdout)] };
+        // a project's own .mcp.json may list the board server too: it is still the built-in one
+        cache = { at: Date.now(), servers: [...BUILT_IN, ...parseMcpList(stdout).filter((s) => !BUILT_IN.some((b) => b.prefix === s.prefix))] };
         return cache.servers;
       })
       .catch(() => cache?.servers ?? BUILT_IN)
@@ -103,7 +104,7 @@ export function recordTools(db: DB, names: string[]): void {
   const seen = getSetting<Record<string, string[]>>(db, 'brain.tools_seen', {});
   let changed = false;
   for (const n of names) {
-    if (!n.startsWith('mcp__') || n.startsWith('mcp__brain__') || n.startsWith('mcp__kankan__')) continue;
+    if (!n.startsWith('mcp__') || n.startsWith('mcp__brain__') || n.startsWith('mcp__kanban__')) continue;
     const prefix = n.split('__').slice(0, 2).join('__');
     const list = (seen[prefix] ??= []);
     if (!list.includes(n)) {
