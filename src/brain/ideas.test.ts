@@ -248,9 +248,11 @@ describe('the Idea board', () => {
     const i = await call('POST', '/api/ideas', { title: 'Podcast about tea', type: 'general' });
     assert.equal((await call('POST', `/api/ideas/${i.id}`, { status: 'parked' })).status, 'parked');
     assert.equal((await call('POST', `/api/ideas/${i.id}`, { status: 'raw' })).status, 'raw');
+    const { conversation } = await call('POST', `/api/ideas/${i.id}/thread`);
     await call('DELETE', `/api/ideas/${i.id}`);
     assert.equal((await raw('GET', `/api/ideas/${i.id}`)).status, 404);
     assert.ok(!existsSync(join(ws, 'vault', 'ideas', 'podcast-about-tea')));
     assert.ok(existsSync(join(ws, 'vault', 'ideas', '.deleted')));
+    assert.ok(!(await call('GET', '/api/conversations')).some((c: any) => c.id === conversation), 'its chat is no longer listed');
   });
 });

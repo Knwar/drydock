@@ -1,6 +1,7 @@
 // The messenger: every conversation in one panel that slides in from the
-// right (header toggle). A list first; picking one opens it in the panel with
-// a way back to the list. "New chat" starts a direct chat with a team member,
+// right (header toggle). A list of conversations first (direct chats once
+// they have messages); picking one opens it in the panel with a way back to
+// the list. "New chat" starts a direct chat with a team member,
 // a group thread, or adds a member. Idea chats open on their idea's page.
 import { useEffect, useMemo, useState } from 'react';
 import { navigate } from '../lib/router';
@@ -63,7 +64,8 @@ export function Messenger({ conversations, roles, projects, onSent, onClose }: {
     const match = (c: Conversation, label: string) => !q.trim() || `${label} ${c.name}`.toLowerCase().includes(q.trim().toLowerCase());
     const label = (c: Conversation) => (c.kind === 'dm' ? byRole.get(c.role_id ?? '')?.name ?? c.name : c.name);
     const main = all.filter((c) => c.id === 'dm:main');
-    const team = all.filter((c) => c.kind === 'dm' && c.id !== 'dm:main');
+    // direct chats only once they have messages: the team itself is picked from New chat
+    const team = all.filter((c) => c.kind === 'dm' && c.id !== 'dm:main' && (c.last || c.working));
     const threads = all.filter((c) => c.kind === 'channel' && !c.project_id && !c.idea_id);
     const ideas = all.filter((c) => c.idea_id);
     const byProject = projects.map((p) => ({ p, list: all.filter((c) => c.kind === 'channel' && c.project_id === p.id) })).filter((x) => x.list.length);
@@ -96,7 +98,6 @@ export function Messenger({ conversations, roles, projects, onSent, onClose }: {
           </div>
           <div className="msg-list">
             {sections.main.map((c) => <Row key={c.id} c={c} title="Main agent" role={byRole.get('main')} onOpen={() => go(c)} />)}
-            {sections.team.length > 0 && <div className="msg-label">Team</div>}
             {sections.team.map((c) => <Row key={c.id} c={c} title={sections.label(c)} role={byRole.get(c.role_id ?? '')} onOpen={() => go(c)} />)}
             {sections.threads.length > 0 && <div className="msg-label">Threads</div>}
             {sections.threads.map((c) => <Row key={c.id} c={c} title={`# ${c.name}`} onOpen={() => go(c)} />)}
