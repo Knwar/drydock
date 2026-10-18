@@ -143,7 +143,7 @@ export function Home({ projects, onImport, conversation, roles, sheet, setSheet,
             onSent={() => (setSheet(true), onSent?.())}
             draftText={draft}
             onDraftUsed={onDraftUsed}
-            dock={{ expanded: sheet, onToggle: () => setSheet(!sheet), onAttention: () => setSheet(true), placeholder: 'Ask the Main agent: an idea, your day, a project…' }}
+            dock={{ minimal: true, expanded: sheet, onToggle: () => setSheet(!sheet), onAttention: () => setSheet(true), placeholder: 'Ask the Main agent: an idea, your day, a project…' }}
           />
         ) : null}
       </div>

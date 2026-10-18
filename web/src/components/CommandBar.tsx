@@ -153,6 +153,11 @@ export function CommandBar({ projects, conversations, roles, onClose, openLink, 
       }
     }
     for (const c of conversations) {
+      if (c.id.startsWith('sys:')) continue; // background work, not a chat
+      if (c.idea_id) {
+        out.push({ id: `t/${c.id}`, label: `Idea: ${c.name}`, hint: 'idea chat', icon: 'idea', link: `/idea/${c.idea_id}` });
+        continue;
+      }
       const project = c.project_id ? projects.find((p) => p.id === c.project_id) : null;
       const label = c.id === 'dm:main' ? 'Main agent' : c.kind === 'dm' ? `Chat with ${byRole.get(c.role_id ?? '')?.name ?? c.name}` : `#${c.name}`;
       const base = project ? `/project/${project.id}` : '/';

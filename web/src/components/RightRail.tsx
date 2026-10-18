@@ -22,7 +22,8 @@ export function RightRail({ roles, conversations, open, onExpand, onHide }: { ro
   const [saved, setSaved] = useState(false);
   const byId = new Map(roles.map((r) => [r.id, r]));
   const working = conversations.filter((c) => c.working);
-  const unread = conversations.filter((c) => c.unread > 0);
+  // internal conversations (the Daily, team suggestions) are background work, not chats to read
+  const unread = conversations.filter((c) => c.unread > 0 && !c.id.startsWith('sys:'));
   const n = needs.data;
   const waiting = (n?.approvals.length ?? 0) + (n?.proposals.length ?? 0) + (n?.secrets?.length ?? 0);
   const today = personal.data;
@@ -41,6 +42,9 @@ export function RightRail({ roles, conversations, open, onExpand, onHide }: { ro
   };
   const label = (id: string | null) => {
     if (id === 'dm:main') return 'Main agent';
+    if (id === 'sys:daily') return 'the Daily';
+    if (id?.startsWith('sys:team:')) return 'team suggestions';
+    if (id?.startsWith('sys:')) return 'background work';
     const c = conversations.find((x) => x.id === id);
     if (c?.kind === 'channel') return `#${c.name}`;
     return byId.get(id?.replace(/^dm:/, '') ?? '')?.name ?? id ?? '';
