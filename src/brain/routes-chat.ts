@@ -31,6 +31,7 @@ import { HttpError, on, type ApiCtx } from './router.js';
 import { activeRuns, respond, sessionLimits, stopRun, toolSummary } from './runner.js';
 import { currentWorkspace } from './workspace.js';
 import { contractFor } from './contracts.js';
+import { autoAllows, autoWaiting } from './auto.js';
 import { defaultSkills, roleSkills } from './skills.js';
 
 const need = <T>(v: T | undefined | null, what: string): T => {
@@ -211,7 +212,10 @@ export function openApproval(ctx: ApiCtx, roleId: string, conversationId: string
   // a standing decision answers without asking
   if (standingTools(db, roleId, 'allow').includes(tool)) return { id: null, status: 'allowed' };
   if (standingTools(db, roleId, 'deny').includes(tool)) return { id: null, status: 'denied', note: 'blocked by a standing rule in Settings' };
+  // auto mode: edits and commands that stay inside the project folder run without asking
+  if (autoAllows(db, conversation, tool, input)) return { id: null, status: 'allowed' };
   const a = createApproval(db, roleId, conversation, tool, input);
+  autoWaiting(db, conversation, toolSummary(tool, input));
   if (conversation) {
     const m = addMessage(db, conversation, roleId, toolSummary(tool, input), 'approval', { approval_id: a.id, tool, input: input ?? null, status: 'pending' });
     linkApprovalMessage(db, a.id, m.id);

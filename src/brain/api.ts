@@ -20,6 +20,7 @@ import './routes-skills.js';
 import './routes-ideas.js';
 import { restoreApps, startLiveWatcher } from './live.js';
 import { startCheckins } from './checkins.js';
+import { startAuto } from './auto.js';
 import { resumeInterruptedRuns } from './runner.js';
 import { ensureSchema } from './schema.js';
 import { startDailyScheduler } from './daily.js';
@@ -41,7 +42,7 @@ export function startBrain(db: () => import('../core/db.js').DB, schedulers = tr
   const watcher = startLiveWatcher();
   if (!schedulers) return [watcher];
   void listServers();
-  return [startDailyScheduler(), startCheckins(), watcher];
+  return [startDailyScheduler(), startCheckins(), startAuto(), watcher];
 }
 
 export { handleApi } from './router.js';

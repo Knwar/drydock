@@ -419,6 +419,30 @@ server.registerTool(
 );
 
 server.registerTool(
+  'design_done',
+  {
+    description: 'Auto mode only: the system design is complete and its reviews (threat model, CTO) are addressed. Finalises it, sets up the verticals and starts the planning. With auto mode off the user finalises the design instead.',
+    inputSchema: { project_id: z.string() },
+  },
+  async ({ project_id }) => {
+    await call(`/api/projects/${project_id}/design/done`, {});
+    return text('Design finalised; the PM has been asked to plan the phases.');
+  },
+);
+
+server.registerTool(
+  'start_building',
+  {
+    description: 'Auto mode only: you committed the phases with create_phase; this moves the project to building without the user\'s approval. Then advance to the first phase and run the phase loop. With auto mode off the user approves the roadmap instead.',
+    inputSchema: { project_id: z.string() },
+  },
+  async ({ project_id }) => {
+    await call(`/api/projects/${project_id}/auto/build`, {});
+    return text('Building. Advance to the first phase (advance_phase) and run the phase loop.');
+  },
+);
+
+server.registerTool(
   'offer_next_step',
   {
     description:

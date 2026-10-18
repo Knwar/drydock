@@ -52,6 +52,58 @@ interface Detail {
   last_activity: number;
   /** the idea it was promoted from: its brand and UI mockups are shown here */
   idea_id: string | null;
+  auto: { on: boolean; paused_until: number | null; waiting: boolean };
+}
+
+const AUTO_STEPS = [
+  'Once the requirements are final, the recommended team is added and the design (or the planning) starts by itself.',
+  'The Architect finalises the design, the PM commits its own roadmap and builds phase by phase, with no approvals from you.',
+  'Open questions are decided by the agents and logged as decisions you can review and reverse.',
+  'Edits and commands inside the project folder run without asking.',
+  'Still asks you, and tells you when it does: secrets, anything outside the project folder, deleting, deploying, publishing, sending messages, spending money, and the final sign-off.',
+  'Pauses when usage reaches 80% and carries on when that window resets.',
+];
+
+function AutoSwitch({ p }: { p: Detail }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const set = async (on: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/projects/${p.id}/auto`, { body: { on } });
+      setConfirming(false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const a = p.auto;
+  const state = !a.on ? null : a.paused_until ? `Paused for usage until ${new Date(a.paused_until).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}` : a.waiting ? 'Waiting for you: see Needs you' : 'Running on its own';
+  return (
+    <div className="auto-switch">
+      <button className="switch" role="switch" aria-checked={a.on} aria-label="Auto mode" disabled={busy} onClick={() => (a.on ? set(false) : setConfirming(true))}><span /></button>
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
+        <span style={{ fontWeight: 700, fontSize: 12.5 }}>Auto mode</span>
+        <span className={a.waiting || a.paused_until ? '' : 'muted'} style={{ fontSize: 11.5, color: a.waiting || a.paused_until ? 'var(--a-fg)' : undefined }}>{state ?? 'Off: you approve each stage'}</span>
+      </div>
+      {error && !confirming && <span className="error" style={{ fontSize: 12 }}>{error}</span>}
+      {confirming && (
+        <Modal title="Turn on auto mode?" onClose={() => setConfirming(false)} width={540}>
+          <div style={{ fontSize: 13 }}><strong>{p.name}</strong> runs without your input from here:</div>
+          <ul className="md-list" style={{ fontSize: 13, lineHeight: 1.55, margin: 0 }}>{AUTO_STEPS.map((s) => <li key={s}>{s}</li>)}</ul>
+          <div className="banner t-a" style={{ fontSize: 12.5 }}>The work itself costs the same, but it keeps going without the breaks your approvals would give, so it uses your usage limits faster, and a wrong turn is not caught until you look. Turn it off at any time; agents already working finish their current reply.</div>
+          {error && <div className="error">{error}</div>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn primary" autoFocus disabled={busy} onClick={() => set(true)}>{busy ? 'Turning on…' : 'Yes, turn on auto mode'}</button>
+            <button className="btn" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
 }
 
 /** The brand or UI mockups shaped on the Idea board before the project existed. */
@@ -188,6 +240,7 @@ function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: 
           {a.label}
         </button>
       ))}
+      {(p.status === 'active' || p.status === 'paused') && p.auto && <AutoSwitch p={p} />}
       {pausable && (
         <button className="btn sm" onClick={() => setConfirming({ label: 'Pause project', confirm: 'Pause project', hint: '', path: `${base}/status`, body: { status: 'paused' }, steps: ['Check-ins stop for this project.', 'Agents already working finish their current reply; nobody starts new work until you resume.', 'You can resume any time.'] })}>
           Pause

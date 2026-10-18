@@ -13,9 +13,9 @@ import { getSetting } from './settings.js';
 import { addMessage, countTurn, getConversation, getSession, listMessages, members, saveSession, standingTools, type Message } from './chat.js';
 import { effectiveEffort, getRole, listRoles, type Role } from './roles.js';
 import { blockedServers, listServers, recordTools, toolPolicies } from './integrations.js';
-import { activeLearnings, memoryDigest, projectMembers } from './teamwork.js';
+import { activeLearnings, isAuto, memoryDigest, projectMembers } from './teamwork.js';
 import { disabledTools, projectPlugins, projectType } from './plugins.js';
-import { contractFor, ideaChatRules } from './contracts.js';
+import { AUTO_RULES, contractFor, ideaChatRules } from './contracts.js';
 import { getIdea, ideaDir } from './ideas.js';
 import { fits, PLUGIN, pluginDir, runSkills, skillById, subagentSkills } from './skills.js';
 import { onRateLimit } from './usage.js';
@@ -72,6 +72,7 @@ function systemPrompt(role: Role, conversationId: string): string {
   const lines = [contractFor(role)];
   const idea = conv.idea_id ? getIdea(db, conv.idea_id) : undefined;
   if (idea) lines.push('', ideaChatRules(idea, members(db, conversationId)[0] === role.id, ideaDir(db, idea.id)));
+  if (isAuto(db, conv.project_id)) lines.push('', AUTO_RULES);
   if (role.persona.trim()) lines.push('', '## About you (set by the user)', role.persona.trim());
   const sk = agentSkills(role, conv.project_id, conv.idea_id);
   if (sk.own.length || role.skill) {
@@ -419,6 +420,7 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
       }
     } else if (ev.type === 'rate_limit_event') {
       onRateLimit(getBus().db(), ev);
+      void import('./auto.js').then((a) => a.autoUsageCheck(getBus().db()));
     } else if (ev.type === 'result') {
       final = ev;
     }

@@ -119,3 +119,13 @@ The Main agent leads it. Act on what the user or the Main agent asks you, in you
 export function contractFor(role: Pick<Role, 'id' | 'scope'>): string {
   return [CONTRACT_COMMON, '', CONTRACTS[role.id] ?? BY_SCOPE[role.scope] ?? BY_SCOPE.shared].join('\n');
 }
+
+/** For agents' system prompts in an auto project's threads (auto.ts). */
+export const AUTO_RULES = `## Auto mode (the user turned it on for this project)
+The user is not watching this project: keep the work moving without waiting for them. These rules replace every "ask the user" or "wait for approval" step above and in CLAUDE.md, except the ones listed as still the user's.
+- Do not wait for approval of a plan, a spec, a design or a roadmap: decide and carry on.
+- An open question (a product choice, a library, a default): pick the most sensible, conventional and reversible option, record it with log_decision (what you chose, why, the alternatives), and continue. The user reviews decisions later and can reverse them.
+- PM: write each card's spec yourself (no discussion step). After a card fails review twice, try once more with a different approach; if it fails again, raise_blocker on it with the findings and move on to the next card. Commit the roadmap yourself and call start_building.
+- Architect: when the design is complete and the reviews are addressed, call design_done.
+- Still the user's, even now: secrets (request_secret), anything outside the project folder, deleting data, deploying, publishing, sending messages, spending money. Ask for these (they wait for the user), say so in one line, and keep working on whatever does not depend on them.
+- Never close the project: the user signs it off.`;

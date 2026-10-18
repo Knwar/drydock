@@ -5,8 +5,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { addMessage, createChannel, getConversation, listMessages, members as convMembers } from './chat.js';
 import { checkinSettings, lastActivity, runCheckins } from './checkins.js';
-import { finalizeDesign, getDesign, projectRef, reportWorkComplete, saveThreatModel, slugify, startDesign, startPlanning, NeedsRole } from './pipeline.js';
-import { projectPlugins } from './plugins.js';
+import { enterBuild, finalizeDesign, projectRef, reportWorkComplete, saveThreatModel, slugify, startAfterTeam, NeedsRole } from './pipeline.js';
+import { autoProgress, autoState, runAuto, setAuto } from './auto.js';
 import { getRole, listRoles } from './roles.js';
 import { HttpError, on } from './router.js';
 import { activeRuns, respond } from './runner.js';
@@ -27,6 +27,7 @@ import {
   recordLesson,
   removeProjectMember,
   setEnhancementStatus,
+  isAuto,
   setProjectStatus,
   setRecommendation,
   teamChecklist,
@@ -81,12 +82,7 @@ on('DELETE', '/api/projects/:id/team/:role', (_q, res, _u, ctx, p) => {
 on('POST', '/api/projects/:id/design/start', async (_q, res, _u, ctx, p) => {
   project(ctx.db(), p.id);
   try {
-    const db = ctx.db();
-    const design = projectPlugins(db, p.id).includes('design');
-    // shaped on the Idea board: the design is already done, so it is frozen and the PM plans
-    const shaped = (db.prepare('SELECT origin FROM brain_projects WHERE project_id = ?').get(p.id) as { origin: string } | undefined)?.origin === 'idea';
-    if (shaped && design && getDesign(db, p.id).elements.length) return ctx.json(res, 200, { channel: await finalizeDesign(db, p.id), stage: 'plan' });
-    ctx.json(res, 200, { channel: design && !shaped ? startDesign(db, p.id) : startPlanning(db, p.id), stage: design && !shaped ? 'design' : 'plan' });
+    ctx.json(res, 200, await startAfterTeam(ctx.db(), p.id));
   } catch (err) {
     if (err instanceof NeedsRole) throw new HttpError(409, err.message, { needs_role: err.role });
     throw new HttpError(400, (err as Error).message);
@@ -186,6 +182,52 @@ on('POST', '/api/projects/:id/status', async (req, res, _u, ctx, p) => {
   ctx.json(res, 200, projectStatus(db, p.id));
 });
 
+// ── auto mode (auto.ts) ──
+
+const stageOf = (db: any, id: string) => (db.prepare('SELECT stage FROM brain_projects WHERE project_id = ?').get(id) as { stage: string } | undefined)?.stage ?? '';
+
+/** The user's switch (confirmed in the UI). */
+on('POST', '/api/projects/:id/auto', async (req, res, _u, ctx, p) => {
+  const db = ctx.db();
+  project(db, p.id);
+  const b = await ctx.readBody(req);
+  setAuto(db, p.id, Boolean(b?.on));
+  ctx.json(res, 200, autoState(db, p.id));
+});
+
+/** From the Architect in auto mode: the design is complete and reviewed; finalise it and start the planning. */
+on('POST', '/api/projects/:id/design/done', async (_q, res, _u, ctx, p) => {
+  const db = ctx.db();
+  project(db, p.id);
+  const stage = stageOf(db, p.id);
+  if (!isAuto(db, p.id)) throw new HttpError(409, 'auto mode is off: tell the user the design is ready; they finalise it with the Finalise design button');
+  if (stage !== 'design') throw new HttpError(409, `the project is at the ${stage} stage, not design`);
+  try {
+    const channel = await finalizeDesign(db, p.id);
+    autoProgress(db, p.id);
+    ctx.json(res, 200, { channel, stage: 'plan' });
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+});
+
+/** From the PM in auto mode: it committed the phases; building starts without the user's approval. */
+on('POST', '/api/projects/:id/auto/build', (_q, res, _u, ctx, p) => {
+  const db = ctx.db();
+  project(db, p.id);
+  const stage = stageOf(db, p.id);
+  if (!isAuto(db, p.id)) throw new HttpError(409, 'auto mode is off: post the phases for the user to approve');
+  if (stage === 'build') return ctx.json(res, 200, { stage: 'build' });
+  if (stage !== 'plan') throw new HttpError(409, `the project is at the ${stage} stage, not plan`);
+  try {
+    enterBuild(db, p.id);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+  autoProgress(db, p.id);
+  ctx.json(res, 200, { stage: 'build' });
+});
+
 on('POST', '/api/projects/:id/rag', async (req, res, _u, ctx, p) => {
   const db = ctx.db();
   project(db, p.id);
@@ -254,3 +296,9 @@ on('GET', '/api/threads/:id', (_q, res, _u, ctx, p) => {
 
 /** Run one check-in pass now (Settings "Check now"; also used by tests). */
 on('POST', '/api/checkins/run', (_q, res, _u, ctx) => ctx.json(res, 200, { done: runCheckins(ctx.db()) }));
+/** One auto-mode pass now (it also runs every five minutes); `at` stands in for the clock in tests. */
+on('POST', '/api/auto/run', async (req, res, _u, ctx) => {
+  const b = await ctx.readBody(req);
+  runAuto(ctx.db(), Number(b?.at) || Date.now());
+  ctx.json(res, 200, { ok: true });
+});

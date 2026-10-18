@@ -82,9 +82,18 @@ CREATE TABLE IF NOT EXISTS enhancements (
       checkin_tier: 'INTEGER NOT NULL DEFAULT 0',
       checkin_at: 'INTEGER',
       rag: 'TEXT',
+      // auto mode: the project runs without the user's input after the requirements (auto.ts)
+      auto_mode: 'INTEGER NOT NULL DEFAULT 0',
+      auto_paused_until: 'INTEGER', // paused for usage until this time
+      auto_nudged_at: 'INTEGER',
+      auto_nudges: 'INTEGER NOT NULL DEFAULT 0',
     });
   },
 );
+
+/** Auto mode is on for this project. */
+export const isAuto = (db: DB, projectId: string | null | undefined): boolean =>
+  Boolean(projectId && (db.prepare('SELECT auto_mode FROM brain_projects WHERE project_id = ?').get(projectId) as { auto_mode: number } | undefined)?.auto_mode);
 
 const now = () => Date.now();
 

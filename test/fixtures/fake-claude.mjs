@@ -22,6 +22,8 @@ if (prompt.includes('NEEDS_APPROVAL')) {
   reply = `write ${a.status}`;
 }
 if (prompt.includes('Reply as') && prompt.includes('nothing to add')) reply = 'PASS';
+// usage report: the 5-hour window at 85% (auto mode pauses at 80%)
+if (prompt.includes('HIGH_USAGE')) out({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: 0.85, resetsAt: Math.floor(Date.now() / 1000) + 3600 } } } });
 // a member asking the user something (tests that the answer goes back to them)
 if (prompt.includes('ASKME')) reply = 'Which database should we use?';
 // handover chain for tests: "HANDOFF to @X" makes this role mention X back; never-ending on purpose

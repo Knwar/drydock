@@ -27,6 +27,7 @@ import { lastActivity } from './checkins.js';
 import { getRecommendation, projectMembers, projectStatus } from './teamwork.js';
 import { currentWorkspace, isInside } from './workspace.js';
 import { getIdea, isIdeaId } from './ideas.js';
+import { autoState } from './auto.js';
 
 const ref = (db: any, id: string) => {
   try {
@@ -85,6 +86,7 @@ on('GET', '/api/projects/:id', (_q, res, _u, ctx, p) => {
     ...projectStatus(db, p.id),
     requirementsFinal: Boolean(latest?.final),
     // shaped on the Idea board: its brand and UI mockups stay with the idea
+    auto: autoState(db, p.id),
     idea_id: (db.prepare('SELECT id FROM ideas WHERE project_id = ?').get(p.id) as { id: string } | undefined)?.id ?? null,
     requirementsVersion: latest?.version ?? null,
     requirementsOpen: latest ? [...latest.markdown.matchAll(/^## (.+)\n+_To discuss\._/gm)].map((m) => m[1].trim()) : [],

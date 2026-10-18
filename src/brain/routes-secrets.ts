@@ -8,6 +8,7 @@ import { addMessage, getApproval, getConversation, getMessage, updateMessageMeta
 import { openApproval } from './routes-chat.js';
 import { getRole } from './roles.js';
 import { HttpError, on, type ApiCtx } from './router.js';
+import { respond } from './runner.js';
 import {
   clearBwsToken,
   deleteSecret,
@@ -121,6 +122,7 @@ on('POST', '/api/secrets', async (req, res, _u, ctx) => {
     ctx.broadcast({ type: 'chat_update', conversation: reqMsg.conversation_id, message: updated });
     const m = addMessage(db, reqMsg.conversation_id, 'user', `Saved ${row.name} to ${PROVIDER_NAME[row.provider]}. Use it by name with run_with_secrets.`);
     ctx.broadcast({ type: 'chat', conversation: reqMsg.conversation_id, message: m });
+    respond(reqMsg.conversation_id); // the agent that asked carries on
   }
   ctx.broadcast({ type: 'secrets' });
   ctx.json(res, 200, view(row));

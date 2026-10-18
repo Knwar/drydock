@@ -155,6 +155,9 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .stages li + li::before { content: '›'; position: absolute; left: -10px; color: var(--muted); opacity: 0.6; font-weight: 400; }
 .stages li.done { color: var(--text2); }
 .stages li.cur { background: var(--b-bg); color: var(--b-fg); font-weight: 700; }
+.auto-switch { display: flex; align-items: center; gap: 8px; padding-left: 10px; border-left: 1px solid var(--border); }
+.auto-switch .switch { flex: 0 0 36px; width: 36px; height: 22px; padding: 2px; }
+.auto-switch .switch > span { width: 18px; height: 18px; }
 .stage-now { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 
 /* projects widget */

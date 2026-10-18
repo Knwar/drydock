@@ -2,7 +2,7 @@
 // workspace, keep versioned requirements, hold the C4 design model, and move
 // through the gates that hand work to the next agent.
 import { ROLE_TEMPLATES } from './roles.js';
-import { projectType, TYPES, type ProjectType } from './plugins.js';
+import { projectPlugins, projectType, TYPES, type ProjectType } from './plugins.js';
 import { execFile } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -16,7 +16,7 @@ import { addMessage, createChannel, getConversation } from './chat.js';
 import { setStage, type Stage } from './projects.js';
 import { respond } from './runner.js';
 import { defineSchema } from './schema.js';
-import { getRecommendation, setProjectStatus, setRecommendation } from './teamwork.js';
+import { getRecommendation, isAuto, setProjectStatus, setRecommendation } from './teamwork.js';
 import { currentWorkspace, isInside } from './workspace.js';
 import { getIdea, handOver, ideaChanged, ideaDir, isIdeaId } from './ideas.js';
 
@@ -370,7 +370,8 @@ function askMainForTeam(db: DB, ref: ProjectRef, version: number): void {
     `The requirements for ${ref.name} (a ${type.name.toLowerCase()} project) are final (v${version}, project_id ${ref.id}). Read them with get_requirements, then call recommend_team once with the members this project needs beyond the always-on core (${core}): ${specialists}. At most four extra members, each with a one-line reason that refers to the requirements. You may also give the core members a project-specific reason.${skills.length ? `\nInstalled skills you can assign: ${skills.join(', ')}` : ''}`,
   );
   getBus().emit({ type: 'chat', conversation: conv, message: m });
-  respond(conv, '', { model: 'sonnet' });
+  // auto mode takes the team step as soon as the recommendation is in
+  respond(conv, '', { model: 'sonnet', onDone: () => void import('./auto.js').then((a) => a.autoStep(getBus().db(), ref.id)) });
 }
 
 /** Gate 3 → 4 (after the team step): the Architect designs; the Security Champion threat-models; the CTO reviews. */
@@ -393,7 +394,8 @@ export function startDesign(db: DB, projectId: string): string {
         ? `A design was already drawn from the existing code: check it against the requirements with get_design, fix what is missing or wrong, and mark what the requirements change. Then summarise it here in a few lines`
         : `Read them and create the system design with the design tools: containers first (the verticals), then the components inside the important ones. Then summarise the design here in a few lines`) +
       (security ? ` and ask @Security Champion for the STRIDE threat model` : '') +
-      (members.includes('cto') ? `, and the CTO for review.` : '.'),
+      (members.includes('cto') ? `, and the CTO for review.` : '.') +
+      (isAuto(db, projectId) ? ' Auto mode is on: once the design is complete and the reviews are addressed, call design_done; that finalises it and starts the planning.' : ''),
     '@Architect',
   );
   getBus().emit({ type: 'brain_project', project_id: projectId });
@@ -415,7 +417,7 @@ export function startPlanning(db: DB, projectId: string): string {
     ch,
     `@PM the requirements for ${ref.name} are final (v${latest.version}, project_id ${ref.id}, saved at ${join(ref.vault, 'requirements', 'current.md')}). ` +
       `${projectType(db, projectId) === 'general' ? `This is not a software project: the work is documents and other files in the project folder, and the checks are reviews against each card's acceptance criteria. ` : ''}` +
-      `Follow the project kickoff in CLAUDE.md: draft the phases with the manager subagent, then post them here for my approval. Do not create cards or start the work until I approve.${shapedNote(db, ref)}`,
+      `Follow the project kickoff in CLAUDE.md: draft the phases with the manager subagent, then ${planAsk(db, projectId)}${shapedNote(db, ref)}`,
     '@PM',
   );
   getBus().emit({ type: 'brain_project', project_id: projectId });
@@ -459,11 +461,33 @@ export async function finalizeDesign(db: DB, projectId: string): Promise<string>
     db,
     ch,
     `@PM the system design for ${ref.name} is final (v${version}); it is in ${join(ref.vault, 'design', 'system-design.md')} and the verticals are set up on the board. ` +
-      `Follow the project kickoff in CLAUDE.md: draft the phases with the manager subagent, then post them here for my approval. Do not create cards or start building until I approve.${shapedNote(db, ref)}`,
+      `Follow the project kickoff in CLAUDE.md: draft the phases with the manager subagent, then ${planAsk(db, projectId)}${shapedNote(db, ref)}`,
     '@PM',
   );
   getBus().emit({ type: 'brain_project', project_id: projectId });
   return ch;
+}
+
+/** What the PM does with its drafted phases: ask the user, or (auto mode) commit them and start. */
+const planAsk = (db: DB, projectId: string) =>
+  isAuto(db, projectId)
+    ? 'commit them with create_phase yourself (auto mode is on, so do not wait for my approval), call start_building, and run the phase loop.'
+    : 'post them here for my approval. Do not create cards or start the work until I approve.';
+
+/** After the team step: the design stage when the project has System design (frozen at once when it was shaped on the Idea board), else the planning. */
+export async function startAfterTeam(db: DB, projectId: string): Promise<{ channel: string; stage: 'design' | 'plan' }> {
+  const design = projectPlugins(db, projectId).includes('design');
+  const shaped = (db.prepare('SELECT origin FROM brain_projects WHERE project_id = ?').get(projectId) as { origin: string } | undefined)?.origin === 'idea';
+  if (shaped && design && getDesign(db, projectId).elements.length) return { channel: await finalizeDesign(db, projectId), stage: 'plan' };
+  return design && !shaped ? { channel: startDesign(db, projectId), stage: 'design' } : { channel: startPlanning(db, projectId), stage: 'plan' };
+}
+
+/** Auto mode: the PM committed the phases itself; building starts without the user's approval. */
+export function enterBuild(db: DB, projectId: string): void {
+  projectRef(db, projectId);
+  if (!board.getPhases(db, projectId).length) throw new Error('commit the phases with create_phase first');
+  setStage(db, projectId, 'build');
+  getBus().emit({ type: 'brain_project', project_id: projectId });
 }
 
 /** Gate 5 → 6: the roadmap is approved; the PM runs the phase loop. */
