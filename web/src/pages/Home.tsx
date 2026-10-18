@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { QuickAsk } from '../components/QuickAsk';
 import { StageSteps } from '../components/Shell';
 import { api, useApi } from '../lib/api';
 import { go, href } from '../lib/router';
@@ -100,44 +100,6 @@ function Today({ data }: { data: PersonalData }) {
   );
 }
 
-/** The input at the bottom of Home: sending opens the Main agent's chat page with the message on its way. */
-function AskMain({ onSent }: { onSent: () => void }) {
-  const [text, setText] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const send = async () => {
-    const t = text.trim();
-    if (!t) return;
-    setError(null);
-    try {
-      await api('/api/conversations/dm%3Amain/messages', { body: { text: t } });
-      setText('');
-      onSent();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-  return (
-    <form className="composer home-ask" onSubmit={(e) => (e.preventDefault(), send())}>
-      <label htmlFor="home-ask" className="sr-only">Ask the Main agent</label>
-      <textarea
-        id="home-ask"
-        rows={2}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) (e.preventDefault(), send());
-        }}
-        placeholder="Ask the Main agent: an idea, your day, a project…"
-      />
-      {error && <div className="error">{error}</div>}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span className="muted" style={{ fontSize: 11 }}>Enter to send · Shift+Enter for a new line</span>
-        <button type="submit" className="btn sm primary" style={{ marginLeft: 'auto' }} disabled={!text.trim()}>Send</button>
-      </div>
-    </form>
-  );
-}
-
 /** Home: the day at a glance, with the Main agent's input at the bottom. */
 export function Home({ projects, onImport, onAsked }: { projects: ProjectSummary[]; onImport: () => void; onAsked: () => void }) {
   const personal = useApi<PersonalData>('/api/personal', personalEvents);
@@ -149,7 +111,7 @@ export function Home({ projects, onImport, onAsked }: { projects: ProjectSummary
         {personal.data && <Today data={personal.data} />}
       </div>
       <div className="docked-bar home-bar">
-        <AskMain onSent={onAsked} />
+        <QuickAsk conversationId="dm:main" placeholder="Ask the Main agent: an idea, your day, a project…" onSent={onAsked} />
       </div>
     </div>
   );

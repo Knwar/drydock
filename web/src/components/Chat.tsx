@@ -197,16 +197,13 @@ function ToolLines({ items }: { items: Message[] }) {
   );
 }
 
-/** Docked at the bottom of a page (an idea's board): the conversation folds away, quick actions sit above the input. */
-export interface Dock {
-  expanded: boolean;
-  onToggle: () => void;
-  /** shown above the input (quick-action pills) */
+/** Embedded in a page (an idea's Conversation tab): no header, and something (quick actions) above the input. */
+export interface Bare {
   above?: React.ReactNode;
   placeholder?: string;
 }
 
-export function ChatPanel({ conversation, roles, projects = [], onSent, onClose, draftText, onDraftUsed, dock }: { conversation: Conversation | null; roles: Role[]; projects?: ProjectSummary[]; onSent?: () => void; onClose: () => void; draftText?: string; onDraftUsed?: () => void; dock?: Dock }) {
+export function ChatPanel({ conversation, roles, projects = [], onSent, onClose, draftText, onDraftUsed, bare }: { conversation: Conversation | null; roles: Role[]; projects?: ProjectSummary[]; onSent?: () => void; onClose: () => void; draftText?: string; onDraftUsed?: () => void; bare?: Bare }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [working, setWorking] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ role: string; text: string } | null>(null);
@@ -215,7 +212,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
   const [view, setView] = useState<'chat' | 'activity'>('chat');
   const [info, setInfo] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
-  const inputId = dock ? 'chat-input-dock' : 'chat-input';
+  const inputId = bare ? 'chat-input-bare' : 'chat-input';
   const convId = conversation?.id ?? null;
   useEffect(() => {
     if (draftText) {
@@ -299,22 +296,16 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
   }
   const visible = view === 'chat' ? rows : messages.filter((m) => m.kind === 'tool' || m.kind === 'approval' || m.kind === 'error').map((m) => [m] as Message[]);
 
-  const latest = [...messages].reverse().find((m) => m.kind === 'text' && m.author !== 'user' && m.author !== 'system');
   return (
-    <aside className={`chat${dock ? ` chat-dock${dock.expanded ? '' : ' collapsed'}` : ''}`} aria-label="Conversation">
+    <aside className={`chat${bare ? ' chat-bare' : ''}`} aria-label="Conversation">
+      {!bare && (
       <header className="chat-head">
         <button className="chat-title" onClick={() => setInfo(true)} title="Members, sessions and usage" aria-haspopup="dialog">
           {lead ? <Avatar role={lead} size={30} /> : <span className="avatar t-n" style={{ width: 30, height: 30, flex: '0 0 30px' }}>#</span>}
           <span style={{ flex: 1, minWidth: 0 }}>
             <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{lead ? lead.name : `# ${threadTitle}`}</h2>
             <span className="muted" style={{ display: 'block', fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {dock && !dock.expanded
-                ? working
-                  ? `${byId.get(working)?.name ?? 'An agent'} is working…`
-                  : latest
-                    ? `${byId.get(latest.author)?.name ?? latest.author}: ${latest.body.replace(/[#*_`>|-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 140)}`
-                    : `${memberNames} and you`
-                : lead ? `${lead.scope === 'global' ? 'Personal manager · all projects' : lead.scope === 'shared' ? 'Shared role · all projects' : 'Project role'} · ${lead.model}` : `${project ? `${project.name} · ` : ''}${memberNames} and you`}
+              {lead ? `${lead.scope === 'global' ? 'Personal manager · all projects' : lead.scope === 'shared' ? 'Shared role · all projects' : 'Project role'} · ${lead.model}` : `${project ? `${project.name} · ` : ''}${memberNames} and you`}
             </span>
           </span>
         </button>
@@ -322,14 +313,11 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
           <button aria-pressed={view === 'chat'} onClick={() => setView('chat')}>Chat</button>
           <button aria-pressed={view === 'activity'} onClick={() => setView('activity')}>Activity</button>
         </div>
-        {dock ? (
-          <button className="btn sm" aria-expanded={dock.expanded} onClick={dock.onToggle}>{dock.expanded ? 'Hide conversation' : 'Show conversation'}</button>
-        ) : (
-          <button className="icon-btn" style={{ width: 30, height: 30, flex: '0 0 30px', borderRadius: 8, fontSize: 13 }} aria-label="Minimise chat" title="Minimise chat" onClick={onClose}>✕</button>
-        )}
+        <button className="icon-btn" style={{ width: 30, height: 30, flex: '0 0 30px', borderRadius: 8, fontSize: 13 }} aria-label="Minimise chat" title="Minimise chat" onClick={onClose}>✕</button>
       </header>
+      )}
       {info && <ConversationInfo id={conversation.id} title={lead ? lead.name : `# ${threadTitle}`} roles={roles} onClose={() => setInfo(false)} />}
-      {lead && (
+      {lead && !bare && (
         <div className="perm-strip">
           <span className="muted">Can do on its own:</span>
           {ALWAYS.map((a) => <span key={a} className="pill t-g">{a}</span>)}
@@ -390,8 +378,8 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
           </div>
         )}
       </div>
+      {bare?.above}
       <form className="composer" onSubmit={send}>
-        {dock?.above}
         <label htmlFor={inputId} className="sr-only">Message</label>
         <textarea
           id={inputId}
@@ -404,7 +392,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
               send();
             }
           }}
-          placeholder={dock?.placeholder ?? (lead?.id === 'main' ? 'Describe an idea, or ask anything…' : lead ? `Message ${lead.name}…` : several ? `Message #${threadTitle}: ${replyName} answers, or @mention someone…` : `Message #${threadTitle}…`)}
+          placeholder={bare?.placeholder ?? (lead?.id === 'main' ? 'Describe an idea, or ask anything…' : lead ? `Message ${lead.name}…` : several ? `Message #${threadTitle}: ${replyName} answers, or @mention someone…` : `Message #${threadTitle}…`)}
         />
         {error && <div className="error">{error}</div>}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { ChatPanel } from '../components/Chat';
 import { Modal } from '../components/Dialogs';
 import { ideaEvents, Shaped, STATUS } from '../components/Ideas';
+import { QuickAsk } from '../components/QuickAsk';
 import { api, useApi } from '../lib/api';
 import { Markdown } from '../lib/md';
 import { go, href, navigate } from '../lib/router';
@@ -224,7 +225,7 @@ function Screens({ d }: { d: Detail }) {
 export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id: string; tab: string; sub: string | null; roles: Role[]; conversations: Conversation[]; projects: ProjectSummary[] }) {
   const idea = useApi<Detail>(`/api/ideas/${id}`, (m) => ideaEvents(m));
   const analyses = useApi<Analysis[]>('/api/idea-analyses');
-  const [chatOpen, setChatOpen] = useState(false);
+
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState('');
   const [pitch, setPitch] = useState('');
@@ -240,7 +241,7 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
   if (!d) return null;
   const conv = conversations.find((c) => c.id === d.conversation_id) ?? null;
   const software = d.type === 'software';
-  const tabs: [string, string][] = [['', 'Board'], ['requirements', 'Requirements'], ...(software ? ([['design', 'System design']] as [string, string][]) : []), ['brand', 'Brand'], ...(software ? ([['ui', 'UI']] as [string, string][]) : [])];
+  const tabs: [string, string][] = [['', 'Board'], ['chat', 'Conversation'], ['requirements', 'Requirements'], ...(software ? ([['design', 'System design']] as [string, string][]) : []), ['brand', 'Brand'], ...(software ? ([['ui', 'UI']] as [string, string][]) : [])];
   const run = (kind: string) => act(() => api(`/api/ideas/${id}/sections/${kind}/run`, { method: 'POST' }));
   const base = `/idea/${id}`;
   const act = async (fn: () => Promise<unknown>) => {
@@ -257,7 +258,7 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
   const promoted = d.status === 'promoted';
   return (
     <div className="docked-page idea-page">
-      <div className="docked-main">
+      <div className={`docked-main${tab === 'chat' ? ' fill' : ''}`}>
         <div className="eyebrow" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <a href={href('/')} onClick={go('/')}>Idea board</a> ›
           <span className={`pill ${STATUS[d.status].tone}`}>{STATUS[d.status].label}</span>
@@ -306,6 +307,15 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
             <Analyses d={d} analyses={analyses.data ?? []} run={run} />
           </>
         )}
+        {tab === 'chat' && (
+          conv ? (
+            <div className="idea-conversation">
+              <ChatPanel conversation={conv} roles={roles} projects={projects} onClose={() => navigate(base)} bare={{ above: promoted ? undefined : <Pills d={d} analyses={analyses.data ?? []} run={run} />, placeholder: promoted ? 'This idea is a project now.' : 'Talk the idea through: a feature, a change, a question…' }} />
+            </div>
+          ) : (
+            <div className="muted">Opening the chat…</div>
+          )
+        )}
         {tab === 'requirements' && (
           <section className="panel">
             {d.requirements ? <Markdown text={d.requirements.markdown} /> : <div className="muted" style={{ fontSize: 13.5, lineHeight: 1.6 }}>No requirements yet. They appear here and grow with every message in the chat.</div>}
@@ -315,24 +325,12 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
         {tab === 'brand' && <Brand d={d} />}
         {tab === 'ui' && software && <Screens d={d} />}
       </div>
-      <div className="docked-bar" aria-label="Idea chat">
-        {conv ? (
-          <ChatPanel
-            conversation={conv}
-            roles={roles}
-            projects={projects}
-            onClose={() => setChatOpen(false)}
-            dock={{
-              expanded: chatOpen,
-              onToggle: () => setChatOpen((v) => !v),
-              above: promoted ? undefined : <Pills d={d} analyses={analyses.data ?? []} run={run} />,
-              placeholder: promoted ? 'This idea is a project now.' : 'Talk the idea through: a feature, a change, a question…',
-            }}
-          />
-        ) : (
-          <div className="muted" style={{ padding: 14, fontSize: 13 }}>{promoted ? 'This idea is a project now.' : 'Opening the chat…'}</div>
-        )}
-      </div>
+      {/* the input sits at the bottom of every tab; typing opens the Conversation tab, a quick action stays on the Board */}
+      {conv && !promoted && tab !== 'chat' && (
+        <div className="docked-bar idea-bar">
+          <QuickAsk conversationId={conv.id} placeholder="Talk the idea through: a feature, a change, a question…" onSent={() => navigate(`${base}/chat`)} above={<Pills d={d} analyses={analyses.data ?? []} run={run} />} />
+        </div>
+      )}
       {modal === 'promote' && (
         <Modal title={`Promote "${d.title}" to a project?`} onClose={() => setModal(null)}>
           <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>
