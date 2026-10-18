@@ -444,11 +444,12 @@ button.chev-btn:hover { background: var(--hover); }
 .chat-page { flex: 1; display: flex; justify-content: center; min-width: 0; min-height: 0; animation: page-rise 180ms ease-out; }
 .chat-page > .chat { position: static; height: 100%; max-width: 900px; width: 100%; flex: 1; border-left: 0; }
 @keyframes page-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
-.docked-main.fill { overflow: hidden; }
-.idea-conversation { flex: 1 1 auto !important; min-height: 0; display: flex; }
-.chat.chat-bare { position: static; height: auto; flex: 1; max-width: none; width: 100%; border: 1px solid var(--border); border-radius: 14px; }
-.chat.chat-bare > .pills, .chat.chat-bare > .composer { width: calc(100% - 28px); max-width: 980px; align-self: center; }
-.chat.chat-bare > .pills { margin-top: 8px; }
+.idea-page { flex-direction: row; }
+.idea-chat { flex: 0 0 420px; display: flex; min-height: 0; border-left: 1px solid var(--border); background: var(--surface); }
+.chat.chat-bare { position: static; height: auto; flex: 1; max-width: none; width: 100%; border: 0; }
+.chat.chat-bare > .pills { margin: 0 14px 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+@media (max-width: 1100px) { .idea-chat { flex-basis: 360px; } }
+@media (max-width: 720px) { .idea-page { flex-direction: column; } .idea-chat { flex: 0 0 55vh; border-left: 0; border-top: 1px solid var(--border); } }
 /* quick actions: a wrapped row of pills above the input box, grouped */
 .pills { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .pill-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
@@ -459,7 +460,6 @@ button.chev-btn:hover { background: var(--hover); }
 .quick-pill:disabled { opacity: 0.6; cursor: default; }
 .quick-ask { display: flex; flex-direction: column; gap: 8px; width: calc(100% - 28px); max-width: 980px; margin: 8px auto 14px; }
 .quick-ask .composer { margin: 0; }
-.idea-bar { border-top: 0; background: none; }
 .feature-module + .feature-module { margin-top: 6px; }
 .feature-module-h { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 0; }
 .feature { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 6px; }

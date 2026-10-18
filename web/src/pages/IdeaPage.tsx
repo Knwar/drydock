@@ -5,7 +5,6 @@ import { useEffect, useState } from 'react';
 import { ChatPanel } from '../components/Chat';
 import { Modal } from '../components/Dialogs';
 import { ideaEvents, Shaped, STATUS } from '../components/Ideas';
-import { QuickAsk } from '../components/QuickAsk';
 import { api, useApi } from '../lib/api';
 import { Markdown } from '../lib/md';
 import { go, href, navigate } from '../lib/router';
@@ -70,7 +69,7 @@ function Features({ d }: { d: Detail }) {
         {d.mvpFeatures > 0 && <button className="btn sm" aria-pressed={mvpOnly} onClick={() => setMvpOnly((v) => !v)}>{mvpOnly ? 'Show all' : 'MVP only'}</button>}
       </div>
       {!d.featureList.length ? (
-        <div className="muted" style={{ fontSize: 13, lineHeight: 1.6 }}>Nothing broken down yet. Press <strong>Feature breakdown</strong> below (or just describe what it should do): every module is split into features with user stories and acceptance criteria, so the PM and builders never have to guess.</div>
+        <div className="muted" style={{ fontSize: 13, lineHeight: 1.6 }}>Nothing broken down yet. Press <strong>Feature breakdown</strong> in the chat (or just describe what it should do): every module is split into features with user stories and acceptance criteria, so the PM and builders never have to guess.</div>
       ) : (
         modules.map((m) => (
           <div key={m} className="feature-module">
@@ -241,7 +240,7 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
   if (!d) return null;
   const conv = conversations.find((c) => c.id === d.conversation_id) ?? null;
   const software = d.type === 'software';
-  const tabs: [string, string][] = [['', 'Board'], ['chat', 'Conversation'], ['requirements', 'Requirements'], ...(software ? ([['design', 'System design']] as [string, string][]) : []), ['brand', 'Brand'], ...(software ? ([['ui', 'UI']] as [string, string][]) : [])];
+  const tabs: [string, string][] = [['', 'Board'], ['requirements', 'Requirements'], ...(software ? ([['design', 'System design']] as [string, string][]) : []), ['brand', 'Brand'], ...(software ? ([['ui', 'UI']] as [string, string][]) : [])];
   const run = (kind: string) => act(() => api(`/api/ideas/${id}/sections/${kind}/run`, { method: 'POST' }));
   const base = `/idea/${id}`;
   const act = async (fn: () => Promise<unknown>) => {
@@ -258,7 +257,7 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
   const promoted = d.status === 'promoted';
   return (
     <div className="docked-page idea-page">
-      <div className={`docked-main${tab === 'chat' ? ' fill' : ''}`}>
+      <div className="docked-main">
         <div className="eyebrow" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <a href={href('/')} onClick={go('/')}>Idea board</a> ›
           <span className={`pill ${STATUS[d.status].tone}`}>{STATUS[d.status].label}</span>
@@ -296,25 +295,16 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
             <a key={t} className={`tab${tab === t ? ' on' : ''}`} aria-current={tab === t ? 'page' : undefined} href={href(t ? `${base}/${t}` : base)} onClick={go(t ? `${base}/${t}` : base)}>{label}</a>
           ))}
         </nav>
-        {tab === '' && (
+        {(tab === '' || tab === 'chat') && (
           <>
             {!d.requirements && !d.featureList.length && !d.sections.length && (
               <div className="banner t-b" style={{ fontSize: 13, lineHeight: 1.6 }}>
-                Start by telling the Main agent about the idea below: the problem, who it is for, how you see it working. Or press a quick action: competitors, the MVP cut, risks… Each one adds a card here, and the requirements, design, brand and UI fill in as you talk.
+                Start by telling the Main agent about the idea in the chat: the problem, who it is for, how you see it working. Or press a quick action: competitors, the MVP cut, risks… Each one adds a card here, and the requirements, design, brand and UI fill in as you talk.
               </div>
             )}
             <Features d={d} />
             <Analyses d={d} analyses={analyses.data ?? []} run={run} />
           </>
-        )}
-        {tab === 'chat' && (
-          conv ? (
-            <div className="idea-conversation">
-              <ChatPanel conversation={conv} roles={roles} projects={projects} onClose={() => navigate(base)} bare={{ above: promoted ? undefined : <Pills d={d} analyses={analyses.data ?? []} run={run} />, placeholder: promoted ? 'This idea is a project now.' : 'Talk the idea through: a feature, a change, a question…' }} />
-            </div>
-          ) : (
-            <div className="muted">Opening the chat…</div>
-          )
         )}
         {tab === 'requirements' && (
           <section className="panel">
@@ -325,12 +315,14 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
         {tab === 'brand' && <Brand d={d} />}
         {tab === 'ui' && software && <Screens d={d} />}
       </div>
-      {/* the input sits at the bottom of every tab; typing opens the Conversation tab, a quick action stays on the Board */}
-      {conv && !promoted && tab !== 'chat' && (
-        <div className="docked-bar idea-bar">
-          <QuickAsk conversationId={conv.id} placeholder="Talk the idea through: a feature, a change, a question…" onSent={() => navigate(`${base}/chat`)} above={<Pills d={d} analyses={analyses.data ?? []} run={run} />} />
-        </div>
-      )}
+      {/* the idea's chat with the Main agent, always open on the right; quick actions sit above its input */}
+      <aside className="idea-chat" aria-label="Chat about this idea">
+        {conv ? (
+          <ChatPanel conversation={conv} roles={roles} projects={projects} onClose={() => navigate(base)} bare={{ above: promoted ? undefined : <Pills d={d} analyses={analyses.data ?? []} run={run} />, placeholder: promoted ? 'This idea is a project now.' : 'Talk the idea through: a feature, a change, a question…' }} />
+        ) : (
+          <div className="muted" style={{ padding: 16 }}>Opening the chat…</div>
+        )}
+      </aside>
       {modal === 'promote' && (
         <Modal title={`Promote "${d.title}" to a project?`} onClose={() => setModal(null)}>
           <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>
