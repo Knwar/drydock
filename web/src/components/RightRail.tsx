@@ -14,7 +14,7 @@ interface NeedsYou {
   secrets?: { message_id: number; conversation: string; name: string }[];
 }
 
-export function RightRail({ roles, conversations, open, onExpand, onHide }: { roles: Role[]; conversations: Conversation[]; open: (conversationId: string) => void; onExpand: () => void; onHide?: () => void }) {
+export function RightRail({ roles, conversations, open, onExpand, onHide }: { roles: Role[]; conversations: Conversation[]; open: (conversationId: string) => void; onExpand?: () => void; onHide?: () => void }) {
   const needs = useApi<NeedsYou>('/api/needs-you', (m) => ['approvals', 'chat', 'chat_update'].includes(m?.type));
   const personal = useApi<PersonalData>('/api/personal', (m) => ['personal', 'daily'].includes(m?.type));
   const usage = useApi<{ five_hour: { pct: number } | null; seven_day: { pct: number } | null; high: boolean; threshold: number }>('/api/usage', (m) => m?.type === 'usage');
@@ -49,9 +49,11 @@ export function RightRail({ roles, conversations, open, onExpand, onHide }: { ro
     <aside className="rail" aria-label="Overview">
       <div className="rail-head">
         <span style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>At a glance</span>
-        <button className="btn sm" onClick={onExpand} title="Open the chat">
-          <Icon name="chat" size={14} /> Chat
-        </button>
+        {onExpand && (
+          <button className="btn sm" onClick={onExpand} title="Open the chat">
+            <Icon name="chat" size={14} /> Chat
+          </button>
+        )}
         {onHide && <button className="icon-btn" style={{ width: 28, height: 28, borderRadius: 8, fontSize: 13 }} aria-label="Hide panel" title="Hide panel" onClick={onHide}>✕</button>}
       </div>
 

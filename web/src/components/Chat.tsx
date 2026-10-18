@@ -204,6 +204,8 @@ export interface Dock {
   /** shown above the input (quick-action pills) */
   above?: React.ReactNode;
   placeholder?: string;
+  /** something needs the user (an approval, a proposal): open the conversation */
+  onAttention?: () => void;
 }
 
 export function ChatPanel({ conversation, roles, projects = [], onSent, onClose, draftText, onDraftUsed, dock }: { conversation: Conversation | null; roles: Role[]; projects?: ProjectSummary[]; onSent?: () => void; onClose: () => void; draftText?: string; onDraftUsed?: () => void; dock?: Dock }) {
@@ -215,12 +217,15 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
   const [view, setView] = useState<'chat' | 'activity'>('chat');
   const [info, setInfo] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+  const attention = useRef(dock?.onAttention);
+  attention.current = dock?.onAttention;
+  const inputId = dock ? 'chat-input-dock' : 'chat-input';
   const convId = conversation?.id ?? null;
   useEffect(() => {
     if (draftText) {
       setText(draftText);
       onDraftUsed?.();
-      document.getElementById('chat-input')?.focus();
+      document.getElementById(inputId)?.focus();
     }
   }, [draftText]); // eslint-disable-line react-hooks/exhaustive-deps
   const byId = useMemo(() => new Map(roles.map((r) => [r.id, r])), [roles]);
@@ -240,6 +245,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
       if (msg.conversation !== convId) return;
       if (msg.type === 'chat') {
         setMessages((ms) => (ms.some((m) => m.id === msg.message.id) ? ms : [...ms, msg.message]));
+        if (['approval', 'proposal', 'secret_request', 'change_request'].includes(msg.message.kind)) attention.current?.();
         if (msg.message.author !== 'user') setDraft(null);
       } else if (msg.type === 'chat_update') setMessages((ms) => ms.map((m) => (m.id === msg.message.id ? msg.message : m)));
       else if (msg.type === 'chat_delta') setDraft(msg.text ? { role: msg.role, text: msg.text } : null);
@@ -391,9 +397,9 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
       </div>
       <form className="composer" onSubmit={send}>
         {dock?.above}
-        <label htmlFor="chat-input" className="sr-only">Message</label>
+        <label htmlFor={inputId} className="sr-only">Message</label>
         <textarea
-          id="chat-input"
+          id={inputId}
           rows={2}
           value={text}
           onChange={(e) => setText(e.target.value)}

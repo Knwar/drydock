@@ -1,9 +1,10 @@
+import { useEffect } from 'react';
+import { ChatPanel } from '../components/Chat';
 import { StageSteps } from '../components/Shell';
 import { api, useApi } from '../lib/api';
 import { go, href } from '../lib/router';
 import { DailyCard, personalEvents, type PersonalData } from './Personal';
-import { IdeaBoard } from '../components/Ideas';
-import type { ProjectSummary } from '../lib/types';
+import type { Conversation, ProjectSummary, Role } from '../lib/types';
 
 function ProjectsPanel({ projects, onImport }: { projects: ProjectSummary[]; onImport: () => void }) {
   const found = useApi<{ candidates: { name: string }[] }>('/api/import/candidates', (m) => ['workspace', 'brain_project'].includes(m?.type));
@@ -21,7 +22,7 @@ function ProjectsPanel({ projects, onImport }: { projects: ProjectSummary[]; onI
         </div>
       )}
       {projects.length === 0 ? (
-        <div className="empty">No projects yet. Tell the main agent about an idea and it will offer to set one up.</div>
+        <div className="muted" style={{ fontSize: 13 }}>No projects yet: ideas you promote from the Idea board land here.</div>
       ) : (
         <div className="scroll-x">
           <div style={{ minWidth: 600 }}>
@@ -81,7 +82,7 @@ function Today({ data }: { data: PersonalData }) {
         <a className="btn sm" href={href('/personal')} onClick={go('/personal')}>Week and more</a>
       </div>
       {items.length === 0 ? (
-        <div className="muted" style={{ fontSize: 13 }}>Nothing scheduled. Calendar events appear after the Daily runs with Google Calendar connected; reminders you add show here on their day.</div>
+        <div className="muted" style={{ fontSize: 13 }}>Nothing scheduled today.</div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', columnGap: 24 }}>
           {items.map((i: any) => (
@@ -100,14 +101,52 @@ function Today({ data }: { data: PersonalData }) {
   );
 }
 
-export function Home({ projects, onImport }: { projects: ProjectSummary[]; onImport: () => void }) {
+/**
+ * Home: the day at a glance, with the Main agent's chat docked at the bottom.
+ * Sending a message raises the conversation as a sheet over the (dimmed)
+ * widgets; folding it leaves a one-line peek at the latest reply.
+ */
+export function Home({ projects, onImport, conversation, roles, sheet, setSheet, draft, onDraftUsed, onSent }: {
+  projects: ProjectSummary[];
+  onImport: () => void;
+  conversation: Conversation | null;
+  roles: Role[];
+  sheet: boolean;
+  setSheet: (open: boolean) => void;
+  draft?: string;
+  onDraftUsed?: () => void;
+  onSent?: () => void;
+}) {
   const personal = useApi<PersonalData>('/api/personal', personalEvents);
+  // Esc folds the sheet (unless a dialog is open; that closes first)
+  useEffect(() => {
+    if (!sheet) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !document.querySelector('.modal-back, .settings-back') && setSheet(false);
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [sheet, setSheet]);
   return (
-    <>
-      {personal.data && <DailyCard edition={personal.data.edition} generating={personal.data.generating} compact />}
-      <IdeaBoard />
-      <ProjectsPanel projects={projects} onImport={onImport} />
-      {personal.data && <Today data={personal.data} />}
-    </>
+    <div className="docked-page home-page">
+      <div className="docked-main">
+        {personal.data && <DailyCard edition={personal.data.edition} generating={personal.data.generating} compact />}
+        <ProjectsPanel projects={projects} onImport={onImport} />
+        {personal.data && <Today data={personal.data} />}
+        {sheet && <div className="sheet-scrim" aria-hidden="true" onClick={() => setSheet(false)} />}
+      </div>
+      <div className="docked-bar" aria-label="Main agent">
+        {conversation ? (
+          <ChatPanel
+            conversation={conversation}
+            roles={roles}
+            projects={projects}
+            onClose={() => setSheet(false)}
+            onSent={() => (setSheet(true), onSent?.())}
+            draftText={draft}
+            onDraftUsed={onDraftUsed}
+            dock={{ expanded: sheet, onToggle: () => setSheet(!sheet), onAttention: () => setSheet(true), placeholder: 'Ask the Main agent: an idea, your day, a project…' }}
+          />
+        ) : null}
+      </div>
+    </div>
   );
 }

@@ -256,8 +256,8 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
   };
   const promoted = d.status === 'promoted';
   return (
-    <div className="idea-page">
-      <div className="idea-main">
+    <div className="docked-page idea-page">
+      <div className="docked-main">
         <div className="eyebrow" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <a href={href('/')} onClick={go('/')}>Idea board</a> ›
           <span className={`pill ${STATUS[d.status].tone}`}>{STATUS[d.status].label}</span>
@@ -315,7 +315,7 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
         {tab === 'brand' && <Brand d={d} />}
         {tab === 'ui' && software && <Screens d={d} />}
       </div>
-      <div className="idea-dock" aria-label="Idea chat">
+      <div className="docked-bar" aria-label="Idea chat">
         {conv ? (
           <ChatPanel
             conversation={conv}

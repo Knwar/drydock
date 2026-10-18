@@ -44,6 +44,14 @@ export function DailyCard({ edition, generating, compact = false }: { edition: E
       setBusy(false);
     }
   };
+  if (!edition && compact)
+    return (
+      <article className="panel compact-empty">
+        <span className="eyebrow">The Daily</span>
+        <span className="muted" style={{ flex: 1 }}>No edition yet.</span>
+        <button className="btn sm" disabled={busy || generating} onClick={generate}>{generating ? 'Writing…' : 'Write today’s'}</button>
+      </article>
+    );
   if (!edition)
     return (
       <article className="panel daily">
