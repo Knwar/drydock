@@ -10,6 +10,7 @@ import { AddMemberDialog, NewProjectDialog, NewThreadDialog } from './components
 import { ImportDialog } from './components/ImportDialog';
 import { RightRail } from './components/RightRail';
 import { listed, Messenger } from './components/Messenger';
+import { NeedsYouPrompt } from './components/NeedsYouPrompt';
 import { Home } from './pages/Home';
 import { Onboarding } from './pages/Onboarding';
 import { Personal } from './pages/Personal';
@@ -188,6 +189,8 @@ export function App() {
           </div>
         )}
         {messenger && <Messenger conversations={conversations} roles={roles.data ?? []} projects={list} onSent={convs.reload} onClose={() => setMessenger(false)} />}
+        {/* a permission or key an agent is waiting on pops up wherever you are */}
+        <NeedsYouPrompt roles={roles.data ?? []} conversations={conversations} openChat={select} />
         {settings && <SettingsWindow section={settings} roles={roles.data ?? []} onClose={closeSettings} />}
         {capturing && <CaptureIdeaDialog onClose={() => setCapturing(false)} />}
         {newProject && <NewProjectDialog onClose={() => setNewProject(false)} askMain={askMain} onImport={() => (setNewProject(false), setImporting(true))} />}
