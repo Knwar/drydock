@@ -149,10 +149,13 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .error { color: var(--r-fg); font-size: 13px; }
 
 /* stage stepper */
-.steps { display: flex; gap: 5px; align-items: center; }
-.step { width: 18px; height: 6px; border-radius: 3px; background: var(--todo); }
-.step.done { background: var(--done); }
-.step.cur { width: 26px; background: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+.stages { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted); }
+.stages li { position: relative; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+.stages li + li { margin-left: 12px; }
+.stages li + li::before { content: '›'; position: absolute; left: -10px; color: var(--muted); opacity: 0.6; font-weight: 400; }
+.stages li.done { color: var(--text2); }
+.stages li.cur { background: var(--b-bg); color: var(--b-fg); font-weight: 700; }
+.stage-now { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 
 /* projects widget */
 .proj-row { display: grid; grid-template-columns: 150px 150px minmax(0, 1fr) 80px; gap: 16px; align-items: center; padding: 11px 2px; border-top: 1px solid var(--border); text-decoration: none; }

@@ -849,7 +849,8 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
           <div className="muted" style={{ fontSize: 12 }}>Projects / {p.name}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>{p.name}</h1>
-            <span className="pill t-g">{STAGE_NAMES[p.stage]}{p.phase ? ` · phase ${p.phase.index} of ${p.phase.count}` : ''}</span>
+            {/* the stage itself shows in the stage list on the right */}
+            {p.phase && <span className="pill t-g">Phase {p.phase.index} of {p.phase.count}</span>}
             {p.status !== 'active' && <span className={`pill ${p.status === 'review' ? 't-v' : p.status === 'paused' ? 't-a' : 't-n'}`}>{p.status === 'review' ? 'Close-out' : p.status === 'paused' ? 'Paused' : `Closed${p.closed_reason ? ` · ${p.closed_reason}` : ''}`}</span>}
             {p.rag && p.status === 'active' && <span className={`pill ${p.rag === 'green' ? 't-g' : p.rag === 'amber' ? 't-a' : 't-r'}`} title="Status reported by the PM">{p.rag}</span>}
             <span className="mono muted" style={{ fontSize: 12 }}>{p.root.split('/').slice(-2).join('/')}</span>

@@ -251,15 +251,27 @@ export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking,
   );
 }
 
-export function StageSteps({ stage, type }: { stage: string; type?: string }) {
+const STAGE_TITLES: Record<string, string> = { idea: 'Idea', create: 'Set up', requirements: 'Requirements', design: 'Design', plan: 'Plan', build: 'Build' };
+
+/** Where a project is in its life: every stage named, done ones ticked, the current one highlighted (compact: just the current one). */
+export function StageSteps({ stage, type, compact }: { stage: string; type?: string; compact?: boolean }) {
   const order = type === 'general' ? ['idea', 'create', 'requirements', 'plan', 'build'] : ['idea', 'create', 'requirements', 'design', 'plan', 'build'];
   const cur = order.indexOf(stage);
+  if (compact)
+    return (
+      <div className="stage-now" title={order.map((s, i) => `${i < cur ? '✓' : i === cur ? '●' : '○'} ${STAGE_TITLES[s]}`).join('\n')}>
+        <span style={{ fontWeight: 600, fontSize: 12.5 }}>{STAGE_TITLES[stage] ?? stage}</span>
+        {cur >= 0 && <span className="muted" style={{ fontSize: 11.5 }}>Stage {cur + 1} of {order.length}</span>}
+      </div>
+    );
   return (
-    <div className="steps" aria-label={`Stage: ${stage}, ${cur + 1} of ${order.length}`}>
+    <ol className="stages" aria-label="Project stages">
       {order.map((s, i) => (
-        <span key={s} title={s[0].toUpperCase() + s.slice(1)} className={`step${i < cur ? ' done' : i === cur ? ' cur' : ''}`} />
+        <li key={s} className={i < cur ? 'done' : i === cur ? 'cur' : undefined} aria-current={i === cur ? 'step' : undefined}>
+          {i < cur && <span aria-hidden="true">✓ </span>}
+          {STAGE_TITLES[s]}
+        </li>
       ))}
-      {cur >= 0 && <span className="muted" style={{ fontSize: 11.5, marginLeft: 4 }}>{cur + 1} of {order.length}</span>}
-    </div>
+    </ol>
   );
 }

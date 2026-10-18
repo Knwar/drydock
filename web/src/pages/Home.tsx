@@ -41,7 +41,7 @@ function ProjectsPanel({ projects, onImport }: { projects: ProjectSummary[]; onI
                       {p.verticals.length ? p.verticals.map((v) => v.name).join(' · ') : 'not split yet'}
                     </div>
                   </div>
-                  <StageSteps stage={p.stage} type={p.type} />
+                  <StageSteps stage={p.stage} type={p.type} compact />
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
                       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{status}</span>
