@@ -13,7 +13,7 @@ import type { DB } from '../core/db.js';
 import { getBus } from './bus.js';
 import { listDecisions } from './chat.js';
 import { projectRef } from './pipeline.js';
-import { addFromTemplate, getRole, listRoles, ROLE_TEMPLATES, saveRole } from './roles.js';
+import { addFromTemplate, getRole, listRoles, ROLE_TEMPLATES, saveRole, type Role } from './roles.js';
 import { addMissingColumns, defineSchema } from './schema.js';
 import { getSetting } from './settings.js';
 
@@ -171,6 +171,13 @@ export function setRecommendation(db: DB, projectId: string, items: Partial<Reco
 const DEV_PERSONA = (name: string, skill: string | null) =>
   `You are a member of the user's personal AI team inside AI Brain, working on one project as its ${name}.${skill ? ` Use the ${skill} skill for your work.` : ''} You build cards on the project board when the PM assigns them to you: follow each card's requirements and acceptance criteria exactly, work only in your card's git worktree, and keep changes small and tested. Everything you create stays inside the AI Brain workspace folder.`;
 
+/** Put a member on a project's team; specialists who build cards also go on the board roster so the PM can assign them, with their skill. */
+export function joinProject(db: DB, projectId: string, role: Pick<Role, 'id' | 'name' | 'skill'>, kind: 'core' | 'specialist', reason: string | null): void {
+  db.prepare(`INSERT OR IGNORE INTO project_members (project_id, role_id, kind, reason, added_at) VALUES (?, ?, ?, ?, ?)`).run(projectId, role.id, kind, reason, now());
+  if (kind === 'specialist' && !board.listTeam(db).some((t) => t.name === role.name)) board.createTeamMember(db, role.name, { skill: role.skill ?? undefined });
+  getBus().emit({ type: 'team', project_id: projectId });
+}
+
 /** Add recommended members (by key) to the project: creates missing roles, joins the project, and puts builders on the board roster. */
 export function addProjectMembers(db: DB, projectId: string, keys: string[]): string[] {
   const rec = getRecommendation(db, projectId);
@@ -182,9 +189,7 @@ export function addProjectMembers(db: DB, projectId: string, keys: string[]): st
     const role = item.template
       ? addFromTemplate(db, item.template)
       : getRole(db, item.key) ?? saveRole(db, { id: item.key, name: item.name, skill: item.skill ?? null, scope: 'project', model: 'sonnet', persona: item.persona || DEV_PERSONA(item.name, item.skill ?? null) });
-    db.prepare(`INSERT OR IGNORE INTO project_members (project_id, role_id, kind, reason, added_at) VALUES (?, ?, ?, ?, ?)`).run(projectId, role.id, item.kind, item.reason, now());
-    // specialists who build cards go on the board roster so the PM can assign them, with their skill
-    if (item.kind === 'specialist' && !board.listTeam(db).some((t) => t.name === role.name)) board.createTeamMember(db, role.name, { skill: role.skill ?? undefined });
+    joinProject(db, projectId, role, item.kind, item.reason);
     added.push(role.id);
   }
   getBus().emit({ type: 'roles' });

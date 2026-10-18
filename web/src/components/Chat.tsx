@@ -111,11 +111,11 @@ function ProposalCard({ m, proposer }: { m: Message; proposer?: Role }) {
       {m.meta?.persona && <div className="muted" style={{ fontSize: 12 }}>{m.meta.persona}</div>}
       {status === 'pending' ? (
         <div style={{ display: 'flex', gap: 6 }}>
-          <button className="btn sm primary" disabled={busy} onClick={() => answer(true)}>{m.meta?.existing ? 'Add to this chat' : m.meta?.join ? 'Add to team and chat' : 'Add to team'}</button>
+          <button className="btn sm primary" disabled={busy} onClick={() => answer(true)}>{m.meta?.existing ? (m.meta?.join ? 'Add to this chat' : 'Add to this project') : m.meta?.join ? 'Add to team and chat' : 'Add to team'}</button>
           <button className="btn sm" disabled={busy} onClick={() => answer(false)}>Not now</button>
         </div>
       ) : (
-        <span className={`pill ${status === 'added' ? 't-g' : 't-n'}`} style={{ alignSelf: 'flex-start' }}>{status === 'added' ? (m.meta?.existing ? 'Added to this chat' : m.meta?.join ? 'Added to your team and this chat' : 'Added to your team') : 'Not added'}</span>
+        <span className={`pill ${status === 'added' ? 't-g' : 't-n'}`} style={{ alignSelf: 'flex-start' }}>{status === 'added' ? (m.meta?.existing ? (m.meta?.join ? 'Added to this chat' : 'Added to this project') : m.meta?.join ? 'Added to your team and this chat' : 'Added to your team') : 'Not added'}</span>
       )}
     </div>
   );

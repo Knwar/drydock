@@ -33,6 +33,7 @@ import { currentWorkspace } from './workspace.js';
 import { contractFor } from './contracts.js';
 import { autoAllows, autoWaiting } from './auto.js';
 import { defaultSkills, roleSkills } from './skills.js';
+import { joinProject } from './teamwork.js';
 
 const need = <T>(v: T | undefined | null, what: string): T => {
   if (v === undefined || v === null) throw new HttpError(404, `unknown ${what}`);
@@ -349,8 +350,13 @@ on('POST', '/api/role-proposals', async (req, res, _u, ctx) => {
   const join = b?.join && getConversation(db, conversation)?.kind === 'channel' ? conversation : null;
   const existing = getRole(db, template?.id ?? name.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
   if (existing) {
-    if (!join || members(db, conversation).includes(existing.id)) return ctx.json(res, 200, { status: 'exists' });
-    const m = addMessage(db, conversation, String(b?.role ?? 'main'), `Add ${existing.name} to this chat?`, 'proposal', { status: 'pending', existing: true, role_id: existing.id, name: existing.name, join, reason: b?.reason ?? null, skills: roleSkills(existing) });
+    // already on the user's team: it can still be missing from this chat, or from this thread's project
+    const projectId = getConversation(db, conversation)?.project_id;
+    const inProject = !projectId || Boolean(db.prepare('SELECT 1 FROM project_members WHERE project_id = ? AND role_id = ?').get(projectId, existing.id));
+    const inChat = !join || members(db, conversation).includes(existing.id);
+    if (inProject && inChat) return ctx.json(res, 200, { status: 'exists' });
+    const template = ROLE_TEMPLATES.some((t) => t.id === existing.id) ? existing.id : null;
+    const m = addMessage(db, conversation, String(b?.role ?? 'main'), inChat ? `Add ${existing.name} to this project?` : `Add ${existing.name} to this chat?`, 'proposal', { status: 'pending', existing: true, role_id: existing.id, name: existing.name, template, join: inChat ? null : join, reason: b?.reason ?? null, skills: roleSkills(existing) });
     ctx.broadcast({ type: 'chat', conversation, message: m });
     return ctx.json(res, 200, { status: 'proposed', message_id: m.id });
   }
@@ -386,6 +392,19 @@ on('POST', '/api/role-proposals/:id', async (req, res, _u, ctx, p) => {
         ? addFromTemplate(db, mt.template)
         : saveRole(db, { name: mt.name, skill: mt.skill, scope: mt.scope, model: mt.model, ...(mt.persona ? { persona: mt.persona } : {}) });
     ensureDms(db);
+    // proposed in a project's thread: they join that project's team (and its board roster), and whoever asked carries on
+    const projectId = getConversation(db, m.conversation_id)?.project_id;
+    if (role && projectId) {
+      // a custom specialist (a developer and the like) builds cards; template roles advise
+      const builder = !mt.template;
+      joinProject(db, projectId, role, builder ? 'specialist' : 'core', mt.reason ?? null);
+      if (!mt.join) {
+        const asker = getRole(db, m.author)?.name ?? 'PM';
+        const note = addMessage(db, m.conversation_id, 'system', `${role.name} is now on this project's team${builder ? ' and the board roster' : ''}. @${asker}: carry on, and assign them the work you wanted them for.`);
+        ctx.broadcast({ type: 'chat', conversation: m.conversation_id, message: note });
+        respond(m.conversation_id, `@${asker}`);
+      }
+    }
     if (role && mt.join && getConversation(db, mt.join)) {
       db.prepare('INSERT OR IGNORE INTO conversation_members (conversation_id, role_id) VALUES (?, ?)').run(mt.join, role.id);
       const lead = members(db, mt.join)[0];

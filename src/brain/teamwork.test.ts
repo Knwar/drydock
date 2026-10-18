@@ -78,6 +78,26 @@ describe('team, learning and close-out', () => {
     assert.ok(team.recommendation.items.find((i: any) => i.key === 'flutter-developer').added);
   });
 
+  it('a member the PM proposes in a project thread joins that project (and its roster), and the PM carries on', async () => {
+    const ch = (await call('POST', '/api/channels', { name: 'pm', members: ['pm'], project_id: id })).id;
+    const p = await call('POST', '/api/role-proposals', { role: 'pm', conversation: ch, name: 'Python developer', skill: 'python-dev', persona: 'Builds the Python core.', reason: 'the core is Python' });
+    await call('POST', `/api/role-proposals/${p.message_id}`, { accept: true });
+    const team = await call('GET', `/api/projects/${id}/team`);
+    assert.ok(team.members.some((m: any) => m.role_id === 'python-developer' && m.kind === 'specialist'), 'on the project team');
+    assert.ok((await call('GET', '/team')).some((t: any) => t.name === 'Python developer' && t.skill === 'python-dev'), 'on the board roster');
+    await waitFor(ch, (m) => m.author === 'system' && /Python developer is now on this project's team/.test(m.body));
+    await waitFor(ch, (m) => m.author === 'pm' && m.kind === 'text');
+    // already on the user's team but not this project: offered for the project, not "already on the team"
+    await call('DELETE', `/api/projects/${id}/team/python-developer`);
+    const again = await call('POST', '/api/role-proposals', { role: 'pm', conversation: ch, name: 'Python developer', reason: 'still Python' });
+    assert.equal(again.status, 'proposed');
+    const card = (await call('GET', `/api/conversations/${encodeURIComponent(ch)}/messages`)).messages.find((m: any) => m.id === again.message_id);
+    assert.equal(card.body, 'Add Python developer to this project?');
+    await call('POST', `/api/role-proposals/${again.message_id}`, { accept: true });
+    assert.ok((await call('GET', `/api/projects/${id}/team`)).members.some((m: any) => m.role_id === 'python-developer'));
+    assert.equal((await call('POST', '/api/role-proposals', { role: 'pm', conversation: ch, name: 'Python developer', reason: 'x' })).status, 'exists');
+  });
+
   it('routes lessons blamelessly: process causes to project memory, repeated behaviour to the member', async () => {
     const a = await call('POST', `/api/projects/${id}/lessons`, { cause: 'missing-check', lesson: 'Add a test for every webhook signature check', mechanism: 'webhook test in CI', card_id: 'c1', member: 'Flutter developer' });
     assert.equal(a.learning, null);
