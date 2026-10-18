@@ -116,7 +116,7 @@ a { color: inherit; }
 .chev { flex: 0 0 12px; color: var(--muted); transition: transform 120ms; }
 .chev.open { transform: rotate(90deg); }
 .chev.none { visibility: hidden; }
-.side-foot { margin-top: auto; border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 1px; }
+.side-foot { flex-shrink: 0; margin-top: auto; border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 1px; }
 
 /* ── building blocks ───────────────────────────────── */
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
@@ -387,7 +387,8 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 @media (max-width: 1180px) { .greeting { display: none; } .usage { flex-basis: 150px; } .brand { flex-basis: auto; } }
 @media (max-width: 900px) { .kbd { display: none; } .usage { display: none; } }
 /* The sidebar keeps Personal and Settings in reach on long pages. */
-.sidebar { position: sticky; top: 69px; height: calc(100vh - 69px); overflow-y: auto; }
+.sidebar { position: sticky; top: 69px; height: calc(100vh - 69px); overflow: hidden; }
+.side-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 16px; margin: -14px -10px 0; padding: 14px 10px 4px; }
 @media (max-width: 720px) { .body, .app-header { flex-wrap: wrap; } }
 .c4-drill { cursor: pointer; }
 /* Keyboard focus is always visible. */
@@ -411,6 +412,7 @@ button.chev-btn:hover { background: var(--hover); }
   .sidebar:not(.hold):hover, .sidebar:not(.hold):focus-within { flex-basis: 264px; max-width: 264px; margin-right: -208px; box-shadow: 8px 0 28px rgba(0, 0, 0, 0.22); }
   :is(.sidebar.hold, .sidebar:not(:hover):not(:focus-within)) :is(.label, .pill, .badge, .side-label, .side-note, .tree-kid, .chev-btn, .dot) { display: none !important; }
   :is(.sidebar.hold, .sidebar:not(:hover):not(:focus-within)) .nav-row { justify-content: center; padding: 6px 0; }
+  .side-scroll { margin: -14px -6px 0; padding: 14px 6px 4px; }
 }
 
 /* ⌘K command bar */

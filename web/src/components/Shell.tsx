@@ -192,53 +192,56 @@ export function Sidebar({ projects, path, children, mainOn, onMain, mainWorking,
   const [hold, setHold] = useState(false);
   return (
     <nav className={`sidebar${hold ? ' hold' : ''}`} aria-label="Main" onClickCapture={() => setHold(true)} onMouseLeave={() => setHold(false)}>
-      <button className={`nav-row${mainOn ? ' on' : ''}`} onClick={onMain} style={{ fontWeight: 600, fontSize: 14, padding: '8px 10px' }}>
-        <span className="avatar" style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }}>M</span>
-        <span className="label">Main agent</span>
-        <span className="dot" style={{ background: mainWorking ? 'var(--g-fg)' : 'var(--n-fg)' }} title={mainWorking ? 'working' : 'idle'} />
-      </button>
-      <div>
-        <div className="side-label">
-          <span>IDEAS</span>
-          <button aria-label="New idea" title="New idea" onClick={onNewIdea}>
-            +
-          </button>
-        </div>
-        {active.length ? (
-          <TreeRows
-            nodes={active.map((i) => ({
-              id: i.id,
-              label: i.title,
-              icon: 'idea' as IconName,
-              to: `/idea/${i.id}`,
-              active: path === `/idea/${i.id}` || path.startsWith(`/idea/${i.id}/`),
-              badge: i.working ? { text: 'live', tone: 't-g' } : i.status === 'raw' ? { text: 'New', tone: 't-n' } : undefined,
-            }))}
-            depth={0}
-            open={open}
-            toggle={toggle}
-          />
-        ) : (
-          <div className="muted side-note" style={{ fontSize: 12.5, padding: '4px 10px' }}>Ideas you mention to the Main agent land here.</div>
-        )}
-        {parked > 0 && <a className="nav-row muted side-note" style={{ fontSize: 12 }} href={href('/')} onClick={go('/')}><span className="chev-btn" aria-hidden="true" /><span className="label">{parked} parked on the board</span></a>}
-      </div>
-      <div>
-        <div className="side-label">
-          <span>PROJECTS</span>
-          <button aria-label="New project" title="New project" onClick={onNewProject}>
-            +
-          </button>
-        </div>
-        {projects.length ? (
-          <TreeRows nodes={projects.map((p) => projectTree(p, { ...threads, toggle }, path))} depth={0} open={open} toggle={toggle} />
-        ) : (
-          <div className="muted side-note" style={{ fontSize: 12.5, padding: '4px 10px' }}>
-            No projects yet. <button className="link-btn" style={{ color: 'var(--accent)', fontSize: 12.5 }} onClick={onNewProject}>Start one</button> or describe an idea to the Main agent.
+      {/* everything scrolls except Personal and Settings, which stay at the bottom */}
+      <div className="side-scroll">
+        <button className={`nav-row${mainOn ? ' on' : ''}`} onClick={onMain} style={{ fontWeight: 600, fontSize: 14, padding: '8px 10px' }}>
+          <span className="avatar" style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }}>M</span>
+          <span className="label">Main agent</span>
+          <span className="dot" style={{ background: mainWorking ? 'var(--g-fg)' : 'var(--n-fg)' }} title={mainWorking ? 'working' : 'idle'} />
+        </button>
+        <div>
+          <div className="side-label">
+            <span>IDEAS</span>
+            <button aria-label="New idea" title="New idea" onClick={onNewIdea}>
+              +
+            </button>
           </div>
-        )}
+          {active.length ? (
+            <TreeRows
+              nodes={active.map((i) => ({
+                id: i.id,
+                label: i.title,
+                icon: 'idea' as IconName,
+                to: `/idea/${i.id}`,
+                active: path === `/idea/${i.id}` || path.startsWith(`/idea/${i.id}/`),
+                badge: i.working ? { text: 'live', tone: 't-g' } : i.status === 'raw' ? { text: 'New', tone: 't-n' } : undefined,
+              }))}
+              depth={0}
+              open={open}
+              toggle={toggle}
+            />
+          ) : (
+            <div className="muted side-note" style={{ fontSize: 12.5, padding: '4px 10px' }}>Ideas you mention to the Main agent land here.</div>
+          )}
+          {parked > 0 && <a className="nav-row muted side-note" style={{ fontSize: 12 }} href={href('/')} onClick={go('/')}><span className="chev-btn" aria-hidden="true" /><span className="label">{parked} parked on the board</span></a>}
+        </div>
+        <div>
+          <div className="side-label">
+            <span>PROJECTS</span>
+            <button aria-label="New project" title="New project" onClick={onNewProject}>
+              +
+            </button>
+          </div>
+          {projects.length ? (
+            <TreeRows nodes={projects.map((p) => projectTree(p, { ...threads, toggle }, path))} depth={0} open={open} toggle={toggle} />
+          ) : (
+            <div className="muted side-note" style={{ fontSize: 12.5, padding: '4px 10px' }}>
+              No projects yet. <button className="link-btn" style={{ color: 'var(--accent)', fontSize: 12.5 }} onClick={onNewProject}>Start one</button> or describe an idea to the Main agent.
+            </div>
+          )}
+        </div>
+        {children}
       </div>
-      {children}
       <div className="side-foot">
         <a className={`nav-row${path === '/personal' ? ' on' : ''}`} href={href('/personal')} onClick={go('/personal')}>
           <Icon name="person" /> <span className="label">Personal</span>
