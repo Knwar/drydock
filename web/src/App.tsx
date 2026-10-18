@@ -9,7 +9,7 @@ import { Header, Sidebar } from './components/Shell';
 import { AddMemberDialog, NewProjectDialog, NewThreadDialog } from './components/Dialogs';
 import { ImportDialog } from './components/ImportDialog';
 import { RightRail } from './components/RightRail';
-import { TeamList } from './components/Team';
+import { listed, Messenger } from './components/Messenger';
 import { Home } from './pages/Home';
 import { Onboarding } from './pages/Onboarding';
 import { Personal } from './pages/Personal';
@@ -78,6 +78,9 @@ export function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [drawer]);
+  // the messenger slides over the page and closes when you go somewhere else
+  const [messenger, setMessenger] = useState(false);
+  useEffect(() => setMessenger(false), [path]);
   const [cmd, setCmd] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -151,7 +154,7 @@ export function App() {
 
   return (
     <div className="app">
-      <Header theme={theme} toggleTheme={toggleTheme} name={profile.data?.name ?? ''} onSearch={() => setCmd(true)} />
+      <Header theme={theme} toggleTheme={toggleTheme} name={profile.data?.name ?? ''} onSearch={() => setCmd(true)} messages={{ open: messenger, unread: listed(conversations).reduce((n, c) => n + (c.unread ?? 0), 0), toggle: () => setMessenger((v) => !v) }} />
       <div className="body">
         <Sidebar
           key={list.length ? 'loaded' : 'empty'}
@@ -164,10 +167,7 @@ export function App() {
           ideas={ideas.data ?? []}
           onNewIdea={() => setCapturing(true)}
           settingsOpen={Boolean(settings)}
-          threads={{ conversations, current: chatState === 'open' && sideOpen ? current?.id ?? null : null, open: select, newThread: (project) => setNewThread({ project }) }}
-        >
-          <TeamList conversations={conversations} roles={roles.data ?? []} current={chatState === 'open' && sideOpen ? current?.id ?? null : null} select={select} onNewThread={() => setNewThread({ project: null })} />
-        </Sidebar>
+        />
         <main className={`main${onIdea || onHome || onChat ? ' main-docked' : ''}`}>{page}</main>
         {sideOpen && (
           <div className={onProject && !onOverview ? 'side-drawer' : 'side-dock'}>
@@ -178,6 +178,7 @@ export function App() {
             )}
           </div>
         )}
+        {messenger && <Messenger conversations={conversations} roles={roles.data ?? []} projects={list} onSent={convs.reload} onClose={() => setMessenger(false)} />}
         {settings && <SettingsWindow section={settings} roles={roles.data ?? []} onClose={closeSettings} />}
         {capturing && <CaptureIdeaDialog onClose={() => setCapturing(false)} />}
         {newProject && <NewProjectDialog onClose={() => setNewProject(false)} askMain={askMain} onImport={() => (setNewProject(false), setImporting(true))} />}

@@ -376,6 +376,26 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 
 /* Side panel: docked (non-project pages and an expanded project Overview) or a drawer over other project tabs. */
 .side-dock { display: contents; }
+/* messenger: slides in over the page from the right */
+.msg-toggle { position: relative; }
+.msg-toggle.on { border-color: var(--accent); color: var(--accent); }
+.msg-toggle .badge { position: absolute; top: -5px; right: -5px; }
+.messenger { position: fixed; top: 69px; right: 0; bottom: 0; width: min(400px, 100vw); z-index: 25; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -12px 0 32px rgba(0, 0, 0, 0.25); animation: msg-in 160ms ease-out; }
+@keyframes msg-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.messenger > .chat { flex: 1; max-width: none; position: static; height: 100%; border-left: 0; }
+.msg-head { display: flex; align-items: center; gap: 8px; padding: 14px 12px 10px 16px; }
+.msg-head h2 { margin: 0; font-size: 16px; flex: 1; }
+.msg-head .btn { display: inline-flex; align-items: center; gap: 4px; }
+.msg-close, .chat-back { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex: 0 0 30px; border: 0; border-radius: 8px; background: none; color: var(--muted); }
+.msg-close:hover, .chat-back:hover { background: var(--hover); color: var(--text); }
+.msg-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 12px; }
+.msg-label { font-size: 10.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; padding: 12px 10px 4px; }
+.msg-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 10px; background: none; color: var(--text); text-align: left; }
+.msg-row:hover { background: var(--hover); }
+.msg-row .presence { box-shadow: 0 0 0 2px var(--surface); }
+.msg-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; font-size: 13px; }
+.msg-preview { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-pick { display: flex; flex-direction: column; max-height: 50vh; overflow-y: auto; margin: 0 -6px; }
 .side-drawer { position: fixed; top: 69px; right: 0; bottom: 0; width: min(400px, 100vw); z-index: 20; display: flex; box-shadow: -12px 0 32px rgba(0, 0, 0, 0.22); }
 .side-drawer > .chat, .side-drawer > .rail { flex: 1; max-width: none; position: static; height: 100%; }
 .btn.on { background: var(--hover); }

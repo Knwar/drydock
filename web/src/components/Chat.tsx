@@ -241,7 +241,7 @@ export interface Bare {
   placeholder?: string;
 }
 
-export function ChatPanel({ conversation, roles, projects = [], onSent, onClose, draftText, onDraftUsed, bare }: { conversation: Conversation | null; roles: Role[]; projects?: ProjectSummary[]; onSent?: () => void; onClose: () => void; draftText?: string; onDraftUsed?: () => void; bare?: Bare }) {
+export function ChatPanel({ conversation, roles, projects = [], onSent, onClose, draftText, onDraftUsed, bare, onBack }: { conversation: Conversation | null; roles: Role[]; projects?: ProjectSummary[]; onSent?: () => void; onClose: () => void; draftText?: string; onDraftUsed?: () => void; bare?: Bare; /** a back arrow before the title (the messenger's way back to its list) */ onBack?: () => void }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [working, setWorking] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ role: string; text: string } | null>(null);
@@ -338,6 +338,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
     <aside className={`chat${bare ? ' chat-bare' : ''}`} aria-label="Conversation">
       {!bare && (
       <header className="chat-head">
+        {onBack && <button className="chat-back" aria-label="Back to messages" title="Back to messages" onClick={onBack}><Icon name="back" size={18} /></button>}
         <button className="chat-title" onClick={() => setInfo(true)} title="Members, sessions and usage" aria-haspopup="dialog">
           {lead ? <Avatar role={lead} size={30} /> : <span className="avatar t-n" style={{ width: 30, height: 30, flex: '0 0 30px' }}>#</span>}
           <span style={{ flex: 1, minWidth: 0 }}>
