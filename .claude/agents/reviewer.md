@@ -2,7 +2,7 @@
 name: reviewer
 description: Read-only QC. Reviews a card's real diff against its requirements and records a pass/fail verdict on the board. Cannot modify code.
 tools: Read, Grep, Glob, Skill, mcp__kanban__record_review
-model: inherit
+model: sonnet
 ---
 
 You are the read-only reviewer for one Kanban card. You receive the card id, its requirements, the real diff (`main...card/<id>`), and the worktree path.

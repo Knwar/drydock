@@ -782,11 +782,24 @@ describe('attention', () => {
     assert.equal(getAttention(db, project.id).length, 0);
   });
 
+  it('accepts one verdict per submission: a second reviewer on the same one is refused', () => {
+    const { db, project } = setup();
+    const t = createTask(db, project.id, 'Twice', { requirements: 'x' });
+    moveTask(db, t.id, 'in_review');
+    recordReview(db, t.id, 'pass');
+    assert.throws(() => recordReview(db, t.id, 'fail'), /already reviewed/);
+    moveTask(db, t.id, 'in_progress');
+    moveTask(db, t.id, 'in_review');
+    assert.equal(recordReview(db, t.id, 'fail').round, 2, 'a resubmission gets its review');
+  });
+
   it('flags two failed reviews as a blocker', () => {
     const { db, project } = setup();
     const t = createTask(db, project.id, 'Flaky', { requirements: 'x' });
     moveTask(db, t.id, 'in_review');
     recordReview(db, t.id, 'fail');
+    moveTask(db, t.id, 'in_progress'); // reworked, then back for a second review
+    moveTask(db, t.id, 'in_review');
     recordReview(db, t.id, 'fail');
     const [item] = getAttention(db, project.id);
     assert.equal(item.kind, 'review_failed');
@@ -851,6 +864,8 @@ describe('attention', () => {
     const fail = createTask(db, project.id, 'Fails', { requirements: 'x' });
     moveTask(db, fail.id, 'in_review');
     recordReview(db, fail.id, 'fail');
+    moveTask(db, fail.id, 'in_progress');
+    moveTask(db, fail.id, 'in_review');
     recordReview(db, fail.id, 'fail'); // blocker
     const done = createTask(db, project.id, 'Done', { requirements: 'x' });
     moveTask(db, done.id, 'done');
@@ -1075,6 +1090,8 @@ describe('delete + redirect', () => {
     assignCard(db, t.id, 'builder-1', `.trees/${t.id}`, `card/${t.id}`);
     moveTask(db, t.id, 'in_review');
     recordReview(db, t.id, 'fail');
+    moveTask(db, t.id, 'in_progress');
+    moveTask(db, t.id, 'in_review');
     recordReview(db, t.id, 'fail');
     const r = redirectTask(db, t.id, { requirements: 'new direction', note: 'wrong library' });
     assert.equal(r.lane, 'backlog');

@@ -974,6 +974,14 @@ export function recordReview(
 ): { task_id: string; round: number; verdict: Verdict } {
   if (verdict !== 'pass' && verdict !== 'fail') throw new Error(`invalid verdict: ${verdict}`);
   const task = getTask(db, taskId);
+  // one verdict per review round: a second reviewer on the same submission (parallel or late) is refused
+  // (by event order, not time: a move and a verdict can share a millisecond)
+  const last = (q: string) => (db.prepare(`SELECT MAX(id) AS id FROM task_events WHERE task_id = ? AND ${q}`).get(taskId) as { id: number | null }).id;
+  const entered = last(`type = 'move' AND json_extract(payload, '$.to') = 'in_review'`);
+  const reviewed = last(`type = 'review'`);
+  if (entered !== null && reviewed !== null && reviewed > entered) {
+    throw new Error(`this submission was already reviewed (round ${task.review_rounds}); stop, another reviewer covered it`);
+  }
   const round = task.review_rounds + 1;
   db.prepare(
     'INSERT INTO reviews (task_id, round, verdict, findings, created_at) VALUES (?, ?, ?, ?, ?)',
