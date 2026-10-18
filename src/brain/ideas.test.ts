@@ -187,6 +187,50 @@ describe('the Idea board', () => {
     assert.equal((await raw('POST', `/api/ideas/${id}/features`, { features: [{ id: 'F9' }] })).status, 400, 'a new feature needs a title and module');
   });
 
+  it('features start as drafts with their source; the user confirms them, and changing what one says makes it a draft again', async () => {
+    await until(async () => !(await call('GET', `/api/ideas/${id}`)).working);
+    let f = (await call('POST', `/api/ideas/${id}/features`, { features: [{ id: 'F2', source: 'your message at 13:40' }] })).find((x: any) => x.id === 'F2');
+    assert.equal(f.confirmed, false);
+    assert.equal(f.source, 'your message at 13:40');
+    const mark = (await messages(conv)).length;
+    const r = await call('POST', `/api/ideas/${id}/features/review`, { items: [{ id: 'F1', verdict: 'ok' }, { id: 'F2', verdict: 'change', reason: 'it is for both parents' }, { id: 'F3', verdict: 'drop' }] });
+    assert.deepEqual(r, { confirmed: 1, changed: 1, dropped: 1 });
+    const d = await call('GET', `/api/ideas/${id}`);
+    assert.equal(d.featureList.find((x: any) => x.id === 'F1').confirmed, true);
+    // one message for the whole review: what to rewrite and what to remove
+    const sent = (await messages(conv)).slice(mark).filter((m) => m.author === 'user');
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].body, /Change these[\s\S]*F2 Streaks: it is for both parents[\s\S]*Not wanted[\s\S]*F3 Share with partner/);
+    // a priority change keeps the confirmation; a new story does not
+    f = (await call('POST', `/api/ideas/${id}/features`, { features: [{ id: 'F1', priority: 'must' }] })).find((x: any) => x.id === 'F1');
+    assert.equal(f.confirmed, true);
+    f = (await call('POST', `/api/ideas/${id}/features`, { features: [{ id: 'F1', stories: ['As a parent, I want to tick a habit in one tap'] }] })).find((x: any) => x.id === 'F1');
+    assert.equal(f.confirmed, false);
+    assert.equal((await raw('POST', `/api/ideas/${id}/features/review`, { items: [{ id: 'nope', verdict: 'ok' }] })).status, 400);
+    await until(async () => !(await call('GET', `/api/ideas/${id}`)).working);
+  });
+
+  it('open questions come with likely answers; a tap answers and tells the lead what to update', async () => {
+    const q = await call('POST', `/api/ideas/${id}/questions`, { text: 'Phone or watch first?', options: ['Phone', 'Watch'], affects: ['F1'] });
+    assert.equal(q.id, 'Q1');
+    assert.equal((await call('POST', `/api/ideas/${id}/questions`, { text: 'phone or watch first?', options: ['Phone', 'Watch', 'Both'] })).id, 'Q1', 'the same question re-words it');
+    assert.equal((await raw('POST', `/api/ideas/${id}/questions`, { text: 'Colour?', options: ['Blue'] })).status, 400, 'at least two options');
+    const mark = (await messages(conv)).length;
+    await call('POST', `/api/ideas/${id}/questions/Q1/answer`, { answer: 'Phone' });
+    const d = await call('GET', `/api/ideas/${id}`);
+    assert.equal(d.questions[0].status, 'answered');
+    assert.equal(d.questions[0].answer, 'Phone');
+    assert.ok((await messages(conv)).slice(mark).some((m) => m.author === 'user' && /^Answer to "phone or watch first\?": Phone\. Update F1/.test(m.body)));
+    assert.equal((await raw('POST', `/api/ideas/${id}/questions/Q1/answer`, { answer: 'Watch' })).status, 400, 'once');
+    // answered in the chat instead: the lead closes it quietly
+    await call('POST', `/api/ideas/${id}/questions`, { text: 'Free or paid?', options: ['Free', 'Paid'] });
+    const before = (await messages(conv)).length;
+    await call('POST', `/api/ideas/${id}/questions/Q2/answer`, { answer: 'Paid', quiet: true });
+    assert.equal((await messages(conv)).length, before, 'no message for a quiet close');
+    assert.ok(Array.isArray(d.decisions));
+    await until(async () => !(await call('GET', `/api/ideas/${id}`)).working);
+  });
+
   let project = '';
   it('promotes the idea: the project starts with everything shaped, at the team step', async () => {
     await until(async () => !(await call('GET', `/api/ideas/${id}`)).working);

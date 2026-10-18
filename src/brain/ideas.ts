@@ -62,6 +62,18 @@ CREATE TABLE IF NOT EXISTS idea_features (
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (idea_id, id)
 );
+CREATE TABLE IF NOT EXISTS idea_questions (
+  idea_id     TEXT NOT NULL,
+  id          TEXT NOT NULL,                 -- Q1, Q2…
+  text        TEXT NOT NULL,
+  options     TEXT NOT NULL DEFAULT '[]',    -- JSON: likely answers, most sensible first
+  affects     TEXT NOT NULL DEFAULT '[]',    -- JSON: feature ids it changes
+  status      TEXT NOT NULL DEFAULT 'open',  -- open|answered
+  answer      TEXT,
+  created_at  INTEGER NOT NULL,
+  answered_at INTEGER,
+  PRIMARY KEY (idea_id, id)
+);
 CREATE TABLE IF NOT EXISTS idea_screens (
   idea_id    TEXT NOT NULL,
   id         TEXT NOT NULL,
@@ -74,6 +86,8 @@ CREATE TABLE IF NOT EXISTS idea_screens (
   (db) => {
     addMissingColumns(db, 'conversations', { idea_id: 'TEXT' });
     addMissingColumns(db, 'brain_projects', { brand_id: 'TEXT' });
+    // a feature the agent drafted stays a draft until the user confirms it on the Board; source says where it came from
+    addMissingColumns(db, 'idea_features', { confirmed: 'INTEGER NOT NULL DEFAULT 0', source: 'TEXT' });
   },
 );
 
@@ -174,7 +188,7 @@ export function deleteIdea(db: DB, id: string): void {
   const dir = ideaDir(db, id);
   db.transaction(() => {
     for (const t of ['requirements', 'design_elements', 'design_relations', 'design_snapshots']) db.prepare(`DELETE FROM ${t} WHERE project_id = ?`).run(id);
-    for (const t of ['idea_screens', 'idea_sections', 'idea_features']) db.prepare(`DELETE FROM ${t} WHERE idea_id = ?`).run(id);
+    for (const t of ['idea_screens', 'idea_sections', 'idea_features', 'idea_questions']) db.prepare(`DELETE FROM ${t} WHERE idea_id = ?`).run(id);
     db.prepare('DELETE FROM ideas WHERE id = ?').run(id);
   })();
   if (existsSync(dir)) {
@@ -272,6 +286,10 @@ export interface Feature extends FeatureSpec {
   priority: 'must' | 'should' | 'could' | 'wont';
   mvp: boolean;
   position: number;
+  /** the user checked it on the Board (until the agent changes what it says) */
+  confirmed: boolean;
+  /** where the agent drafted it from, e.g. "your message at 13:40" */
+  source: string | null;
 }
 const PRIORITIES = ['must', 'should', 'could', 'wont'] as const;
 
@@ -283,6 +301,8 @@ export function listFeatures(db: DB, ideaId: string): Feature[] {
     priority: r.priority,
     mvp: Boolean(r.mvp),
     position: r.position,
+    confirmed: Boolean(r.confirmed),
+    source: r.source ?? null,
     ...(JSON.parse(r.spec) as FeatureSpec),
   }));
 }
@@ -309,16 +329,76 @@ export function saveFeatures(db: DB, ideaId: string, features: (Partial<Feature>
         data: list(input.data, cur?.data ?? []),
         open_questions: list(input.open_questions, cur?.open_questions ?? []),
       };
+      // what the user confirmed stays confirmed unless what it says changes (then they check it again)
+      const said = (f: Pick<Feature, 'title' | 'summary' | 'stories' | 'acceptance'>) => JSON.stringify([f.title, f.summary, f.stories, f.acceptance]);
+      const confirmed = cur?.confirmed && said(cur) === said({ title, ...spec }) ? 1 : 0;
+      const source = typeof (input as any).source === 'string' && (input as any).source.trim() ? String((input as any).source).trim().slice(0, 200) : cur?.source ?? null;
       db.prepare(
-        `INSERT INTO idea_features (idea_id, id, module, title, priority, mvp, spec, position, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO idea_features (idea_id, id, module, title, priority, mvp, spec, position, updated_at, confirmed, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(idea_id, id) DO UPDATE SET module = excluded.module, title = excluded.title, priority = excluded.priority, mvp = excluded.mvp,
-           spec = excluded.spec, position = excluded.position, updated_at = excluded.updated_at`,
-      ).run(ideaId, input.id, module, title, priority, (input.mvp ?? cur?.mvp ?? false) ? 1 : 0, JSON.stringify(spec), input.position ?? cur?.position ?? existing.size + i, Date.now());
+           spec = excluded.spec, position = excluded.position, updated_at = excluded.updated_at, confirmed = excluded.confirmed, source = excluded.source`,
+      ).run(ideaId, input.id, module, title, priority, (input.mvp ?? cur?.mvp ?? false) ? 1 : 0, JSON.stringify(spec), input.position ?? cur?.position ?? existing.size + i, Date.now(), confirmed, source);
     });
   })();
   writeFeaturesDoc(db, ideaId);
   ideaChanged(db, ideaId);
   return listFeatures(db, ideaId);
+}
+
+/** The user checked these features' stories on the Board. */
+export function confirmFeatures(db: DB, ideaId: string, ids: string[]): void {
+  const set = db.prepare('UPDATE idea_features SET confirmed = 1 WHERE idea_id = ? AND id = ?');
+  db.transaction(() => ids.forEach((id) => set.run(ideaId, id)))();
+  ideaChanged(db, ideaId);
+}
+
+// ── open questions: asked with likely answers, so the user taps instead of typing ──
+
+export interface Question {
+  id: string;
+  text: string;
+  options: string[];
+  affects: string[];
+  status: 'open' | 'answered';
+  answer: string | null;
+  created_at: number;
+}
+
+export function listQuestions(db: DB, ideaId: string): Question[] {
+  return (db.prepare('SELECT * FROM idea_questions WHERE idea_id = ? ORDER BY created_at').all(ideaId) as any[]).map((r) => ({
+    id: r.id, text: r.text, options: JSON.parse(r.options), affects: JSON.parse(r.affects), status: r.status, answer: r.answer, created_at: r.created_at,
+  }));
+}
+
+/** Ask (or re-word) an open question. The same text while it is still open updates it rather than asking twice. */
+export function askQuestion(db: DB, ideaId: string, q: { text: string; options: string[]; affects?: string[] }): Question {
+  if (!getIdea(db, ideaId)) throw new Error(`unknown idea ${ideaId}`);
+  const text = String(q.text ?? '').trim();
+  if (!text) throw new Error('the question is empty');
+  const options = (Array.isArray(q.options) ? q.options : []).map((o) => String(o).trim()).filter(Boolean).slice(0, 4);
+  if (options.length < 2) throw new Error('give 2 to 4 likely answers as options, the most sensible first');
+  const same = db.prepare(`SELECT id, affects FROM idea_questions WHERE idea_id = ? AND status = 'open' AND lower(text) = lower(?)`).get(ideaId, text) as { id: string; affects: string } | undefined;
+  // re-worded without saying what it affects: keep what it affected
+  const affects = Array.isArray(q.affects) ? q.affects.map(String).slice(0, 12) : same ? (JSON.parse(same.affects) as string[]) : [];
+  const all = db.prepare('SELECT id FROM idea_questions WHERE idea_id = ?').all(ideaId) as { id: string }[];
+  const id = same?.id ?? `Q${all.reduce((n, r) => Math.max(n, Number(r.id.slice(1)) || 0), 0) + 1}`;
+  db.prepare(
+    `INSERT INTO idea_questions (idea_id, id, text, options, affects, status, created_at) VALUES (?, ?, ?, ?, ?, 'open', ?)
+     ON CONFLICT(idea_id, id) DO UPDATE SET text = excluded.text, options = excluded.options, affects = excluded.affects`,
+  ).run(ideaId, id, text, JSON.stringify(options), JSON.stringify(affects), Date.now());
+  ideaChanged(db, ideaId);
+  return listQuestions(db, ideaId).find((x) => x.id === id)!;
+}
+
+export function answerQuestion(db: DB, ideaId: string, id: string, answer: string): Question {
+  const q = listQuestions(db, ideaId).find((x) => x.id === id);
+  if (!q) throw new Error(`no question ${id}`);
+  if (q.status !== 'open') throw new Error('that question is already answered');
+  const a = String(answer ?? '').trim().slice(0, 500);
+  if (!a) throw new Error('the answer is empty');
+  db.prepare(`UPDATE idea_questions SET status = 'answered', answer = ?, answered_at = ? WHERE idea_id = ? AND id = ?`).run(a, Date.now(), ideaId, id);
+  ideaChanged(db, ideaId);
+  return { ...q, status: 'answered', answer: a };
 }
 
 export function removeFeature(db: DB, ideaId: string, id: string): void {

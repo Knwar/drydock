@@ -7,138 +7,23 @@ import { ChatPanel } from '../components/Chat';
 import { Modal } from '../components/Dialogs';
 import { Icon } from '../components/Icon';
 import { ideaEvents, Shaped, STATUS } from '../components/Ideas';
+import { IdeaOverview, type Analysis, type Feature, type Question, type Section } from '../components/IdeaOverview';
 import { api, useApi } from '../lib/api';
 import { Markdown } from '../lib/md';
 import { go, href, navigate } from '../lib/router';
 import type { Conversation, IdeaCard, ProjectSummary, Role } from '../lib/types';
 import { SystemDesign } from './ProjectPage';
 
-interface Feature {
-  id: string;
-  module: string;
-  title: string;
-  priority: 'must' | 'should' | 'could' | 'wont';
-  mvp: boolean;
-  summary: string;
-  stories: string[];
-  acceptance: string[];
-  edge_cases: string[];
-  data: string[];
-  open_questions: string[];
-}
-interface Section {
-  kind: string;
-  status: 'running' | 'done' | 'stalled';
-  summary: string;
-  markdown: string;
-  updated_at: number;
-}
-interface Analysis {
-  kind: string;
-  label: string;
-  group: 'Understand' | 'Decide' | 'Define';
-  ask: string;
-}
 export interface Detail extends IdeaCard {
   requirements: { version: number; markdown: string } | null;
   brand: (IdeaCard['brand'] & { guidelines: string; tokens: Record<string, any> }) | null;
   screenList: { id: string; title: string }[];
   sections: Section[];
   featureList: Feature[];
+  questions: Question[];
+  decisions: { id: number; title: string; why: string | null; created_at: number }[];
   features: number;
   mvpFeatures: number;
-}
-
-const PRIORITY: Record<Feature['priority'], { label: string; tone: string }> = {
-  must: { label: 'Must', tone: 't-r' },
-  should: { label: 'Should', tone: 't-a' },
-  could: { label: 'Could', tone: 't-b' },
-  wont: { label: "Won't", tone: 't-n' },
-};
-
-/** What will be built: modules, then features you can open to their full spec. */
-function Features({ d }: { d: Detail }) {
-  const [open, setOpen] = useState<string | null>(null);
-  const [mvpOnly, setMvpOnly] = useState(false);
-  const list = d.featureList.filter((f) => !mvpOnly || f.mvp);
-  const modules = [...new Set(list.map((f) => f.module))];
-  const block = (h: string, items: string[]) => (items.length ? <div className="field"><span className="muted">{h}</span><ul className="md-list" style={{ margin: 0 }}>{items.map((x) => <li key={x}>{x}</li>)}</ul></div> : null);
-  return (
-    <section className="panel">
-      <div className="panel-head">
-        <h2>What will be built</h2>
-        <span className="muted" style={{ fontSize: 12 }}>{d.features} feature{d.features === 1 ? '' : 's'} · {d.mvpFeatures} in the MVP</span>
-        {d.mvpFeatures > 0 && <button className="btn sm" aria-pressed={mvpOnly} onClick={() => setMvpOnly((v) => !v)}>{mvpOnly ? 'Show all' : 'MVP only'}</button>}
-      </div>
-      {!d.featureList.length ? (
-        <div className="muted" style={{ fontSize: 13, lineHeight: 1.6 }}>Nothing broken down yet. Press <strong>Feature breakdown</strong> in the chat (or just describe what it should do): every module is split into features with user stories and acceptance criteria, so the PM and builders never have to guess.</div>
-      ) : (
-        modules.map((m) => (
-          <div key={m} className="feature-module">
-            <div className="feature-module-h">{m}</div>
-            {list.filter((f) => f.module === m).map((f) => (
-              <div key={f.id} className={`feature${open === f.id ? ' open' : ''}`}>
-                <button className="feature-row" aria-expanded={open === f.id} onClick={() => setOpen(open === f.id ? null : f.id)}>
-                  <span className="mono muted" style={{ fontSize: 11.5, width: 34 }}>{f.id}</span>
-                  <span style={{ flex: 1, minWidth: 0, fontWeight: 600 }}>{f.title}</span>
-                  {f.mvp && <span className="pill t-g" style={{ fontSize: 10.5 }}>MVP</span>}
-                  <span className={`pill ${PRIORITY[f.priority].tone}`} style={{ fontSize: 10.5 }}>{PRIORITY[f.priority].label}</span>
-                </button>
-                {open === f.id && (
-                  <div className="feature-spec">
-                    {f.summary && <div style={{ fontSize: 13.5 }}>{f.summary}</div>}
-                    {block('User stories', f.stories)}
-                    {block('Acceptance criteria', f.acceptance)}
-                    {block('Edge cases', f.edge_cases)}
-                    {block('Data', f.data)}
-                    {block('Open questions', f.open_questions)}
-                    {!f.stories.length && !f.acceptance.length && <div className="muted" style={{ fontSize: 12.5 }}>Not detailed yet: ask for the feature breakdown, or about this feature in the chat.</div>}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        ))
-      )}
-    </section>
-  );
-}
-
-/** One card per analysis that has been run; open one to read it in full. */
-function Analyses({ d, analyses, run }: { d: Detail; analyses: Analysis[]; run: (kind: string) => void }) {
-  const [reading, setReading] = useState<Section | null>(null);
-  const label = (k: string) => analyses.find((a) => a.kind === k)?.label ?? k;
-  const shown = d.sections.filter((x) => x.kind !== 'features');
-  if (!shown.length) return null;
-  return (
-    <section className="panel">
-      <div className="panel-head"><h2>Analyses</h2><span className="muted" style={{ fontSize: 12 }}>What big companies and agencies check before funding an idea</span></div>
-      <div className="analysis-grid">
-        {shown.map((x) => (
-          <div key={x.kind} className="analysis-card" data-status={x.status}>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <strong style={{ flex: 1 }}>{label(x.kind)}</strong>
-              {x.status === 'running' && <span className="pill t-g" style={{ fontSize: 10.5 }}>working…</span>}
-              {x.status === 'stalled' && <span className="pill t-a" style={{ fontSize: 10.5 }}>no result</span>}
-            </div>
-            <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.45 }}>
-              {x.status === 'running' && !x.markdown ? 'The Main agent is on it. This card fills in when it is done.' : x.status === 'stalled' && !x.markdown ? 'The run ended without saving a result.' : x.summary || 'Done.'}
-            </div>
-            <div style={{ display: 'flex', gap: 6, marginTop: 'auto' }}>
-              {x.markdown && <button className="btn sm" onClick={() => setReading(x)}>Read</button>}
-              {x.status !== 'running' && <button className="btn sm" onClick={() => run(x.kind)}>{x.markdown ? 'Redo' : 'Run again'}</button>}
-            </div>
-          </div>
-        ))}
-      </div>
-      {reading && (
-        <Modal title={label(reading.kind)} onClose={() => setReading(null)} width={820}>
-          <div className="muted" style={{ fontSize: 12.5 }}>{reading.summary}</div>
-          <Markdown text={reading.markdown} />
-        </Modal>
-      )}
-    </section>
-  );
 }
 
 /** Quick actions above the chat input: each runs one analysis and adds its card to the board. */
@@ -326,11 +211,10 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
           <>
             {!d.requirements && !d.featureList.length && !d.sections.length && (
               <div className="banner t-b" style={{ fontSize: 13, lineHeight: 1.6 }}>
-                Start by telling the Main agent about the idea in the chat: the problem, who it is for, how you see it working. Or press a quick action: competitors, the MVP cut, risks… Each one adds a card here, and the requirements, design, brand and UI fill in as you talk.
+                Start by telling the Main agent about the idea in the chat: the problem, who it is for, how you see it working. Or press a quick action: competitors, the MVP cut, risks… This board fills in as you talk: what will be built, what was decided, and what is still open.
               </div>
             )}
-            <Features d={d} />
-            <Analyses d={d} analyses={analyses.data ?? []} run={run} />
+            <IdeaOverview d={d} analyses={analyses.data ?? []} run={run} />
           </>
         )}
         {tab === 'requirements' && (

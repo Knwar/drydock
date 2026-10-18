@@ -6,7 +6,11 @@ import { getBus } from './bus.js';
 import {
   analysisByKind,
   ANALYSES,
+  answerQuestion,
+  askQuestion,
+  confirmFeatures,
   listFeatures,
+  listQuestions,
   listSections,
   markSectionRunning,
   markSectionStalled,
@@ -72,7 +76,9 @@ on('GET', '/api/ideas/:id', (_q, res, _u, ctx, p) => {
   const db = ctx.db();
   need(db, p.id);
   const s = ideaSummary(db, p.id);
-  ctx.json(res, 200, { ...card(db, p.id), requirements: listRequirements(db, p.id)[0] ?? null, brand: s.brand, screenList: s.screens, sections: listSections(db, p.id), featureList: listFeatures(db, p.id) });
+  const conv = s.idea.conversation_id;
+  const decisions = conv ? (db.prepare('SELECT id, title, why, created_at FROM brain_decisions WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 20').all(conv) as any[]) : [];
+  ctx.json(res, 200, { ...card(db, p.id), requirements: listRequirements(db, p.id)[0] ?? null, brand: s.brand, screenList: s.screens, sections: listSections(db, p.id), featureList: listFeatures(db, p.id), questions: listQuestions(db, p.id), decisions });
 });
 
 on('POST', '/api/ideas/:id', async (req, res, _u, ctx, p) => {
@@ -140,6 +146,61 @@ on('POST', '/api/ideas/:id/features', async (req, res, _u, ctx, p) => {
   const b = await ctx.readBody(req);
   if (!Array.isArray(b?.features) || !b.features.length) throw new HttpError(400, 'features: a list');
   ctx.json(res, 200, attempt(() => saveFeatures(ctx.db(), p.id, b.features)));
+});
+
+/**
+ * The user's story review from the Board: confirmed ones are marked; changed and
+ * dropped ones go to the lead in one message, so a whole review costs one turn.
+ */
+on('POST', '/api/ideas/:id/features/review', async (req, res, _u, ctx, p) => {
+  const db = ctx.db();
+  const idea = need(db, p.id);
+  if (idea.status === 'promoted') throw new HttpError(400, 'this idea is already a project');
+  const b = await ctx.readBody(req);
+  const items: { id: string; verdict: string; reason?: string }[] = Array.isArray(b?.items) ? b.items : [];
+  const known = new Map(listFeatures(db, p.id).map((f) => [f.id, f]));
+  const ok = items.filter((i) => i.verdict === 'ok' && known.has(i.id)).map((i) => i.id);
+  const changed = items.filter((i) => i.verdict === 'change' && known.has(i.id));
+  const dropped = items.filter((i) => i.verdict === 'drop' && known.has(i.id));
+  if (!ok.length && !changed.length && !dropped.length) throw new HttpError(400, 'nothing to review');
+  if (ok.length) confirmFeatures(db, p.id, ok);
+  if (changed.length || dropped.length) {
+    const conv = attempt(() => ideaThread(db, p.id));
+    const line = (i: { id: string; reason?: string }) => `- ${i.id} ${known.get(i.id)!.title}${i.reason ? `: ${String(i.reason).slice(0, 300)}` : ''}`;
+    const text = [
+      'Story review from the Board.',
+      ...(changed.length ? ['Change these (rewrite the stories and checks to fix what I said; they come back to me as drafts):', ...changed.map(line)] : []),
+      ...(dropped.length ? ['Not wanted (remove them with remove_feature and update the requirements):', ...dropped.map(line)] : []),
+    ].join('\n');
+    const m = addMessage(db, conv, 'user', text);
+    ctx.broadcast({ type: 'chat', conversation: conv, message: m });
+    respond(conv, '');
+  }
+  ctx.json(res, 200, { confirmed: ok.length, changed: changed.length, dropped: dropped.length });
+});
+
+// ── open questions: the lead asks with likely answers; a tap answers ──
+
+on('POST', '/api/ideas/:id/questions', async (req, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  const b = await ctx.readBody(req);
+  ctx.json(res, 200, attempt(() => askQuestion(ctx.db(), p.id, { text: b?.text, options: b?.options, affects: b?.affects })));
+});
+
+/** The user's answer (a tapped option or their own words): the lead updates what it affects. */
+on('POST', '/api/ideas/:id/questions/:qid/answer', async (req, res, _u, ctx, p) => {
+  const db = ctx.db();
+  const idea = need(db, p.id);
+  const b = await ctx.readBody(req);
+  const q = attempt(() => answerQuestion(db, p.id, p.qid, String(b?.answer ?? '')));
+  // answered by the lead after the user replied in the chat: nothing more to do
+  if (!b?.quiet && idea.status !== 'promoted') {
+    const conv = attempt(() => ideaThread(db, p.id));
+    const m = addMessage(db, conv, 'user', `Answer to "${q.text}": ${q.answer}.${q.affects.length ? ` Update ${q.affects.join(', ')} and the requirements to match.` : ' Update what it affects.'}`);
+    ctx.broadcast({ type: 'chat', conversation: conv, message: m });
+    respond(conv, '');
+  }
+  ctx.json(res, 200, q);
 });
 
 on('DELETE', '/api/ideas/:id/features/:fid', (_q, res, _u, ctx, p) => {

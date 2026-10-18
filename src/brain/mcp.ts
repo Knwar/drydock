@@ -333,6 +333,7 @@ server.registerTool(
             edge_cases: z.array(z.string()).optional(),
             data: z.array(z.string()).optional().describe('What it reads or writes'),
             open_questions: z.array(z.string()).optional(),
+            source: z.string().optional().describe('Where you drafted it from, in a few words: "your message at 13:40", "the Problem analysis", "the MVP cut"'),
           }),
         )
         .min(1),
@@ -341,6 +342,36 @@ server.registerTool(
   async ({ idea_id, features }) => {
     const all = await call(`/api/ideas/${idea_id}/features`, { features });
     return text(`Saved ${features.length} feature(s); the idea now has ${all.length} (${all.filter((f: any) => f.mvp).length} in the MVP).`);
+  },
+);
+
+server.registerTool(
+  'ask_question',
+  {
+    description:
+      "Ask the user something only they can decide about an idea, with 2 to 4 likely answers they can tap (most sensible first) and the features it affects. It shows under Still open on the idea's Board; their answer comes back to you in the chat. Asking the same question again re-words it. Don't also ask it in prose.",
+    inputSchema: {
+      idea_id: z.string(),
+      text: z.string().describe('One short question'),
+      options: z.array(z.string()).min(2).max(4).describe('Likely answers, short, most sensible first'),
+      affects: z.array(z.string()).optional().describe('Feature ids it changes, e.g. ["F3"]'),
+    },
+  },
+  async ({ idea_id, ...q }) => {
+    const r = await call(`/api/ideas/${idea_id}/questions`, q);
+    return text(`Asked as ${r.id}. The user answers on the Board; you get the answer in this chat.`);
+  },
+);
+
+server.registerTool(
+  'close_question',
+  {
+    description: 'Mark an open question answered when the user answered it in the chat instead of on the Board.',
+    inputSchema: { idea_id: z.string(), id: z.string().describe('Q1, Q2…'), answer: z.string().describe('Their answer, in a few words') },
+  },
+  async ({ idea_id, id, answer }) => {
+    await call(`/api/ideas/${idea_id}/questions/${encodeURIComponent(id)}/answer`, { answer, quiet: true });
+    return text(`${id} closed.`);
   },
 );
 
