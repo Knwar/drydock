@@ -231,6 +231,43 @@ describe('the Idea board', () => {
     await until(async () => !(await call('GET', `/api/ideas/${id}`)).working);
   });
 
+  it('a new idea opens with an intake: the basics are asked, and the last answer starts the first pass in one message', async () => {
+    const i = await call('POST', '/api/ideas', { title: 'Recipe planner', type: 'software' });
+    const c = (await call('POST', `/api/ideas/${i.id}/thread`)).conversation;
+    const intake = (await messages(c)).find((m) => m.author === 'system');
+    assert.match(intake.body, /Start with an intake[\s\S]*intake set to true[\s\S]*First pass/);
+    await until(async () => (await messages(c)).some((m) => m.author === 'main'));
+    // opening it again does not start another intake
+    await call('POST', `/api/ideas/${i.id}/thread`);
+    assert.equal((await messages(c)).filter((m) => m.author === 'system').length, 1);
+    await call('POST', `/api/ideas/${i.id}/questions`, { text: 'Which platform?', options: ['iPhone', 'Web'], intake: true });
+    await call('POST', `/api/ideas/${i.id}/questions`, { text: 'What is the goal?', options: ['Personal use', 'Side income'], intake: true });
+    await until(async () => !(await call('GET', `/api/ideas/${i.id}`)).working);
+    const mark = (await messages(c)).length;
+    await call('POST', `/api/ideas/${i.id}/questions/Q1/answer`, { answer: 'iPhone' });
+    assert.equal((await messages(c)).length, mark, 'the first basic is collected quietly');
+    await call('POST', `/api/ideas/${i.id}/questions/Q2/answer`, { answer: 'Side income' });
+    const sent = (await messages(c)).slice(mark).filter((m) => m.author === 'user');
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].body, /^The basics:\n- Which platform\? iPhone\n- What is the goal\? Side income[\s\S]*First pass/);
+    assert.equal((await raw('POST', `/api/ideas/${i.id}/intake/skip`)).status, 400, 'nothing left to skip');
+    await until(async () => !(await call('GET', `/api/ideas/${i.id}`)).working);
+    await call('DELETE', `/api/ideas/${i.id}`);
+  });
+
+  it('skipping the rest of the intake starts the first pass on best guesses', async () => {
+    const i = await call('POST', '/api/ideas', { title: 'Garden journal', type: 'general' });
+    const c = (await call('POST', `/api/ideas/${i.id}/thread`)).conversation;
+    await until(async () => !(await call('GET', `/api/ideas/${i.id}`)).working);
+    await call('POST', `/api/ideas/${i.id}/questions`, { text: 'Which format?', options: ['Book', 'Blog'], intake: true });
+    assert.deepEqual(await call('POST', `/api/ideas/${i.id}/intake/skip`), { skipped: 1 });
+    const d = await call('GET', `/api/ideas/${i.id}`);
+    assert.match(d.questions[0].answer, /best guess/);
+    assert.ok((await messages(c)).some((m) => m.author === 'user' && /^The basics:[\s\S]*best guess[\s\S]*First pass/.test(m.body)));
+    await until(async () => !(await call('GET', `/api/ideas/${i.id}`)).working);
+    await call('DELETE', `/api/ideas/${i.id}`);
+  });
+
   let project = '';
   it('promotes the idea: the project starts with everything shaped, at the team step', async () => {
     await until(async () => !(await call('GET', `/api/ideas/${id}`)).working);

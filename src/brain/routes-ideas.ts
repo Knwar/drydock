@@ -34,6 +34,7 @@ import {
 } from './ideas.js';
 import { listRequirements, NeedsRole, projectRef, promoteIdea, saveRequirements } from './pipeline.js';
 import { getRole } from './roles.js';
+import { FIRST_PASS, ideaIntake } from './contracts.js';
 import { HttpError, on } from './router.js';
 import { activeRuns, respond } from './runner.js';
 
@@ -97,8 +98,39 @@ on('DELETE', '/api/ideas/:id', (_q, res, _u, ctx, p) => {
 
 /** The idea's one shaping chat (opened on first use). */
 on('POST', '/api/ideas/:id/thread', (_q, res, _u, ctx, p) => {
-  need(ctx.db(), p.id);
-  ctx.json(res, 200, { conversation: attempt(() => ideaThread(ctx.db(), p.id)) });
+  const db = ctx.db();
+  const idea = need(db, p.id);
+  const fresh = !idea.conversation_id;
+  const conv = attempt(() => ideaThread(db, p.id));
+  // a new idea's chat opens with the intake: the lead asks the missing basics (or lays it out if nothing is missing)
+  if (fresh && idea.status !== 'promoted') {
+    const m = addMessage(db, conv, 'system', ideaIntake(p.id));
+    ctx.broadcast({ type: 'chat', conversation: conv, message: m });
+    respond(conv, '');
+  }
+  ctx.json(res, 200, { conversation: conv });
+});
+
+/** The last intake answer is in: one message with all of them, and the first pass starts. */
+function startFirstPass(ctx: any, ideaId: string): void {
+  const db = ctx.db();
+  const conv = attempt(() => ideaThread(db, ideaId));
+  const basics = listQuestions(db, ideaId).filter((q) => q.kind === 'intake' && q.status === 'answered');
+  const m = addMessage(db, conv, 'user', [`The basics:`, ...basics.map((q) => `- ${q.text} ${q.answer}`), '', FIRST_PASS].join('\n'));
+  ctx.broadcast({ type: 'chat', conversation: conv, message: m });
+  respond(conv, '');
+}
+
+/** Skip the rest of the intake: the lead uses its best guesses (and says which in the assumptions). */
+on('POST', '/api/ideas/:id/intake/skip', (_q, res, _u, ctx, p) => {
+  const db = ctx.db();
+  const idea = need(db, p.id);
+  if (idea.status === 'promoted') throw new HttpError(400, 'this idea is already a project');
+  const open = listQuestions(db, p.id).filter((q) => q.kind === 'intake' && q.status === 'open');
+  if (!open.length) throw new HttpError(400, 'no basics left to answer');
+  for (const q of open) answerQuestion(db, p.id, q.id, 'no preference: use your best guess and note it as an assumption');
+  startFirstPass(ctx, p.id);
+  ctx.json(res, 200, { skipped: open.length });
 });
 
 on('POST', '/api/ideas/:id/promote', async (_q, res, _u, ctx, p) => {
@@ -184,7 +216,7 @@ on('POST', '/api/ideas/:id/features/review', async (req, res, _u, ctx, p) => {
 on('POST', '/api/ideas/:id/questions', async (req, res, _u, ctx, p) => {
   need(ctx.db(), p.id);
   const b = await ctx.readBody(req);
-  ctx.json(res, 200, attempt(() => askQuestion(ctx.db(), p.id, { text: b?.text, options: b?.options, affects: b?.affects })));
+  ctx.json(res, 200, attempt(() => askQuestion(ctx.db(), p.id, { text: b?.text, options: b?.options, affects: b?.affects, intake: Boolean(b?.intake) })));
 });
 
 /** The user's answer (a tapped option or their own words): the lead updates what it affects. */
@@ -193,6 +225,12 @@ on('POST', '/api/ideas/:id/questions/:qid/answer', async (req, res, _u, ctx, p) 
   const idea = need(db, p.id);
   const b = await ctx.readBody(req);
   const q = attempt(() => answerQuestion(db, p.id, p.qid, String(b?.answer ?? '')));
+  // the basics are collected quietly; the last one starts the first pass (one turn for the whole intake)
+  if (q.kind === 'intake') {
+    const left = listQuestions(db, p.id).some((x) => x.kind === 'intake' && x.status === 'open');
+    if (!b?.quiet && !left && idea.status !== 'promoted') startFirstPass(ctx, p.id);
+    return ctx.json(res, 200, q);
+  }
   // answered by the lead after the user replied in the chat: nothing more to do
   if (!b?.quiet && idea.status !== 'promoted') {
     const conv = attempt(() => ideaThread(db, p.id));

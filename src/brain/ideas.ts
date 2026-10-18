@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS idea_screens (
     addMissingColumns(db, 'brain_projects', { brand_id: 'TEXT' });
     // a feature the agent drafted stays a draft until the user confirms it on the Board; source says where it came from
     addMissingColumns(db, 'idea_features', { confirmed: 'INTEGER NOT NULL DEFAULT 0', source: 'TEXT' });
+    // intake: the basics asked before the first pass; decision: everything after
+    addMissingColumns(db, 'idea_questions', { kind: `TEXT NOT NULL DEFAULT 'decision'` });
   },
 );
 
@@ -362,16 +364,18 @@ export interface Question {
   status: 'open' | 'answered';
   answer: string | null;
   created_at: number;
+  /** intake: a basic asked before the first pass (platform, goal…); decision: the rest */
+  kind: 'intake' | 'decision';
 }
 
 export function listQuestions(db: DB, ideaId: string): Question[] {
   return (db.prepare('SELECT * FROM idea_questions WHERE idea_id = ? ORDER BY created_at').all(ideaId) as any[]).map((r) => ({
-    id: r.id, text: r.text, options: JSON.parse(r.options), affects: JSON.parse(r.affects), status: r.status, answer: r.answer, created_at: r.created_at,
+    id: r.id, text: r.text, options: JSON.parse(r.options), affects: JSON.parse(r.affects), status: r.status, answer: r.answer, created_at: r.created_at, kind: r.kind === 'intake' ? 'intake' : 'decision',
   }));
 }
 
 /** Ask (or re-word) an open question. The same text while it is still open updates it rather than asking twice. */
-export function askQuestion(db: DB, ideaId: string, q: { text: string; options: string[]; affects?: string[] }): Question {
+export function askQuestion(db: DB, ideaId: string, q: { text: string; options: string[]; affects?: string[]; intake?: boolean }): Question {
   if (!getIdea(db, ideaId)) throw new Error(`unknown idea ${ideaId}`);
   const text = String(q.text ?? '').trim();
   if (!text) throw new Error('the question is empty');
@@ -383,9 +387,9 @@ export function askQuestion(db: DB, ideaId: string, q: { text: string; options: 
   const all = db.prepare('SELECT id FROM idea_questions WHERE idea_id = ?').all(ideaId) as { id: string }[];
   const id = same?.id ?? `Q${all.reduce((n, r) => Math.max(n, Number(r.id.slice(1)) || 0), 0) + 1}`;
   db.prepare(
-    `INSERT INTO idea_questions (idea_id, id, text, options, affects, status, created_at) VALUES (?, ?, ?, ?, ?, 'open', ?)
+    `INSERT INTO idea_questions (idea_id, id, text, options, affects, status, created_at, kind) VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
      ON CONFLICT(idea_id, id) DO UPDATE SET text = excluded.text, options = excluded.options, affects = excluded.affects`,
-  ).run(ideaId, id, text, JSON.stringify(options), JSON.stringify(affects), Date.now());
+  ).run(ideaId, id, text, JSON.stringify(options), JSON.stringify(affects), Date.now(), q.intake ? 'intake' : 'decision');
   ideaChanged(db, ideaId);
   return listQuestions(db, ideaId).find((x) => x.id === id)!;
 }

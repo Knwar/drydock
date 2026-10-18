@@ -42,6 +42,7 @@ export interface Question {
   affects: string[];
   status: 'open' | 'answered';
   answer: string | null;
+  kind: 'intake' | 'decision';
 }
 interface Data {
   id: string;
@@ -213,6 +214,19 @@ function StillOpen({ d, readOnly }: { d: Data; readOnly: boolean }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const open = (d.questions ?? []).filter((q) => q.status === 'open');
+  // the basics come first: answering the last one (or skipping) starts the first pass
+  const basics = open.filter((q) => q.kind === 'intake');
+  const skip = async () => {
+    setBusy('skip');
+    setError(null);
+    try {
+      await api(`/api/ideas/${d.id}/intake/skip`, { method: 'POST' });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
   const answered = (d.questions ?? []).filter((q) => q.status === 'answered').slice(-2);
   // older ideas keep their open questions as notes on features
   const notes = d.featureList.flatMap((f) => f.open_questions.map((q) => ({ f: f.id, q }))).slice(0, 4);
@@ -234,10 +248,11 @@ function StillOpen({ d, readOnly }: { d: Data; readOnly: boolean }) {
   return (
     <section className="panel still-open" style={{ gap: 12 }}>
       <div className="panel-head">
-        <h2>Still open</h2>
+        <h2>{basics.length ? 'A few basics first' : 'Still open'}</h2>
         {open.length > 0 && <span style={{ fontSize: 12 }}>{open.length} to answer{readOnly ? '' : ' · tap one'}</span>}
       </div>
-      {open.map((q) => (
+      {basics.length > 0 && <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>Answer these and the Main agent lays the idea out: the problem, users, core flow, features and the decisions that matter.</div>}
+      {[...basics, ...open.filter((q) => q.kind !== 'intake')].map((q) => (
         <div key={q.id} style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
           <span style={{ fontSize: 13, lineHeight: 1.45 }}>{q.text}{q.affects.length > 0 && <span className="affects"> · {q.affects.join(', ')}</span>}</span>
           {!readOnly && (
@@ -254,6 +269,9 @@ function StillOpen({ d, readOnly }: { d: Data; readOnly: boolean }) {
           )}
         </div>
       ))}
+      {basics.length > 0 && !readOnly && (
+        <button className="btn sm" style={{ alignSelf: 'flex-start' }} disabled={busy === 'skip'} onClick={skip}>Skip, use your best guesses</button>
+      )}
       {answered.map((q) => (
         <div key={q.id} style={{ fontSize: 12.5, display: 'flex', gap: 6 }}>
           <span style={{ color: 'var(--g-fg)' }}>✓</span>
@@ -490,14 +508,17 @@ function ScopeMap({ d, readOnly }: { d: Data; readOnly: boolean }) {
 
 export function IdeaOverview({ d, analyses, run }: { d: Data; analyses: Analysis[]; run: (kind: string) => void }) {
   const readOnly = d.status === 'promoted';
+  // while the basics are being asked they are the one thing to do, so they lead the page
+  const intake = (d.questions ?? []).some((q) => q.kind === 'intake' && q.status === 'open');
   return (
     <>
+      {intake && <StillOpen d={d} readOnly={readOnly} />}
       <Progress d={d} analyses={analyses} run={run} readOnly={readOnly} />
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-start' }}>
         <Built d={d} />
         <div style={{ flex: '1 1 300px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
           <Decided d={d} />
-          <StillOpen d={d} readOnly={readOnly} />
+          {!intake && <StillOpen d={d} readOnly={readOnly} />}
         </div>
       </div>
       <ScopeMap d={d} readOnly={readOnly} />

@@ -524,7 +524,7 @@ button.chev-btn:hover { background: var(--hover); }
 .quick-pill:disabled { opacity: 0.6; cursor: default; }
 .quick-ask { display: flex; flex-direction: column; gap: 8px; width: calc(100% - 28px); max-width: 980px; margin: 8px auto 14px; }
 .quick-ask .composer { margin: 0; }
-.progress-steps { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 4px; }
+.progress-steps { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px 6px; }
 .progress-step { display: flex; flex-direction: column; gap: 6px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 10.5px; line-height: 1.25; text-align: left; cursor: pointer; min-width: 0; hyphens: auto; -webkit-hyphens: auto; }
 .progress-step .progress-bar { display: block; height: 8px; border-radius: 4px; background: var(--border); }
 .progress-step:hover .progress-bar { outline: 2px solid var(--ring); }

@@ -355,6 +355,7 @@ server.registerTool(
       text: z.string().describe('One short question'),
       options: z.array(z.string()).min(2).max(4).describe('Likely answers, short, most sensible first'),
       affects: z.array(z.string()).optional().describe('Feature ids it changes, e.g. ["F3"]'),
+      intake: z.boolean().optional().describe('true for the basics asked when a new idea starts (platform, goal, audience, constraints); their answers come back together and start the first pass'),
     },
   },
   async ({ idea_id, ...q }) => {
