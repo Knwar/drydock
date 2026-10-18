@@ -377,6 +377,8 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 /* Side panel: docked (non-project pages and an expanded project Overview) or a drawer over other project tabs. */
 .side-dock { display: contents; }
 /* messenger: slides in over the page from the right */
+.activity-log { display: flex; flex-direction: column; gap: 2px; max-height: 60vh; overflow-y: auto; }
+.activity-row { display: grid; grid-template-columns: auto auto 1fr; gap: 10px; align-items: baseline; padding: 5px 2px; border-bottom: 1px solid var(--border); }
 .msg-toggle { position: relative; }
 .msg-toggle.on { border-color: var(--accent); color: var(--accent); }
 .msg-toggle .badge { position: absolute; top: -5px; right: -5px; }

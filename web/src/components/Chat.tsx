@@ -247,7 +247,6 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
   const [draft, setDraft] = useState<{ role: string; text: string } | null>(null);
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<'chat' | 'activity'>('chat');
   const [info, setInfo] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const inputId = bare ? 'chat-input-bare' : 'chat-input';
@@ -332,14 +331,13 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
     if (m.kind === 'tool' && Array.isArray(prev) && prev[0].author === m.author) prev.push(m);
     else rows.push(m.kind === 'tool' ? [m] : m);
   }
-  const visible = view === 'chat' ? rows : messages.filter((m) => m.kind === 'tool' || m.kind === 'approval' || m.kind === 'error').map((m) => [m] as Message[]);
 
   return (
     <aside className={`chat${bare ? ' chat-bare' : ''}`} aria-label="Conversation">
       {!bare && (
       <header className="chat-head">
         {onBack && <button className="chat-back" aria-label="Back to messages" title="Back to messages" onClick={onBack}><Icon name="back" size={18} /></button>}
-        <button className="chat-title" onClick={() => setInfo(true)} title="Members, sessions and usage" aria-haspopup="dialog">
+        <button className="chat-title" onClick={() => setInfo(true)} title="Members, activity and usage" aria-haspopup="dialog">
           {lead ? <Avatar role={lead} size={30} /> : <span className="avatar t-n" style={{ width: 30, height: 30, flex: '0 0 30px' }}>#</span>}
           <span style={{ flex: 1, minWidth: 0 }}>
             <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{lead ? lead.name : `# ${threadTitle}`}</h2>
@@ -348,10 +346,6 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
             </span>
           </span>
         </button>
-        <div role="group" aria-label="View" className="seg">
-          <button aria-pressed={view === 'chat'} onClick={() => setView('chat')}>Chat</button>
-          <button aria-pressed={view === 'activity'} onClick={() => setView('activity')}>Activity</button>
-        </div>
         <button className="icon-btn" style={{ width: 30, height: 30, flex: '0 0 30px', borderRadius: 8, fontSize: 13 }} aria-label="Minimise chat" title="Minimise chat" onClick={onClose}>✕</button>
       </header>
       )}
@@ -374,7 +368,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
                   : 'Start the discussion. @mention a member to ask just them.'}
           </div>
         )}
-        {visible.map((row) => {
+        {rows.map((row) => {
           if (Array.isArray(row)) return <ToolLines key={`t${row[0].id}`} items={row} />;
           const m = row;
           if (m.author === 'user') return <div key={m.id} className="bubble-me">{m.body}</div>;
@@ -405,7 +399,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
             </div>
           );
         })}
-        {(draft || working) && view === 'chat' && (
+        {(draft || working) && (
           <div className="msg">
             <Avatar role={byId.get(draft?.role ?? working ?? '')} />
             <div className="msg-body">

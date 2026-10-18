@@ -1,11 +1,11 @@
 // A conversation's details, opened from the chat header: who is in it, how
 // big each member's session has grown (context and turns, against the point
-// where it starts fresh by itself), what the chat has used, and a way to
-// restart one member's session.
+// where it starts fresh by itself), what the chat has used, a way to restart
+// one member's session, and its activity (what the agents ran).
 import { useState } from 'react';
 import { api, useApi } from '../lib/api';
 import { when } from '../lib/time';
-import type { Role } from '../lib/types';
+import type { Message, Role } from '../lib/types';
 import { Avatar } from './Chat';
 import { Modal } from './Dialogs';
 
@@ -52,6 +52,10 @@ export function ConversationInfo({ id, title, roles, onClose }: { id: string; ti
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const d = info.data;
+  const [tab, setTab] = useState<'members' | 'activity'>('members');
+  const log = useApi<{ messages: Message[] }>(tab === 'activity' ? `/api/conversations/${encodeURIComponent(id)}/messages` : null, (m) => m?.type === 'chat' && m.conversation === id);
+  const activity = (log.data?.messages ?? []).filter((m) => m.kind === 'tool' || m.kind === 'approval' || m.kind === 'error').reverse();
+  const nameOf = (rid: string) => roles.find((r) => r.id === rid)?.name ?? rid;
   const total = d?.members.reduce((a, m) => ({ runs: a.runs + (m.usage?.runs ?? 0), cost: a.cost + (m.usage?.cost ?? 0), output: a.output + (m.usage?.output ?? 0) }), { runs: 0, cost: 0, output: 0 });
   const restart = async (m: Member) => {
     setBusy(true);
@@ -72,6 +76,21 @@ export function ConversationInfo({ id, title, roles, onClose }: { id: string; ti
         <div className="muted">Loading…</div>
       ) : (
         <>
+          <div className="seg" role="tablist" aria-label="Details" style={{ alignSelf: 'flex-start' }}>
+            <button role="tab" aria-selected={tab === 'members'} aria-pressed={tab === 'members'} onClick={() => setTab('members')}>Members</button>
+            <button role="tab" aria-selected={tab === 'activity'} aria-pressed={tab === 'activity'} onClick={() => setTab('activity')}>Activity</button>
+          </div>
+          {tab === 'activity' ? (
+            <div className="activity-log">
+              {!log.data ? <div className="muted">Loading…</div> : activity.length === 0 ? <div className="muted" style={{ fontSize: 13 }}>Nothing run here yet: tool use, approvals and errors show up here.</div> : activity.map((m) => (
+                <div key={m.id} className="activity-row">
+                  <span className="muted" style={{ fontSize: 11.5, whiteSpace: 'nowrap' }}>{when(m.created_at)}</span>
+                  <span style={{ fontWeight: 600, fontSize: 12.5, whiteSpace: 'nowrap' }}>{nameOf(m.author)}</span>
+                  <span className={m.kind === 'error' ? 'error' : ''} style={{ fontSize: 12.5, minWidth: 0, overflowWrap: 'anywhere' }}>{m.kind === 'approval' ? `Asked: ${m.body}${m.meta?.status && m.meta.status !== 'pending' ? ` (${m.meta.status})` : ''}` : m.body}</span>
+                </div>
+              ))}
+            </div>
+          ) : (<>
           <div className="muted" style={{ fontSize: 12.5, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
             <span>{d.kind === 'dm' ? 'Direct chat' : `Thread · ${d.members.length} member${d.members.length === 1 ? '' : 's'} and you`}</span>
             <span>Started {when(d.created_at)}</span>
@@ -120,6 +139,7 @@ export function ConversationInfo({ id, title, roles, onClose }: { id: string; ti
           <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
             A session starts fresh by itself, with a handover summary, at {k(d.limits.maxContextTokens)} of context or {d.limits.maxTurns} turns (Settings › Usage alerts). Restart one sooner if a member seems confused or stuck on old details.
           </div>
+          </>)}
         </>
       )}
       {confirm && (
