@@ -2367,6 +2367,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         depends_on: task.depends_on ? JSON.parse(task.depends_on) : [],
         subtasks: task.subtasks ? JSON.parse(task.subtasks) : [],
         activity: board.cardTotals(db, taskId),
+        // for the app's card popup: review verdicts with findings, and what happened to the card
+        reviews: (db.prepare('SELECT round, verdict, findings, created_at FROM reviews WHERE task_id = ? ORDER BY round').all(taskId) as { round: number; verdict: string; findings: string; created_at: number }[]).map((r) => ({ ...r, findings: JSON.parse(r.findings || '[]') })),
+        history: (db.prepare(`SELECT type, payload, agent, created_at FROM task_events WHERE task_id = ? AND type != 'tool' ORDER BY id DESC LIMIT 40`).all(taskId) as { type: string; payload: string | null; agent: string | null; created_at: number }[]).map((e) => ({ ...e, payload: e.payload ? JSON.parse(e.payload) : null })),
       });
     }
     if (method === 'DELETE' && !action) {

@@ -560,11 +560,110 @@ export function SystemDesign({ p, focus, openConversation, base: baseIn, empty }
   );
 }
 
+const LANE_LABEL: Record<string, string> = { backlog: 'Backlog', queued: 'Queued', in_progress: 'In progress', in_review: 'In review', done: 'Done' };
+
+/** One line of a card's history, in words. */
+function eventText(e: { type: string; payload: any; agent: string | null }): string {
+  const p = e.payload ?? {};
+  switch (e.type) {
+    case 'create': return 'Created';
+    case 'move': return `Moved to ${LANE_LABEL[p.to] ?? p.to}`;
+    case 'assign': return `Assigned${e.agent ? ` to ${e.agent}` : ''}${p.branch ? ` (branch ${p.branch})` : ''}`;
+    case 'build_start': return 'Builder started';
+    case 'build_end': return 'Builder finished';
+    case 'review': return `Review round ${p.round}: ${p.verdict === 'pass' ? 'passed' : 'failed'}${p.findings ? `, ${p.findings} finding${p.findings === 1 ? '' : 's'}` : ''}`;
+    case 'subtasks': return 'Acceptance criteria set';
+    case 'check': return `${p.done ? 'Done' : 'Unchecked'}: ${p.text ?? 'a criterion'}`;
+    case 'redirect': return `Redirected${p.note ? `: ${p.note}` : ''}`;
+    case 'block': return `Blocked: ${p.reason ?? ''}`;
+    case 'unblock': return 'Blocker resolved';
+    case 'note': return p.text ?? p.note ?? 'Note';
+    default: return e.type.replace(/_/g, ' ');
+  }
+}
+
+/** A card's details: what it is for, its acceptance criteria, reviews and history. */
+function CardDetail({ id, board, cards, onClose }: { id: string; board: string; cards: any[]; onClose: () => void }) {
+  const [c, setC] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api<any>(`/task/${encodeURIComponent(id)}`).then(setC, (e) => setError((e as Error).message));
+  }, [id, cards]);
+  const title = (dep: string) => cards.find((x) => x.id === dep)?.title ?? dep;
+  const subs: { text: string; done: boolean }[] = c?.subtasks ?? [];
+  const a = c?.activity;
+  return (
+    <Modal title={c?.title ?? 'Card'} onClose={onClose} width={700}>
+      {error ? <div className="error">{error}</div> : !c ? <div className="muted">Loading…</div> : (
+        <div className="card-detail">
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span className="mono muted" style={{ fontSize: 11.5 }}>{c.id}</span>
+            <span className="pill t-n">{LANE_LABEL[c.lane] ?? c.lane}</span>
+            <span className="pill t-b">{board}</span>
+            {c.tag && <span className="pill t-v">{c.tag}</span>}
+            {c.assigned_agent && <span className="pill t-n">{c.assigned_agent}{c.skill ? ` · ${c.skill}` : ''}</span>}
+            {c.estimate_hours ? <span className="pill t-n">~{c.estimate_hours}h</span> : null}
+          </div>
+          {c.blocked_at && <div className="banner t-r" style={{ fontSize: 13 }}><strong>Blocked:</strong> {c.blocked_reason}</div>}
+          <section>
+            <h3>What it is for</h3>
+            {c.requirements ? <Markdown text={c.requirements} /> : <div className="muted">No requirements written yet.</div>}
+          </section>
+          <section>
+            <h3>Acceptance criteria {subs.length > 0 && <span className="muted" style={{ fontWeight: 400 }}>{subs.filter((s) => s.done).length} of {subs.length} done</span>}</h3>
+            {subs.length ? (
+              <ul className="criteria">{subs.map((s, i) => <li key={i} className={s.done ? 'done' : ''}><span aria-hidden="true">{s.done ? '✓' : '○'}</span> {s.text}</li>)}</ul>
+            ) : <div className="muted">None yet.</div>}
+          </section>
+          {c.depends_on.length > 0 && (
+            <section>
+              <h3>Waits for</h3>
+              <ul className="md-list" style={{ margin: 0 }}>{c.depends_on.map((d: string) => <li key={d}><span className="mono muted" style={{ fontSize: 11.5 }}>{d}</span> {title(d)}</li>)}</ul>
+            </section>
+          )}
+          {c.reviews.length > 0 && (
+            <section>
+              <h3>Reviews</h3>
+              {c.reviews.map((r: any) => (
+                <div key={r.round} className="review-round">
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <strong style={{ fontSize: 13 }}>Round {r.round}</strong>
+                    <span className={`pill ${r.verdict === 'pass' ? 't-g' : 't-r'}`}>{r.verdict === 'pass' ? 'passed' : 'failed'}</span>
+                    <span className="muted" style={{ fontSize: 11.5 }}>{when(r.created_at)}</span>
+                  </div>
+                  {r.findings.length > 0 && (
+                    <ul className="md-list" style={{ margin: '4px 0 0', fontSize: 12.5 }}>
+                      {r.findings.map((f: any, i: number) => <li key={i}><span className="mono">{f.file}{f.line ? `:${f.line}` : ''}</span> <span className="pill t-n" style={{ fontSize: 10.5 }}>{f.severity}</span> {f.note}</li>)}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </section>
+          )}
+          {(a?.tokens > 0 || a?.lines_added > 0) && (
+            <div className="muted" style={{ fontSize: 12 }}>
+              Work so far: {a.lines_added ? `+${a.lines_added} / −${a.lines_removed} lines · ` : ''}{a.tokens ? `${Math.round(a.tokens / 1000)}k tokens · ` : ''}{a.ms ? `${Math.max(1, Math.round(a.ms / 60000))} min of agent time` : ''}
+              {c.branch && <> · branch <span className="mono">{c.branch}</span></>}
+            </div>
+          )}
+          {c.history.length > 0 && (
+            <section>
+              <h3>History</h3>
+              <ul className="card-history">{c.history.map((e: any, i: number) => <li key={i}><span className="muted">{when(e.created_at)}</span> {eventText(e)}</li>)}</ul>
+            </section>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function Board({ p }: { p: Detail }) {
   const ids = [p.id, ...p.verticals.map((v) => v.id)];
   const [cards, setCards] = useState<any[]>([]);
   const [filter, setFilter] = useState<string>('all');
   const [tick, setTick] = useState(0);
+  const [open, setOpen] = useState<any | null>(null);
   useEffect(() => {
     Promise.all(ids.map((id) => api<any[]>(`/board?project=${id}`).then((cs) => cs.map((c) => ({ ...c, board: id }))).catch(() => []))).then((all) => setCards(all.flat()));
   }, [p.id, ids.join(','), tick]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -599,7 +698,16 @@ function Board({ p }: { p: Detail }) {
                 <div key={lane} className="lane">
                   <div className="lane-head"><strong>{label}</strong><span className="mono muted">{items.length}</span></div>
                   {items.map((c) => (
-                    <div key={c.id} className={`board-card${c.blocked ? ' blocked' : ''}${c.id === cardParam ? ' hit' : ''}`} ref={c.id === cardParam ? reveal : undefined}>
+                    <div
+                      key={c.id}
+                      className={`board-card${c.blocked ? ' blocked' : ''}${c.id === cardParam ? ' hit' : ''}`}
+                      ref={c.id === cardParam ? reveal : undefined}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`${c.title}: details`}
+                      onClick={() => setOpen(c)}
+                      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), setOpen(c))}
+                    >
                       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                         <span className="mono muted" style={{ fontSize: 10.5 }}>{c.id}</span>
                         <span className="pill t-b" style={{ fontSize: 10.5 }}>{name(c.board)}</span>
@@ -618,6 +726,7 @@ function Board({ p }: { p: Detail }) {
           </div>
         </div>
       )}
+      {open && <CardDetail id={open.id} board={name(open.board)} cards={cards} onClose={() => setOpen(null)} />}
     </>
   );
 }
@@ -922,7 +1031,7 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
         </div>
       </div>
       <nav aria-label="Project sections" className={`tabs${tabsMore}`} ref={tabsRef} onScroll={measureTabs}>
-        {(p.idea_id ? [...TABS.slice(0, 2), ['brand', 'Brand'], ['ui', 'UI'], ...TABS.slice(2)] : TABS).map(([t, label]) => (
+        {[...TABS.slice(0, 2), ...(p.plugins?.includes('design') ? [['design', 'System design']] : []), ...(p.idea_id ? [['brand', 'Brand'], ['ui', 'UI']] : []), ...TABS.slice(2)].map(([t, label]) => (
           <a key={t} aria-current={tab === t ? 'page' : undefined} className={`tab${tab === t ? ' on' : ''}`} href={href(t ? `${base}/${t}` : base)} onClick={go(t ? `${base}/${t}` : base)}>
             {label}
           </a>
