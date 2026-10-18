@@ -1,10 +1,9 @@
-import { useEffect } from 'react';
-import { ChatPanel } from '../components/Chat';
+import { useState } from 'react';
 import { StageSteps } from '../components/Shell';
 import { api, useApi } from '../lib/api';
 import { go, href } from '../lib/router';
 import { DailyCard, personalEvents, type PersonalData } from './Personal';
-import type { Conversation, ProjectSummary, Role } from '../lib/types';
+import type { ProjectSummary } from '../lib/types';
 
 function ProjectsPanel({ projects, onImport }: { projects: ProjectSummary[]; onImport: () => void }) {
   const found = useApi<{ candidates: { name: string }[] }>('/api/import/candidates', (m) => ['workspace', 'brain_project'].includes(m?.type));
@@ -101,51 +100,56 @@ function Today({ data }: { data: PersonalData }) {
   );
 }
 
-/**
- * Home: the day at a glance, with the Main agent's chat docked at the bottom.
- * Sending a message raises the conversation as a sheet over the (dimmed)
- * widgets; folding it leaves a one-line peek at the latest reply.
- */
-export function Home({ projects, onImport, conversation, roles, sheet, setSheet, draft, onDraftUsed, onSent }: {
-  projects: ProjectSummary[];
-  onImport: () => void;
-  conversation: Conversation | null;
-  roles: Role[];
-  sheet: boolean;
-  setSheet: (open: boolean) => void;
-  draft?: string;
-  onDraftUsed?: () => void;
-  onSent?: () => void;
-}) {
+/** The input at the bottom of Home: sending opens the Main agent's chat page with the message on its way. */
+function AskMain({ onSent }: { onSent: () => void }) {
+  const [text, setText] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const send = async () => {
+    const t = text.trim();
+    if (!t) return;
+    setError(null);
+    try {
+      await api('/api/conversations/dm%3Amain/messages', { body: { text: t } });
+      setText('');
+      onSent();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  return (
+    <form className="composer home-ask" onSubmit={(e) => (e.preventDefault(), send())}>
+      <label htmlFor="home-ask" className="sr-only">Ask the Main agent</label>
+      <textarea
+        id="home-ask"
+        rows={2}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) (e.preventDefault(), send());
+        }}
+        placeholder="Ask the Main agent: an idea, your day, a project…"
+      />
+      {error && <div className="error">{error}</div>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span className="muted" style={{ fontSize: 11 }}>Enter to send · Shift+Enter for a new line</span>
+        <button type="submit" className="btn sm primary" style={{ marginLeft: 'auto' }} disabled={!text.trim()}>Send</button>
+      </div>
+    </form>
+  );
+}
+
+/** Home: the day at a glance, with the Main agent's input at the bottom. */
+export function Home({ projects, onImport, onAsked }: { projects: ProjectSummary[]; onImport: () => void; onAsked: () => void }) {
   const personal = useApi<PersonalData>('/api/personal', personalEvents);
-  // Esc folds the sheet (unless a dialog is open; that closes first)
-  useEffect(() => {
-    if (!sheet) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !document.querySelector('.modal-back, .settings-back') && setSheet(false);
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [sheet, setSheet]);
   return (
     <div className="docked-page home-page">
       <div className="docked-main">
         {personal.data && <DailyCard edition={personal.data.edition} generating={personal.data.generating} compact />}
         <ProjectsPanel projects={projects} onImport={onImport} />
         {personal.data && <Today data={personal.data} />}
-        {sheet && <div className="sheet-scrim" aria-hidden="true" onClick={() => setSheet(false)} />}
       </div>
-      <div className="docked-bar" aria-label="Main agent">
-        {conversation ? (
-          <ChatPanel
-            conversation={conversation}
-            roles={roles}
-            projects={projects}
-            onClose={() => setSheet(false)}
-            onSent={() => (setSheet(true), onSent?.())}
-            draftText={draft}
-            onDraftUsed={onDraftUsed}
-            dock={{ minimal: true, expanded: sheet, onToggle: () => setSheet(!sheet), onAttention: () => setSheet(true), placeholder: 'Ask the Main agent: an idea, your day, a project…' }}
-          />
-        ) : null}
+      <div className="docked-bar home-bar">
+        <AskMain onSent={onAsked} />
       </div>
     </div>
   );

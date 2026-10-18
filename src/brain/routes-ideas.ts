@@ -63,6 +63,8 @@ on('POST', '/api/ideas', async (req, res, _u, ctx) => {
   const b = await ctx.readBody(req);
   if (!b?.title) throw new HttpError(400, 'title required');
   const idea = attempt(() => captureIdea(ctx.db(), { title: String(b.title), pitch: b.pitch, type: b.type, source: b.source ?? null }));
+  // the first thinking (from the chat it came up in) becomes its starting requirements
+  if (typeof b.notes === 'string' && b.notes.trim()) attempt(() => saveRequirements(ctx.db(), idea.id, /^#\s/.test(b.notes.trim()) ? b.notes : `# ${idea.title}\n\n${b.notes}`, String(b.role ?? 'main')));
   ctx.json(res, 200, card(ctx.db(), idea.id));
 });
 

@@ -204,10 +204,6 @@ export interface Dock {
   /** shown above the input (quick-action pills) */
   above?: React.ReactNode;
   placeholder?: string;
-  /** something needs the user (an approval, a proposal): open the conversation */
-  onAttention?: () => void;
-  /** no header: a peek line opens it, a handle folds it (Home) */
-  minimal?: boolean;
 }
 
 export function ChatPanel({ conversation, roles, projects = [], onSent, onClose, draftText, onDraftUsed, dock }: { conversation: Conversation | null; roles: Role[]; projects?: ProjectSummary[]; onSent?: () => void; onClose: () => void; draftText?: string; onDraftUsed?: () => void; dock?: Dock }) {
@@ -219,8 +215,6 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
   const [view, setView] = useState<'chat' | 'activity'>('chat');
   const [info, setInfo] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
-  const attention = useRef(dock?.onAttention);
-  attention.current = dock?.onAttention;
   const inputId = dock ? 'chat-input-dock' : 'chat-input';
   const convId = conversation?.id ?? null;
   useEffect(() => {
@@ -247,7 +241,6 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
       if (msg.conversation !== convId) return;
       if (msg.type === 'chat') {
         setMessages((ms) => (ms.some((m) => m.id === msg.message.id) ? ms : [...ms, msg.message]));
-        if (['approval', 'proposal', 'secret_request', 'change_request'].includes(msg.message.kind)) attention.current?.();
         if (msg.message.author !== 'user') setDraft(null);
       } else if (msg.type === 'chat_update') setMessages((ms) => ms.map((m) => (m.id === msg.message.id ? msg.message : m)));
       else if (msg.type === 'chat_delta') setDraft(msg.text ? { role: msg.role, text: msg.text } : null);
@@ -309,48 +302,34 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
   const latest = [...messages].reverse().find((m) => m.kind === 'text' && m.author !== 'user' && m.author !== 'system');
   return (
     <aside className={`chat${dock ? ` chat-dock${dock.expanded ? '' : ' collapsed'}` : ''}`} aria-label="Conversation">
-      {dock?.minimal ? (
-        dock.expanded ? (
-          <button className="dock-handle" onClick={dock.onToggle} aria-expanded="true" aria-label="Fold the conversation" title="Fold (Esc)"><span /></button>
-        ) : working || latest ? (
-          <button className="dock-peek" onClick={dock.onToggle} aria-expanded="false" title="Open the conversation">
-            <Avatar role={byId.get(working ?? latest!.author)} size={20} />
-            <span className="dock-peek-text">
-              {working ? `${byId.get(working)?.name ?? 'The agent'} is working…` : `${latest!.body.replace(/[#*_`>|]/g, '').replace(/\s+/g, ' ').trim().slice(0, 160)}`}
-            </span>
-            <span className="muted" style={{ fontSize: 11.5, flex: '0 0 auto' }}>Open ▴</span>
-          </button>
-        ) : null
-      ) : (
       <header className="chat-head">
-          <button className="chat-title" onClick={() => setInfo(true)} title="Members, sessions and usage" aria-haspopup="dialog">
-            {lead ? <Avatar role={lead} size={30} /> : <span className="avatar t-n" style={{ width: 30, height: 30, flex: '0 0 30px' }}>#</span>}
-            <span style={{ flex: 1, minWidth: 0 }}>
-              <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{lead ? lead.name : `# ${threadTitle}`}</h2>
-              <span className="muted" style={{ display: 'block', fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {dock && !dock.expanded
-                  ? working
-                    ? `${byId.get(working)?.name ?? 'An agent'} is working…`
-                    : latest
-                      ? `${byId.get(latest.author)?.name ?? latest.author}: ${latest.body.replace(/[#*_`>|-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 140)}`
-                      : `${memberNames} and you`
-                  : lead ? `${lead.scope === 'global' ? 'Personal manager · all projects' : lead.scope === 'shared' ? 'Shared role · all projects' : 'Project role'} · ${lead.model}` : `${project ? `${project.name} · ` : ''}${memberNames} and you`}
-              </span>
+        <button className="chat-title" onClick={() => setInfo(true)} title="Members, sessions and usage" aria-haspopup="dialog">
+          {lead ? <Avatar role={lead} size={30} /> : <span className="avatar t-n" style={{ width: 30, height: 30, flex: '0 0 30px' }}>#</span>}
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{lead ? lead.name : `# ${threadTitle}`}</h2>
+            <span className="muted" style={{ display: 'block', fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {dock && !dock.expanded
+                ? working
+                  ? `${byId.get(working)?.name ?? 'An agent'} is working…`
+                  : latest
+                    ? `${byId.get(latest.author)?.name ?? latest.author}: ${latest.body.replace(/[#*_`>|-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 140)}`
+                    : `${memberNames} and you`
+                : lead ? `${lead.scope === 'global' ? 'Personal manager · all projects' : lead.scope === 'shared' ? 'Shared role · all projects' : 'Project role'} · ${lead.model}` : `${project ? `${project.name} · ` : ''}${memberNames} and you`}
             </span>
-          </button>
-          <div role="group" aria-label="View" className="seg">
-            <button aria-pressed={view === 'chat'} onClick={() => setView('chat')}>Chat</button>
-            <button aria-pressed={view === 'activity'} onClick={() => setView('activity')}>Activity</button>
-          </div>
-          {dock ? (
-            <button className="btn sm" aria-expanded={dock.expanded} onClick={dock.onToggle}>{dock.expanded ? 'Hide conversation' : 'Show conversation'}</button>
-          ) : (
-            <button className="icon-btn" style={{ width: 30, height: 30, flex: '0 0 30px', borderRadius: 8, fontSize: 13 }} aria-label="Minimise chat" title="Minimise chat" onClick={onClose}>✕</button>
-          )}
-        </header>
-      )}
+          </span>
+        </button>
+        <div role="group" aria-label="View" className="seg">
+          <button aria-pressed={view === 'chat'} onClick={() => setView('chat')}>Chat</button>
+          <button aria-pressed={view === 'activity'} onClick={() => setView('activity')}>Activity</button>
+        </div>
+        {dock ? (
+          <button className="btn sm" aria-expanded={dock.expanded} onClick={dock.onToggle}>{dock.expanded ? 'Hide conversation' : 'Show conversation'}</button>
+        ) : (
+          <button className="icon-btn" style={{ width: 30, height: 30, flex: '0 0 30px', borderRadius: 8, fontSize: 13 }} aria-label="Minimise chat" title="Minimise chat" onClick={onClose}>✕</button>
+        )}
+      </header>
       {info && <ConversationInfo id={conversation.id} title={lead ? lead.name : `# ${threadTitle}`} roles={roles} onClose={() => setInfo(false)} />}
-      {lead && !dock?.minimal && (
+      {lead && (
         <div className="perm-strip">
           <span className="muted">Can do on its own:</span>
           {ALWAYS.map((a) => <span key={a} className="pill t-g">{a}</span>)}

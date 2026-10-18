@@ -48,7 +48,13 @@ describe('the Idea board', () => {
     assert.deepEqual(i.missing, ['requirements', 'system design', 'brand', 'UI']);
     assert.equal((await call('GET', '/api/projects')).length, 0);
     assert.ok(existsSync(join(ws, 'vault', 'ideas', 'habit-app')));
-    assert.equal((await call('POST', '/api/ideas', { title: 'Habit app', type: 'software' })).slug, 'habit-app-2', 'same title, new slug');
+    const twin = await call('POST', '/api/ideas', { title: 'Habit app', type: 'software', notes: '## Problem\nParents forget habits.\n\n## Open questions\n- Phone or watch?' });
+    assert.equal(twin.slug, 'habit-app-2', 'same title, new slug');
+    // the first thinking from the chat it came up in becomes its starting requirements
+    const reqs = await call('GET', `/api/projects/${twin.id}/requirements`);
+    assert.equal(reqs.length, 1);
+    assert.match(reqs[0].markdown, /^# Habit app\n\n## Problem/);
+    await call('DELETE', `/api/ideas/${twin.id}`);
   });
 
   it('keeps requirements, design, brand and UI on the idea, in its vault folder', async () => {

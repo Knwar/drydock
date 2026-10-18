@@ -264,12 +264,17 @@ server.registerTool(
 server.registerTool(
   'capture_idea',
   {
-    description: 'Save a new idea to the Idea board: a short title, a one-line pitch and its kind. Cheap: no project, folder or team is created. Tell the user in one line that you saved it.',
-    inputSchema: { title: z.string(), pitch: z.string().describe('One sentence: what it is and for whom'), type: z.enum(['software', 'general']).describe('software for apps, sites, APIs, tools; general for anything else') },
+    description: 'Save a new idea to the Idea board: a short title, a one-line pitch, its kind, and your first notes. Cheap: no project, folder or team is created. Do this as soon as the user floats something they might make, without asking.',
+    inputSchema: {
+      title: z.string(),
+      pitch: z.string().describe('One sentence: what it is and for whom'),
+      type: z.enum(['software', 'general']).describe('software for apps, sites, APIs, tools; general for anything else'),
+      notes: z.string().optional().describe('Your first thinking in Markdown (problem, users, rough approach, open questions): saved as the idea\'s starting requirements'),
+    },
   },
   async (b) => {
-    const i = await call('/api/ideas', { ...b, source: CONVERSATION });
-    return text(`Saved to the Idea board: ${i.title} (idea_id ${i.id}).`);
+    const i = await call('/api/ideas', { ...b, source: CONVERSATION, role: ROLE });
+    return text(`Saved to the Idea board: ${i.title} (idea_id ${i.id})${b.notes ? ', with your notes as its starting requirements' : ''}.`);
   },
 );
 

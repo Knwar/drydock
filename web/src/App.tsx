@@ -58,8 +58,6 @@ export function App() {
   const convs = useApi<Conversation[]>(ready ? '/api/conversations' : null, convEvents);
   const ideas = useApi<IdeaCard[]>(ready ? '/api/ideas' : null, ideaEvents);
   const [capturing, setCapturing] = useState(false);
-  // Home's bottom sheet with the Main agent's conversation
-  const [sheet, setSheet] = useState(false);
   const [convId, setConvId] = useStored('ai-brain-conversation', 'dm:main');
   const [chatState, setChatState] = useStored('ai-brain-chat', 'open');
   const [newProject, setNewProject] = useState(false);
@@ -101,6 +99,8 @@ export function App() {
   // an idea page has its own chat beside it
   const onIdea = parts[0] === 'idea' && Boolean(parts[1]);
   const onHome = parts.length === 0;
+  // the Main agent's own page, separate from Home (sending from Home opens it)
+  const onChat = parts[0] === 'chat';
   const mainConv = conversations.find((c) => c.id === 'dm:main') ?? null;
   const sideOpen = !onIdea && (!onProject || (onOverview ? projectSide === 'open' || Boolean(linked) : drawer));
   const setSide = (open: boolean) => {
@@ -118,8 +118,8 @@ export function App() {
     navigate(link);
   };
   const select = (id: string) => {
-    // on Home the Main agent lives in the bottom sheet
-    if (onHome && id === 'dm:main') return setSheet(true);
+    // the Main agent has its own page
+    if (id === 'dm:main') return navigate('/chat');
     setConvId(id);
     if (threadParam() !== id) navigate(`${path === '/' ? '' : path}?thread=${encodeURIComponent(id)}`);
     setChatState('open');
@@ -130,13 +130,19 @@ export function App() {
     select('dm:main');
     if (text) setDraft(text);
   };
-  // on Home the right side stays At a glance, unless you opened another conversation there
+  // on Home and the Main agent's page the right side stays At a glance, unless you opened another conversation there
   // (a chat opened from the sidebar comes with ?thread=, so a stale one from an earlier visit does not take its place)
-  const sideChat = onHome ? Boolean(linked) && linked !== 'dm:main' && current?.id === linked : chatState === 'open';
+  const glanceFirst = onHome || onChat;
+  const sideChat = glanceFirst ? Boolean(linked) && linked !== 'dm:main' && current?.id === linked : chatState === 'open';
 
   let page: React.ReactNode;
-  if (onHome)
-    page = <Home projects={list} onImport={() => setImporting(true)} conversation={mainConv} roles={roles.data ?? []} sheet={sheet} setSheet={setSheet} draft={draft} onDraftUsed={() => setDraft(undefined)} onSent={convs.reload} />;
+  if (onHome) page = <Home projects={list} onImport={() => setImporting(true)} onAsked={() => (convs.reload(), navigate('/chat'))} />;
+  else if (onChat)
+    page = (
+      <div className="chat-page">
+        <ChatPanel conversation={mainConv} roles={roles.data ?? []} projects={list} onSent={convs.reload} onClose={() => navigate('/')} draftText={draft} onDraftUsed={() => setDraft(undefined)} />
+      </div>
+    );
   else if (parts[0] === 'project' && parts[1])
     page = <ProjectPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} openConversation={select} newThread={() => setNewThread({ project: parts[1] })} side={{ open: sideOpen, toggle: () => setSide(!sideOpen) }} />;
   else if (onIdea) page = <IdeaPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} conversations={conversations} projects={list} />;
@@ -151,7 +157,7 @@ export function App() {
           key={list.length ? 'loaded' : 'empty'}
           projects={list}
           path={path}
-          mainOn={onHome ? sheet : chatState === 'open' && sideOpen && current?.id === 'dm:main'}
+          mainOn={onChat}
           onMain={() => select('dm:main')}
           mainWorking={Boolean(conversations.find((c) => c.id === 'dm:main')?.working)}
           onNewProject={() => setNewProject(true)}
@@ -162,13 +168,13 @@ export function App() {
         >
           <TeamList conversations={conversations} roles={roles.data ?? []} current={chatState === 'open' && sideOpen ? current?.id ?? null : null} select={select} onNewThread={() => setNewThread({ project: null })} />
         </Sidebar>
-        <main className={`main${onIdea || onHome ? ' main-docked' : ''}`}>{page}</main>
+        <main className={`main${onIdea || onHome || onChat ? ' main-docked' : ''}`}>{page}</main>
         {sideOpen && (
           <div className={onProject && !onOverview ? 'side-drawer' : 'side-dock'}>
             {sideChat ? (
-              <ChatPanel conversation={current} roles={roles.data ?? []} projects={list} onSent={convs.reload} onClose={() => (onProject ? setSide(false) : onHome ? navigate('/') : setChatState('closed'))} draftText={onHome ? undefined : draft} onDraftUsed={() => setDraft(undefined)} />
+              <ChatPanel conversation={current} roles={roles.data ?? []} projects={list} onSent={convs.reload} onClose={() => (onProject ? setSide(false) : glanceFirst ? navigate(onChat ? '/chat' : '/') : setChatState('closed'))} draftText={glanceFirst ? undefined : draft} onDraftUsed={() => setDraft(undefined)} />
             ) : (
-              <RightRail roles={roles.data ?? []} conversations={conversations} open={select} onExpand={onHome ? undefined : () => setChatState('open')} onHide={onProject ? () => setSide(false) : undefined} />
+              <RightRail roles={roles.data ?? []} conversations={conversations} open={select} onExpand={glanceFirst ? undefined : () => setChatState('open')} onHide={onProject ? () => setSide(false) : undefined} />
             )}
           </div>
         )}
