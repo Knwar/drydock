@@ -11,6 +11,7 @@ import { api, useApi } from '../lib/api';
 import { Markdown } from '../lib/md';
 import { go, href, navigate } from '../lib/router';
 import type { Role } from '../lib/types';
+import { Brand, Screens, type Detail as IdeaDetail } from './IdeaPage';
 
 const TABS = PROJECT_TABS;
 
@@ -49,6 +50,16 @@ interface Detail {
   team: { role_id: string; kind: string; reason: string | null; name: string; initials: string; tone: string; skill: string | null; scope: string }[];
   recommendation: Recommendation | null;
   last_activity: number;
+  /** the idea it was promoted from: its brand and UI mockups are shown here */
+  idea_id: string | null;
+}
+
+/** The brand or UI mockups shaped on the Idea board before the project existed. */
+function FromIdea({ ideaId, part }: { ideaId: string; part: 'brand' | 'ui' }) {
+  const idea = useApi<IdeaDetail>(`/api/ideas/${ideaId}`, (m) => m?.type === 'idea' && m.idea_id === ideaId);
+  if (idea.error) return <div className="error">{idea.error}</div>;
+  if (!idea.data) return null;
+  return part === 'brand' ? <Brand d={idea.data} /> : <Screens d={idea.data} />;
 }
 
 const refresh = (id: string) => (m: any) =>
@@ -856,7 +867,7 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
         </div>
       </div>
       <nav aria-label="Project sections" className={`tabs${tabsMore}`} ref={tabsRef} onScroll={measureTabs}>
-        {TABS.map(([t, label]) => (
+        {(p.idea_id ? [...TABS.slice(0, 2), ['brand', 'Brand'], ['ui', 'UI'], ...TABS.slice(2)] : TABS).map(([t, label]) => (
           <a key={t} aria-current={tab === t ? 'page' : undefined} className={`tab${tab === t ? ' on' : ''}`} href={href(t ? `${base}/${t}` : base)} onClick={go(t ? `${base}/${t}` : base)}>
             {label}
           </a>
@@ -867,6 +878,7 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
       {tab === 'design' && (p.plugins?.includes('design') ? <SystemDesign p={p} focus={sub} openConversation={openConversation} /> : <PluginOff p={p} id="design" />)}
       {tab === 'live' && (p.plugins?.includes('live') ? <LiveCard projectId={p.id} /> : <PluginOff p={p} id="live" />)}
       {tab === 'board' && <Board p={p} />}
+      {(tab === 'brand' || tab === 'ui') && (p.idea_id ? <FromIdea ideaId={p.idea_id} part={tab} /> : <div className="empty">This project was not shaped on the Idea board, so it has no brand or UI mockups here.</div>)}
       {tab === 'roles' && <Roles p={p} roles={roles} openConversation={openConversation} openTeam={() => setTeamOpen(true)} />}
       {tab === 'memory' && <Memory p={p} />}
       {teamOpen && p.recommendation && (

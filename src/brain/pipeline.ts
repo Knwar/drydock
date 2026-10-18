@@ -4,7 +4,7 @@
 import { ROLE_TEMPLATES } from './roles.js';
 import { projectType, TYPES, type ProjectType } from './plugins.js';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -135,8 +135,13 @@ export async function promoteIdea(db: DB, ideaId: string): Promise<ProjectRef> {
   if (idea.status === 'promoted') throw new Error('this idea is already a project');
   const ref = await createProject(db, idea.title, idea.pitch || idea.title, idea.type);
   handOver(db, ideaId, ref);
+  // the design model moved with the idea: write it out for the project (vault for the team, docs/ for the repo)
+  if (getDesign(db, ref.id).elements.length) {
+    writeDesignDoc(db, ref.id);
+    copyFileSync(join(ref.vault, 'design', 'system-design.md'), join(ref.root, 'docs', 'system-design.md'));
+  }
   await execFileAsync('git', ['-C', ref.root, 'add', '-A'], { timeout: 30_000 });
-  await execFileAsync('git', ['-C', ref.root, '-c', 'user.name=AI Brain', '-c', 'user.email=ai-brain@localhost', 'commit', '-qm', 'Add what was shaped on the Idea board: requirements, brand and UI'], { timeout: 30_000 }).catch(() => undefined);
+  await execFileAsync('git', ['-C', ref.root, '-c', 'user.name=AI Brain', '-c', 'user.email=ai-brain@localhost', 'commit', '-qm', 'Add what was shaped on the Idea board: requirements, features, design, brand and UI'], { timeout: 30_000 }).catch(() => undefined);
   if (listRequirements(db, ref.id)[0]) finalizeRequirements(db, ref.id);
   getBus().emit({ type: 'brain_project', project_id: ref.id });
   return ref;
@@ -147,10 +152,13 @@ function shapedNote(db: DB, ref: ProjectRef): string {
   const origin = (db.prepare('SELECT origin FROM brain_projects WHERE project_id = ?').get(ref.id) as { origin: string } | undefined)?.origin;
   if (origin !== 'idea') return '';
   const docs = join(ref.root, 'docs');
+  // name only the analyses that were actually run
+  const analyses = existsSync(join(docs, 'analysis')) ? readdirSync(join(docs, 'analysis')).filter((f) => f.endsWith('.md')).map((f) => `analysis/${f}`) : [];
   const have = [
     existsSync(join(docs, 'requirements.md')) && 'requirements (docs/requirements.md)',
     existsSync(join(docs, 'features.md')) && 'feature specifications with acceptance criteria (docs/features.md: plan one or more cards per feature, MVP first, and carry each feature\'s acceptance criteria into its cards)',
-    existsSync(join(docs, 'analysis')) && 'the analyses behind it (docs/analysis/: risks, MVP cut, estimate and more)',
+    existsSync(join(docs, 'system-design.md')) && 'the system design (docs/system-design.md)',
+    analyses.length > 0 && `the analyses behind it (docs/${analyses.join(', docs/')})`,
     existsSync(join(docs, 'brand.md')) && 'brand guidelines and tokens (docs/brand.md, docs/brand-tokens.json)',
     existsSync(join(docs, 'ui', 'index.html')) && 'UI mockups (docs/ui/, start at index.html)',
   ].filter(Boolean);
@@ -427,6 +435,7 @@ export async function finalizeDesign(db: DB, projectId: string): Promise<string>
   if (!design.elements.length) throw new Error('the design is empty');
   requireRole(db, 'pm', 'a PM (project manager)');
   const version = (design.finalVersion ?? 0) + 1;
+  writeDesignDoc(db, projectId); // the kickoff below points the PM at it
   db.prepare('INSERT INTO design_snapshots (project_id, version, model, created_at) VALUES (?, ?, ?, ?)').run(projectId, version, JSON.stringify(design), Date.now());
 
   const existing = new Set((db.prepare('SELECT name FROM projects WHERE parent_id = ?').all(projectId) as { name: string }[]).map((r) => r.name));

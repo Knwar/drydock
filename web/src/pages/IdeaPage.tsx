@@ -39,7 +39,7 @@ interface Analysis {
   group: 'Understand' | 'Decide' | 'Define';
   ask: string;
 }
-interface Detail extends IdeaCard {
+export interface Detail extends IdeaCard {
   requirements: { version: number; markdown: string } | null;
   brand: (IdeaCard['brand'] & { guidelines: string; tokens: Record<string, any> }) | null;
   screenList: { id: string; title: string }[];
@@ -175,7 +175,7 @@ function colours(tokens: Record<string, any>, prefix = ''): [string, string][] {
   return out;
 }
 
-function Brand({ d }: { d: Detail }) {
+export function Brand({ d }: { d: Detail }) {
   if (!d.brand) return <div className="empty" style={{ padding: 30 }}>No brand yet. Ask in the chat (for example "give it a calm, friendly brand"); the Main agent writes the guidelines and tokens.</div>;
   const sw = colours(d.brand.tokens);
   const fonts = Object.entries((d.brand.tokens?.font ?? d.brand.tokens?.typography ?? {}) as Record<string, any>).filter(([, v]) => typeof v === 'string');
@@ -197,7 +197,7 @@ function Brand({ d }: { d: Detail }) {
   );
 }
 
-function Screens({ d }: { d: Detail }) {
+export function Screens({ d }: { d: Detail }) {
   const [cur, setCur] = useState<string | null>(null);
   const [width, setWidth] = useState<'mobile' | 'desktop'>('desktop');
   const [stamp, setStamp] = useState(0);

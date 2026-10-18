@@ -200,7 +200,10 @@ describe('the Idea board', () => {
     assert.equal(req[0].final, 1);
     assert.match(req[0].markdown, /Parents forget/);
     assert.equal((await call('GET', `/api/projects/${project}/design`)).elements.length, 2);
-    for (const f of ['docs/requirements.md', 'docs/brand.md', 'docs/brand-tokens.json', 'docs/ui/home.html', 'docs/ui/index.html', 'docs/features.md', 'docs/analysis/competitors.md']) assert.ok(existsSync(join(r.root, f)), f);
+    for (const f of ['docs/requirements.md', 'docs/brand.md', 'docs/brand-tokens.json', 'docs/ui/home.html', 'docs/ui/index.html', 'docs/features.md', 'docs/analysis/competitors.md', 'docs/system-design.md']) assert.ok(existsSync(join(r.root, f)), f);
+    // the design file the PM's kickoff points to
+    assert.match(readFileSync(join(p.vault, 'design', 'system-design.md'), 'utf8'), /System design/);
+    assert.equal(p.idea_id, id, 'the project shows the idea’s brand and UI');
     assert.match(execFileSync('git', ['-C', r.root, 'log', '--oneline']).toString(), /Idea board/);
     const idea = await call('GET', `/api/ideas/${id}`);
     assert.equal(idea.status, 'promoted');
@@ -217,6 +220,9 @@ describe('the Idea board', () => {
     assert.match(kickoff.body, /docs\/ui\//);
     assert.match(kickoff.body, /propose_change/);
     assert.match(kickoff.body, /docs\/features\.md/);
+    assert.match(kickoff.body, /docs\/system-design\.md/);
+    assert.match(kickoff.body, /docs\/analysis\/competitors\.md/);
+    assert.doesNotMatch(kickoff.body, /risks, MVP cut, estimate/, 'only the analyses that were run');
   });
 
   it('changes to settled requirements go through the user, without moving the stage', async () => {
