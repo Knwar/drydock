@@ -28,14 +28,16 @@ export interface Server {
   url: string;
   status: 'connected' | 'needs_auth' | 'failed' | 'not_configured' | 'built_in';
   detail: string;
+  /** account: a claude.ai connector on the user's Claude account; plugin: ships with a Claude Code plugin; added: set up with `claude mcp add` */
+  source: 'built_in' | 'account' | 'plugin' | 'added';
 }
 
 /** The tool-name prefix Claude Code gives a server's tools. */
 export const prefixOf = (name: string) => `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}`;
 
 const BUILT_IN: Server[] = [
-  { name: 'brain', prefix: 'mcp__brain', url: 'built in', status: 'built_in', detail: 'AI Brain itself: approvals, decisions, projects, requirements, design, personal data' },
-  { name: 'kanban', prefix: 'mcp__kanban', url: 'built in', status: 'built_in', detail: 'The board: phases, cards, worktrees (project roles)' },
+  { name: 'brain', prefix: 'mcp__brain', url: 'built in', status: 'built_in', source: 'built_in', detail: 'AI Brain itself: approvals, decisions, projects, requirements, design, personal data' },
+  { name: 'kanban', prefix: 'mcp__kanban', url: 'built in', status: 'built_in', source: 'built_in', detail: 'The board: phases, cards, worktrees (project roles)' },
 ];
 
 /** Which roles may use a server when nobody has said otherwise. */
@@ -58,7 +60,8 @@ export function parseMcpList(out: string): Server[] {
     if (!m) continue;
     const [, name, url, rest] = m;
     const status = /Connected/i.test(rest) ? 'connected' : /Needs authentication/i.test(rest) ? 'needs_auth' : /Not configured/i.test(rest) ? 'not_configured' : 'failed';
-    servers.push({ name, prefix: prefixOf(name), url: url.replace(/\s*\(HTTP\)$/, ''), status, detail: rest.replace(/^[✔✘!-]\s*/, '') });
+    const source = name.startsWith('claude.ai ') ? 'account' : name.startsWith('plugin:') ? 'plugin' : 'added';
+    servers.push({ name, prefix: prefixOf(name), url: url.replace(/\s*\(HTTP\)$/, ''), status, detail: rest.replace(/^[✔✘!-]\s*/, ''), source });
   }
   return servers;
 }
@@ -76,6 +79,53 @@ export async function listServers(force = false): Promise<Server[]> {
       .catch(() => cache?.servers ?? BUILT_IN)
       .finally(() => (inflight = null));
   return inflight;
+}
+
+// ── setting servers up from the app (each runs the claude CLI as the user would) ──
+
+export const SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
+
+/** Add a server for every project (user scope): a web address, or a command that starts it. */
+export async function addServer(input: { name: string; url?: string; command?: string }): Promise<void> {
+  const name = input.name.trim();
+  if (!SERVER_NAME_RE.test(name)) throw new Error('Use letters, numbers, - or _ for the name (up to 40)');
+  if (cachedServers().some((s) => s.name === name)) throw new Error(`There is already a server called ${name}`);
+  let args: string[];
+  if (input.url) {
+    const url = input.url.trim();
+    if (!/^https?:\/\/\S+$/.test(url)) throw new Error('The address must start with https://');
+    args = ['mcp', 'add', '--scope', 'user', '--transport', 'http', name, url];
+  } else {
+    const parts = (input.command ?? '').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) throw new Error('Enter an address or a command');
+    args = ['mcp', 'add', '--scope', 'user', name, '--', ...parts];
+  }
+  await execFileAsync(CLAUDE_BIN, args, { timeout: 30_000 });
+  cache = null;
+}
+
+/** Only servers added with `claude mcp add` can be removed here. */
+export async function removeServer(name: string): Promise<void> {
+  const s = cachedServers().find((x) => x.name === name);
+  if (!s || s.source !== 'added') throw new Error('Only servers you added can be removed here');
+  await execFileAsync(CLAUDE_BIN, ['mcp', 'remove', name], { timeout: 30_000 });
+  cache = null;
+}
+
+/** Opens the server's sign-in page in the browser and waits (up to 5 minutes) for the user to finish. */
+export async function signIn(name: string): Promise<void> {
+  if (!cachedServers().some((x) => x.name === name && x.source !== 'built_in')) throw new Error('Unknown server');
+  try {
+    await execFileAsync(CLAUDE_BIN, ['mcp', 'login', name], { timeout: 300_000 });
+  } finally {
+    cache = null;
+  }
+}
+
+export async function signOut(name: string): Promise<void> {
+  if (!cachedServers().some((x) => x.name === name && x.source !== 'built_in')) throw new Error('Unknown server');
+  await execFileAsync(CLAUDE_BIN, ['mcp', 'logout', name], { timeout: 30_000 });
+  cache = null;
 }
 
 export const cachedServers = (): Server[] => cache?.servers ?? BUILT_IN;

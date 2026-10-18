@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { listDecisions } from './chat.js';
 import { DAILY_CONVERSATION, dailySettings, generateDaily, getEdition, isGenerating, listEditions, publishEdition, saveDailySettings } from './daily.js';
-import { listServers, serverAllowed, setServerAccess, setToolPolicy, toolPolicies, toolsSeen } from './integrations.js';
+import { addServer, listServers, removeServer, serverAllowed, setServerAccess, setToolPolicy, signIn, signOut, toolPolicies, toolsSeen } from './integrations.js';
 import {
   addNote,
   addReminder,
@@ -177,6 +177,22 @@ on('POST', '/api/integrations/access', async (req, res, _u, ctx) => {
   setServerAccess(ctx.db(), b.role, b.server, Boolean(b.allowed));
   ctx.json(res, 200, { ok: true });
 });
+const cliError = (e: unknown) => {
+  const err = e as { stderr?: string; message: string; killed?: boolean };
+  if (err.killed) return new HttpError(408, 'Timed out. Try again.');
+  return new HttpError(400, (err.stderr || err.message).trim().split('\n').pop() || 'Failed');
+};
+for (const [path, fn] of [
+  ['/api/integrations/add', (b: any) => addServer({ name: String(b?.name ?? ''), url: b?.url ? String(b.url) : undefined, command: b?.command ? String(b.command) : undefined })],
+  ['/api/integrations/remove', (b: any) => removeServer(String(b?.name ?? ''))],
+  ['/api/integrations/login', (b: any) => signIn(String(b?.name ?? ''))],
+  ['/api/integrations/logout', (b: any) => signOut(String(b?.name ?? ''))],
+] as const)
+  on('POST', path, async (req, res, _u, ctx) => {
+    const b = await ctx.readBody(req);
+    await fn(b).catch((e) => { throw cliError(e); });
+    ctx.json(res, 200, { ok: true });
+  });
 on('POST', '/api/integrations/policy', async (req, res, _u, ctx) => {
   const b = await ctx.readBody(req);
   if (!b?.tool || !['allow', 'ask', 'deny'].includes(b?.policy)) throw new HttpError(400, 'tool and policy (allow|ask|deny) required');

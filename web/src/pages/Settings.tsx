@@ -22,6 +22,7 @@ interface Server {
   url: string;
   status: string;
   detail: string;
+  source: 'built_in' | 'account' | 'plugin' | 'added';
   roles: { id: string; name: string; allowed: boolean }[];
   tools: { name: string; policy: Policy }[];
   policy: Policy;
@@ -43,12 +44,91 @@ function PolicyButton({ tool, policy, onDone }: { tool: string; policy: Policy; 
   );
 }
 
+const GROUPS: { source: string; title: string; note: string }[] = [
+  { source: 'account', title: 'From your Claude account', note: 'Connectors on your claude.ai account. Every Claude app you sign in to shares them, so they show up here without being set up in AI Brain. Connect or disconnect them on claude.ai › Settings › Connectors.' },
+  { source: 'added', title: 'Added by you', note: 'Servers added here or with claude mcp add. Every project can use them.' },
+  { source: 'plugin', title: 'From Claude Code plugins', note: 'They come with a plugin installed in Claude Code. Each needs its own sign-in before an agent can use it.' },
+  { source: 'built_in', title: 'Built in', note: 'Part of AI Brain.' },
+];
+
+function AddServerDialog({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const [kind, setKind] = useState<'url' | 'command'>('url');
+  const [name, setName] = useState('');
+  const [value, setValue] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const add = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api('/api/integrations/add', { body: { name, [kind]: value } });
+      onAdded();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title="Add an MCP server" onClose={onClose} width={520}>
+      <div className="seg" style={{ alignSelf: 'flex-start' }}>
+        <button aria-pressed={kind === 'url'} onClick={() => setKind('url')}>Web address</button>
+        <button aria-pressed={kind === 'command'} onClick={() => setKind('command')}>Command on this Mac</button>
+      </div>
+      <label className="field"><span className="muted">Name</span><input className="input" value={name} placeholder="sentry" onChange={(e) => setName(e.target.value.replace(/[^A-Za-z0-9_-]/g, '-'))} /></label>
+      <label className="field">
+        <span className="muted">{kind === 'url' ? 'Server address (from the service’s MCP docs)' : 'Command that starts it'}</span>
+        <input className="input mono" value={value} placeholder={kind === 'url' ? 'https://mcp.sentry.dev/mcp' : 'npx -y @modelcontextprotocol/server-filesystem ~/Documents'} onChange={(e) => setValue(e.target.value)} />
+      </label>
+      {kind === 'url' && <div className="muted" style={{ fontSize: 12.5 }}>If the service needs a sign-in, use Sign in on its card after adding it.</div>}
+      {error && <div className="error">{error}</div>}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="btn primary" disabled={busy || !name || !value.trim()} onClick={add}>{busy ? 'Adding…' : 'Add server'}</button>
+        <button className="btn" onClick={onClose}>Cancel</button>
+      </div>
+    </Modal>
+  );
+}
+
 function Integrations() {
   const [refresh, setRefresh] = useState(0);
   const data = useApi<{ servers: Server[] }>(`/api/integrations${refresh ? '?refresh=1&n=' + refresh : ''}`, () => false);
   const [sel, setSel] = useState<string>('');
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [confirm, setConfirm] = useState<'remove' | 'logout' | null>(null);
+  const [showPlugins, setShowPlugins] = useState(false);
   const servers = data.data?.servers ?? [];
   const s = servers.find((x) => x.prefix === sel) ?? servers.find((x) => x.status === 'connected') ?? servers[0];
+  const short = (x: Server) => x.name.replace(/^claude\.ai /, '').replace(/^plugin:[^:]+:/, '');
+  const act = async (key: string, path: string, ok: string) => {
+    setBusy(key);
+    setMsg(null);
+    try {
+      await api(path, { body: { name: s!.name } });
+      setMsg({ ok: true, text: ok });
+      setRefresh((n) => n + 1);
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+    } finally {
+      setBusy(null);
+      setConfirm(null);
+    }
+  };
+  const card = (x: Server) => {
+    const [label, tone] = STATUS[x.status] ?? [x.status, 't-n'];
+    return (
+      <button key={x.prefix} className={`server${s?.prefix === x.prefix ? ' on' : ''}`} onClick={() => (setSel(x.prefix), setMsg(null))}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
+          <span style={{ flex: 1, fontWeight: 700, fontSize: 13.5, textAlign: 'left' }}>{short(x)}</span>
+          <span className={`pill ${tone}`}>{label}</span>
+        </div>
+        <div className="muted" style={{ fontSize: 11.5, textAlign: 'left' }}>{x.source === 'plugin' ? `${x.name.split(':')[1]} plugin` : x.source === 'account' ? 'claude.ai connector' : x.url}</div>
+        <div className="muted" style={{ fontSize: 11, textAlign: 'left' }}>{x.roles.filter((r) => r.allowed).length} roles · {x.tools.length} tools seen</div>
+      </button>
+    );
+  };
   return (
     <>
       <div className="settings-head">
@@ -56,33 +136,48 @@ function Integrations() {
           <h1>Integrations</h1>
           <p className="muted">MCP servers your agents can use. A role uses a server only if it has access here, and every tool call follows its policy: Allow runs without asking, Ask shows an approval card, Never blocks it.</p>
         </div>
-        <button className="btn" onClick={() => setRefresh((n) => n + 1)} disabled={!data.data && !data.error}>{data.data ? 'Check again' : 'Checking servers…'}</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn" onClick={() => setRefresh((n) => n + 1)} disabled={!data.data && !data.error}>{data.data ? 'Check again' : 'Checking servers…'}</button>
+          <button className="btn primary" onClick={() => setAdding(true)}>Add a server</button>
+        </div>
       </div>
       {!data.data && !data.error && <div className="muted">Asking Claude Code for its MCP servers (this health-checks each one and can take up to a minute)…</div>}
       {data.data && (
         <div className="row">
-          <div style={{ flex: '1.3 1 420px', minWidth: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 10 }}>
-            {servers.map((x) => {
-              const [label, tone] = STATUS[x.status] ?? [x.status, 't-n'];
+          <div style={{ flex: '1.3 1 420px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 18 }}>
+            {GROUPS.map((g) => {
+              const list = servers.filter((x) => x.source === g.source);
+              if (!list.length) return null;
+              const folded = g.source === 'plugin' && !showPlugins;
               return (
-                <button key={x.prefix} className={`server${s?.prefix === x.prefix ? ' on' : ''}`} onClick={() => setSel(x.prefix)}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
-                    <span style={{ flex: 1, fontWeight: 700, fontSize: 13.5, textAlign: 'left' }}>{x.name.replace(/^claude\.ai /, '').replace(/^plugin:[^:]+:/, '')}</span>
-                    <span className={`pill ${tone}`}>{label}</span>
+                <section key={g.source} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                    <h2 style={{ margin: 0, fontSize: 14 }}>{g.title}</h2>
+                    <span className="muted" style={{ fontSize: 12 }}>{list.filter((x) => x.status === 'connected' || x.status === 'built_in').length} of {list.length} ready</span>
+                    {g.source === 'plugin' && <button className="link-btn" style={{ fontSize: 12, marginLeft: 'auto' }} onClick={() => setShowPlugins(!showPlugins)}>{folded ? 'Show' : 'Hide'}</button>}
                   </div>
-                  <div className="muted" style={{ fontSize: 11.5, textAlign: 'left' }}>{x.name.startsWith('claude.ai') ? 'claude.ai connector' : x.name.startsWith('plugin:') ? x.name.split(':').slice(0, 2).join(':') : x.url}</div>
-                  <div className="muted" style={{ fontSize: 11, textAlign: 'left' }}>{x.roles.filter((r) => r.allowed).length} roles · {x.tools.length} tools seen</div>
-                </button>
+                  <div className="muted" style={{ fontSize: 12 }}>{g.note}{g.source === 'account' && <> <a href="https://claude.ai/settings/connectors" target="_blank" rel="noreferrer">Open claude.ai connectors</a></>}</div>
+                  {!folded && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 10 }}>{list.map(card)}</div>}
+                </section>
               );
             })}
           </div>
           {s && (
-            <aside className="panel" style={{ flex: '1 1 320px', minWidth: 0 }}>
-              <div style={{ fontSize: 18, fontWeight: 800 }}>{s.name}</div>
+            <aside className="panel" style={{ flex: '1 1 320px', minWidth: 0, alignSelf: 'flex-start' }}>
+              <div style={{ fontSize: 18, fontWeight: 800 }}>{short(s)}</div>
               <div className="muted mono" style={{ fontSize: 11.5 }}>{s.prefix}</div>
-              <div style={{ fontSize: 13 }}>{s.detail}</div>
-              {s.status === 'needs_auth' && (
-                <div className="banner t-a" style={{ fontSize: 12.5 }}>Sign in once: run <span className="mono">claude</span> in a terminal, type <span className="mono">/mcp</span>, pick this server and follow the browser sign-in.</div>
+              <div style={{ fontSize: 13 }}>{s.source === 'account' ? `${s.detail}. This is a connector on your claude.ai account, not something AI Brain set up.` : s.detail}</div>
+              {msg && <div className={msg.ok ? 'banner t-g' : 'error'} style={{ fontSize: 12.5 }}>{msg.text}</div>}
+              {s.status !== 'built_in' && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {s.status === 'needs_auth' || (s.status === 'failed' && /^https?:/.test(s.url)) ? (
+                    <button className="btn primary sm" disabled={busy !== null} onClick={() => act('login', '/api/integrations/login', `Signed in to ${short(s)}.`)}>{busy === 'login' ? 'Finish signing in in your browser…' : 'Sign in'}</button>
+                  ) : null}
+                  {s.status === 'not_configured' && <span className="muted" style={{ fontSize: 12.5 }}>Its plugin has settings that are not filled in yet. Set them with /plugin in Claude Code.</span>}
+                  {s.status === 'connected' && s.source !== 'account' && <button className="btn sm" disabled={busy !== null} onClick={() => setConfirm('logout')}>Sign out</button>}
+                  {s.source === 'account' && <a className="btn sm" href="https://claude.ai/settings/connectors" target="_blank" rel="noreferrer">Manage on claude.ai</a>}
+                  {s.source === 'added' && <button className="btn sm danger" disabled={busy !== null} onClick={() => setConfirm('remove')}>Remove</button>}
+                </div>
               )}
               {s.status !== 'built_in' && (
                 <>
@@ -114,6 +209,20 @@ function Integrations() {
             </aside>
           )}
         </div>
+      )}
+      {adding && <AddServerDialog onClose={() => setAdding(false)} onAdded={() => (setAdding(false), setMsg(null), setRefresh((n) => n + 1))} />}
+      {confirm && s && (
+        <Modal title={confirm === 'remove' ? `Remove ${short(s)}?` : `Sign out of ${short(s)}?`} onClose={() => setConfirm(null)} width={460}>
+          <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+            {confirm === 'remove' ? 'It is removed from Claude Code for every project, and agents can no longer use it. You can add it again later.' : 'Agents can no longer use it until you sign in again.'}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn danger" disabled={busy !== null} onClick={() => (confirm === 'remove' ? act('remove', '/api/integrations/remove', `Removed ${short(s)}.`) : act('logout', '/api/integrations/logout', `Signed out of ${short(s)}.`))}>
+              {confirm === 'remove' ? 'Yes, remove' : 'Yes, sign out'}
+            </button>
+            <button className="btn" onClick={() => setConfirm(null)}>Cancel</button>
+          </div>
+        </Modal>
       )}
     </>
   );

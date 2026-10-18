@@ -13,13 +13,15 @@ describe('integrations parsing', () => {
 claude.ai Gmail: https://gmailmcp.googleapis.com/mcp/v1 - ✔ Connected
 plugin:marketing:slack: https://mcp.slack.com/mcp (HTTP) - ! Needs authentication
 plugin:marketing:hubspot: https://mcp.hubspot.com/anthropic (HTTP) - ✘ Failed to connect — no DCR
-plugin:marketing:gmail:  (HTTP) - - Not configured`;
+plugin:marketing:gmail:  (HTTP) - - Not configured
+sentry: https://mcp.sentry.dev/mcp (HTTP) - ✔ Connected`;
     const s = parseMcpList(out);
-    assert.deepEqual(s.map((x) => [x.name, x.status]), [
-      ['claude.ai Gmail', 'connected'],
-      ['plugin:marketing:slack', 'needs_auth'],
-      ['plugin:marketing:hubspot', 'failed'],
-      ['plugin:marketing:gmail', 'not_configured'],
+    assert.deepEqual(s.map((x) => [x.name, x.status, x.source]), [
+      ['claude.ai Gmail', 'connected', 'account'],
+      ['plugin:marketing:slack', 'needs_auth', 'plugin'],
+      ['plugin:marketing:hubspot', 'failed', 'plugin'],
+      ['plugin:marketing:gmail', 'not_configured', 'plugin'],
+      ['sentry', 'connected', 'added'],
     ]);
     assert.equal(prefixOf('claude.ai Gmail'), 'mcp__claude_ai_Gmail');
     assert.equal(prefixOf('claude.ai Claude Docs'), 'mcp__claude_ai_Claude_Docs');

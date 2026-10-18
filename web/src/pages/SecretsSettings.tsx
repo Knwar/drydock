@@ -48,6 +48,8 @@ const BLURB: Record<Provider, string> = {
   bws: 'Bitwarden’s product for machines: a machine-account token, one project. Needs Bitwarden cloud or the official self-hosted server (not Vaultwarden).',
 };
 
+const BREW: Partial<Record<Provider, string>> = { '1password': 'brew install --cask 1password-cli', bitwarden: 'brew install bitwarden-cli' };
+
 function Switch({ on, label, onChange }: { on: boolean; label: string; onChange: (v: boolean) => void }) {
   return <button role="switch" aria-checked={on} aria-label={label} className="switch" onClick={() => onChange(!on)}><span /></button>;
 }
@@ -59,6 +61,7 @@ export function SecretsSettings() {
   const [busy, setBusy] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [confirm, setConfirm] = useState<{ kind: 'delete' | 'rotate'; name: string } | null>(null);
+  const [install, setInstall] = useState<Provider | null>(null);
   const [form, setForm] = useState<Record<string, string>>({});
   const data = d.data;
   if (!data) return <div className="muted">Checking your password managers…</div>;
@@ -88,13 +91,28 @@ export function SecretsSettings() {
       <section key={p} className="panel" style={{ flex: '1 1 280px', borderColor: chosen ? 'var(--accent)' : undefined }}>
         <div className="panel-head">
           <h2>{NAMES[p]}</h2>
-          {chosen ? <span className="pill t-b">In use</span> : <button className="btn sm" disabled={busy !== null} onClick={() => saveSettings({ provider: p }, `${NAMES[p]} is now where new secrets go.`)}>Use this</button>}
+          {chosen && st.ready ? (
+            <span className="pill t-b">In use</span>
+          ) : chosen ? (
+            <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span className="pill t-a">Chosen, not set up</span>
+              <button className="link-btn" style={{ fontSize: 12 }} disabled={busy !== null} onClick={() => saveSettings({ provider: null }, `${NAMES[p]} is no longer chosen.`)}>Undo</button>
+            </span>
+          ) : (
+            <button className="btn sm" disabled={busy !== null || !st.installed} title={st.installed ? undefined : 'Install it first'} onClick={() => saveSettings({ provider: p }, `${NAMES[p]} is now where new secrets go.`)}>Use this</button>
+          )}
         </div>
         <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>{BLURB[p]}</div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12.5 }}>
           <span className={`pill ${!st.installed ? 't-r' : st.ready ? 't-g' : 't-a'}`}>{!st.installed ? 'Not installed' : st.ready ? (p === 'bitwarden' && !st.unlocked ? 'Locked' : 'Ready') : 'Needs setup'}</span>
           <span style={{ color: 'var(--text2)' }}>{st.detail}</span>
         </div>
+        {!st.installed && BREW[p] && (
+          <button className="btn sm primary" style={{ alignSelf: 'flex-start' }} disabled={busy !== null} onClick={() => setInstall(p)}>{busy === `install-${p}` ? 'Installing…' : 'Install it'}</button>
+        )}
+        {!st.installed && p === 'bws' && (
+          <a className="btn sm" style={{ alignSelf: 'flex-start' }} href="https://github.com/bitwarden/sdk-sm/releases" target="_blank" rel="noreferrer">Download page</a>
+        )}
 
         {p === '1password' && st.installed && (
           <div className="form-grid">
@@ -207,6 +225,19 @@ export function SecretsSettings() {
       </section>
 
       {adding && <AddSecretDialog projects={projects.data ?? []} onClose={() => setAdding(false)} onSaved={() => (setAdding(false), d.reload())} />}
+      {install && (
+        <Modal title={`Install ${NAMES[install]}?`} onClose={() => setInstall(null)} width={480}>
+          <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+            AI Brain runs <span className="mono">{BREW[install]}</span> on this Mac with Homebrew. It takes a minute or two.
+            {install === '1password' && ' Afterwards, open the 1Password app and turn on Settings › Developer › Integrate with 1Password CLI.'}
+            {install === 'bitwarden' && ' Afterwards, enter your Vaultwarden server here and sign the CLI in once in a terminal: bw login.'}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn primary" onClick={() => { const p = install; setInstall(null); run(`install-${p}`, () => api('/api/secrets/install', { body: { provider: p } }), `${NAMES[p]} CLI installed.`); }}>Yes, install</button>
+            <button className="btn" onClick={() => setInstall(null)}>Cancel</button>
+          </div>
+        </Modal>
+      )}
       {confirm && (
         <Modal title={confirm.kind === 'delete' ? `Delete ${confirm.name}?` : `Rotate ${confirm.name}?`} onClose={() => setConfirm(null)} width={480}>
           <div style={{ fontSize: 13, lineHeight: 1.5 }}>

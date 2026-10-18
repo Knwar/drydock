@@ -14,6 +14,7 @@ import {
   deleteSecret,
   generateValue,
   getSecret,
+  installProvider,
   listSecrets,
   lockBitwarden,
   moveFromFile,
@@ -69,6 +70,14 @@ on('POST', '/api/secrets/settings', async (req, res, _u, ctx) => {
   if (b?.onepassword) patch.onepassword = { vault: String(b.onepassword.vault ?? 'AI Brain').trim() || 'AI Brain', account: b.onepassword.account ? String(b.onepassword.account) : null, askEveryTime: Boolean(b.onepassword.askEveryTime) };
   if (b?.bitwarden) patch.bitwarden = { ...secretSettings(ctx.db()).bitwarden, folder: String(b.bitwarden.folder ?? 'AI Brain').trim() || 'AI Brain', unlockMinutes: Math.min(240, Math.max(1, Number(b.bitwarden.unlockMinutes) || 15)) };
   saveSecretSettings(ctx.db(), patch);
+  ctx.broadcast({ type: 'secrets' });
+  ctx.json(res, 200, await providerStatus(ctx.db()));
+});
+
+on('POST', '/api/secrets/install', async (req, res, _u, ctx) => {
+  const b = await ctx.readBody(req);
+  if (!['1password', 'bitwarden', 'bws'].includes(b?.provider)) throw new HttpError(400, 'provider must be 1password, bitwarden or bws');
+  await guard(() => installProvider(b.provider));
   ctx.broadcast({ type: 'secrets' });
   ctx.json(res, 200, await providerStatus(ctx.db()));
 });

@@ -160,6 +160,17 @@ export async function confirmOnMac(reason: string): Promise<void> {
 
 const opArgs = (s: SecretSettings, args: string[]) => (s.onepassword.account ? [...args, '--account', s.onepassword.account] : args);
 
+/** Homebrew packages for the CLIs that have one (Secrets Manager has none). */
+export const INSTALL: Partial<Record<Provider, string[]>> = { '1password': ['install', '--cask', '1password-cli'], bitwarden: ['install', 'bitwarden-cli'] };
+const BREW = () => process.env.BRAIN_BREW_BIN ?? ['/opt/homebrew/bin/brew', '/usr/local/bin/brew'].find((b) => existsSync(b)) ?? 'brew';
+
+export async function installProvider(p: Provider): Promise<void> {
+  const args = INSTALL[p];
+  if (!args) throw new SecretError(`${PROVIDER_NAME[p]} has no Homebrew package. Install it by hand.`, 'invalid');
+  const r = await cli(BREW(), args, { env: { HOMEBREW_NO_AUTO_UPDATE: '1' }, timeoutMs: 600_000 });
+  if (r.code !== 0) throw new SecretError(`Homebrew could not install it: ${(r.stderr || r.stdout).trim().split('\n').pop()}`, 'cli');
+}
+
 async function opStatus(s: SecretSettings) {
   const v = await cli(OP(), ['--version']);
   if (v.code !== 0) return { installed: false, ready: false, detail: 'Install the 1Password CLI: brew install 1password-cli, then turn on "Integrate with 1Password CLI" in the 1Password app (Settings › Developer).' };
@@ -338,7 +349,7 @@ async function bwsJson(s: SecretSettings, args: string[], what: string): Promise
 
 async function bwsStatus(s: SecretSettings) {
   const v = await cli(BWS(), ['--version']);
-  if (v.code !== 0) return { installed: false, ready: false, detail: 'Install the Secrets Manager CLI: brew install bws (or download it from bitwarden.com/help/secrets-manager-cli).' };
+  if (v.code !== 0) return { installed: false, ready: false, detail: 'Install the Secrets Manager CLI: download bws from github.com/bitwarden/sdk-sm/releases (or run cargo install bws) and put it on your PATH. It has no Homebrew package.' };
   let projects: { id: string; name: string }[] = [];
   try {
     projects = (await bwsJson(s, ['project', 'list'], 'Listing projects')) ?? [];
