@@ -19,6 +19,8 @@ const PATHS = {
   check: 'M20 6L9 17l-5-5',
   chat: 'M4 5h16v11H8l-4 4z',
   plus: 'M12 5v14M5 12h14',
+  expand: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',
+  close: 'M6 6l12 12M18 6L6 18',
   idea: 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z',
 } as const;
 

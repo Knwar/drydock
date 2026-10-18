@@ -485,6 +485,14 @@ button.chev-btn:hover { background: var(--hover); }
 .swatch > span:first-child { height: 52px; border-radius: 10px; border: 1px solid var(--border); }
 .mockup-stage { display: flex; justify-content: center; background: var(--bg2, rgba(127, 127, 127, 0.08)); border-radius: 12px; padding: 12px; }
 .mockup-stage iframe { height: 640px; max-width: 100%; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+.mockup-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.mockup-pick { width: auto; min-width: 200px; max-width: min(360px, 100%); }
+.mockup-full { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 16px; background: var(--bg); }
+.mockup-full .mockup-stage { flex: 1; min-height: 0; padding: 0; background: none; }
+.mockup-full .mockup-stage iframe { height: 100%; }
+.mockup-bar .btn { display: inline-flex; align-items: center; gap: 6px; }
+.mockup-close { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border: 0; border-radius: 8px; background: none; color: var(--muted); }
+.mockup-close:hover { background: var(--hover); color: var(--text); }
 .md-table-wrap { overflow-x: auto; margin: 6px 0; }
 .md-table { border-collapse: collapse; font-size: 13px; min-width: 50%; }
 .md-table th, .md-table td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }

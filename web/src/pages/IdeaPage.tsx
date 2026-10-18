@@ -2,8 +2,10 @@
 // UI mockups) beside its single chat. Every message in the chat can change
 // several of these at once; the tabs update live. Promote makes a project.
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ChatPanel } from '../components/Chat';
 import { Modal } from '../components/Dialogs';
+import { Icon } from '../components/Icon';
 import { ideaEvents, Shaped, STATUS } from '../components/Ideas';
 import { api, useApi } from '../lib/api';
 import { Markdown } from '../lib/md';
@@ -200,23 +202,48 @@ function Screens({ d }: { d: Detail }) {
   const [width, setWidth] = useState<'mobile' | 'desktop'>('desktop');
   const [stamp, setStamp] = useState(0);
   useEffect(() => setStamp(Date.now()), [d.screens, d.updated_at]);
+  const [full, setFull] = useState(false);
+  useEffect(() => {
+    if (!full) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setFull(false);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [full]);
   const screen = d.screenList.find((s) => s.id === cur) ?? d.screenList[0];
   if (!screen) return <div className="empty" style={{ padding: 30 }}>No screens yet. Ask in the chat (for example "sketch the home and settings screens"); the Main agent draws them as clickable mockups.</div>;
+  const at = d.screenList.indexOf(screen);
+  // screens in a dropdown (the list can grow long), the size, and full screen
+  const bar = (
+    <div className="mockup-bar">
+      <select className="input mockup-pick" aria-label="Screen" value={screen.id} onChange={(e) => setCur(e.target.value)}>
+        {d.screenList.map((s, i) => <option key={s.id} value={s.id}>{i + 1}. {s.title}</option>)}
+      </select>
+      <span className="muted" style={{ fontSize: 12 }}>{at + 1} of {d.screenList.length}</span>
+      <div className="seg" style={{ marginLeft: 'auto' }}>
+        <button aria-pressed={width === 'mobile'} onClick={() => setWidth('mobile')}>Mobile</button>
+        <button aria-pressed={width === 'desktop'} onClick={() => setWidth('desktop')}>Desktop</button>
+      </div>
+      {full ? (
+        <button className="mockup-close" aria-label="Close full screen" title="Close (Esc)" onClick={() => setFull(false)}><Icon name="close" size={18} /></button>
+      ) : (
+        <button className="btn sm" onClick={() => setFull(true)}><Icon name="expand" size={14} /> Full screen</button>
+      )}
+    </div>
+  );
+  /* fully sandboxed and served without scripts: links between screens work, nothing else can */
+  const frame = <iframe key={`${screen.id}-${stamp}`} title={`${screen.title} mockup`} sandbox="" src={`/api/ideas/${d.id}/ui/${screen.id}.html?v=${stamp}`} style={{ width: width === 'mobile' ? 390 : '100%' }} />;
   return (
     <section className="panel" style={{ gap: 10 }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <div className="seg" role="tablist" aria-label="Screens">
-          {d.screenList.map((s) => <button key={s.id} aria-pressed={s.id === screen.id} onClick={() => setCur(s.id)}>{s.title}</button>)}
-        </div>
-        <div className="seg" style={{ marginLeft: 'auto' }}>
-          <button aria-pressed={width === 'mobile'} onClick={() => setWidth('mobile')}>Mobile</button>
-          <button aria-pressed={width === 'desktop'} onClick={() => setWidth('desktop')}>Desktop</button>
-        </div>
-      </div>
-      <div className="mockup-stage">
-        {/* fully sandboxed and served without scripts: links between screens work, nothing else can */}
-        <iframe key={`${screen.id}-${stamp}`} title={`${screen.title} mockup`} sandbox="" src={`/api/ideas/${d.id}/ui/${screen.id}.html?v=${stamp}`} style={{ width: width === 'mobile' ? 390 : '100%' }} />
-      </div>
+      {!full && bar}
+      {!full && <div className="mockup-stage">{frame}</div>}
+      {full &&
+        createPortal(
+          <div className="mockup-full" role="dialog" aria-modal="true" aria-label={`${screen.title}, full screen`}>
+            {bar}
+            <div className="mockup-stage">{frame}</div>
+          </div>,
+          document.body,
+        )}
     </section>
   );
 }
