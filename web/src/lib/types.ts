@@ -64,7 +64,7 @@ export interface Message {
   id: number;
   conversation_id: string;
   author: string;
-  kind: 'text' | 'tool' | 'decision' | 'approval' | 'proposal' | 'secret_request' | 'change_request' | 'error';
+  kind: 'text' | 'tool' | 'decision' | 'approval' | 'proposal' | 'secret_request' | 'change_request' | 'offer' | 'error';
   body: string;
   meta: any;
   created_at: number;

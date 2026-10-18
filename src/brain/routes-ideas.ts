@@ -148,6 +148,65 @@ on('DELETE', '/api/ideas/:id/features/:fid', (_q, res, _u, ctx, p) => {
   ctx.json(res, 200, { ok: true });
 });
 
+// ── next steps: the lead offers to build the system design or the UI once the idea is ready; the user starts it with a button ──
+
+const STEPS: Record<string, { label: string; ask: string; software: boolean }> = {
+  design: {
+    label: 'Build the system design',
+    ask: 'Draw the system design for this idea from the requirements and features so far, loading the C4 skill: the containers, the main components and how they connect, and the tech choices with the reason for each. Use the design tools with the idea_id. Then reply here in two or three lines, with anything the design left open.',
+    software: true,
+  },
+  ui: {
+    label: 'Build the UI mockups',
+    ask: 'Make the UI mockups for this idea: the main screens of the MVP features, one save_screen call each, static and clickable, following the brand (if there is no brand yet, draft one first with save_brand). Then reply here in two or three lines: which screens, and anything the requirements left open.',
+    software: true,
+  },
+};
+
+on('POST', '/api/ideas/:id/offers', async (req, res, _u, ctx, p) => {
+  const db = ctx.db();
+  const idea = need(db, p.id);
+  const b = await ctx.readBody(req);
+  const step = STEPS[String(b?.step ?? '')];
+  if (!step) throw new HttpError(400, `step must be one of ${Object.keys(STEPS).join(', ')}`);
+  if (idea.status === 'promoted') throw new HttpError(400, 'this idea is already a project');
+  if (step.software && idea.type !== 'software') throw new HttpError(400, 'only software ideas get a system design and UI mockups');
+  const conv = attempt(() => ideaThread(db, p.id));
+  // one open offer per step: a newer one replaces it
+  const open = db.prepare(`SELECT id FROM messages WHERE conversation_id = ? AND kind = 'offer' AND json_extract(meta, '$.step') = ? AND json_extract(meta, '$.status') = 'pending'`).all(conv, b.step) as { id: number }[];
+  for (const o of open) {
+    const old = getMessage(db, o.id)!;
+    ctx.broadcast({ type: 'chat_update', conversation: conv, message: updateMessageMeta(db, o.id, { ...old.meta, status: 'replaced' }) });
+  }
+  const m = addMessage(db, conv, String(b?.role ?? 'main'), step.label, 'offer', { status: 'pending', idea_id: p.id, step: b.step, reason: String(b?.reason ?? '').trim() || null });
+  ctx.broadcast({ type: 'chat', conversation: conv, message: m });
+  ctx.json(res, 200, { status: 'offered', message_id: m.id });
+});
+
+on('POST', '/api/ideas/:id/offers/:mid', async (req, res, _u, ctx, p) => {
+  const db = ctx.db();
+  const idea = need(db, p.id);
+  const m = getMessage(db, Number(p.mid));
+  if (!m || m.kind !== 'offer' || m.meta?.idea_id !== p.id) throw new HttpError(404, 'unknown offer');
+  if (m.meta.status !== 'pending') throw new HttpError(409, `already ${m.meta.status}`);
+  const b = await ctx.readBody(req);
+  const conv = m.conversation_id;
+  const accept = Boolean(b?.accept);
+  if (accept && idea.status === 'promoted') throw new HttpError(400, 'this idea is already a project');
+  const updated = updateMessageMeta(db, m.id, { ...m.meta, status: accept ? 'started' : 'declined' });
+  ctx.broadcast({ type: 'chat_update', conversation: conv, message: updated });
+  if (accept) {
+    const step = STEPS[m.meta.step];
+    const ask = addMessage(db, conv, 'user', `**${step.label}**: ${step.ask}`);
+    ctx.broadcast({ type: 'chat', conversation: conv, message: ask });
+    respond(conv, '');
+  } else {
+    const note = addMessage(db, conv, 'system', `The user said not now to "${STEPS[m.meta.step].label}". Keep shaping; offer it again only when the user brings it up or something important has changed.`);
+    ctx.broadcast({ type: 'chat', conversation: conv, message: note });
+  }
+  ctx.json(res, 200, { status: updated.meta.status });
+});
+
 // ── brand ──
 
 on('GET', '/api/brands', (_q, res, _u, ctx) => ctx.json(res, 200, listBrands(ctx.db())));

@@ -146,6 +146,30 @@ describe('the Idea board', () => {
     assert.equal((await raw('POST', `/api/ideas/${id}/sections`, { kind: 'horoscope', summary: 'x', markdown: 'y' })).status, 400);
   });
 
+  it('offers the next step on a card; nothing starts until the user presses its button', async () => {
+    assert.equal((await raw('POST', `/api/ideas/${id}/offers`, { step: 'deploy', reason: 'x' })).status, 400);
+    const first = await call('POST', `/api/ideas/${id}/offers`, { step: 'design', reason: 'The core features are clear.' });
+    const again = await call('POST', `/api/ideas/${id}/offers`, { step: 'design', reason: 'Still clear.' });
+    let ms = await messages(conv);
+    assert.equal(ms.find((m) => m.id === first.message_id).meta.status, 'replaced', 'one open offer per step');
+    const card = ms.find((m) => m.id === again.message_id);
+    assert.equal(card.kind, 'offer');
+    assert.equal(card.meta.status, 'pending');
+    assert.equal(card.body, 'Build the system design');
+    const mark = ms.length;
+    await call('POST', `/api/ideas/${id}/offers/${again.message_id}`, { accept: true });
+    ms = await messages(conv);
+    assert.equal(ms.find((m) => m.id === again.message_id).meta.status, 'started');
+    assert.ok(ms.slice(mark).some((m) => m.author === 'user' && /\*\*Build the system design\*\*/.test(m.body)), 'pressing it asks the lead');
+    assert.equal((await raw('POST', `/api/ideas/${id}/offers/${again.message_id}`, { accept: true })).status, 409);
+    await until(async () => !(await call('GET', `/api/ideas/${id}`)).working);
+    const ui = await call('POST', `/api/ideas/${id}/offers`, { step: 'ui', reason: 'The MVP is agreed.' });
+    await call('POST', `/api/ideas/${id}/offers/${ui.message_id}`, { accept: false });
+    ms = await messages(conv);
+    assert.equal(ms.find((m) => m.id === ui.message_id).meta.status, 'declined');
+    assert.ok(!ms.some((m) => m.author === 'user' && /\*\*Build the UI mockups\*\*/.test(m.body)), 'not now starts nothing');
+  });
+
   it('keeps what will be built as detailed features, and the MVP cut updates them in place', async () => {
     await call('POST', `/api/ideas/${id}/features`, {
       features: [

@@ -419,6 +419,23 @@ server.registerTool(
 );
 
 server.registerTool(
+  'offer_next_step',
+  {
+    description:
+      'In an idea chat you lead: offer to build the system design or the UI mockups once the idea is ready for it. The user sees a card with a button and starts it there (or says not now); do not build it until then. Software ideas only.',
+    inputSchema: {
+      idea_id: z.string(),
+      step: z.enum(['design', 'ui']).describe('design: the system design; ui: the UI mockups'),
+      reason: z.string().describe('One sentence: why now (what is settled enough to build it from)'),
+    },
+  },
+  async ({ idea_id, ...b }) => {
+    await call(`/api/ideas/${idea_id}/offers`, { ...b, role: ROLE });
+    return text('Offered. The user starts it with the button on the card; you will get the request in this chat when they do. Do not build it before.');
+  },
+);
+
+server.registerTool(
   'propose_change',
   {
     description:

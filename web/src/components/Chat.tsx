@@ -166,6 +166,44 @@ function ChangeRequestCard({ m, role }: { m: Message; role?: Role }) {
   );
 }
 
+/** The lead's offer to build the next part of an idea (system design, UI mockups): nothing starts until the user presses the button. */
+function OfferCard({ m, role }: { m: Message; role?: Role }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const status = m.meta?.status ?? 'pending';
+  const answer = async (accept: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/ideas/${m.meta.idea_id}/offers/${m.id}`, { body: { accept } });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const done: Record<string, [string, string]> = { started: ['Started', 't-g'], declined: ['Not now', 't-n'], replaced: ['Offered again below', 't-n'] };
+  return (
+    <div className="card-proposal" data-status={status === 'started' ? 'added' : status}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className="pill t-v">Next step</span>
+        <span className="muted" style={{ fontSize: 12 }}>{role?.name ?? 'Main agent'} suggests</span>
+      </div>
+      <div style={{ fontWeight: 700, fontSize: 14 }}>{m.body}</div>
+      {m.meta?.reason && <div style={{ fontSize: 12.5, color: 'var(--text2)' }}>{m.meta.reason}</div>}
+      {error && <div className="error">{error}</div>}
+      {status === 'pending' ? (
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button className="btn sm primary" disabled={busy} onClick={() => answer(true)}>{m.body}</button>
+          <button className="btn sm" disabled={busy} onClick={() => answer(false)}>Not now</button>
+        </div>
+      ) : (
+        <span className={`pill ${done[status]?.[1] ?? 't-n'}`} style={{ alignSelf: 'flex-start' }}>{done[status]?.[0] ?? status}</span>
+      )}
+    </div>
+  );
+}
+
 function DecisionCard({ m }: { m: Message }) {
   return (
     <div className="card-decision">
@@ -352,6 +390,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
           if (m.kind === 'decision') return <DecisionCard key={m.id} m={m} />;
           if (m.kind === 'proposal') return <ProposalCard key={m.id} m={m} proposer={role} />;
           if (m.kind === 'change_request') return <ChangeRequestCard key={m.id} m={m} role={role} />;
+          if (m.kind === 'offer') return <OfferCard key={m.id} m={m} role={role} />;
           return (
             <div key={m.id} className="msg">
               <Avatar role={role} />
