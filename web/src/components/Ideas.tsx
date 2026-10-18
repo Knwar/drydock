@@ -20,6 +20,7 @@ export const STATUS: Record<IdeaCard['status'], { label: string; tone: string }>
 export function Shaped({ i }: { i: IdeaCard }) {
   const parts = [
     i.requirementsVersion ? `Requirements v${i.requirementsVersion}` : null,
+    i.features ? `Features · ${i.features}${i.mvpFeatures ? ` (${i.mvpFeatures} MVP)` : ''}` : null,
     i.type === 'software' && i.designElements ? `Design · ${i.designElements}` : null,
     i.brand ? `Brand · ${i.brand.name}` : null,
     i.screens ? `UI · ${i.screens} screen${i.screens === 1 ? '' : 's'}` : null,

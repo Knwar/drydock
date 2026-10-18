@@ -434,21 +434,38 @@ button.chev-btn:hover { background: var(--hover); }
 .idea-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
 .idea-card { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; color: var(--text); text-decoration: none; min-width: 0; }
 .idea-card:hover { border-color: var(--accent); }
-.main.main-idea { padding: 0; overflow: hidden; }
-.idea-page { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); height: 100%; min-height: 0; }
-.idea-main { display: flex; flex-direction: column; gap: 14px; padding: 22px 26px 40px; overflow: auto; min-width: 0; }
-.idea-chat { border-left: 1px solid var(--border); min-height: 0; display: flex; flex-direction: column; }
-.idea-chat > .chat { flex: 1; min-height: 0; }
+.main.main-idea { padding: 0; overflow: hidden; display: flex; position: sticky; top: 69px; height: calc(100vh - 69px); }
+.idea-page { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.idea-main { flex: 1; display: flex; flex-direction: column; gap: 14px; padding: 22px 26px 24px; overflow: auto; min-height: 0; }
+.idea-main > * { flex-shrink: 0; }
+.idea-dock { border-top: 1px solid var(--border); background: var(--surface); }
+.chat.chat-dock { position: static; height: auto; max-height: 72vh; max-width: none; width: 100%; border-left: 0; }
+.chat.chat-dock .chat-head { padding: 8px 16px; }
+.chat.chat-dock .composer { max-width: 980px; width: calc(100% - 28px); align-self: center; margin-top: 10px; }
+.chat.chat-dock .chat-log { max-height: 46vh; }
+.chat.chat-dock.collapsed .chat-log, .chat.chat-dock.collapsed .perm-strip { display: none; }
+.pills { display: flex; gap: 14px; overflow-x: auto; padding: 2px 0 8px; scrollbar-width: thin; }
+.pill-group { display: flex; gap: 6px; align-items: center; flex: 0 0 auto; }
+.pill-group-h { font-size: 10.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.quick-pill { border: 1px solid var(--border2); background: var(--surface2, var(--surface)); color: var(--text); border-radius: 999px; padding: 4px 11px; font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+.quick-pill:hover:not(:disabled) { border-color: var(--accent); }
+.quick-pill.done { color: var(--muted); }
+.quick-pill:disabled { opacity: 0.6; cursor: default; }
+.feature-module + .feature-module { margin-top: 6px; }
+.feature-module-h { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 0; }
+.feature { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 6px; }
+.feature.open { border-color: var(--border2); }
+.feature-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; background: none; border: 0; color: var(--text); text-align: left; cursor: pointer; font-size: 13.5px; }
+.feature-row:hover { background: var(--hover); border-radius: 10px; }
+.feature-spec { display: flex; flex-direction: column; gap: 10px; padding: 4px 14px 12px 54px; font-size: 13px; }
+.analysis-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.analysis-card { display: flex; flex-direction: column; gap: 8px; min-height: 120px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; }
+.analysis-card[data-status='running'] { border-style: dashed; }
 .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 .swatch { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
 .swatch > span:first-child { height: 52px; border-radius: 10px; border: 1px solid var(--border); }
 .mockup-stage { display: flex; justify-content: center; background: var(--bg2, rgba(127, 127, 127, 0.08)); border-radius: 12px; padding: 12px; }
 .mockup-stage iframe { height: 640px; max-width: 100%; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
-@media (max-width: 900px) {
-  .idea-page { grid-template-columns: 1fr; height: auto; }
-  .main.main-idea { overflow: auto; }
-  .idea-chat { border-left: 0; border-top: 1px solid var(--border); height: 70vh; }
-}
 .md-table-wrap { overflow-x: auto; margin: 6px 0; }
 .md-table { border-collapse: collapse; font-size: 13px; min-width: 50%; }
 .md-table th, .md-table td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }

@@ -197,7 +197,16 @@ function ToolLines({ items }: { items: Message[] }) {
   );
 }
 
-export function ChatPanel({ conversation, roles, projects = [], onSent, onClose, draftText, onDraftUsed }: { conversation: Conversation | null; roles: Role[]; projects?: ProjectSummary[]; onSent?: () => void; onClose: () => void; draftText?: string; onDraftUsed?: () => void }) {
+/** Docked at the bottom of a page (an idea's board): the conversation folds away, quick actions sit above the input. */
+export interface Dock {
+  expanded: boolean;
+  onToggle: () => void;
+  /** shown above the input (quick-action pills) */
+  above?: React.ReactNode;
+  placeholder?: string;
+}
+
+export function ChatPanel({ conversation, roles, projects = [], onSent, onClose, draftText, onDraftUsed, dock }: { conversation: Conversation | null; roles: Role[]; projects?: ProjectSummary[]; onSent?: () => void; onClose: () => void; draftText?: string; onDraftUsed?: () => void; dock?: Dock }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [working, setWorking] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ role: string; text: string } | null>(null);
@@ -289,15 +298,22 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
   }
   const visible = view === 'chat' ? rows : messages.filter((m) => m.kind === 'tool' || m.kind === 'approval' || m.kind === 'error').map((m) => [m] as Message[]);
 
+  const latest = [...messages].reverse().find((m) => m.kind === 'text' && m.author !== 'user' && m.author !== 'system');
   return (
-    <aside className="chat" aria-label="Conversation">
+    <aside className={`chat${dock ? ` chat-dock${dock.expanded ? '' : ' collapsed'}` : ''}`} aria-label="Conversation">
       <header className="chat-head">
         <button className="chat-title" onClick={() => setInfo(true)} title="Members, sessions and usage" aria-haspopup="dialog">
           {lead ? <Avatar role={lead} size={30} /> : <span className="avatar t-n" style={{ width: 30, height: 30, flex: '0 0 30px' }}>#</span>}
           <span style={{ flex: 1, minWidth: 0 }}>
             <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{lead ? lead.name : `# ${threadTitle}`}</h2>
             <span className="muted" style={{ display: 'block', fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {lead ? `${lead.scope === 'global' ? 'Personal manager · all projects' : lead.scope === 'shared' ? 'Shared role · all projects' : 'Project role'} · ${lead.model}` : `${project ? `${project.name} · ` : ''}${memberNames} and you`}
+              {dock && !dock.expanded
+                ? working
+                  ? `${byId.get(working)?.name ?? 'An agent'} is working…`
+                  : latest
+                    ? `${byId.get(latest.author)?.name ?? latest.author}: ${latest.body.replace(/[#*_`>|-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 140)}`
+                    : `${memberNames} and you`
+                : lead ? `${lead.scope === 'global' ? 'Personal manager · all projects' : lead.scope === 'shared' ? 'Shared role · all projects' : 'Project role'} · ${lead.model}` : `${project ? `${project.name} · ` : ''}${memberNames} and you`}
             </span>
           </span>
         </button>
@@ -305,7 +321,11 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
           <button aria-pressed={view === 'chat'} onClick={() => setView('chat')}>Chat</button>
           <button aria-pressed={view === 'activity'} onClick={() => setView('activity')}>Activity</button>
         </div>
-        <button className="icon-btn" style={{ width: 30, height: 30, flex: '0 0 30px', borderRadius: 8, fontSize: 13 }} aria-label="Minimise chat" title="Minimise chat" onClick={onClose}>✕</button>
+        {dock ? (
+          <button className="btn sm" aria-expanded={dock.expanded} onClick={dock.onToggle}>{dock.expanded ? 'Hide conversation' : 'Show conversation'}</button>
+        ) : (
+          <button className="icon-btn" style={{ width: 30, height: 30, flex: '0 0 30px', borderRadius: 8, fontSize: 13 }} aria-label="Minimise chat" title="Minimise chat" onClick={onClose}>✕</button>
+        )}
       </header>
       {info && <ConversationInfo id={conversation.id} title={lead ? lead.name : `# ${threadTitle}`} roles={roles} onClose={() => setInfo(false)} />}
       {lead && (
@@ -370,6 +390,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
         )}
       </div>
       <form className="composer" onSubmit={send}>
+        {dock?.above}
         <label htmlFor="chat-input" className="sr-only">Message</label>
         <textarea
           id="chat-input"
@@ -382,7 +403,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
               send();
             }
           }}
-          placeholder={lead?.id === 'main' ? 'Describe an idea, or ask anything…' : lead ? `Message ${lead.name}…` : several ? `Message #${threadTitle}: ${replyName} answers, or @mention someone…` : `Message #${threadTitle}…`}
+          placeholder={dock?.placeholder ?? (lead?.id === 'main' ? 'Describe an idea, or ask anything…' : lead ? `Message ${lead.name}…` : several ? `Message #${threadTitle}: ${replyName} answers, or @mention someone…` : `Message #${threadTitle}…`)}
         />
         {error && <div className="error">{error}</div>}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

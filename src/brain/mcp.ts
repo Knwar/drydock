@@ -282,9 +282,70 @@ server.registerTool(
       [
         `${i.title} (${i.type}, ${i.status}): ${i.pitch}`,
         `Design: ${i.designElements} elements · Brand: ${i.brand ? i.brand.name : 'none'} · Screens: ${i.screenList.map((x: any) => x.id).join(', ') || 'none'}${i.missing.length ? ` · Missing: ${i.missing.join(', ')}` : ''}`,
+        `Features: ${i.featureList.length ? i.featureList.map((f: any) => `${f.id} ${f.title} [${f.module}, ${f.priority}${f.mvp ? ', MVP' : ''}]`).join('; ') : 'none yet'}`,
+        `Analyses: ${i.sections.filter((x: any) => x.status === 'done').map((x: any) => `${x.kind}: ${x.summary}`).join(' | ') || 'none yet'}`,
         i.requirements ? `\nRequirements v${i.requirements.version}:\n${i.requirements.markdown}` : 'No requirements yet.',
       ].join('\n'),
     );
+  },
+);
+
+server.registerTool(
+  'save_idea_section',
+  {
+    description: "Save the result of one analysis of an idea (competitors, market, risks, MVP cut…) so it shows as a card on the idea's board. The kind is given in the request; a later save replaces it.",
+    inputSchema: {
+      idea_id: z.string(),
+      kind: z.enum(['problem', 'competitors', 'market', 'pr-faq', 'assumptions', 'risks', 'business', 'metrics', 'features', 'mvp', 'estimate', 'decision']),
+      summary: z.string().describe('One line: the headline finding'),
+      markdown: z.string().describe('The full write-up (tables welcome; cite sources for facts)'),
+    },
+  },
+  async ({ idea_id, ...b }) => {
+    await call(`/api/ideas/${idea_id}/sections`, b);
+    return text(`Saved ${b.kind} to the idea's board.`);
+  },
+);
+
+server.registerTool(
+  'save_features',
+  {
+    description:
+      "Add or update an idea's features: what will be built, grouped by module, each detailed enough to build from without guessing. Matched by id (F1, F2…); fields you leave out keep their values (so the MVP cut can just set priority and mvp).",
+    inputSchema: {
+      idea_id: z.string(),
+      features: z
+        .array(
+          z.object({
+            id: z.string().describe('F1, F2, … (stable)'),
+            module: z.string().optional().describe('e.g. "Trips", "Sharing", "Auth"'),
+            title: z.string().optional(),
+            priority: z.enum(['must', 'should', 'could', 'wont']).optional(),
+            mvp: z.boolean().optional(),
+            summary: z.string().optional(),
+            stories: z.array(z.string()).optional().describe('"As a …, I want …, so that …"'),
+            acceptance: z.array(z.string()).optional().describe('Given … When … Then …'),
+            edge_cases: z.array(z.string()).optional(),
+            data: z.array(z.string()).optional().describe('What it reads or writes'),
+            open_questions: z.array(z.string()).optional(),
+          }),
+        )
+        .min(1),
+    },
+  },
+  async ({ idea_id, features }) => {
+    const all = await call(`/api/ideas/${idea_id}/features`, { features });
+    return text(`Saved ${features.length} feature(s); the idea now has ${all.length} (${all.filter((f: any) => f.mvp).length} in the MVP).`);
+  },
+);
+
+server.registerTool(
+  'remove_feature',
+  { description: 'Remove a feature from an idea.', inputSchema: { idea_id: z.string(), id: z.string() } },
+  async ({ idea_id, id }) => {
+    const res = await fetch(`${DAEMON}/api/ideas/${idea_id}/features/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? String(res.status));
+    return text(`Removed ${id}.`);
   },
 );
 

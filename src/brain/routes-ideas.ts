@@ -2,7 +2,17 @@
 // UI mockups, and change requests (a PM proposes a change to what was
 // settled; the user approves it on a card).
 import { addMessage, getConversation, getMessage, members, recordDecision, updateMessageMeta } from './chat.js';
+import { getBus } from './bus.js';
 import {
+  analysisByKind,
+  ANALYSES,
+  listFeatures,
+  listSections,
+  markSectionRunning,
+  markSectionStalled,
+  removeFeature,
+  saveFeatures,
+  saveSection,
   captureIdea,
   deleteIdea,
   getBrand,
@@ -41,7 +51,7 @@ const attempt = <T>(fn: () => T): T => {
 function card(db: any, id: string) {
   const s = ideaSummary(db, id);
   const working = Boolean(s.idea.conversation_id && activeRuns().some((r) => r.conversation === s.idea.conversation_id));
-  return { ...s.idea, requirementsVersion: s.requirementsVersion, designElements: s.designElements, brand: s.brand ? { id: s.brand.id, name: s.brand.name } : null, screens: s.screens.length, missing: s.missing, working };
+  return { ...s.idea, requirementsVersion: s.requirementsVersion, designElements: s.designElements, brand: s.brand ? { id: s.brand.id, name: s.brand.name } : null, screens: s.screens.length, features: s.features, mvpFeatures: s.mvpFeatures, missing: s.missing, working };
 }
 
 on('GET', '/api/ideas', (_q, res, url, ctx) => {
@@ -60,7 +70,7 @@ on('GET', '/api/ideas/:id', (_q, res, _u, ctx, p) => {
   const db = ctx.db();
   need(db, p.id);
   const s = ideaSummary(db, p.id);
-  ctx.json(res, 200, { ...card(db, p.id), requirements: listRequirements(db, p.id)[0] ?? null, brand: s.brand, screenList: s.screens });
+  ctx.json(res, 200, { ...card(db, p.id), requirements: listRequirements(db, p.id)[0] ?? null, brand: s.brand, screenList: s.screens, sections: listSections(db, p.id), featureList: listFeatures(db, p.id) });
 });
 
 on('POST', '/api/ideas/:id', async (req, res, _u, ctx, p) => {
@@ -93,6 +103,47 @@ on('POST', '/api/ideas/:id/promote', async (_q, res, _u, ctx, p) => {
   } catch (err) {
     throw bad(err);
   }
+});
+
+// ── analyses and features ──
+
+on('GET', '/api/idea-analyses', (_q, res, _u, ctx) => ctx.json(res, 200, ANALYSES));
+
+/** A pill: ask the idea's lead for one analysis; its card shows as working until the result is saved. */
+on('POST', '/api/ideas/:id/sections/:kind/run', (_q, res, _u, ctx, p) => {
+  const db = ctx.db();
+  const idea = need(db, p.id);
+  const a = analysisByKind(p.kind);
+  if (!a) throw new HttpError(404, 'unknown analysis');
+  if (idea.status === 'promoted') throw new HttpError(400, 'this idea is already a project');
+  const conv = attempt(() => ideaThread(db, p.id));
+  markSectionRunning(db, p.id, a.kind);
+  const save = a.kind === 'features'
+    ? `Save every feature with save_features, then a short overview with save_idea_section (kind "${a.kind}").`
+    : `Save the result with save_idea_section (kind "${a.kind}"): a one-line summary and the full write-up in Markdown.`;
+  const m = addMessage(db, conv, 'user', `**${a.label}**: ${a.ask}\n\n${save} Then reply here in two or three lines.`);
+  ctx.broadcast({ type: 'chat', conversation: conv, message: m });
+  respond(conv, '', { onDone: () => markSectionStalled(getBus().db(), p.id, a.kind) });
+  ctx.json(res, 200, { conversation: conv, kind: a.kind });
+});
+
+on('POST', '/api/ideas/:id/sections', async (req, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  const b = await ctx.readBody(req);
+  ctx.json(res, 200, attempt(() => saveSection(ctx.db(), p.id, String(b?.kind ?? ''), { summary: String(b?.summary ?? ''), markdown: String(b?.markdown ?? '') })));
+});
+
+on('POST', '/api/ideas/:id/features', async (req, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  const b = await ctx.readBody(req);
+  if (!Array.isArray(b?.features) || !b.features.length) throw new HttpError(400, 'features: a list');
+  ctx.json(res, 200, attempt(() => saveFeatures(ctx.db(), p.id, b.features)));
+});
+
+on('DELETE', '/api/ideas/:id/features/:fid', (_q, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  removeFeature(ctx.db(), p.id, p.fid);
+  ctx.json(res, 200, { ok: true });
 });
 
 // ── brand ──

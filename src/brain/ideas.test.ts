@@ -34,7 +34,7 @@ describe('the Idea board', () => {
   });
   after(async () => {
     await d?.stop();
-    rmSync(tmp, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   });
 
   let id = '';
@@ -121,6 +121,42 @@ describe('the Idea board', () => {
     assert.equal(reply.author, 'designer');
   });
 
+  it('a pill runs an analysis: its card shows working, then the saved result (or that nothing came back)', async () => {
+    const kinds = (await call('GET', '/api/idea-analyses')).map((a: any) => a.kind);
+    assert.ok(['competitors', 'mvp', 'risks', 'pr-faq', 'features', 'decision'].every((k) => kinds.includes(k)));
+    const r = await call('POST', `/api/ideas/${id}/sections/competitors/run`);
+    assert.equal(r.conversation, conv);
+    let card = (await call('GET', `/api/ideas/${id}`)).sections.find((x: any) => x.kind === 'competitors');
+    assert.equal(card.status, 'running');
+    assert.ok((await messages(conv)).some((m) => m.author === 'user' && /\*\*Competitors\*\*/.test(m.body) && /save_idea_section/.test(m.body)));
+    // the stand-in agent never saves: once its run ends the card says so instead of spinning
+    await until(async () => (await call('GET', `/api/ideas/${id}`)).sections.find((x: any) => x.kind === 'competitors').status !== 'running');
+    card = (await call('GET', `/api/ideas/${id}`)).sections.find((x: any) => x.kind === 'competitors');
+    assert.equal(card.status, 'stalled');
+    await call('POST', `/api/ideas/${id}/sections`, { kind: 'competitors', summary: 'Two apps, both nag; the gap is calm.', markdown: '| App | Price |\n|---|---|\n| Streaks | $5 |' });
+    card = (await call('GET', `/api/ideas/${id}`)).sections.find((x: any) => x.kind === 'competitors');
+    assert.equal(card.status, 'done');
+    assert.match(card.summary, /gap is calm/);
+    assert.equal((await raw('POST', `/api/ideas/${id}/sections`, { kind: 'horoscope', summary: 'x', markdown: 'y' })).status, 400);
+  });
+
+  it('keeps what will be built as detailed features, and the MVP cut updates them in place', async () => {
+    await call('POST', `/api/ideas/${id}/features`, {
+      features: [
+        { id: 'F1', module: 'Habits', title: 'Daily checklist', priority: 'must', summary: 'Tick habits off for today.', stories: ['As a parent, I want to tick a habit, so that I see progress'], acceptance: ['Given a habit, When I tick it, Then it shows done for today'], edge_cases: ['Midnight rollover'], data: ['habits', 'checkins'] },
+        { id: 'F2', module: 'Habits', title: 'Streaks', priority: 'should' },
+        { id: 'F3', module: 'Sharing', title: 'Share with partner', priority: 'could' },
+      ],
+    });
+    const all = await call('POST', `/api/ideas/${id}/features`, { features: [{ id: 'F1', mvp: true }, { id: 'F2', mvp: true }] });
+    const f1 = all.find((f: any) => f.id === 'F1');
+    assert.equal(f1.mvp, true);
+    assert.equal(f1.acceptance.length, 1, 'a partial update keeps the spec');
+    assert.equal((await call('GET', `/api/ideas/${id}`)).mvpFeatures, 2);
+    assert.match(readFileSync(join(ws, 'vault', 'ideas', slug, 'features.md'), 'utf8'), /### F1: Daily checklist[\s\S]*Given a habit/);
+    assert.equal((await raw('POST', `/api/ideas/${id}/features`, { features: [{ id: 'F9' }] })).status, 400, 'a new feature needs a title and module');
+  });
+
   let project = '';
   it('promotes the idea: the project starts with everything shaped, at the team step', async () => {
     await until(async () => !(await call('GET', `/api/ideas/${id}`)).working);
@@ -134,7 +170,7 @@ describe('the Idea board', () => {
     assert.equal(req[0].final, 1);
     assert.match(req[0].markdown, /Parents forget/);
     assert.equal((await call('GET', `/api/projects/${project}/design`)).elements.length, 2);
-    for (const f of ['docs/requirements.md', 'docs/brand.md', 'docs/brand-tokens.json', 'docs/ui/home.html', 'docs/ui/index.html']) assert.ok(existsSync(join(r.root, f)), f);
+    for (const f of ['docs/requirements.md', 'docs/brand.md', 'docs/brand-tokens.json', 'docs/ui/home.html', 'docs/ui/index.html', 'docs/features.md', 'docs/analysis/competitors.md']) assert.ok(existsSync(join(r.root, f)), f);
     assert.match(execFileSync('git', ['-C', r.root, 'log', '--oneline']).toString(), /Idea board/);
     const idea = await call('GET', `/api/ideas/${id}`);
     assert.equal(idea.status, 'promoted');
@@ -150,6 +186,7 @@ describe('the Idea board', () => {
     assert.match(kickoff.body, /shaped on the Idea board/);
     assert.match(kickoff.body, /docs\/ui\//);
     assert.match(kickoff.body, /propose_change/);
+    assert.match(kickoff.body, /docs\/features\.md/);
   });
 
   it('changes to settled requirements go through the user, without moving the stage', async () => {

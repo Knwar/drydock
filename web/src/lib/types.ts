@@ -85,6 +85,8 @@ export interface IdeaCard {
   designElements: number;
   brand: { id: string; name: string } | null;
   screens: number;
+  features?: number;
+  mvpFeatures?: number;
   missing: string[];
   working: boolean;
 }

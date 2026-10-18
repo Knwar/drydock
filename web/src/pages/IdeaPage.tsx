@@ -11,10 +11,155 @@ import { go, href, navigate } from '../lib/router';
 import type { Conversation, IdeaCard, ProjectSummary, Role } from '../lib/types';
 import { SystemDesign } from './ProjectPage';
 
+interface Feature {
+  id: string;
+  module: string;
+  title: string;
+  priority: 'must' | 'should' | 'could' | 'wont';
+  mvp: boolean;
+  summary: string;
+  stories: string[];
+  acceptance: string[];
+  edge_cases: string[];
+  data: string[];
+  open_questions: string[];
+}
+interface Section {
+  kind: string;
+  status: 'running' | 'done' | 'stalled';
+  summary: string;
+  markdown: string;
+  updated_at: number;
+}
+interface Analysis {
+  kind: string;
+  label: string;
+  group: 'Understand' | 'Decide' | 'Define';
+  ask: string;
+}
 interface Detail extends IdeaCard {
   requirements: { version: number; markdown: string } | null;
   brand: (IdeaCard['brand'] & { guidelines: string; tokens: Record<string, any> }) | null;
   screenList: { id: string; title: string }[];
+  sections: Section[];
+  featureList: Feature[];
+  features: number;
+  mvpFeatures: number;
+}
+
+const PRIORITY: Record<Feature['priority'], { label: string; tone: string }> = {
+  must: { label: 'Must', tone: 't-r' },
+  should: { label: 'Should', tone: 't-a' },
+  could: { label: 'Could', tone: 't-b' },
+  wont: { label: "Won't", tone: 't-n' },
+};
+
+/** What will be built: modules, then features you can open to their full spec. */
+function Features({ d }: { d: Detail }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const [mvpOnly, setMvpOnly] = useState(false);
+  const list = d.featureList.filter((f) => !mvpOnly || f.mvp);
+  const modules = [...new Set(list.map((f) => f.module))];
+  const block = (h: string, items: string[]) => (items.length ? <div className="field"><span className="muted">{h}</span><ul className="md-list" style={{ margin: 0 }}>{items.map((x) => <li key={x}>{x}</li>)}</ul></div> : null);
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h2>What will be built</h2>
+        <span className="muted" style={{ fontSize: 12 }}>{d.features} feature{d.features === 1 ? '' : 's'} · {d.mvpFeatures} in the MVP</span>
+        {d.mvpFeatures > 0 && <button className="btn sm" aria-pressed={mvpOnly} onClick={() => setMvpOnly((v) => !v)}>{mvpOnly ? 'Show all' : 'MVP only'}</button>}
+      </div>
+      {!d.featureList.length ? (
+        <div className="muted" style={{ fontSize: 13, lineHeight: 1.6 }}>Nothing broken down yet. Press <strong>Feature breakdown</strong> below (or just describe what it should do): every module is split into features with user stories and acceptance criteria, so the PM and builders never have to guess.</div>
+      ) : (
+        modules.map((m) => (
+          <div key={m} className="feature-module">
+            <div className="feature-module-h">{m}</div>
+            {list.filter((f) => f.module === m).map((f) => (
+              <div key={f.id} className={`feature${open === f.id ? ' open' : ''}`}>
+                <button className="feature-row" aria-expanded={open === f.id} onClick={() => setOpen(open === f.id ? null : f.id)}>
+                  <span className="mono muted" style={{ fontSize: 11.5, width: 34 }}>{f.id}</span>
+                  <span style={{ flex: 1, minWidth: 0, fontWeight: 600 }}>{f.title}</span>
+                  {f.mvp && <span className="pill t-g" style={{ fontSize: 10.5 }}>MVP</span>}
+                  <span className={`pill ${PRIORITY[f.priority].tone}`} style={{ fontSize: 10.5 }}>{PRIORITY[f.priority].label}</span>
+                </button>
+                {open === f.id && (
+                  <div className="feature-spec">
+                    {f.summary && <div style={{ fontSize: 13.5 }}>{f.summary}</div>}
+                    {block('User stories', f.stories)}
+                    {block('Acceptance criteria', f.acceptance)}
+                    {block('Edge cases', f.edge_cases)}
+                    {block('Data', f.data)}
+                    {block('Open questions', f.open_questions)}
+                    {!f.stories.length && !f.acceptance.length && <div className="muted" style={{ fontSize: 12.5 }}>Not detailed yet: ask for the feature breakdown, or about this feature in the chat.</div>}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ))
+      )}
+    </section>
+  );
+}
+
+/** One card per analysis that has been run; open one to read it in full. */
+function Analyses({ d, analyses, run }: { d: Detail; analyses: Analysis[]; run: (kind: string) => void }) {
+  const [reading, setReading] = useState<Section | null>(null);
+  const label = (k: string) => analyses.find((a) => a.kind === k)?.label ?? k;
+  const shown = d.sections.filter((x) => x.kind !== 'features');
+  if (!shown.length) return null;
+  return (
+    <section className="panel">
+      <div className="panel-head"><h2>Analyses</h2><span className="muted" style={{ fontSize: 12 }}>What big companies and agencies check before funding an idea</span></div>
+      <div className="analysis-grid">
+        {shown.map((x) => (
+          <div key={x.kind} className="analysis-card" data-status={x.status}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <strong style={{ flex: 1 }}>{label(x.kind)}</strong>
+              {x.status === 'running' && <span className="pill t-g" style={{ fontSize: 10.5 }}>working…</span>}
+              {x.status === 'stalled' && <span className="pill t-a" style={{ fontSize: 10.5 }}>no result</span>}
+            </div>
+            <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.45 }}>
+              {x.status === 'running' && !x.markdown ? 'The Main agent is on it. This card fills in when it is done.' : x.status === 'stalled' && !x.markdown ? 'The run ended without saving a result.' : x.summary || 'Done.'}
+            </div>
+            <div style={{ display: 'flex', gap: 6, marginTop: 'auto' }}>
+              {x.markdown && <button className="btn sm" onClick={() => setReading(x)}>Read</button>}
+              {x.status !== 'running' && <button className="btn sm" onClick={() => run(x.kind)}>{x.markdown ? 'Redo' : 'Run again'}</button>}
+            </div>
+          </div>
+        ))}
+      </div>
+      {reading && (
+        <Modal title={label(reading.kind)} onClose={() => setReading(null)} width={820}>
+          <div className="muted" style={{ fontSize: 12.5 }}>{reading.summary}</div>
+          <Markdown text={reading.markdown} />
+        </Modal>
+      )}
+    </section>
+  );
+}
+
+/** Quick actions above the chat input: each runs one analysis and adds its card to the board. */
+function Pills({ d, analyses, run }: { d: Detail; analyses: Analysis[]; run: (kind: string) => void }) {
+  const state = (k: string) => d.sections.find((x) => x.kind === k)?.status;
+  const groups = ['Understand', 'Decide', 'Define'] as const;
+  return (
+    <div className="pills" role="toolbar" aria-label="Quick analyses">
+      {groups.map((g) => (
+        <span key={g} className="pill-group">
+          <span className="pill-group-h">{g}</span>
+          {analyses.filter((a) => a.group === g).map((a) => {
+            const st = state(a.kind);
+            return (
+              <button key={a.kind} type="button" className={`quick-pill${st === 'done' ? ' done' : ''}`} disabled={st === 'running' || d.status === 'promoted'} title={a.ask} onClick={() => run(a.kind)}>
+                {st === 'done' ? '✓ ' : st === 'running' ? '… ' : ''}{a.label}
+              </button>
+            );
+          })}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 /** Colour tokens, flattened to name → value (nested groups become "group.name"). */
@@ -78,6 +223,8 @@ function Screens({ d }: { d: Detail }) {
 
 export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id: string; tab: string; sub: string | null; roles: Role[]; conversations: Conversation[]; projects: ProjectSummary[] }) {
   const idea = useApi<Detail>(`/api/ideas/${id}`, (m) => ideaEvents(m));
+  const analyses = useApi<Analysis[]>('/api/idea-analyses');
+  const [chatOpen, setChatOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState('');
   const [pitch, setPitch] = useState('');
@@ -93,7 +240,8 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
   if (!d) return null;
   const conv = conversations.find((c) => c.id === d.conversation_id) ?? null;
   const software = d.type === 'software';
-  const tabs: [string, string][] = [['', 'Overview'], ...(software ? ([['design', 'System design']] as [string, string][]) : []), ['brand', 'Brand'], ...(software ? ([['ui', 'UI']] as [string, string][]) : [])];
+  const tabs: [string, string][] = [['', 'Board'], ['requirements', 'Requirements'], ...(software ? ([['design', 'System design']] as [string, string][]) : []), ['brand', 'Brand'], ...(software ? ([['ui', 'UI']] as [string, string][]) : [])];
+  const run = (kind: string) => act(() => api(`/api/ideas/${id}/sections/${kind}/run`, { method: 'POST' }));
   const base = `/idea/${id}`;
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -148,23 +296,51 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
           ))}
         </nav>
         {tab === '' && (
+          <>
+            {!d.requirements && !d.featureList.length && !d.sections.length && (
+              <div className="banner t-b" style={{ fontSize: 13, lineHeight: 1.6 }}>
+                Start by telling the Main agent about the idea below: the problem, who it is for, how you see it working. Or press a quick action: competitors, the MVP cut, risks… Each one adds a card here, and the requirements, design, brand and UI fill in as you talk.
+              </div>
+            )}
+            <Features d={d} />
+            <Analyses d={d} analyses={analyses.data ?? []} run={run} />
+          </>
+        )}
+        {tab === 'requirements' && (
           <section className="panel">
-            {d.requirements ? <Markdown text={d.requirements.markdown} /> : <div className="muted" style={{ fontSize: 13.5, lineHeight: 1.6 }}>Tell the Main agent about the idea in the chat: the problem, who it is for, how you see it working. The requirements appear here and grow with every message. The system design, brand and UI fill in as the conversation touches them.</div>}
+            {d.requirements ? <Markdown text={d.requirements.markdown} /> : <div className="muted" style={{ fontSize: 13.5, lineHeight: 1.6 }}>No requirements yet. They appear here and grow with every message in the chat.</div>}
           </section>
         )}
         {tab === 'design' && software && <SystemDesign p={{ id, name: d.title, stage: 'idea', channels: [] }} focus={sub} openConversation={() => undefined} base={`${base}/design`} empty={'No system design yet. Ask in the chat (for example "how would this be built?"); the Main agent draws it here.'} />}
         {tab === 'brand' && <Brand d={d} />}
         {tab === 'ui' && software && <Screens d={d} />}
       </div>
-      <aside className="idea-chat" aria-label="Idea chat">
-        {conv ? <ChatPanel conversation={conv} roles={roles} projects={projects} onClose={() => navigate('/')} /> : <div className="muted" style={{ padding: 20, fontSize: 13 }}>{promoted ? 'This idea is a project now.' : 'Opening the chat…'}</div>}
-      </aside>
+      <div className="idea-dock" aria-label="Idea chat">
+        {conv ? (
+          <ChatPanel
+            conversation={conv}
+            roles={roles}
+            projects={projects}
+            onClose={() => setChatOpen(false)}
+            dock={{
+              expanded: chatOpen,
+              onToggle: () => setChatOpen((v) => !v),
+              above: promoted ? undefined : <Pills d={d} analyses={analyses.data ?? []} run={run} />,
+              placeholder: promoted ? 'This idea is a project now.' : 'Talk the idea through: a feature, a change, a question…',
+            }}
+          />
+        ) : (
+          <div className="muted" style={{ padding: 14, fontSize: 13 }}>{promoted ? 'This idea is a project now.' : 'Opening the chat…'}</div>
+        )}
+      </div>
       {modal === 'promote' && (
         <Modal title={`Promote "${d.title}" to a project?`} onClose={() => setModal(null)}>
           <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>
             This creates the project folder, its git repository and board. What was shaped goes with it:
             <ul className="md-list" style={{ margin: '6px 0' }}>
               <li>{d.requirementsVersion ? `Requirements v${d.requirementsVersion}, marked final` : 'Requirements: none yet (a placeholder is created)'}</li>
+              <li>{d.features ? `Features: ${d.features} specified (${d.mvpFeatures} in the MVP), in docs/features.md: the PM plans cards from them` : 'Features: not broken down yet (the PM works from the requirements)'}</li>
+              {d.sections.some((x) => x.status === 'done') && <li>Analyses: {d.sections.filter((x) => x.status === 'done').length}, in docs/analysis/</li>}
               {software && <li>{d.designElements ? `System design: ${d.designElements} elements (the design stage is skipped)` : 'System design: none yet (the Architect designs it in the project)'}</li>}
               <li>{d.brand ? `Brand: ${d.brand.name} (in docs/brand.md)` : 'Brand: none'}</li>
               {software && <li>{d.screens ? `UI: ${d.screens} screens (in docs/ui/)` : 'UI: none'}</li>}

@@ -149,6 +149,8 @@ function shapedNote(db: DB, ref: ProjectRef): string {
   const docs = join(ref.root, 'docs');
   const have = [
     existsSync(join(docs, 'requirements.md')) && 'requirements (docs/requirements.md)',
+    existsSync(join(docs, 'features.md')) && 'feature specifications with acceptance criteria (docs/features.md: plan one or more cards per feature, MVP first, and carry each feature\'s acceptance criteria into its cards)',
+    existsSync(join(docs, 'analysis')) && 'the analyses behind it (docs/analysis/: risks, MVP cut, estimate and more)',
     existsSync(join(docs, 'brand.md')) && 'brand guidelines and tokens (docs/brand.md, docs/brand-tokens.json)',
     existsSync(join(docs, 'ui', 'index.html')) && 'UI mockups (docs/ui/, start at index.html)',
   ].filter(Boolean);
