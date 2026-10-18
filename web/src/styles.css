@@ -30,6 +30,7 @@
   --b-fg: #6ea8ff; --b-bg: #14203a;
   --n-fg: #9aa3b2; --n-bg: #1e222b;
   --c4-bg: #13233d; --c4-line: #4f86d9; --person-bg: #1b2d52; --person-line: #8db8ff; --ext-bg: #191c22; --ext-line: #4a5160; --edge: #8c95a6;
+  --scroll: rgba(255, 255, 255, 0.13); --scroll-hover: rgba(255, 255, 255, 0.28);
   color-scheme: dark;
 }
 :root[data-theme='light'] {
@@ -62,10 +63,19 @@
   --b-fg: #2f5bea; --b-bg: #eef2fe;
   --n-fg: #5b6270; --n-bg: #f0f1f4;
   --c4-bg: #eaf1fe; --c4-line: #3d6fd8; --person-bg: #d9e5fc; --person-line: #2f5bea; --ext-bg: #f2f3f5; --ext-line: #aeb4bf; --edge: #6b7280;
+  --scroll: rgba(0, 0, 0, 0.16); --scroll-hover: rgba(0, 0, 0, 0.32);
   color-scheme: light;
 }
 
 * { box-sizing: border-box; }
+/* slim scrollbars: a 4px thumb on a clear track that thickens on hover (Chrome/Safari); thin in Firefox */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--scroll); border-radius: 10px; border: 3px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-hover); border-width: 2px; }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: var(--scroll) transparent; }
+}
 html, body, #root { margin: 0; min-height: 100%; }
 body { background: var(--bg); color: var(--text); font: 14px/1.45 'Schibsted Grotesk', system-ui, sans-serif; }
 button, input, textarea, select { font: inherit; color: inherit; }
