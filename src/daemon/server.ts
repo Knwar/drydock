@@ -31,6 +31,7 @@ import { openDb } from '../core/db.js';
 import { handleApi, startBrain } from '../brain/api.js';
 import { serveApp } from '../brain/static.js';
 import { bindBus, markShuttingDown } from '../brain/bus.js';
+import { stopAllRuns } from '../brain/runner.js';
 import { proxyHttp, proxyUpgrade, stopAllForShutdown } from '../brain/live.js';
 import { resolveDbPath } from '../brain/workspace.js';
 import { cardLines } from '../core/lines.js';
@@ -2902,6 +2903,7 @@ async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   markShuttingDown(); // agent runs cut off now stay recorded, to resume on the next start
+  stopAllRuns(); // and their processes stop, so the resumed copy is the only one
   stopAllForShutdown(); // running apps stop now and come back on the next start
   setTimeout(() => process.exit(0), SHUTDOWN_DEADLINE_MS).unref();
 

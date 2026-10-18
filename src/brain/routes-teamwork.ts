@@ -7,7 +7,7 @@ import { addMessage, createChannel, getConversation, listMessages, members as co
 import { checkinSettings, lastActivity, runCheckins } from './checkins.js';
 import { enterBuild, finalizeDesign, projectRef, reportWorkComplete, saveThreatModel, slugify, startAfterTeam, NeedsRole } from './pipeline.js';
 import { autoProgress, autoResume, autoState, runAuto, setAuto } from './auto.js';
-import { getRole, listRoles } from './roles.js';
+import { getRole, listRoles, ROLE_TEMPLATES } from './roles.js';
 import { HttpError, on } from './router.js';
 import { activeRuns, respond } from './runner.js';
 import { putSetting } from './settings.js';
@@ -22,6 +22,7 @@ import {
   listEnhancements,
   listLessons,
   memoryDigest,
+  joinProject,
   projectMembers,
   projectStatus,
   recordLesson,
@@ -70,6 +71,17 @@ on('POST', '/api/projects/:id/team', async (req, res, _u, ctx, p) => {
   } catch (err) {
     throw new HttpError(400, (err as Error).message);
   }
+});
+
+/** The user adds someone already on their team to this project (confirmed in the UI); a custom specialist also joins the board roster. */
+on('POST', '/api/projects/:id/team/:role', (_q, res, _u, ctx, p) => {
+  const db = ctx.db();
+  project(db, p.id);
+  const role = getRole(db, p.role);
+  if (!role) throw new HttpError(404, 'no such team member');
+  joinProject(db, p.id, role, ROLE_TEMPLATES.some((t) => t.id === role.id) ? 'core' : 'specialist', null);
+  ctx.broadcast({ type: 'brain_project', project_id: p.id });
+  ctx.json(res, 200, { team: projectMembers(db, p.id) });
 });
 
 on('DELETE', '/api/projects/:id/team/:role', (_q, res, _u, ctx, p) => {

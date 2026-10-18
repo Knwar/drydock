@@ -943,8 +943,12 @@ function Memory({ p }: { p: Detail }) {
   );
 }
 
+/** Built-in roles advise; custom specialists (developers and the like) also build cards. */
+const ROLE_TEMPLATE_IDS = ['main', 'architect', 'pm', 'qc', 'security', 'cto', 'cfo', 'marketing', 'social', 'writer', 'editor', 'podcast', 'designer', 'researcher'];
+
 function Roles({ p, roles, openConversation, openTeam }: { p: Detail; roles: Role[]; openConversation: (id: string) => void; openTeam: () => void }) {
   const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState<Role | null>(null);
   const bring = async (role: Role) => {
     setError(null);
     const existing = p.channels.find((c) => c.id === `ch:${p.slug}-${role.id}` || c.name === role.name);
@@ -973,11 +977,28 @@ function Roles({ p, roles, openConversation, openTeam }: { p: Detail; roles: Rol
         </div>
         {others.length > 0 && (
           <details>
-            <summary className="muted" style={{ fontSize: 12.5, cursor: 'pointer' }}>Not on this project ({others.length}): ask them anyway</summary>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-              {others.map((r) => <button key={r.id} className="btn sm" onClick={() => bring(r)}>{r.name}</button>)}
+            <summary className="muted" style={{ fontSize: 12.5, cursor: 'pointer' }}>Not on this project ({others.length}): ask them, or add them</summary>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
+              {others.map((r) => (
+                <div key={r.id} className="check-row" style={{ padding: '4px 0' }}>
+                  <span style={{ flex: 1, fontSize: 13 }}>{r.name}</span>
+                  <button className="btn sm" onClick={() => bring(r)}><Icon name="chat" size={13} /> Ask</button>
+                  <button className="btn sm" onClick={() => setAdding(r)}>Add to project</button>
+                </div>
+              ))}
             </div>
           </details>
+        )}
+        {adding && (
+          <Modal title={`Add ${adding.name} to ${p.name}?`} onClose={() => setAdding(null)} width={460}>
+            <div style={{ fontSize: 13, lineHeight: 1.55 }}>
+              {adding.name} joins {p.name}'s team{ROLE_TEMPLATE_IDS.includes(adding.id) ? '' : ' and its board roster, so the PM can assign them cards'}. You can remove them again from the team list.
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn primary" autoFocus onClick={async () => { try { await api(`/api/projects/${p.id}/team/${adding.id}`, { method: 'POST' }); setAdding(null); } catch (e) { setError((e as Error).message); setAdding(null); } }}>Yes, add to project</button>
+              <button className="btn" onClick={() => setAdding(null)}>Cancel</button>
+            </div>
+          </Modal>
         )}
         {error && <div className="error">{error}</div>}
       </section>

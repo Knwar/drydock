@@ -96,6 +96,11 @@ describe('team, learning and close-out', () => {
     await call('POST', `/api/role-proposals/${again.message_id}`, { accept: true });
     assert.ok((await call('GET', `/api/projects/${id}/team`)).members.some((m: any) => m.role_id === 'python-developer'));
     assert.equal((await call('POST', '/api/role-proposals', { role: 'pm', conversation: ch, name: 'Python developer', reason: 'x' })).status, 'exists');
+    // or the user adds someone already on their team straight from the project
+    await call('DELETE', `/api/projects/${id}/team/python-developer`);
+    const r = await call('POST', `/api/projects/${id}/team/python-developer`);
+    assert.ok(r.team.some((m: any) => m.role_id === 'python-developer' && m.kind === 'specialist'));
+    await assert.rejects(call('POST', `/api/projects/${id}/team/nobody`), /no such team member/);
   });
 
   it('routes lessons blamelessly: process causes to project memory, repeated behaviour to the member', async () => {

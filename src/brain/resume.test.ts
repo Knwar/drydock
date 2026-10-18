@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,12 +25,24 @@ describe('agent runs survive a daemon restart', () => {
     d = await startDaemon({ dbPath: null, env });
     await call('POST', '/api/workspace', { path: join(tmp, 'ws') });
     await call('POST', '/api/roles', { template: 'cto' });
-    await call('POST', '/api/conversations/dm:cto/messages', { text: 'SLOW job please' });
+    const token = `SLOW job ${Math.random().toString(36).slice(2, 8)}`;
+    await call('POST', '/api/conversations/dm:cto/messages', { text: token });
     // wait until the run has started (its session is recorded)
     for (let i = 0; i < 300 && !(await call('GET', '/api/conversations/dm:cto/messages')).working; i++) await new Promise((r) => setTimeout(r, 100));
     await new Promise((r) => setTimeout(r, 1500)); // the fake has printed its session by now
     const first = d;
-    await d.stop(); // the restart kills the run mid-job
+    const pids = () => {
+      try {
+        return execFileSync('pgrep', ['-f', token], { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+      } catch {
+        return [];
+      }
+    };
+    assert.ok(pids().length, 'the agent is running');
+    await d.stop(); // the restart cuts the run off mid-job
+    // and stops its process: left running, it would carry on unseen beside the resumed copy
+    for (let i = 0; i < 30 && pids().length; i++) await new Promise((r) => setTimeout(r, 100));
+    assert.deepEqual(pids(), [], 'no agent process outlives the daemon');
     if (process.env.RESUME_DEBUG) console.log('FIRST DAEMON:\n' + first.output());
     d = await startDaemon({ dbPath: null, env });
     let messages: any[] = [];

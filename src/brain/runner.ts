@@ -2,7 +2,7 @@
 // per (role, conversation) so each role keeps its own context. Output streams
 // into the chat; tool calls that are not pre-allowed go to the in-app
 // approvals flow through the brain MCP server's `approve` tool.
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -42,10 +42,29 @@ export function activeRuns(): { conversation: string; role: string }[] {
   return [...running.entries()].map(([conversation, r]) => ({ conversation, role: r.roleId }));
 }
 
+/** Stop an agent's whole process group (claude, its subagents' tools and MCP servers). */
+const killTree = (child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM') => {
+  try {
+    if (child.pid) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch {
+    child.kill(signal);
+  }
+};
+
+/**
+ * Shutting down: stop every running agent. Its run stays recorded and resumes
+ * in the same session on the next start; left running, it would carry on
+ * unseen beside the resumed copy (two PMs on one board).
+ */
+export function stopAllRuns(): void {
+  for (const r of running.values()) killTree(r.child);
+}
+
 export function stopRun(conversationId: string): boolean {
   const r = running.get(conversationId);
   if (!r) return false;
-  r.child.kill('SIGTERM');
+  killTree(r.child);
   return true;
 }
 
@@ -153,7 +172,7 @@ const HANDOVER =
 /** Ask the old session for its handover note, quietly (nothing is posted). Returns null if it fails. */
 async function handoverNote(base: string[], cwd: string, env: NodeJS.ProcessEnv, roleId: string, conversationId: string): Promise<string | null> {
   const noTools = ['Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit', 'TodoWrite', 'mcp__brain', 'mcp__kanban'];
-  const child = spawn(CLAUDE_BIN, ['-p', HANDOVER, ...base, '--disallowedTools', ...noTools], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(CLAUDE_BIN, ['-p', HANDOVER, ...base, '--disallowedTools', ...noTools], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   running.set(conversationId, { child, roleId });
   let out = '';
   child.stdout!.setEncoding('utf8').on('data', (d: string) => (out += d));
@@ -369,9 +388,10 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
   if (session?.session_id) args.push('--resume', session.session_id);
 
   emitStatus(conversationId, roleId, 'working');
-  const child = spawn(CLAUDE_BIN, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  // its own process group, so stopping it stops everything it started
+  const child = spawn(CLAUDE_BIN, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   running.set(conversationId, { child, roleId });
-  markRun(conversationId, roleId, session?.session_id || null, modelOverride ?? null, pending.lastId);
+  markRun(conversationId, roleId, session?.session_id || null, modelOverride ?? null, pending.lastId, child.pid ?? null);
 
   let sessionId = session?.session_id || null;
   let lastCall: any = null; // usage of the latest model call: how big the context is now
@@ -574,18 +594,30 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   started_at      INTEGER NOT NULL
 );
 `,
-  (db) => addMissingColumns(db, 'agent_runs', { seen_upto: 'INTEGER NOT NULL DEFAULT 0' }),
+  (db) => addMissingColumns(db, 'agent_runs', { seen_upto: 'INTEGER NOT NULL DEFAULT 0', pid: 'INTEGER' }),
 );
 
-function markRun(conversationId: string, roleId: string, sessionId: string | null, model: string | null, seenUpto = 0): void {
+function markRun(conversationId: string, roleId: string, sessionId: string | null, model: string | null, seenUpto = 0, pid: number | null = null): void {
   getBus()
     .db()
     .prepare(
-      `INSERT INTO agent_runs (conversation_id, role_id, session_id, model, seen_upto, started_at) VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO agent_runs (conversation_id, role_id, session_id, model, seen_upto, started_at, pid) VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(conversation_id) DO UPDATE SET role_id = excluded.role_id, session_id = COALESCE(excluded.session_id, agent_runs.session_id),
-         model = excluded.model, seen_upto = MAX(agent_runs.seen_upto, excluded.seen_upto)`,
+         model = excluded.model, seen_upto = MAX(agent_runs.seen_upto, excluded.seen_upto), pid = COALESCE(excluded.pid, agent_runs.pid)`,
     )
-    .run(conversationId, roleId, sessionId, model, seenUpto, Date.now());
+    .run(conversationId, roleId, sessionId, model, seenUpto, Date.now(), pid);
+}
+
+/** A run's process left over from a previous daemon (it crashed, or was killed outright): stop it before resuming. */
+function stopLeftover(pid: number | null): void {
+  if (!pid) return;
+  try {
+    // only a claude process: the pid may have been reused since
+    if (!/\bclaude\b/.test(execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }))) return;
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    /* gone already */
+  }
 }
 
 function clearRun(conversationId: string): void {
@@ -601,8 +633,9 @@ const PROCESS_STARTED = Date.now();
 export function resumeInterruptedRuns(): number {
   const db = getBus().db();
   // only runs left over from a previous process, never one running now
-  const rows = (db.prepare('SELECT conversation_id, role_id, session_id, model, seen_upto, started_at FROM agent_runs WHERE started_at < ?').all(PROCESS_STARTED) as any[]).filter((r) => !running.has(r.conversation_id)) as { conversation_id: string; role_id: string; session_id: string | null; model: string | null; seen_upto: number }[];
+  const rows = (db.prepare('SELECT conversation_id, role_id, session_id, model, seen_upto, started_at, pid FROM agent_runs WHERE started_at < ?').all(PROCESS_STARTED) as any[]).filter((r) => !running.has(r.conversation_id)) as { conversation_id: string; role_id: string; session_id: string | null; model: string | null; seen_upto: number; pid: number | null }[];
   for (const r of rows) {
+    stopLeftover(r.pid);
     clearRun(r.conversation_id);
     if (!getConversation(db, r.conversation_id) || !getRole(db, r.role_id)) continue;
     const name = getRole(db, r.role_id)!.name;
