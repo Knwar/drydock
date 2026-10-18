@@ -43,11 +43,22 @@ export function setAuto(db: DB, projectId: string, on: boolean): void {
   projectRef(db, projectId);
   db.prepare('UPDATE brain_projects SET auto_mode = ?, auto_paused_until = NULL, auto_nudged_at = NULL, auto_nudges = 0 WHERE project_id = ?').run(on ? 1 : 0, projectId);
   emit(projectId);
-  if (!on) return;
+  if (on) kick(db, projectId, 'Auto mode is now on for this project: carry on without waiting for my approval, as your auto mode rules say.');
+}
+
+/** A paused auto project was resumed: start counting quiet spells afresh and get its lead going again. */
+export function autoResume(db: DB, projectId: string): void {
+  if (!isAuto(db, projectId)) return;
+  db.prepare('UPDATE brain_projects SET auto_nudged_at = NULL, auto_nudges = 0 WHERE project_id = ?').run(projectId);
+  kick(db, projectId, 'The project is resumed and auto mode is still on: carry on where you left off, without waiting for my approval.');
+}
+
+/** Get an auto project moving now rather than at the next quiet-project check: its stage's lead, or the next gate. */
+function kick(db: DB, projectId: string, text: string): void {
   const r = row(db, projectId)!;
-  // mid-way: tell the stage's lead now rather than at the first quiet-project check
-  if (r.status === 'active' && r.stage !== 'requirements' && !busy(db, projectId).length) nudge(db, projectId, r.stage, 'Auto mode is now on for this project: carry on without waiting for my approval, as your auto mode rules say.');
-  else void autoStep(db, projectId);
+  if (r.status !== 'active' || r.auto_paused_until) return;
+  if (r.stage === 'requirements') void autoStep(db, projectId);
+  else if (!busy(db, projectId).length) nudge(db, projectId, r.stage, text);
 }
 
 /** The project's conversations with an agent working in them now. */

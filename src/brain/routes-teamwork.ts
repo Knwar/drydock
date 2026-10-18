@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { addMessage, createChannel, getConversation, listMessages, members as convMembers } from './chat.js';
 import { checkinSettings, lastActivity, runCheckins } from './checkins.js';
 import { enterBuild, finalizeDesign, projectRef, reportWorkComplete, saveThreatModel, slugify, startAfterTeam, NeedsRole } from './pipeline.js';
-import { autoProgress, autoState, runAuto, setAuto } from './auto.js';
+import { autoProgress, autoResume, autoState, runAuto, setAuto } from './auto.js';
 import { getRole, listRoles } from './roles.js';
 import { HttpError, on } from './router.js';
 import { activeRuns, respond } from './runner.js';
@@ -176,7 +176,9 @@ on('POST', '/api/projects/:id/status', async (req, res, _u, ctx, p) => {
   const status = b?.status;
   if (!['active', 'paused', 'closed'].includes(status)) throw new HttpError(400, 'status must be active, paused or closed');
   const reason = status === 'closed' ? (['completed', 'cancelled'].includes(b?.reason) ? b.reason : 'completed') : null;
+  const was = projectStatus(db, p.id).status;
   setProjectStatus(db, p.id, status, reason);
+  if (status === 'active' && was === 'paused') autoResume(db, p.id); // an auto project picks up where it left off
   if (status === 'closed') writeProjectMemory(db, p.id);
   if (status !== 'active') await stopApp(db, p.id); // a paused or closed project stops running on this Mac
   ctx.json(res, 200, projectStatus(db, p.id));

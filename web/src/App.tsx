@@ -96,8 +96,17 @@ export function App() {
 
   const list = projects.data ?? [];
   const conversations = convs.data ?? [];
-  const current = conversations.find((c) => c.id === (linked ?? convId)) ?? conversations.find((c) => c.id === 'dm:main') ?? null;
   const onProject = parts[0] === 'project' && Boolean(parts[1]);
+  // on a project, the Chat button opens that project's lead thread (the stage's: design → #design, then #build with the PM), not the last chat used elsewhere
+  const projectThread = (() => {
+    if (!onProject) return null;
+    const p = list.find((x) => x.id === parts[1]);
+    const threads = conversations.filter((c) => c.kind === 'channel' && c.project_id === parts[1]);
+    const want = p?.stage === 'design' ? 'design' : p?.stage === 'plan' || p?.stage === 'build' ? 'build' : null;
+    return (want && threads.find((c) => c.name === want || c.name.endsWith(`-${want}`))) || threads[0] || null;
+  })();
+  // (a project with no threads yet gets the Main agent)
+  const current = (linked ? conversations.find((c) => c.id === linked) : onProject ? projectThread : conversations.find((c) => c.id === convId)) ?? conversations.find((c) => c.id === 'dm:main') ?? null;
   const onOverview = onProject && !parts[2];
   // an idea page has its own chat beside it
   const onIdea = parts[0] === 'idea' && Boolean(parts[1]);

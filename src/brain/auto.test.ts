@@ -128,6 +128,13 @@ describe('auto mode', () => {
     assert.ok((await messages('dm:main')).some((m) => /gone quiet several times/.test(m.body)));
   });
 
+  it('resuming a paused auto project gets its lead going again, even after the quiet-project nudges ran out', async () => {
+    await call('POST', `/api/projects/${id}/status`, { status: 'paused' });
+    await call('POST', `/api/projects/${id}/status`, { status: 'active' });
+    await until(async () => (await messages('ch:shop-build')).some((m) => m.author === 'user' && /resumed and auto mode is still on/.test(m.body)), 'resume nudge');
+    await idle();
+  });
+
   it('turned off, the gates and permissions are the user’s again', async () => {
     await call('POST', `/api/projects/${id}/auto`, { on: false });
     assert.equal((await raw('POST', `/api/projects/${id}/design/done`)).status, 409);

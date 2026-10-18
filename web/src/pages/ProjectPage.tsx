@@ -9,7 +9,7 @@ import { Icon } from '../components/Icon';
 import { StageSteps } from '../components/Shell';
 import { api, useApi } from '../lib/api';
 import { Markdown } from '../lib/md';
-import { go, href, navigate } from '../lib/router';
+import { go, href, navigate, openSettings } from '../lib/router';
 import type { Role } from '../lib/types';
 import { Brand, Screens, type Detail as IdeaDetail } from './IdeaPage';
 
@@ -28,7 +28,7 @@ interface Detail {
   verticals: { id: string; name: string; done: number; total: number }[];
   containers: { id: string; name: string; components: number }[];
   phase: { index: number; count: number; title: string } | null;
-  phases: { id: string; title: string; goal: string | null; status: string }[];
+  phases: { id: string; title: string; goal: string | null; status: string; progress?: { done: number; total: number } }[];
   cards: { done: number; total: number };
   liveAgents: number;
   blocked: number;
@@ -313,7 +313,65 @@ function Plugins({ p }: { p: Detail }) {
   );
 }
 
+const PHASE_STATUS: Record<string, string> = { planned: 'planned', active: 'in progress', done: 'done', parked: 'parked' };
+
+/** A roadmap phase: its goal and plan, progress, and its cards by lane (opening one shows the card). */
+function PhaseDetail({ p, id, index, onClose }: { p: Detail; id: string; index: number; onClose: () => void }) {
+  const [ph, setPh] = useState<any>(null);
+  const [cards, setCards] = useState<any[] | null>(null);
+  const [card, setCard] = useState<any | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api<any>(`/phase/${encodeURIComponent(id)}`).then(setPh, (e) => setError((e as Error).message));
+    const boards = [p.id, ...p.verticals.map((v) => v.id)];
+    Promise.all(boards.map((b) => api<any[]>(`/board?project=${b}`).then((cs) => cs.map((c) => ({ ...c, board: b }))).catch(() => []))).then((all) => setCards(all.flat().filter((c) => c.phase_id === id)));
+  }, [id, p.id, p.verticals.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  const boardName = (b: string) => (b === p.id ? 'Shared' : p.verticals.find((v) => v.id === b)?.name ?? '');
+  const lanes: [string, string][] = [['in_progress', 'In progress'], ['in_review', 'In review'], ['queued', 'Queued'], ['backlog', 'Backlog'], ['done', 'Done']];
+  const done = cards?.filter((c) => c.lane === 'done').length ?? 0;
+  const total = cards?.length ?? 0;
+  return (
+    <Modal title={ph ? `Phase ${index + 1}: ${ph.title}` : 'Phase'} onClose={onClose} width={700}>
+      {error ? <div className="error">{error}</div> : !ph ? <div className="muted">Loading…</div> : (
+        <div className="card-detail">
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span className={`pill ${ph.status === 'active' ? 't-b' : ph.status === 'done' ? 't-g' : 't-n'}`}>{PHASE_STATUS[ph.status] ?? ph.status}</span>
+            {ph.target_date && <span className="pill t-n">target {ph.target_date}</span>}
+            {total > 0 && <span className="muted" style={{ fontSize: 12.5 }}>{done} of {total} cards done</span>}
+          </div>
+          {total > 0 && <div className="bar"><div style={{ width: `${Math.round((done / total) * 100)}%` }} /></div>}
+          {ph.goal && <section><h3>Goal</h3><Markdown text={ph.goal} /></section>}
+          {ph.plan && <section><h3>Plan</h3><Markdown text={ph.plan} /></section>}
+          <section>
+            <h3>Cards</h3>
+            {!cards ? <div className="muted">Loading…</div> : !cards.length ? (
+              <div className="muted" style={{ fontSize: 13 }}>{ph.status === 'planned' ? 'Cards are planned when this phase starts.' : 'No cards in this phase.'}</div>
+            ) : lanes.map(([lane, label]) => {
+              const items = cards.filter((c) => c.lane === lane);
+              return items.length ? (
+                <div key={lane} style={{ marginBottom: 8 }}>
+                  <div className="msg-label" style={{ padding: '4px 0' }}>{label} · {items.length}</div>
+                  {items.map((c) => (
+                    <button key={c.id} className="phase-card" onClick={() => setCard(c)}>
+                      <span style={{ flex: 1, minWidth: 0 }}>{c.title}</span>
+                      {c.blocked && <span className="pill t-r" style={{ fontSize: 10.5 }}>blocked</span>}
+                      {c.subs?.total ? <span className="muted" style={{ fontSize: 11.5 }}>{c.subs.done}/{c.subs.total}</span> : null}
+                      <span className="pill t-b" style={{ fontSize: 10.5 }}>{boardName(c.board)}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null;
+            })}
+          </section>
+        </div>
+      )}
+      {card && <CardDetail id={card.id} board={boardName(card.board)} cards={cards ?? []} onClose={() => setCard(null)} />}
+    </Modal>
+  );
+}
+
 function Overview({ p, openConversation, newThread }: { p: Detail; openConversation: (id: string) => void; newThread: () => void }) {
+  const [phase, setPhase] = useState<string | null>(null);
   const kpis = [
     { label: 'Stage', value: STAGE_NAMES[p.stage], sub: p.description ?? '' },
     { label: 'Current phase', value: p.phase ? `${p.phase.index} of ${p.phase.count}` : '—', sub: p.phase?.title ?? 'Not planned yet' },
@@ -338,18 +396,29 @@ function Overview({ p, openConversation, newThread }: { p: Detail; openConversat
             <h2>Roadmap</h2>
             {p.phases.length ? (
               <div className="phases">
-                {p.phases.map((ph, i) => (
-                  <div key={ph.id} className={`phase phase-${ph.status}`}>
-                    <span className="mono muted" style={{ fontSize: 11 }}>P{i + 1} · {ph.status}</span>
-                    <strong style={{ fontSize: 13 }}>{ph.title}</strong>
-                    {ph.goal && <span className="muted" style={{ fontSize: 11.5 }}>{ph.goal.slice(0, 110)}</span>}
-                  </div>
-                ))}
+                {p.phases.map((ph, i) => {
+                  const pr = ph.progress;
+                  const pct = pr?.total ? Math.round((pr.done / pr.total) * 100) : 0;
+                  return (
+                    <button key={ph.id} className={`phase phase-${ph.status}`} onClick={() => setPhase(ph.id)} aria-label={`Phase ${i + 1}: ${ph.title}, details`}>
+                      <span className="mono muted" style={{ fontSize: 11 }}>P{i + 1} · {PHASE_STATUS[ph.status] ?? ph.status}</span>
+                      <strong style={{ fontSize: 13 }}>{ph.title}</strong>
+                      {ph.goal && <span className="muted" style={{ fontSize: 11.5 }}>{ph.goal.slice(0, 110)}</span>}
+                      {pr && pr.total > 0 && (
+                        <span style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 'auto' }}>
+                          <span className="bar" style={{ height: 4 }}><span style={{ display: 'block', height: '100%', width: `${pct}%`, background: 'var(--accent)', borderRadius: 2 }} /></span>
+                          <span className="muted" style={{ fontSize: 11 }}>{pr.done}/{pr.total} cards done</span>
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             ) : (
               <div className="empty">No roadmap yet. The PM proposes phases after the design is final.</div>
             )}
           </section>
+          {phase && <PhaseDetail p={p} id={phase} index={p.phases.findIndex((x) => x.id === phase)} onClose={() => setPhase(null)} />}
           {p.plugins?.includes('design') && (
           <section className="panel">
             <div className="panel-head">
@@ -731,8 +800,9 @@ function Board({ p }: { p: Detail }) {
   );
 }
 
-function ProjectTeam({ p, openTeam }: { p: Detail; openTeam: () => void }) {
+function ProjectTeam({ p, openTeam, chat }: { p: Detail; openTeam: () => void; chat: (roleId: string) => void }) {
   const [removing, setRemoving] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<string | null>(null);
   const templates = useApi<{ id: string; blurb: string }[]>('/api/role-templates', (m) => m?.type === 'roles');
   const blurb = new Map((templates.data ?? []).map((t) => [t.id, t.blurb]));
   return (
@@ -745,7 +815,7 @@ function ProjectTeam({ p, openTeam }: { p: Detail; openTeam: () => void }) {
         <div className="muted" style={{ fontSize: 13 }}>{p.requirementsFinal ? 'No members yet: open the recommended team.' : 'The team is recommended when the requirements are final.'}</div>
       ) : (
         p.team.map((m) => (
-          <div key={m.role_id} className="check-row">
+          <div key={m.role_id} className="check-row member-row" role="button" tabIndex={0} aria-label={`${m.name}: details`} onClick={() => setViewing(m.role_id)} onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), setViewing(m.role_id))}>
             <span className={`avatar t-${m.tone}`}>{m.initials}</span>
             <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
               <span style={{ fontWeight: 600, fontSize: 13 }}>{m.name} <span className={`pill ${m.kind === 'core' ? 't-b' : 't-v'}`} style={{ marginLeft: 6 }}>{m.kind}</span></span>
@@ -753,10 +823,31 @@ function ProjectTeam({ p, openTeam }: { p: Detail; openTeam: () => void }) {
               {m.reason && <span className="muted" style={{ fontSize: 12 }}>Why on this project: {m.reason}</span>}
             </span>
             {m.skill && <span className="pill t-n mono" style={{ fontSize: 10.5 }}>{m.skill}</span>}
-            <button className="link-btn" style={{ color: 'var(--r-fg)', fontSize: 12 }} onClick={() => setRemoving(m.role_id)}>Remove</button>
+            <button className="btn sm" onClick={(e) => (e.stopPropagation(), chat(m.role_id))}><Icon name="chat" size={13} /> Chat</button>
           </div>
         ))
       )}
+      {viewing && (() => {
+        const m = p.team.find((x) => x.role_id === viewing);
+        if (!m) return null;
+        return (
+          <Modal title={m.name} onClose={() => setViewing(null)} width={500}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <span className={`avatar t-${m.tone}`}>{m.initials}</span>
+              <span className={`pill ${m.kind === 'core' ? 't-b' : 't-v'}`}>{m.kind === 'core' ? 'Core member' : 'Specialist'}</span>
+              <span className="pill t-n">{m.scope === 'project' ? 'Project role' : 'Shared role'}</span>
+              {m.skill && <span className="pill t-n mono">{m.skill}</span>}
+            </div>
+            {blurb.get(m.role_id) && <div style={{ fontSize: 13 }}>{blurb.get(m.role_id)}</div>}
+            {m.reason && <div style={{ fontSize: 13 }}><span className="muted">Why on this project:</span> {m.reason}</div>}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn primary" onClick={() => (setViewing(null), chat(m.role_id))}><Icon name="chat" size={14} /> Chat about {p.name}</button>
+              <button className="btn" onClick={() => (setViewing(null), openSettings('team'))}>Edit in Settings</button>
+              <button className="btn" style={{ color: 'var(--r-fg)', marginLeft: 'auto' }} onClick={() => (setViewing(null), setRemoving(m.role_id))}>Remove from project</button>
+            </div>
+          </Modal>
+        );
+      })()}
       {removing && (
         <Modal title="Remove from this project?" onClose={() => setRemoving(null)} width={460}>
           <div style={{ fontSize: 13 }}>{p.team.find((m) => m.role_id === removing)?.name} leaves {p.name}'s team. They stay on your team and keep their learnings; their threads here are kept.</div>
@@ -870,7 +961,7 @@ function Roles({ p, roles, openConversation, openTeam }: { p: Detail; roles: Rol
   const others = roles.filter((r) => r.id !== 'main' && !onTeam.has(r.id));
   return (
     <>
-      <ProjectTeam p={p} openTeam={openTeam} />
+      <ProjectTeam p={p} openTeam={openTeam} chat={(id) => { const r = roles.find((x) => x.id === id); if (r) void bring(r); }} />
       <section className="panel">
         <h2>Talk to a member about {p.name}</h2>
         <div className="muted" style={{ fontSize: 13 }}>Opens a thread in this project's Discussions with that member.</div>

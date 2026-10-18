@@ -2346,6 +2346,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   }
   // after /phase/advance, so 'advance' is never taken as a phase id
   const phaseMatch = pathname.match(/^\/phase\/([^/]+)$/);
+  // one phase in full (its plan too), for the app's phase details
+  if (method === 'GET' && phaseMatch && phaseMatch[1] !== 'next') {
+    try {
+      return json(res, 200, board.getPhase(db, phaseMatch[1]));
+    } catch (err) {
+      return json(res, 404, { error: (err as Error).message });
+    }
+  }
   if (method === 'POST' && phaseMatch) {
     const b = await readBody(req);
     if (b.position !== undefined && !(Number.isInteger(b.position) && b.position >= 1))

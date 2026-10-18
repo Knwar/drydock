@@ -369,6 +369,8 @@ function Team({ roles }: { roles: Role[] }) {
     await api('/api/permissions', { body: rule });
     perms.reload();
   };
+  // a member's editor is its own view: the list and its "+ Add member" come back on Close
+  if (editing) return <RoleEditor role={editing} onClose={() => setEditing(null)} />;
   return (
     <>
       <div className="settings-head">
@@ -376,7 +378,6 @@ function Team({ roles }: { roles: Role[] }) {
         <button className="btn primary" onClick={() => setAdding(true)}>+ Add member</button>
       </div>
       {adding && <AddMemberDialog onClose={() => setAdding(false)} onAdded={() => setAdding(false)} />}
-      <RoleEditor role={editing} onClose={() => setEditing(null)} />
       <section className="panel scroll-x" style={{ padding: '6px 18px 10px' }}>
         <table className="table">
           <thead><tr><th>Role</th><th>Scope</th><th>Model</th><th>Skills</th><th /></tr></thead>
