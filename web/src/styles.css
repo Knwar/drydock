@@ -219,8 +219,13 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .chat { position: sticky; top: 69px; height: calc(100vh - 69px); }
 
 /* ── project page ──────────────────────────────────── */
-.proj-head { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
-.gate { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); }
+.proj-head { display: flex; flex-direction: column; gap: 10px; }
+.proj-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.proj-top .btn { display: inline-flex; align-items: center; gap: 6px; }
+/* status bar: the stages on the left, the gate and its actions on the right; wraps into two rows when narrow */
+.proj-status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; padding: 10px 14px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); }
+.proj-status .stages { flex: 1 1 auto; }
+.gate { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-left: auto; }
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); overflow-x: auto; }
 .tab { height: 40px; padding: 0 14px; display: flex; align-items: center; border-bottom: 2px solid transparent; color: var(--muted); text-decoration: none; font-size: 13.5px; font-weight: 500; white-space: nowrap; }
 .tab.on { border-bottom-color: var(--accent); color: var(--text); font-weight: 700; }

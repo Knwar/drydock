@@ -230,7 +230,7 @@ function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: 
   }
   const pausable = p.status === 'active' && p.stage !== 'requirements';
   return (
-    <div className="gate" style={{ flexWrap: 'wrap' }}>
+    <div className="gate">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         <span style={{ fontWeight: 700, fontSize: 13 }}>{p.status === 'review' ? 'Close-out' : p.status === 'closed' ? 'Closed' : p.status === 'paused' ? 'Paused' : 'Next gate'}</span>
         <span className="muted" style={{ fontSize: 12 }}>{actions[0]?.hint ?? `Building · last activity ${ago(p.last_activity)}`}</span>
@@ -897,12 +897,18 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
   const base = `/project/${id}`;
   return (
     <>
+      {/* breadcrumb and chat; title; description; then one status bar: the stages, and the gate with its actions */}
       <div className="proj-head">
-        <div style={{ flex: '1 1 320px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div className="proj-top">
           <div className="muted" style={{ fontSize: 12 }}>Projects / {p.name}</div>
+          <button className={`btn sm${side.open ? ' on' : ''}`} aria-pressed={side.open} onClick={side.toggle} title={side.open ? 'Hide the chat panel' : tab ? 'Show the chat panel over this page' : 'Show the chat panel'}>
+            <Icon name="chat" size={14} /> {side.open ? 'Hide chat' : 'Chat'}
+          </button>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>{p.name}</h1>
-            {/* the stage itself shows in the stage list on the right */}
+            {/* the stage itself shows in the status bar below */}
             {p.phase && <span className="pill t-g">Phase {p.phase.index} of {p.phase.count}</span>}
             {p.status !== 'active' && <span className={`pill ${p.status === 'review' ? 't-v' : p.status === 'paused' ? 't-a' : 't-n'}`}>{p.status === 'review' ? 'Close-out' : p.status === 'paused' ? 'Paused' : `Closed${p.closed_reason ? ` · ${p.closed_reason}` : ''}`}</span>}
             {p.rag && p.status === 'active' && <span className={`pill ${p.rag === 'green' ? 't-g' : p.rag === 'amber' ? 't-a' : 't-r'}`} title="Status reported by the PM">{p.rag}</span>}
@@ -910,13 +916,8 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
           </div>
           {p.description && <div className="muted" style={{ fontSize: 13 }}>{p.description}</div>}
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <StageSteps stage={p.stage} type={p.type} />
-            <button className={`btn sm${side.open ? ' on' : ''}`} aria-pressed={side.open} onClick={side.toggle} title={side.open ? 'Hide the chat panel' : tab ? 'Show the chat panel over this page' : 'Show the chat panel'}>
-              <Icon name="chat" size={14} /> {side.open ? 'Hide chat' : 'Chat'}
-            </button>
-          </div>
+        <div className="proj-status">
+          <StageSteps stage={p.stage} type={p.type} />
           <Gate p={p} openConversation={openConversation} openTeam={() => setTeamOpen(true)} />
         </div>
       </div>
