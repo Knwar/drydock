@@ -232,7 +232,7 @@ function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: 
   return (
     <div className="gate">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <span style={{ fontWeight: 700, fontSize: 13 }}>{p.status === 'review' ? 'Close-out' : p.status === 'closed' ? 'Closed' : p.status === 'paused' ? 'Paused' : 'Next gate'}</span>
+        <span style={{ fontWeight: 700, fontSize: 13 }}>{p.status === 'review' ? 'Close-out' : p.status === 'closed' ? 'Closed' : p.status === 'paused' ? 'Paused' : actions.length ? 'Next gate' : 'Status'}</span>
         <span className="muted" style={{ fontSize: 12 }}>{actions[0]?.hint ?? `Building · last activity ${ago(p.last_activity)}`}</span>
       </div>
       {actions.map((a) => (

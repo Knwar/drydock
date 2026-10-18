@@ -223,9 +223,11 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .proj-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .proj-top .btn { display: inline-flex; align-items: center; gap: 6px; }
 /* status bar: the stages on the left, the gate and its actions on the right; wraps into two rows when narrow */
-.proj-status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; padding: 10px 14px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); }
-.proj-status .stages { flex: 1 1 auto; }
-.gate { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-left: auto; }
+/* status bar, always two rows: the stages; then the status on the left and the gate's actions on the right */
+.proj-status { display: flex; flex-direction: column; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); }
+.proj-status .stages { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.gate { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 14px; }
+.gate > :first-child { flex: 1 1 200px; }
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); overflow-x: auto; }
 .tab { height: 40px; padding: 0 14px; display: flex; align-items: center; border-bottom: 2px solid transparent; color: var(--muted); text-decoration: none; font-size: 13.5px; font-weight: 500; white-space: nowrap; }
 .tab.on { border-bottom-color: var(--accent); color: var(--text); font-weight: 700; }
