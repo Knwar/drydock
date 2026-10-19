@@ -20,8 +20,8 @@ export function Header({ theme, toggleTheme, name, onSearch, messages }: { theme
   return (
     <header className="app-header">
       <a className="brand" href={href('/')} onClick={go('/')}>
-        <span className="brand-mark" aria-hidden="true">AB</span>
-        <span className="brand-name">AI Brain</span>
+        <span className="brand-mark" aria-hidden="true">DD</span>
+        <span className="brand-name">Drydock</span>
       </a>
       <div className="greeting">
         <div className="eyebrow">{stamp}</div>

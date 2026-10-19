@@ -1,7 +1,7 @@
 {
-  "name": "ai-brain",
+  "name": "drydock",
   "version": "0.1.0",
-  "description": "AI Brain: a second brain and project studio. Plans projects, designs systems (C4), and runs a team of Claude Code agents on a live board. Forked from kankanban.",
+  "description": "Drydock: a second brain and project studio. Plans projects, designs systems (C4), and runs a team of Claude Code agents on a live board. Forked from kankanban.",
   "license": "Apache-2.0",
   "author": "Kanwar Singh <hello@knwar.com> (https://knwar.com)",
   "engines": {
@@ -9,6 +9,7 @@
   },
   "type": "module",
   "bin": {
+    "drydock": "bin/drydock.js",
     "brain": "bin/brain.js"
   },
   "files": [

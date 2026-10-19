@@ -53,7 +53,7 @@ describe('agent runs survive a daemon restart', () => {
     }
     if (process.env.RESUME_DEBUG) console.log('SECOND DAEMON:\n' + d.output() + '\nMESSAGES: ' + JSON.stringify(messages.map((m) => [m.author, m.kind, m.body.slice(0, 60)])));
     const note = messages.find((m) => m.kind === 'error');
-    assert.match(note.body, /interrupted when AI Brain restarted/);
+    assert.match(note.body, /interrupted when Drydock restarted/);
     const reply = messages.find((m) => m.author === 'cto' && m.kind === 'text');
     assert.match(reply.body, /^echo: You were interrupted by an app restart.*\(resumed\)$/s);
     // the original message was taken in by the interrupted run: it is not answered again

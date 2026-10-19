@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 
 const fail = (e: unknown) => new HttpError(400, (e as Error).message);
 
-/** Folders in projects/ that are not AI Brain projects yet. */
+/** Folders in projects/ that are not Drydock projects yet. */
 on('GET', '/api/import/candidates', (_q, res, _u, ctx) => {
   try {
     ctx.json(res, 200, { candidates: candidates(ctx.db()) });

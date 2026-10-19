@@ -125,7 +125,7 @@ export function LiveCard({ projectId }: { projectId: string }) {
       {logs && <LogDialog projectId={projectId} onClose={() => setLogs(false)} />}
       {reset && (
         <Modal title={`Reset ${reset.name}?`} onClose={() => setReset(null)} width={480}>
-          <div style={{ fontSize: 13, lineHeight: 1.5 }}>The app stops, AI Brain backs the database up into the workspace if it can, then deletes it and its user. The next start creates an empty one and runs the setup step (migrations) again.</div>
+          <div style={{ fontSize: 13, lineHeight: 1.5 }}>The app stops, Drydock backs the database up into the workspace if it can, then deletes it and its user. The next start creates an empty one and runs the setup step (migrations) again.</div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               className="btn danger"

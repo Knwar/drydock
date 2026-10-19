@@ -33,7 +33,7 @@
     }
   ],
   "changes": [
-    "Written for AI Brain",
+    "Written for Drydock",
     "references/triage-framework.md adapts the inbox-triage triage decision framework (take it / worth considering / pass / flag, draft tones, VIP override, other email types); removed its KB-file, setup-question and logging references and citation list",
     "Note-capture rules and references/capture-voice.md adapt the capture skill's principles and voice-preservation reference",
     "The weekly review steps and checklist adapt the weekly-review skill's GTD get clear / get current / get creative loop, without its scripts or gate"

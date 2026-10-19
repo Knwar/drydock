@@ -878,6 +878,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const method = req.method ?? 'GET';
 
   if (method === 'GET' && (pathname === '/app' || pathname.startsWith('/app/'))) return serveApp(res, pathname);
+  // the bare address opens the app (the board overlay keeps / with ?project=)
+  if (method === 'GET' && pathname === '/' && !url.search) {
+    res.writeHead(302, { location: '/app/' });
+    return void res.end();
+  }
   if (pathname.startsWith('/api/')) {
     const handled = await handleApi(req, res, url, {
       db: () => db,
@@ -942,7 +947,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const { stdout } = await execFileAsync('osascript', [
         '-e',
-        'POSIX path of (choose folder with prompt "Select or create a project folder for AI Brain")',
+        'POSIX path of (choose folder with prompt "Select or create a project folder for Drydock")',
       ]);
       const path = stdout.trim();
       return json(res, 200, path ? { path } : { cancelled: true });

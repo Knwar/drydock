@@ -146,7 +146,7 @@ function workspaceFolder(dir: string): string {
   return full;
 }
 
-/** Folders in projects/ that AI Brain does not manage yet (including ones only the board kit knows). */
+/** Folders in projects/ that Drydock does not manage yet (including ones only the board kit knows). */
 export function candidates(db: DB): { dir: string; name: string; boardOnly: boolean }[] {
   const root = projectsDir();
   const known = db.prepare('SELECT p.root_path, b.project_id AS brain FROM projects p LEFT JOIN brain_projects b ON b.project_id = p.id').all() as { root_path: string; brain: string | null }[];
@@ -216,7 +216,7 @@ export async function snapshot(dir: string): Promise<void> {
   // never sweep secrets into the snapshot
   ignoreEnv(full, readdirSync(full).filter((f) => /^\.env(\..+)?$/.test(f) && !/\.(example|sample)$/.test(f)));
   await run('git', ['-C', full, 'add', '-A']);
-  await run('git', ['-C', full, '-c', 'user.name=AI Brain', '-c', 'user.email=ai-brain@localhost', 'commit', '-qm', 'Snapshot before AI Brain import']).catch(() => undefined);
+  await run('git', ['-C', full, '-c', 'user.name=Drydock', '-c', 'user.email=ai-brain@localhost', 'commit', '-qm', 'Snapshot before Drydock import']).catch(() => undefined);
 }
 
 /** Move the project's own Claude settings and MCP servers aside (restorable), so none of them run. */
@@ -250,8 +250,8 @@ function ignoreEnv(dir: string, envFiles: string[]): void {
 export async function importProject(db: DB, dir: string, opts: { type: ProjectType; name?: string; trust: boolean }): Promise<{ ref: ProjectRef; quarantined: string[]; channel: string }> {
   const full = workspaceFolder(dir);
   const info = await inspect(db, full);
-  if (info.registered) throw new Error('this folder is already an AI Brain project');
-  if (info.git?.dirty) throw new Error(`it has ${info.git.dirty} uncommitted change(s); commit them, or let AI Brain commit a snapshot first`);
+  if (info.registered) throw new Error('this folder is already an Drydock project');
+  if (info.git?.dirty) throw new Error(`it has ${info.git.dirty} uncommitted change(s); commit them, or let Drydock commit a snapshot first`);
   const type = isType(opts.type) ? opts.type : info.type;
   const name = (opts.name ?? '').trim() || info.name;
   const quarantined = opts.trust ? [] : quarantine(full);
@@ -269,9 +269,9 @@ export async function importProject(db: DB, dir: string, opts: { type: ProjectTy
   const members = ['main', ...(type === 'software' && db.prepare("SELECT 1 FROM roles WHERE id = 'architect'").get() ? ['architect'] : [])];
   if (!getConversation(db, channel)) createChannel(db, 'onboarding', members, ref.id, ref.slug);
   const facts = [
-    info.git ? `git: ${info.git.commits} commits on ${info.git.branch ?? 'HEAD'}${info.git.remote ? `, remote ${info.git.remote} (never push)` : ''}` : 'it had no git history; AI Brain started one',
+    info.git ? `git: ${info.git.commits} commits on ${info.git.branch ?? 'HEAD'}${info.git.remote ? `, remote ${info.git.remote} (never push)` : ''}` : 'it had no git history; Drydock started one',
     `${info.files}${info.truncated ? '+' : ''} files`,
-    quarantined.length ? `its own ${quarantined.join(', ')} were moved to .ai-brain/quarantine/ (untrusted) and replaced by AI Brain's` : '',
+    quarantined.length ? `its own ${quarantined.join(', ')} were moved to .ai-brain/quarantine/ (untrusted) and replaced by Drydock's` : '',
     info.risks.envFiles.length ? `.env files found: ${info.risks.envFiles.join(', ')}` : '',
   ].filter(Boolean);
   const steps =

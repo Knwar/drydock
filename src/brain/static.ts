@@ -31,6 +31,6 @@ export async function serveApp(res: ServerResponse, pathname: string): Promise<v
     await send(join(WEB_DIR, 'index.html'), false);
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain' });
-    res.end('AI Brain web app not built — run: npm run build:web');
+    res.end('Drydock web app not built — run: npm run build:web');
   }
 }

@@ -1,5 +1,5 @@
 // Project summaries for Home and the sidebar tree: the kankanban board data
-// (phases, cards, verticals) plus AI Brain's lifecycle stage.
+// (phases, cards, verticals) plus Drydock's lifecycle stage.
 import type { DB } from '../core/db.js';
 import { addMissingColumns, defineSchema } from './schema.js';
 import { isType, projectPlugins, type ProjectType } from './plugins.js';

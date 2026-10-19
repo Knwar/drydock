@@ -129,7 +129,7 @@ describe('live apps on this Mac (fake password manager and database server)', ()
     assert.equal(page.key, 'present');
     assert.match(page.db, new RegExp(`^postgresql://${dbName(slug)}:.+@nas\\.local:5432/${dbName(slug)}$`));
     assert.equal(page.home, true);
-    assert.deepEqual(page.brain, [], "AI Brain's own env is not passed to the app");
+    assert.deepEqual(page.brain, [], "Drydock's own env is not passed to the app");
     const check = await call('POST', `/api/projects/${id}/live/check`, { paths: ['/', 'health'] });
     assert.equal(check.ok, true);
     assert.equal(check.results[0].status, 200);
@@ -180,10 +180,10 @@ describe('live apps on this Mac (fake password manager and database server)', ()
     const r = await visit();
     assert.equal(r.status, 503);
     assert.match(r.body, /not running/);
-    assert.equal((await visit('/', `other.localhost:${port}`)).status, 503, 'unknown apps get a page, not the AI Brain API');
+    assert.equal((await visit('/', `other.localhost:${port}`)).status, 503, 'unknown apps get a page, not the Drydock API');
   });
 
-  it('a server with databases cannot be removed; resetting drops only what AI Brain made', async () => {
+  it('a server with databases cannot be removed; resetting drops only what Drydock made', async () => {
     const svc = (await call('GET', '/api/local-services')).services[0];
     assert.equal((await raw('DELETE', `/api/local-services/${svc.id}`)).status, 400);
     const dbId = (await status()).databases[0].id;

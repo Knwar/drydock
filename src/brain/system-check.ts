@@ -1,4 +1,4 @@
-// What AI Brain needs on this computer: Node, git, the Claude CLI and a
+// What Drydock needs on this computer: Node, git, the Claude CLI and a
 // signed-in Claude account. Checked at start, every 5 minutes and on demand;
 // the app shows a banner while anything is missing. None of it costs tokens.
 import { execFile } from 'node:child_process';
@@ -49,7 +49,7 @@ export async function runChecks(): Promise<SystemStatus> {
   const checks: Check[] = [
     major >= NODE_MIN
       ? { id: 'node', ok: true, label: 'Node.js', detail: `v${process.versions.node}`, fix: null, command: null }
-      : { id: 'node', ok: false, label: 'Node.js', detail: `v${process.versions.node} is too old`, fix: `Install Node ${NODE_MIN} or newer, then restart AI Brain.`, command: 'brew install node' },
+      : { id: 'node', ok: false, label: 'Node.js', detail: `v${process.versions.node} is too old`, fix: `Install Node ${NODE_MIN} or newer, then restart Drydock.`, command: 'brew install node' },
   ];
   const git = await run('git', ['--version']);
   checks.push(

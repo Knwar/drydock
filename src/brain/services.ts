@@ -1,7 +1,7 @@
 // Local services: database and other servers on the user's network that apps
 // can use when they run locally. The user registers a server once (admin login
 // kept in their password manager). When a project's run recipe needs, say,
-// "postgres as DATABASE_URL", AI Brain creates that project's own database and
+// "postgres as DATABASE_URL", Drydock creates that project's own database and
 // a user that can reach only it, saves the connection URL as a project secret,
 // and injects it when the app starts. It only ever touches databases it made
 // (fixed aib_ prefix, recorded here). With no matching server, it falls back to
@@ -103,7 +103,7 @@ export function saveService(db: DB, input: Partial<LocalService> & { name: strin
 
 export function removeService(db: DB, id: string): void {
   const n = (db.prepare('SELECT COUNT(*) AS n FROM service_databases WHERE service_id = ?').get(id) as { n: number }).n;
-  if (n) throw new SecretError(`AI Brain still has ${n} database(s) on this server. Delete them first, or keep the server.`, 'invalid');
+  if (n) throw new SecretError(`Drydock still has ${n} database(s) on this server. Delete them first, or keep the server.`, 'invalid');
   db.prepare('DELETE FROM local_services WHERE id = ?').run(id);
 }
 
@@ -337,7 +337,7 @@ export async function resolveNeed(db: DB, project: { id: string; slug: string },
   let url: string;
   let serviceId: string;
   if (s) {
-    if (s.databases >= s.max_databases) throw new SecretError(`${s.name} already has ${s.databases} AI Brain databases (the limit you set).`, 'invalid');
+    if (s.databases >= s.max_databases) throw new SecretError(`${s.name} already has ${s.databases} Drydock databases (the limit you set).`, 'invalid');
     const driver = await driverFor(s.type);
     await driver.ensure(await adminConn(db, s), name, name, password);
     url = driver.url(s.host, s.port, s.tls, name, name, password);
@@ -346,7 +346,7 @@ export async function resolveNeed(db: DB, project: { id: string; slug: string },
     url = await dockerEnsure(project.slug, need.type, name, password);
     serviceId = `docker:${need.type}`;
   }
-  await storeSecret(db, { name: secret, value: url, kind: 'generated', projectId: project.id, note: `${need.type} for ${project.slug} (${env}), made by AI Brain` });
+  await storeSecret(db, { name: secret, value: url, kind: 'generated', projectId: project.id, note: `${need.type} for ${project.slug} (${env}), made by Drydock` });
   db.prepare(
     `INSERT INTO service_databases (service_id, project_id, env, as_name, db_name, db_user, secret, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(project_id, env, as_name) DO UPDATE SET service_id = excluded.service_id, db_name = excluded.db_name, db_user = excluded.db_user, secret = excluded.secret`,
@@ -355,7 +355,7 @@ export async function resolveNeed(db: DB, project: { id: string; slug: string },
 }
 
 /**
- * Dump a database AI Brain made into <workspace>/.ai-brain/backups. Uses the
+ * Dump a database Drydock made into <workspace>/.ai-brain/backups. Uses the
  * container's own dump tool for Docker databases, and pg_dump / mysqldump /
  * mongodump when they are installed for server ones. Returns the file, or null
  * with the reason when it cannot.
@@ -427,11 +427,11 @@ async function dumpTo(file: string, bin: string, args: string[], env: Record<str
   });
 }
 
-/** Delete a database AI Brain made (and its user and secret). Callers confirm with the user first. */
+/** Delete a database Drydock made (and its user and secret). Callers confirm with the user first. */
 export async function dropProjectDatabase(db: DB, id: number): Promise<void> {
   const r = db.prepare('SELECT * FROM service_databases WHERE id = ?').get(id) as any;
   if (!r) throw new SecretError('No such database', 'not_found');
-  if (!r.db_name.startsWith('aib_')) throw new SecretError('Refusing to drop a database AI Brain did not create.', 'invalid');
+  if (!r.db_name.startsWith('aib_')) throw new SecretError('Refusing to drop a database Drydock did not create.', 'invalid');
   if (r.service_id.startsWith('docker:')) await dockerRemove(r.db_name, r.service_id.slice(7));
   else {
     const s = getService(db, r.service_id);
@@ -471,7 +471,7 @@ const container = (name: string, type: string) => `${name}-${type}`.replace(/_/g
 
 async function dockerEnsure(slug: string, type: string, name: string, password: string): Promise<string> {
   const spec = IMAGES[type];
-  if (!spec) throw new SecretError(`No local server for ${type} is registered (Settings › Local services), and AI Brain cannot start one in Docker.`, 'not_configured');
+  if (!spec) throw new SecretError(`No local server for ${type} is registered (Settings › Local services), and Drydock cannot start one in Docker.`, 'not_configured');
   if (!(await dockerAvailable())) throw new SecretError(`No ${type} server is registered (Settings › Local services) and Docker is not running. Register one, or start Docker or OrbStack.`, 'not_configured');
   const port = await freePort();
   const c = container(name, type);

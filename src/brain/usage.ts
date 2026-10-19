@@ -34,6 +34,6 @@ export function onRateLimit(db: DB, ev: any): void {
   const before = getUsage(db).high;
   putSetting(db, 'brain.rate_limit', { ...ev, at: Date.now() });
   const after = getUsage(db);
-  if (after.high && !before && usageAlert(db).push) notify('AI Brain: usage high', `${after.seven_day?.pct}% of this week's limit used. Agents keep running.`);
+  if (after.high && !before && usageAlert(db).push) notify('Drydock: usage high', `${after.seven_day?.pct}% of this week's limit used. Agents keep running.`);
   getBus().emit({ type: 'usage' });
 }

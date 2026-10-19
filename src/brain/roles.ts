@@ -28,10 +28,10 @@ const DEFAULT_EFFORT: Record<string, string> = { architect: 'high', security: 'h
 export const effectiveEffort = (r: Pick<Role, 'id' | 'effort'>): string | null => r.effort ?? DEFAULT_EFFORT[r.id] ?? null;
 
 /** The opening line of personas written before contracts existed (they held the whole workflow). */
-const PRE_CONTRACT_OPENER = "You are a member of the user's personal AI team inside AI Brain";
+const PRE_CONTRACT_OPENER = "You are a member of the user's personal AI team inside Drydock";
 
 // A persona is the user's part: character, focus and any extra rules. How the
-// role works inside AI Brain is its contract (contracts.ts), which the user
+// role works inside Drydock is its contract (contracts.ts), which the user
 // cannot edit; craft know-how comes from its skills (skills.ts).
 export const DEFAULT_ROLES: Omit<Role, 'position' | 'builtin' | 'effort' | 'skills'>[] = [
   { id: 'main', name: 'Main agent', initials: 'M', scope: 'global', model: 'opus', skill: null, tone: 'b',

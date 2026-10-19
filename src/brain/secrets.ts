@@ -1,7 +1,7 @@
 // Secrets: API keys, passwords and signing keys live in the user's password
 // manager (1Password, a Bitwarden/Vaultwarden vault, or Bitwarden Secrets
-// Manager), never in AI Brain's
-// DB, the vault, a repo, a prompt or a log. AI Brain keeps only a registry of
+// Manager), never in Drydock's
+// DB, the vault, a repo, a prompt or a log. Drydock keeps only a registry of
 // names and where each one lives. Agents work with names:
 //   - save_secret stores a value (given, generated here, or moved out of a
 //     .env file without the agent reading it);
@@ -72,8 +72,8 @@ export class SecretError extends Error {
 const DEFAULTS: SecretSettings = {
   provider: null,
   confirmOnMac: false,
-  onepassword: { vault: 'AI Brain', account: null, askEveryTime: false },
-  bitwarden: { server: null, folder: 'AI Brain', unlockMinutes: 15 },
+  onepassword: { vault: 'Drydock', account: null, askEveryTime: false },
+  bitwarden: { server: null, folder: 'Drydock', unlockMinutes: 15 },
   bws: { serverUrl: null, projectId: null },
 };
 export const secretSettings = (db: DB): SecretSettings => {
@@ -174,7 +174,7 @@ export async function installProvider(p: Provider): Promise<void> {
 async function opStatus(s: SecretSettings) {
   const v = await cli(OP(), ['--version']);
   if (v.code !== 0) return { installed: false, ready: false, detail: 'Install the 1Password CLI: brew install 1password-cli, then turn on "Integrate with 1Password CLI" in the 1Password app (Settings › Developer).' };
-  return { installed: true, ready: true, version: v.stdout.trim(), detail: `Secrets go to the "${s.onepassword.vault}" vault. The 1Password app asks you to authorize AI Brain the first time it uses the CLI.` };
+  return { installed: true, ready: true, version: v.stdout.trim(), detail: `Secrets go to the "${s.onepassword.vault}" vault. The 1Password app asks you to authorize Drydock the first time it uses the CLI.` };
 }
 
 async function opEnsureVault(s: SecretSettings) {
@@ -244,7 +244,7 @@ async function bwStatus(s: SecretSettings) {
   const server = status.serverUrl ?? null;
   if (!s.bitwarden.server) return { installed: true, ready: false, detail: 'Enter your Vaultwarden server address below.' };
   if (server && server.replace(/\/$/, '') !== s.bitwarden.server.replace(/\/$/, '')) return { installed: true, ready: false, detail: `The Bitwarden CLI points at ${server}. Save the server below to switch it.` };
-  if (status.status === 'unauthenticated') return { installed: true, ready: false, detail: `Sign the CLI in once in a terminal: bw login (your server: ${s.bitwarden.server}). AI Brain never sees your login.` };
+  if (status.status === 'unauthenticated') return { installed: true, ready: false, detail: `Sign the CLI in once in a terminal: bw login (your server: ${s.bitwarden.server}). Drydock never sees your login.` };
   const unlocked = Boolean(session());
   return {
     installed: true,
@@ -298,7 +298,7 @@ async function bwFolder(s: SecretSettings): Promise<string> {
 async function bwSave(s: SecretSettings, name: string, value: string, existing: string | null, note: string | null): Promise<string> {
   const env = bwEnv();
   const folderId = await bwFolder(s);
-  const item = { type: 1, name, folderId, notes: note ?? 'Managed by AI Brain', login: { username: null, password: value, uris: [] }, fields: [], favorite: false, reprompt: 0 };
+  const item = { type: 1, name, folderId, notes: note ?? 'Managed by Drydock', login: { username: null, password: value, uris: [] }, fields: [], favorite: false, reprompt: 0 };
   const input = Buffer.from(JSON.stringify(item)).toString('base64'); // stdin, not argv
   const r = existing ? await cli(BW(), ['edit', 'item', existing], { env, input }) : await cli(BW(), ['create', 'item'], { env, input });
   if (r.code !== 0) throw fail('Saving to Bitwarden', r);
@@ -317,11 +317,11 @@ async function bwDelete(id: string) {
 }
 
 // ── Bitwarden Secrets Manager (bws) ──────────────────────────────
-// A machine account's access token authorizes the CLI. AI Brain keeps it in
+// A machine account's access token authorizes the CLI. Drydock keeps it in
 // the macOS Keychain (written through `security -i` on stdin, so it never
 // shows in argv) and hands it to bws in the environment.
 
-const KC_SERVICE = 'AI Brain: Bitwarden Secrets Manager token';
+const KC_SERVICE = 'AI Brain: Bitwarden Secrets Manager token'; // Keychain item name: kept from the old name so saved tokens still work
 const KC_ACCOUNT = 'ai-brain';
 
 export async function setBwsToken(token: string): Promise<void> {
@@ -370,7 +370,7 @@ async function bwsSave(s: SecretSettings, name: string, value: string, existing:
   // bws takes the value as an argument; there is no stdin form
   const out = existing
     ? await bwsJson(s, ['secret', 'edit', existing, '--value', value, ...(note ? ['--note', note] : [])], 'Saving to Secrets Manager')
-    : await bwsJson(s, ['secret', 'create', name, value, s.bws.projectId, '--note', note ?? 'Managed by AI Brain'], 'Saving to Secrets Manager');
+    : await bwsJson(s, ['secret', 'create', name, value, s.bws.projectId, '--note', note ?? 'Managed by Drydock'], 'Saving to Secrets Manager');
   return out.id;
 }
 
@@ -442,7 +442,7 @@ export async function moveFromFile(db: DB, file: string, key: string, name: stri
   let value = re.exec(lines[i])![1].trim();
   if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
   const row = await storeSecret(db, { name, value, kind: 'provided', projectId, note });
-  lines[i] = `# ${key}: moved to ${PROVIDER_NAME[row.provider]} as ${name} by AI Brain (inject it with run_with_secrets)`;
+  lines[i] = `# ${key}: moved to ${PROVIDER_NAME[row.provider]} as ${name} by Drydock (inject it with run_with_secrets)`;
   writeFileSync(path, lines.join('\n'));
   return row;
 }
@@ -455,7 +455,7 @@ async function readValue(db: DB, row: SecretRow): Promise<string> {
 }
 
 /**
- * Read secrets for AI Brain's own use (a server's admin login, an app the user
+ * Read secrets for Drydock's own use (a server's admin login, an app the user
  * started). Agents never reach this directly: their path is withSecrets.
  */
 export async function readSecrets(db: DB, names: string[]): Promise<Record<string, string>> {
@@ -499,7 +499,7 @@ export async function runWithSecrets(db: DB, input: { command: string; secrets: 
   const ws = currentWorkspace();
   if (!ws) throw new SecretError('no workspace', 'not_configured');
   const cwd = resolve(ws.root, input.cwd);
-  if (!isInside(ws.root, cwd)) throw new SecretError('The command must run inside the AI Brain workspace.', 'invalid');
+  if (!isInside(ws.root, cwd)) throw new SecretError('The command must run inside the Drydock workspace.', 'invalid');
   return withSecrets(db, input.secrets, input.reason, async (env) => {
     const r = await cli('/bin/bash', ['-lc', input.command], { cwd, env, timeoutMs: input.timeoutMs ?? 10 * 60_000 });
     const output = redact(`${r.stdout}${r.stderr ? `\n${r.stderr}` : ''}`, Object.values(env)).slice(-20_000);

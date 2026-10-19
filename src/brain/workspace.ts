@@ -1,5 +1,5 @@
 // The workspace: the one folder the user picks at onboarding (D9). Everything
-// AI Brain creates lives inside it, and agents are kept inside it by the
+// Drydock creates lives inside it, and agents are kept inside it by the
 // boundary hook. The only file outside it is the pointer in BRAIN_HOME
 // (~/.ai-brain/config.json), which records where the workspace is.
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -134,7 +134,7 @@ export function setupWorkspace(folder: string, env: NodeJS.ProcessEnv = process.
   if (!existsSync(readme)) {
     writeFileSync(
       readme,
-      '# AI Brain workspace\n\nEverything AI Brain creates lives in this folder, and its agents cannot read or write outside it.\n\n' +
+      '# Drydock workspace\n\nEverything Drydock creates lives in this folder, and its agents cannot read or write outside it.\n\n' +
         '- `vault/`: documents, notes, decisions and the Daily\n- `projects/`: one folder per project\n- `.ai-brain/`: database, logs and settings\n',
     );
   }

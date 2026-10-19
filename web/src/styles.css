@@ -1,4 +1,4 @@
-/* AI Brain design tokens: the mockups' dark and light palettes. */
+/* Drydock design tokens: the mockups' dark and light palettes. */
 :root,
 :root[data-theme='dark'] {
   --bg: #0e1116;
@@ -631,7 +631,7 @@ body.no-scroll { overflow: hidden; }
 .think-bar { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text2); padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; border-top-color: var(--accent); } }
 
-/* what AI Brain needs on this computer */
+/* what Drydock needs on this computer */
 .sys-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 20px; background: var(--r-bg); color: var(--text); border-bottom: 1px solid var(--r-fg); font-size: 13px; }
 .sys-banner strong { color: var(--r-fg); }
 .sys-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

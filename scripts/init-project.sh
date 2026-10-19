@@ -1,5 +1,5 @@
 #!/bin/sh
-# One-command AI Brain kit setup for a new OR existing project.
+# One-command Drydock kit setup for a new OR existing project.
 #   scripts/init-project.sh <target-dir> [project-name]
 # Adapts to what's already there — appends and merges, never skips a
 # needed piece and never overwrites user content. Idempotent.
@@ -105,7 +105,7 @@ if ! git rev-parse HEAD > /dev/null 2>&1; then
     installed="$installed .gitignore"
   fi
   git add -A
-  git commit -qm "Set up the AI Brain project kit"
+  git commit -qm "Set up the Drydock project kit"
   installed="$installed (initial commit)"
 fi
 
@@ -122,7 +122,7 @@ if command -v curl > /dev/null; then
   fi
 fi
 
-[ -n "$UPDATE" ] && echo "brain updated in $TARGET" || echo "AI Brain kit ready in $TARGET"
+[ -n "$UPDATE" ] && echo "brain updated in $TARGET" || echo "Drydock kit ready in $TARGET"
 [ -n "$installed" ] && echo "  installed:$installed"
 [ -n "$updated" ]   && echo "  updated:$updated"
 [ -n "$merged" ]    && echo "  merged into existing:$merged"

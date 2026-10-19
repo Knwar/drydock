@@ -45,10 +45,10 @@ function PolicyButton({ tool, policy, onDone }: { tool: string; policy: Policy; 
 }
 
 const GROUPS: { source: string; title: string; note: string }[] = [
-  { source: 'account', title: 'From your Claude account', note: 'Connectors on your claude.ai account. Every Claude app you sign in to shares them, so they show up here without being set up in AI Brain. Connect or disconnect them on claude.ai › Settings › Connectors.' },
+  { source: 'account', title: 'From your Claude account', note: 'Connectors on your claude.ai account. Every Claude app you sign in to shares them, so they show up here without being set up in Drydock. Connect or disconnect them on claude.ai › Settings › Connectors.' },
   { source: 'added', title: 'Added by you', note: 'Servers added here or with claude mcp add. Every project can use them.' },
   { source: 'plugin', title: 'From Claude Code plugins', note: 'They come with a plugin installed in Claude Code. Each needs its own sign-in before an agent can use it.' },
-  { source: 'built_in', title: 'Built in', note: 'Part of AI Brain.' },
+  { source: 'built_in', title: 'Built in', note: 'Part of Drydock.' },
 ];
 
 function AddServerDialog({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
@@ -166,7 +166,7 @@ function Integrations() {
             <aside className="panel" style={{ flex: '1 1 320px', minWidth: 0, alignSelf: 'flex-start' }}>
               <div style={{ fontSize: 18, fontWeight: 800 }}>{short(s)}</div>
               <div className="muted mono" style={{ fontSize: 11.5 }}>{s.prefix}</div>
-              <div style={{ fontSize: 13 }}>{s.source === 'account' ? `${s.detail}. This is a connector on your claude.ai account, not something AI Brain set up.` : s.detail}</div>
+              <div style={{ fontSize: 13 }}>{s.source === 'account' ? `${s.detail}. This is a connector on your claude.ai account, not something Drydock set up.` : s.detail}</div>
               {msg && <div className={msg.ok ? 'banner t-g' : 'error'} style={{ fontSize: 12.5 }}>{msg.text}</div>}
               {s.status !== 'built_in' && (
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -391,7 +391,7 @@ function RoleEditor({ role, onClose }: { role: Partial<Role> | null; onClose: ()
       </div>
       {role.contract && (
         <details className="contract">
-          <summary>How {role.name} works in AI Brain <span className="muted">· built in, always applies</span></summary>
+          <summary>How {role.name} works in Drydock <span className="muted">· built in, always applies</span></summary>
           <pre>{role.contract}</pre>
         </details>
       )}
@@ -483,7 +483,7 @@ function Team({ roles }: { roles: Role[] }) {
   return (
     <>
       <div className="settings-head">
-        <div><h1>Team &amp; permissions</h1><p className="muted">Each member is a Claude Code session: how it works in AI Brain is built in; its character and skills are yours to change. Shared roles see every project; project roles see only theirs.</p></div>
+        <div><h1>Team &amp; permissions</h1><p className="muted">Each member is a Claude Code session: how it works in Drydock is built in; its character and skills are yours to change. Shared roles see every project; project roles see only theirs.</p></div>
         <button className="btn primary" onClick={() => setAdding(true)}>+ Add member</button>
       </div>
       {adding && <AddMemberDialog onClose={() => setAdding(false)} onAdded={() => setAdding(false)} />}
@@ -659,7 +659,7 @@ function Workspace() {
   const ws = useApi<WorkspaceInfo>('/api/workspace');
   return (
     <>
-      <div className="settings-head"><div><h1>Workspace</h1><p className="muted">Everything AI Brain creates lives in this folder, and agents cannot read or write outside it.</p></div></div>
+      <div className="settings-head"><div><h1>Workspace</h1><p className="muted">Everything Drydock creates lives in this folder, and agents cannot read or write outside it.</p></div></div>
       <section className="panel">
         <div className="field"><span className="muted">Folder</span><span className="mono">{ws.data?.root}</span></div>
         <div className="field"><span className="muted">Database</span><span className="mono">{ws.data?.db}</span></div>

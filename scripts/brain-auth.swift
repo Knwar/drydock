@@ -1,12 +1,12 @@
 // brain-auth "<reason>": asks the person at this Mac to confirm with Touch ID
 // (or their Mac login password when Touch ID is unavailable). Exit 0 when they
 // confirm, 1 when they cancel or fail, 2 when the Mac cannot ask at all.
-// AI Brain compiles this once into the workspace and runs it before it reads
+// Drydock compiles this once into the workspace and runs it before it reads
 // a secret from Bitwarden/Vaultwarden, whose CLI has no biometric unlock.
 import Foundation
 import LocalAuthentication
 
-let reason = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "AI Brain wants to use a secret"
+let reason = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "Drydock wants to use a secret"
 let context = LAContext()
 var error: NSError?
 guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {

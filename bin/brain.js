@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// brain CLI (AI Brain, forked from kankanban)
+// brain CLI (Drydock's agent-facing commands, forked from kankanban; people use bin/drydock.js)
 //   brain setup [folder]      choose the workspace folder (no folder: show it)
 //   brain init [dir] [name]   set up a project (auto-starts the daemon)
 //   brain update [dir]        re-sync kit files into a set-up project (overwrites kit-owned files)
@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DAEMON_URL = process.env.DAEMON_URL ?? 'http://localhost:7900';
 const PORT = new URL(DAEMON_URL).port || '7900';
-const DATA_DIR = join(homedir(), '.ai-brain');
+const DATA_DIR = process.env.BRAIN_HOME ?? join(homedir(), '.ai-brain');
 const PID_FILE = join(DATA_DIR, 'daemon.pid');
 const LOG_FILE = join(DATA_DIR, 'daemon.log');
 
@@ -43,7 +43,9 @@ const daemonCmd = () => [join(ROOT, 'node_modules', '.bin', 'tsx'), join(ROOT, '
 
 async function up() {
   try {
-    return (await fetch(DAEMON_URL, { signal: AbortSignal.timeout(700) })).ok;
+    // ask for something only this daemon answers (the bare address redirects to the app, and another program could hold the port)
+    const res = await fetch(`${DAEMON_URL}/api/workspace`, { signal: AbortSignal.timeout(700) });
+    return res.ok && 'configured' in (await res.json());
   } catch {
     return false;
   }
@@ -170,7 +172,7 @@ async function main() {
   if (['info', 'start', 'stop', 'restart'].includes(cmd)) {
     const dir = process.cwd();
     if (!isSetup(dir)) {
-      console.error(`this folder is not set up for AI Brain — run: brain init`);
+      console.error(`this folder is not set up for Drydock — run: brain init`);
       process.exit(1);
     }
     if (cmd === 'stop') {
@@ -187,7 +189,7 @@ async function main() {
     process.exit(0);
   }
 
-  // Choose the workspace folder (D9): everything AI Brain makes lives inside it.
+  // Choose the workspace folder (D9): everything Drydock makes lives inside it.
   if (cmd === 'setup') {
     if (!rest[0]) {
       const ws = workspaceRoot();
@@ -221,7 +223,7 @@ async function main() {
   if (cmd === 'update') {
     const target = resolve(rest[0] ?? process.cwd());
     if (!isSetup(target)) {
-      console.error(`this folder is not set up for AI Brain — run: brain init`);
+      console.error(`this folder is not set up for Drydock — run: brain init`);
       process.exit(1);
     }
     const res = spawnSync('sh', [join(ROOT, 'scripts', 'init-project.sh'), target], {

@@ -89,7 +89,7 @@ function say(db: DB, projectId: string, text: string): void {
   const name = projectRef(db, projectId).name;
   const m = addMessage(db, 'dm:main', 'system', `**${name}** (auto mode): ${text}`);
   getBus().emit({ type: 'chat', conversation: 'dm:main', message: m });
-  notify(`AI Brain: ${name}`, text);
+  notify(`Drydock: ${name}`, text);
 }
 
 /** An approval is waiting on the user in an auto project: say so, since nobody is watching. */

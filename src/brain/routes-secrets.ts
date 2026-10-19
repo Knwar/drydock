@@ -67,8 +67,8 @@ on('POST', '/api/secrets/settings', async (req, res, _u, ctx) => {
     if (url && !/^https:\/\//.test(url)) throw new HttpError(400, 'The Secrets Manager server must be an https:// address');
     patch.bws = { serverUrl: url || null, projectId: b.bws.projectId ? String(b.bws.projectId) : null };
   }
-  if (b?.onepassword) patch.onepassword = { vault: String(b.onepassword.vault ?? 'AI Brain').trim() || 'AI Brain', account: b.onepassword.account ? String(b.onepassword.account) : null, askEveryTime: Boolean(b.onepassword.askEveryTime) };
-  if (b?.bitwarden) patch.bitwarden = { ...secretSettings(ctx.db()).bitwarden, folder: String(b.bitwarden.folder ?? 'AI Brain').trim() || 'AI Brain', unlockMinutes: Math.min(240, Math.max(1, Number(b.bitwarden.unlockMinutes) || 15)) };
+  if (b?.onepassword) patch.onepassword = { vault: String(b.onepassword.vault ?? 'Drydock').trim() || 'Drydock', account: b.onepassword.account ? String(b.onepassword.account) : null, askEveryTime: Boolean(b.onepassword.askEveryTime) };
+  if (b?.bitwarden) patch.bitwarden = { ...secretSettings(ctx.db()).bitwarden, folder: String(b.bitwarden.folder ?? 'Drydock').trim() || 'Drydock', unlockMinutes: Math.min(240, Math.max(1, Number(b.bitwarden.unlockMinutes) || 15)) };
   saveSecretSettings(ctx.db(), patch);
   ctx.broadcast({ type: 'secrets' });
   ctx.json(res, 200, await providerStatus(ctx.db()));

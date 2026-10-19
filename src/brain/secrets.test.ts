@@ -63,8 +63,8 @@ describe('secrets (fake 1Password, Bitwarden and Secrets Manager CLIs)', () => {
     const gen = await call('POST', '/api/secrets', { name: 'JWT_SIGNING_KEY', generate: { bytes: 32 } });
     assert.equal(gen.kind, 'generated');
     const s = store();
-    assert.equal(s.items['op:AI Brain/STRIPE_API_KEY'], 'sk_test_supersecret123');
-    const jwt = s.items['op:AI Brain/JWT_SIGNING_KEY'];
+    assert.equal(s.items['op:Drydock/STRIPE_API_KEY'], 'sk_test_supersecret123');
+    const jwt = s.items['op:Drydock/JWT_SIGNING_KEY'];
     assert.ok(jwt.length >= 40);
     assert.ok(!argv().includes('sk_test_supersecret123') && !argv().includes(jwt), 'values went in on stdin');
     const list = JSON.stringify(await call('GET', '/api/secrets'));
@@ -97,14 +97,14 @@ describe('secrets (fake 1Password, Bitwarden and Secrets Manager CLIs)', () => {
     await call('POST', '/api/secrets', { name: 'DEMO_DATABASE_URL', from_file: { path: 'projects/demo/.env', key: 'DATABASE_URL' } });
     const env = readFileSync(join(ws, 'projects', 'demo', '.env'), 'utf8');
     assert.ok(!env.includes('pw-in-file') && env.includes('PORT=3000') && env.includes('moved to 1Password as DEMO_DATABASE_URL'));
-    assert.equal(store().items['op:AI Brain/DEMO_DATABASE_URL'], 'postgres://u:pw-in-file@db/x');
+    assert.equal(store().items['op:Drydock/DEMO_DATABASE_URL'], 'postgres://u:pw-in-file@db/x');
     assert.equal((await raw('POST', '/api/secrets', { name: 'OUTSIDE_KEY', from_file: { path: '../../etc/hosts', key: 'X' } })).status, 404, 'only files inside the workspace');
   });
 
   it('rotates generated secrets, not keys issued elsewhere', async () => {
-    const before_ = store().items['op:AI Brain/JWT_SIGNING_KEY'];
+    const before_ = store().items['op:Drydock/JWT_SIGNING_KEY'];
     await call('POST', '/api/secrets/JWT_SIGNING_KEY/rotate');
-    assert.notEqual(store().items['op:AI Brain/JWT_SIGNING_KEY'], before_);
+    assert.notEqual(store().items['op:Drydock/JWT_SIGNING_KEY'], before_);
     assert.equal((await raw('POST', '/api/secrets/STRIPE_API_KEY/rotate')).status, 400);
   });
 

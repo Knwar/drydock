@@ -1,5 +1,5 @@
 // The `brain` MCP server each agent run gets (stdio). It is how agents act on
-// AI Brain itself: ask the user for permission, log decisions, and (later
+// Drydock itself: ask the user for permission, log decisions, and (later
 // phases) create projects, write requirements and edit system designs.
 // Identity comes from env set by the runner: BRAIN_ROLE, BRAIN_CONVERSATION.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -115,7 +115,7 @@ server.registerTool(
 
 server.registerTool(
   'list_projects',
-  { description: 'List the projects in AI Brain with their stage and progress.', inputSchema: {} },
+  { description: 'List the projects in Drydock with their stage and progress.', inputSchema: {} },
   async () => {
     const ps = await call('/api/projects');
     if (!ps.length) return text('No projects yet.');
@@ -834,7 +834,7 @@ server.registerTool(
   'save_run_recipe',
   {
     description:
-      "Tell AI Brain how to run a project on this Mac (written to <project>/.ai-brain/run.json; commit it). web: services each get $PORT and must listen on 127.0.0.1; one is primary (its URL is <slug>.localhost). Other services' ports arrive as <NAME>_PORT / <NAME>_URL. needs: databases and services by type; each becomes an env var with its connection URL (a database of its own on the user's server, or Docker). secrets: names from list_secrets. install runs when lockfiles change; setup (migrations) runs on every start. app: launch builds and opens it.",
+      "Tell Drydock how to run a project on this Mac (written to <project>/.ai-brain/run.json; commit it). web: services each get $PORT and must listen on 127.0.0.1; one is primary (its URL is <slug>.localhost). Other services' ports arrive as <NAME>_PORT / <NAME>_URL. needs: databases and services by type; each becomes an env var with its connection URL (a database of its own on the user's server, or Docker). secrets: names from list_secrets. install runs when lockfiles change; setup (migrations) runs on every start. app: launch builds and opens it.",
     inputSchema: {
       project_id: z.string(),
       recipe: z.object({

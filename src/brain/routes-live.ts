@@ -76,7 +76,7 @@ on('POST', '/api/projects/:id/live/recipe', async (req, res, _u, ctx, p) => {
   ctx.json(res, 200, { saved: true, recipe: readRecipe(root).recipe });
 });
 
-/** Reset a database AI Brain made: back it up, drop it (it is recreated empty on the next start). The app confirms first. */
+/** Reset a database Drydock made: back it up, drop it (it is recreated empty on the next start). The app confirms first. */
 on('POST', '/api/projects/:id/databases/:db/reset', async (_q, res, _u, ctx, p) => {
   const db = ctx.db();
   await stopApp(db, p.id);

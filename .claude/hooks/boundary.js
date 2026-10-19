@@ -1,5 +1,5 @@
 // PreToolUse (Read|Edit|Write|MultiEdit|NotebookEdit|Glob|Grep|LS|Bash):
-// keep every agent inside the AI Brain workspace (D9). A tool call that names
+// keep every agent inside the Drydock workspace (D9). A tool call that names
 // a path outside it is blocked (exit 2); Claude sees the reason and adjusts.
 //
 // Workspace root: $BRAIN_WORKSPACE, else the pointer in $BRAIN_HOME/config.json
@@ -74,10 +74,10 @@ function shellPaths(command, cwd, home) {
 export function checkToolCall({ root, cwd, tool, input, home = homedir() }) {
   if (!root) return null;
   const base = cwd && isAbsolute(cwd) ? cwd : root;
-  const outside = (p) => `"${p}" is outside the AI Brain workspace (${root}). Agents may only read and write inside it. Use a path inside the workspace, or ask the user to copy what you need into it.`;
+  const outside = (p) => `"${p}" is outside the Drydock workspace (${root}). Agents may only read and write inside it. Use a path inside the workspace, or ask the user to copy what you need into it.`;
 
-  // Only sessions running inside the workspace are AI Brain's agents; anything
-  // else (e.g. developing AI Brain itself) is not ours to restrict.
+  // Only sessions running inside the workspace are Drydock's agents; anything
+  // else (e.g. developing Drydock itself) is not ours to restrict.
   if (!isInside(root, base)) return null;
 
   if (tool === 'Bash') {

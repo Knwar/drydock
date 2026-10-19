@@ -63,7 +63,7 @@ describe('boundary hook', () => {
   });
 
   it('blocks file tools that leave it', () => {
-    assert.match(check('Read', { file_path: '/etc/passwd' }), /outside the AI Brain workspace/);
+    assert.match(check('Read', { file_path: '/etc/passwd' }), /outside the Drydock workspace/);
     assert.match(check('Edit', { file_path: '../../../outside.txt' }), /outside/);
     assert.match(check('Read', { file_path: '~/.ssh/id_rsa' }), /outside/);
     assert.match(check('Glob', { pattern: '/Users/**/*.env' }), /outside/);
@@ -90,7 +90,7 @@ describe('boundary hook', () => {
       spawnSync(process.execPath, [hook], { input: JSON.stringify({ cwd, ...input }), env: { ...process.env, BRAIN_WORKSPACE: root }, encoding: 'utf8' });
     const blocked = run({ tool_name: 'Read', tool_input: { file_path: '/etc/hosts' } });
     assert.equal(blocked.status, 2);
-    assert.match(blocked.stderr, /outside the AI Brain workspace/);
+    assert.match(blocked.stderr, /outside the Drydock workspace/);
     assert.equal(run({ tool_name: 'Read', tool_input: { file_path: join(cwd, 'a.ts') } }).status, 0);
   });
 

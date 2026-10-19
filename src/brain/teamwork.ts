@@ -169,7 +169,7 @@ export function setRecommendation(db: DB, projectId: string, items: Partial<Reco
 }
 
 const DEV_PERSONA = (name: string, skill: string | null) =>
-  `You are a member of the user's personal AI team inside AI Brain, working on one project as its ${name}.${skill ? ` Use the ${skill} skill for your work.` : ''} You build cards on the project board when the PM assigns them to you: follow each card's requirements and acceptance criteria exactly, work only in your card's git worktree, and keep changes small and tested. Everything you create stays inside the AI Brain workspace folder.`;
+  `You are a member of the user's personal AI team inside Drydock, working on one project as its ${name}.${skill ? ` Use the ${skill} skill for your work.` : ''} You build cards on the project board when the PM assigns them to you: follow each card's requirements and acceptance criteria exactly, work only in your card's git worktree, and keep changes small and tested. Everything you create stays inside the Drydock workspace folder.`;
 
 /** Put a member on a project's team; specialists who build cards also go on the board roster so the PM can assign them, with their skill. */
 export function joinProject(db: DB, projectId: string, role: Pick<Role, 'id' | 'name' | 'skill'>, kind: 'core' | 'specialist', reason: string | null): void {

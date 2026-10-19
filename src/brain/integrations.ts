@@ -36,7 +36,7 @@ export interface Server {
 export const prefixOf = (name: string) => `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}`;
 
 const BUILT_IN: Server[] = [
-  { name: 'brain', prefix: 'mcp__brain', url: 'built in', status: 'built_in', source: 'built_in', detail: 'AI Brain itself: approvals, decisions, projects, requirements, design, personal data' },
+  { name: 'brain', prefix: 'mcp__brain', url: 'built in', status: 'built_in', source: 'built_in', detail: 'Drydock itself: approvals, decisions, projects, requirements, design, personal data' },
   { name: 'kanban', prefix: 'mcp__kanban', url: 'built in', status: 'built_in', source: 'built_in', detail: 'The board: phases, cards, worktrees (project roles)' },
 ];
 

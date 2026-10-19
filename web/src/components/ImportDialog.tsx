@@ -68,12 +68,12 @@ export function ImportDialog({ onClose, onImported }: { onClose: () => void; onI
         </div>
         <ul className="md-list" style={{ fontSize: 13, lineHeight: 1.6, margin: 0 }}>
           <li><span className="mono">projects/{folder(info.dir)}</span> · {info.files}{info.truncated ? '+' : ''} files · {size(info.bytes)}</li>
-          <li>{info.git ? <>Git: {info.git.commits} commit{info.git.commits === 1 ? '' : 's'} on <span className="mono">{info.git.branch}</span>{info.git.remote && <> · remote <span className="mono">{info.git.remote}</span> (AI Brain never pushes)</>}</> : 'No git history yet: AI Brain starts one.'}</li>
+          <li>{info.git ? <>Git: {info.git.commits} commit{info.git.commits === 1 ? '' : 's'} on <span className="mono">{info.git.branch}</span>{info.git.remote && <> · remote <span className="mono">{info.git.remote}</span> (Drydock never pushes)</>}</> : 'No git history yet: Drydock starts one.'}</li>
         </ul>
 
         {info.git && info.git.dirty > 0 && (
           <div className="banner t-a" style={{ fontSize: 12.5, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ flex: 1 }}>{info.git.dirty} uncommitted change(s). Card work starts from a clean state, so commit them first, or let AI Brain commit them as a snapshot (.env files are kept out of it).</span>
+            <span style={{ flex: 1 }}>{info.git.dirty} uncommitted change(s). Card work starts from a clean state, so commit them first, or let Drydock commit them as a snapshot (.env files are kept out of it).</span>
             <button className="btn sm" disabled={busy !== null} onClick={() => step('snap', async () => review(await api<Inspection>('/api/import/snapshot', { body: { dir: folder(info.dir) } })))}>{busy === 'snap' ? 'Committing…' : 'Commit a snapshot'}</button>
           </div>
         )}
@@ -149,7 +149,7 @@ export function ImportDialog({ onClose, onImported }: { onClose: () => void; onI
               {outside.files}{outside.truncated ? '+' : ''} files, {size(outside.bytes)} to copy{outside.git ? `, with ${outside.git.commits} commit${outside.git.commits === 1 ? '' : 's'} of git history` : ''}.
             </div>
           )}
-          <label className="field"><span className="muted">Name in AI Brain</span><input className="input" placeholder={path.split('/').filter(Boolean).pop() ?? ''} value={name} onChange={(e) => setName(e.target.value)} /></label>
+          <label className="field"><span className="muted">Name in Drydock</span><input className="input" placeholder={path.split('/').filter(Boolean).pop() ?? ''} value={name} onChange={(e) => setName(e.target.value)} /></label>
           <div style={{ display: 'flex', gap: 8 }}>
             {!outside ? (
               <button className="btn primary" disabled={!path.trim() || busy !== null} onClick={() => step('check', async () => setOutside(await api<Inspection>('/api/import/inspect', { body: { path: path.trim() } })))}>{busy === 'check' ? 'Checking…' : 'Check folder'}</button>
@@ -164,7 +164,7 @@ export function ImportDialog({ onClose, onImported }: { onClose: () => void; onI
         <>
           <div className="muted" style={{ fontSize: 12.5 }}>Cloned into <span className="mono">projects/</span> with your own git sign-in. For private GitHub repositories, run <span className="mono">gh auth login</span> in a terminal first. Nothing is ever pushed.</div>
           <label className="field"><span className="muted">Repository address</span><input className="input mono" placeholder="https://github.com/you/repo.git or git@github.com:you/repo.git" value={url} onChange={(e) => setUrl(e.target.value)} /></label>
-          <label className="field"><span className="muted">Name in AI Brain (optional)</span><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></label>
+          <label className="field"><span className="muted">Name in Drydock (optional)</span><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></label>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn primary" disabled={!url.trim() || busy !== null} onClick={() => step('clone', async () => review(await api<Inspection>('/api/import/clone', { body: { url: url.trim(), name: name.trim() } })))}>{busy === 'clone' ? 'Cloning…' : 'Clone and review'}</button>
           </div>

@@ -78,7 +78,7 @@ export function runCheckins(db: DB, at = Date.now()): { project: string; tier: n
     const hours = Math.floor(idle);
     if (next === 3) {
       post(db, 'dm:main', 'main', `**${ref.name}** has had no activity for ${hours} hours, and the team did not get it moving. Do you want to **pause** it, **close** it, or have me dig in? (Pause and close are on the project page.)`, 3);
-      notify('AI Brain', `${ref.name}: no activity for ${hours} hours. Pause or close?`);
+      notify('Drydock', `${ref.name}: no activity for ${hours} hours. Pause or close?`);
     } else if (getConversation(db, build)) {
       if (next === 2) {
         const ids = [r.project_id, ...(db.prepare('SELECT id FROM projects WHERE parent_id = ?').all(r.project_id) as { id: string }[]).map((x) => x.id)];

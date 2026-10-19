@@ -1,4 +1,4 @@
-// What AI Brain needs on this computer (Node, git, the Claude CLI, a Claude
+// What Drydock needs on this computer (Node, git, the Claude CLI, a Claude
 // sign-in): a banner across the app while something is missing, and the
 // full checklist on the welcome screen.
 import { useState } from 'react';
@@ -50,7 +50,7 @@ export function SystemBanner() {
   const signin = failing.some((c) => c.id === 'signin');
   return (
     <div className="sys-banner" role="alert">
-      <strong>{signin && failing.length === 1 ? 'Claude isn’t signed in: agents can’t run.' : 'AI Brain is missing something it needs: agents can’t run.'}</strong>
+      <strong>{signin && failing.length === 1 ? 'Claude isn’t signed in: agents can’t run.' : 'Drydock is missing something it needs: agents can’t run.'}</strong>
       {failing.map((c) => (
         <span key={c.id} className="sys-item">
           <span>{c.label}: {c.detail}. {c.fix}</span>
@@ -69,7 +69,7 @@ export function SystemChecklist() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>What AI Brain needs</span>
+        <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>What Drydock needs</span>
         {!data.ok && <button type="button" className="btn sm" disabled={checking} onClick={again}>{checking ? 'Checking…' : 'Check again'}</button>}
       </div>
       {data.checks.map((c) => (

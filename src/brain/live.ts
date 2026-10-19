@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS live_apps (
   lock_hash  TEXT,                             -- dependencies last installed for
   head       TEXT,                             -- git HEAD last started
   ports      TEXT NOT NULL DEFAULT '{}',       -- service -> port, kept stable
-  pgids      TEXT NOT NULL DEFAULT '[]',       -- process groups, to clean up after a crash of AI Brain itself
+  pgids      TEXT NOT NULL DEFAULT '[]',       -- process groups, to clean up after a crash of Drydock itself
   updated_at INTEGER NOT NULL
 );
 `);
@@ -227,7 +227,7 @@ function logTo(a: App, lines: string[], text: string, svc?: string) {
   }
 }
 
-/** The environment apps get: a clean base (not AI Brain's own env), the recipe's values, secrets, ports. */
+/** The environment apps get: a clean base (not Drydock's own env), the recipe's values, secrets, ports. */
 function baseEnv(): Record<string, string> {
   const keep = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR'];
   return Object.fromEntries(keep.filter((k) => process.env[k]).map((k) => [k, process.env[k]!]));
@@ -466,7 +466,7 @@ function onExit(db: DB, a: App, svc: Svc, code: number | null, signal: NodeJS.Si
 
 /** Tell the PM (build thread, with a card) and the user. */
 function reportCrash(db: DB, a: App, svc: Svc) {
-  notify('AI Brain', `${a.name}: ${svc.spec.name} keeps crashing`);
+  notify('Drydock', `${a.name}: ${svc.spec.name} keeps crashing`);
   const tail = svc.log.slice(-25).join('\n');
   const build = `ch:${a.slug}-build`;
   if (!getConversation(db, build)) {
@@ -702,7 +702,7 @@ export function proxyHttp(req: IncomingMessage, res: ServerResponse): boolean {
   const t = target(req.headers.host);
   if (!t) return false;
   if (!t.port) {
-    res.writeHead(503, { 'content-type': 'text/html' }).end(page(`${t.a?.name ?? t.slug} is not running`, t.a?.status === 'paused' ? 'It is paused. Resume it from its project page in AI Brain.' : 'Start it from its project page in AI Brain.'));
+    res.writeHead(503, { 'content-type': 'text/html' }).end(page(`${t.a?.name ?? t.slug} is not running`, t.a?.status === 'paused' ? 'It is paused. Resume it from its project page in Drydock.' : 'Start it from its project page in Drydock.'));
     return true;
   }
   const up = request({ host: '127.0.0.1', port: t.port, method: req.method, path: req.url, headers: req.headers }, (r) => {

@@ -42,6 +42,6 @@
     "Merged from wshobson visual-design-foundations: spacing values for components, line-height ranges, limiting weights/families, missing-states and magic-number failure modes; dropped its Tailwind, React/TSX, @font-face and web-font pairing examples.",
     "Merged from wshobson responsive-design: mobile-first, content-driven breakpoints, fluid values, 44px touch targets, horizontal overflow and 100vh pitfalls; dropped container-query and image-loading material that does not apply to the format.",
     "Merged from wshobson accessibility-compliance: semantic HTML first, visible focus, labels, 200% zoom, reduced motion; corrected the large-text threshold to WCAG's 24px regular / about 18.7px bold (upstream visual-design-foundations says 18px+) and dropped the testing-tools list and screen-reader/live-region items that need scripting.",
-    "Added references/screen-skeleton.md (an example screen file) and references/mockup-checklist.md (pre-delivery checklist), written for AI Brain."
+    "Added references/screen-skeleton.md (an example screen file) and references/mockup-checklist.md (pre-delivery checklist), written for Drydock."
   ]
 }

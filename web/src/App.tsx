@@ -95,7 +95,7 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  if (ws.error) return <main className="main"><div className="error">Can't reach the AI Brain daemon: {ws.error}</div></main>;
+  if (ws.error) return <main className="main"><div className="error">Can't reach the Drydock daemon: {ws.error}</div></main>;
   if (!ws.data) return null;
   if (!ready) return <Onboarding onDone={() => { ws.reload(); profile.reload(); }} />;
 

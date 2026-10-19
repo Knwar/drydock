@@ -1,4 +1,4 @@
-// AI Brain's own tables, next to kankanban's (core/schema.sql). Each feature
+// Drydock's own tables, next to kankanban's (core/schema.sql). Each feature
 // module registers its DDL with defineSchema; ensureSchema applies all of it
 // once per DB, so the bootstrap DB and a workspace DB both get every table.
 import type { DB } from '../core/db.js';

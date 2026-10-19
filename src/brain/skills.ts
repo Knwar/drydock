@@ -199,7 +199,7 @@ export function pluginDir(dataDir: string, ids: string[]): string | null {
     mkdirSync(join(dir, '.claude-plugin'), { recursive: true });
     mkdirSync(join(dir, 'skills'), { recursive: true });
     for (const id of list) symlinkSync(wsDir(dataDir, id), join(dir, 'skills', id), 'dir');
-    writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: PLUGIN, version: '1.0.0', description: 'AI Brain skills for this role' }));
+    writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: PLUGIN, version: '1.0.0', description: 'Drydock skills for this role' }));
   }
   return dir;
 }

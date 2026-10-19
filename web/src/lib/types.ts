@@ -39,7 +39,7 @@ export interface Role {
   builtin: number;
   effort?: string | null;
   default_effort?: string | null;
-  /** how the role works inside AI Brain: built in, read-only */
+  /** how the role works inside Drydock: built in, read-only */
   contract?: string;
   /** library skill ids it loads (its own choice or the defaults) */
   skill_list?: string[];

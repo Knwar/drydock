@@ -60,7 +60,7 @@ export function LocalServicesSettings() {
       <div className="settings-head">
         <div>
           <h1>Local services</h1>
-          <p className="muted">Database and other servers on your network that apps can use when they run on this Mac. For each project AI Brain creates its own database and a user that can reach only that one, and keeps the login in your password manager. It never touches databases it did not create. Without a matching server it uses Docker{d.data.docker ? '' : ' (not running right now)'}.</p>
+          <p className="muted">Database and other servers on your network that apps can use when they run on this Mac. For each project Drydock creates its own database and a user that can reach only that one, and keeps the login in your password manager. It never touches databases it did not create. Without a matching server it uses Docker{d.data.docker ? '' : ' (not running right now)'}.</p>
         </div>
         <button className="btn primary" onClick={() => setEditing({ type: 'postgres', port: 5432, max_databases: 20 })}>Add a server</button>
       </div>
@@ -72,7 +72,7 @@ export function LocalServicesSettings() {
         ) : (
           <div className="scroll-x">
             <table className="table">
-              <thead><tr><th>Server</th><th>Type</th><th>Address</th><th>Status</th><th>AI Brain databases</th><th /></tr></thead>
+              <thead><tr><th>Server</th><th>Type</th><th>Address</th><th>Status</th><th>Drydock databases</th><th /></tr></thead>
               <tbody>
                 {d.data.services.map((s) => (
                   <tr key={s.id}>
@@ -109,7 +109,7 @@ export function LocalServicesSettings() {
       {editing && <ServiceDialog data={d.data} initial={editing} onClose={() => setEditing(null)} onSaved={(s) => (setEditing(null), d.reload(), setMsg(s.check?.ok ? { ok: true, text: `${s.name}: connected${s.check.version ? ` (${s.check.version})` : ''}.` } : { ok: false, text: `${s.name} was saved, but the connection test failed: ${s.check?.error ?? 'unknown error'}` }))} />}
       {removing && (
         <Modal title={`Remove ${removing.name}?`} onClose={() => setRemoving(null)} width={460}>
-          <div style={{ fontSize: 13, lineHeight: 1.5 }}>AI Brain stops using this server for new databases. Nothing on the server is changed.{removing.databases ? ` It still has ${removing.databases} database(s) made by AI Brain: reset them from their projects first.` : ''}</div>
+          <div style={{ fontSize: 13, lineHeight: 1.5 }}>Drydock stops using this server for new databases. Nothing on the server is changed.{removing.databases ? ` It still has ${removing.databases} database(s) made by Drydock: reset them from their projects first.` : ''}</div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn danger" disabled={busy !== null || removing.databases > 0} onClick={() => run('remove', () => api(`/api/local-services/${removing.id}`, { method: 'DELETE' }), `Removed ${removing.name}.`).then(() => setRemoving(null))}>Yes, remove</button>
             <button className="btn" onClick={() => setRemoving(null)}>Cancel</button>
@@ -165,7 +165,7 @@ function ServiceDialog({ data, initial, onClose, onSaved }: { data: Data; initia
       {db && (
         <div className="form-grid">
           <label className="field"><span className="muted">Admin user (can create databases and users)</span><input className="input mono" placeholder={f.type === 'mysql' ? 'root' : f.type === 'mongodb' ? 'admin' : 'postgres'} value={f.admin_user ?? ''} onChange={(e) => set('admin_user', e.target.value)} /></label>
-          <label className="field"><span className="muted">Databases AI Brain may create here</span><input className="input" type="number" min={1} value={f.max_databases ?? 20} onChange={(e) => set('max_databases', Number(e.target.value))} /></label>
+          <label className="field"><span className="muted">Databases Drydock may create here</span><input className="input" type="number" min={1} value={f.max_databases ?? 20} onChange={(e) => set('max_databases', Number(e.target.value))} /></label>
         </div>
       )}
       <label className="field">

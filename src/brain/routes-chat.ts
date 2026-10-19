@@ -303,7 +303,7 @@ function appendDecisionToVault(ctx: ApiCtx, projectId: string | null, line: stri
     if (p) file = join(ws.vault, 'projects', basename(p.root_path), 'decisions.md');
   }
   mkdirSync(join(file, '..'), { recursive: true });
-  if (!existsSync(file)) appendFileSync(file, '# Decisions\n\nNewest last. Written by AI Brain when a decision is agreed in chat.\n');
+  if (!existsSync(file)) appendFileSync(file, '# Decisions\n\nNewest last. Written by Drydock when a decision is agreed in chat.\n');
   appendFileSync(file, line);
   return file;
 }

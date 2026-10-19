@@ -1,4 +1,4 @@
-// Daemon handles that AI Brain modules need outside a request (agent runs,
+// Daemon handles that Drydock modules need outside a request (agent runs,
 // timers): the current DB, the daemon URL and live broadcasts. The daemon
 // binds them once at startup.
 import type { DB } from '../core/db.js';

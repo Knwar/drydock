@@ -93,9 +93,9 @@ function SkillEditor({ id, onClose }: { id: string; onClose: () => void }) {
   return (
     <Modal title={d.title} onClose={onClose} width={860}>
       <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
-        {d.source ? <>Adapted from {repoLink(d.source)} ({d.source.license}, commit <span className="mono">{d.source.commit.slice(0, 7)}</span>).</> : <>Written for AI Brain.</>}
+        {d.source ? <>Adapted from {repoLink(d.source)} ({d.source.license}, commit <span className="mono">{d.source.commit.slice(0, 7)}</span>).</> : <>Written for Drydock.</>}
         {d.basedOn.length > 0 && <> Borrows from {d.basedOn.map((b, k) => <span key={b.repo + b.path}>{k ? ', ' : ''}{repoLink(b)} ({b.license})</span>)}.</>}
-        {' '}The app keeps how each role works in AI Brain separately, so editing this changes only the know-how.
+        {' '}The app keeps how each role works in Drydock separately, so editing this changes only the know-how.
       </div>
       <div className="seg" style={{ alignSelf: 'flex-start' }}>
         <button aria-pressed={view === 'edit'} onClick={() => setView('edit')}>Edit</button>
@@ -144,7 +144,7 @@ export function SkillsSettings({ roles }: { roles: Role[] }) {
       <div className="settings-head">
         <div>
           <h1>Skills</h1>
-          <p className="muted">Know-how each team member loads when the work calls for it. Most are adapted from public skill collections; you can edit any of them. How each member works inside AI Brain is built in and is not affected by edits here.</p>
+          <p className="muted">Know-how each team member loads when the work calls for it. Most are adapted from public skill collections; you can edit any of them. How each member works inside Drydock is built in and is not affected by edits here.</p>
         </div>
       </div>
       {open && <SkillEditor id={open} onClose={() => { setOpen(null); skills.reload(); }} />}
@@ -160,7 +160,7 @@ export function SkillsSettings({ roles }: { roles: Role[] }) {
                   <div className="muted" style={{ fontSize: 12 }}>{s.summary}</div>
                 </td>
                 <td style={{ fontSize: 12.5 }}>{s.roles.map(name).join(', ')}{s.types.includes('any') ? '' : <span className="muted"> · {s.types.join(', ')} projects</span>}</td>
-                <td style={{ fontSize: 12.5 }}>{s.source ? <>{repoLink(s.source)} <span className="muted">{s.source.license}</span></> : <span className="muted">Written for AI Brain</span>}</td>
+                <td style={{ fontSize: 12.5 }}>{s.source ? <>{repoLink(s.source)} <span className="muted">{s.source.license}</span></> : <span className="muted">Written for Drydock</span>}</td>
                 <td style={{ textAlign: 'right' }}><button className="btn sm" onClick={() => setOpen(s.id)}>Open</button></td>
               </tr>
             ))}

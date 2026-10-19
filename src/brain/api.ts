@@ -1,4 +1,4 @@
-// /api/* — AI Brain's routes, kept out of the kankanban daemon file. Each
+// /api/* — Drydock's routes, kept out of the kankanban daemon file. Each
 // feature module registers handlers here; the daemon calls handleApi first
 // for every /api/ request.
 import { execFile } from 'node:child_process';
@@ -80,7 +80,7 @@ on('POST', '/api/workspace', async (req, res, _url, ctx) => {
 on('POST', '/api/workspace/pick', async (_req, res, _url, ctx) => {
   if (process.platform !== 'darwin') throw new HttpError(501, 'folder picker is macOS only: type the path instead');
   try {
-    const { stdout } = await execFileAsync('osascript', ['-e', 'POSIX path of (choose folder with prompt "Choose or create the folder AI Brain will work in")']);
+    const { stdout } = await execFileAsync('osascript', ['-e', 'POSIX path of (choose folder with prompt "Choose or create the folder Drydock will work in")']);
     ctx.json(res, 200, { path: stdout.trim().replace(/\/$/, '') });
   } catch {
     ctx.json(res, 200, { path: null }); // cancelled

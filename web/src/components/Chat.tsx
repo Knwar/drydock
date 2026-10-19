@@ -8,7 +8,7 @@ import type { Conversation, Message, ProjectSummary, Role } from '../lib/types';
 import { Icon } from './Icon';
 import { ConversationInfo } from './ConversationInfo';
 
-const ALWAYS = ['Read and search files', 'Search the web', 'AI Brain tools'];
+const ALWAYS = ['Read and search files', 'Search the web', 'Drydock tools'];
 
 export function Avatar({ role, size = 28 }: { role?: Role | null; size?: number }) {
   const tone = role?.tone ?? 'n';
@@ -375,7 +375,7 @@ export function ChatPanel({ conversation, roles, projects = [], onSent, onClose,
           if (m.author === 'system')
             return (
               <details key={m.id} className="sys-note">
-                <summary>AI Brain asked {conversation.id === 'sys:daily' ? 'for the Daily' : 'the team'} · {when(m.created_at)}</summary>
+                <summary>Drydock asked {conversation.id === 'sys:daily' ? 'for the Daily' : 'the team'} · {when(m.created_at)}</summary>
                 <Markdown text={m.body} />
               </details>
             );

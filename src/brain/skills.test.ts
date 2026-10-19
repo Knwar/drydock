@@ -132,7 +132,7 @@ describe('personas written before contracts', () => {
     const { DEFAULT_ROLES } = await import('./roles.js');
     const db = new Database(':memory:');
     db.exec(`CREATE TABLE roles (id TEXT PRIMARY KEY, name TEXT NOT NULL, initials TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'shared', persona TEXT NOT NULL, skill TEXT, model TEXT NOT NULL DEFAULT 'sonnet', tone TEXT NOT NULL DEFAULT 'v', position INTEGER NOT NULL DEFAULT 0, builtin INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`);
-    const old = "You are a member of the user's personal AI team inside AI Brain, a local app on their Mac.\n\nYou are the CTO. Use the kankan board.";
+    const old = "You are a member of the user's personal AI team inside Drydock, a local app on their Mac.\n\nYou are the CTO. Use the kankan board.";
     db.prepare(`INSERT INTO roles (id, name, initials, persona, created_at) VALUES ('cto', 'CTO', 'CT', ?, 0), ('mine', 'Mine', 'MI', 'My own words.', 0)`).run(old);
     ensureSchema(db as never);
     const rows = db.prepare('SELECT id, persona, persona_before_contracts AS before FROM roles ORDER BY id').all() as any[];

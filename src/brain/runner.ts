@@ -28,7 +28,7 @@ const BRAIN_CLI = join(HERE, '..', '..', 'bin', 'brain.js');
 const TSX_LOADER = createRequire(import.meta.url).resolve('tsx/esm');
 const CLAUDE_BIN = process.env.BRAIN_CLAUDE_BIN ?? 'claude';
 
-/** Tools every role may use without asking: reading, searching, and AI Brain's own tools. */
+/** Tools every role may use without asking: reading, searching, and Drydock's own tools. */
 export const ALWAYS_ALLOWED = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'Skill', 'mcp__brain'];
 /** Project roles also run the board, its subagents and per-card worktrees without asking. */
 export const PROJECT_ALLOWED = ['mcp__kanban', 'Task', 'Bash(brain worktree:*)', 'Bash(brain verify:*)', 'Bash(brain security-scan:*)'];
@@ -639,7 +639,7 @@ export function resumeInterruptedRuns(): number {
     clearRun(r.conversation_id);
     if (!getConversation(db, r.conversation_id) || !getRole(db, r.role_id)) continue;
     const name = getRole(db, r.role_id)!.name;
-    emitMessage(addMessage(db, r.conversation_id, r.role_id, `${name} was interrupted when AI Brain restarted. Resuming where they left off…`, 'error', { interrupted: true }));
+    emitMessage(addMessage(db, r.conversation_id, r.role_id, `${name} was interrupted when Drydock restarted. Resuming where they left off…`, 'error', { interrupted: true }));
     // the interrupted run had taken in everything up to seen_upto: mark it seen so it is not answered twice
     if (r.session_id) saveSession(db, r.role_id, r.conversation_id, r.session_id, r.seen_upto);
     const note = r.session_id

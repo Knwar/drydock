@@ -228,7 +228,7 @@ export function SecretsSettings() {
       {install && (
         <Modal title={`Install ${NAMES[install]}?`} onClose={() => setInstall(null)} width={480}>
           <div style={{ fontSize: 13, lineHeight: 1.5 }}>
-            AI Brain runs <span className="mono">{BREW[install]}</span> on this Mac with Homebrew. It takes a minute or two.
+            Drydock runs <span className="mono">{BREW[install]}</span> on this Mac with Homebrew. It takes a minute or two.
             {install === '1password' && ' Afterwards, open the 1Password app and turn on Settings › Developer › Integrate with 1Password CLI.'}
             {install === 'bitwarden' && ' Afterwards, enter your Vaultwarden server here and sign the CLI in once in a terminal: bw login.'}
           </div>
