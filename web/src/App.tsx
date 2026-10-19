@@ -18,6 +18,7 @@ import { ProjectPage } from './pages/ProjectPage';
 import { IdeaPage } from './pages/IdeaPage';
 import { CaptureIdeaDialog, ideaEvents } from './components/Ideas';
 import { onLive } from './lib/live';
+import { SystemBanner } from './components/SystemCheck';
 import { SettingsWindow } from './pages/Settings';
 
 const projectEvents = (m: any) => ['card', 'card_removed', 'phases', 'project_removed', 'workspace', 'brain_project', 'design'].includes(m?.type);
@@ -168,6 +169,7 @@ export function App() {
   return (
     <div className="app">
       <Header theme={theme} toggleTheme={toggleTheme} name={profile.data?.name ?? ''} onSearch={() => setCmd(true)} messages={{ open: messenger, unread: listed(conversations).reduce((n, c) => n + (c.unread ?? 0), 0), toggle: () => setMessenger((v) => !v) }} />
+      <SystemBanner />
       <div className="body">
         <Sidebar
           key={list.length ? 'loaded' : 'empty'}

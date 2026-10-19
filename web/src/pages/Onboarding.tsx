@@ -1,3 +1,4 @@
+import { SystemChecklist } from '../components/SystemCheck';
 import { useState } from 'react';
 import { api } from '../lib/api';
 
@@ -45,6 +46,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             anything outside it.
           </p>
         </div>
+        <SystemChecklist />
         <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, fontWeight: 600 }}>
           Workspace folder
           <div style={{ display: 'flex', gap: 8 }}>

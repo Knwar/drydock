@@ -25,6 +25,7 @@ import { resumeInterruptedRuns } from './runner.js';
 import { ensureSchema } from './schema.js';
 import { startDailyScheduler } from './daily.js';
 import { listServers } from './integrations.js';
+import { startSystemChecks, systemStatus } from './system-check.js';
 
 /** Background work the daemon starts once: the Daily scheduler and the MCP server list. */
 export function startBrain(db: () => import('../core/db.js').DB, schedulers = true): NodeJS.Timeout[] {
@@ -40,9 +41,10 @@ export function startBrain(db: () => import('../core/db.js').DB, schedulers = tr
     }
   }, 1500);
   const watcher = startLiveWatcher();
-  if (!schedulers) return [watcher];
+  const checks = startSystemChecks();
+  if (!schedulers) return [watcher, checks];
   void listServers();
-  return [startDailyScheduler(), startCheckins(), startAuto(), watcher];
+  return [startDailyScheduler(), startCheckins(), startAuto(), watcher, checks];
 }
 
 export { handleApi } from './router.js';
@@ -54,6 +56,9 @@ function workspaceView(ctx: ApiCtx) {
   const ws = currentWorkspace();
   return { configured: Boolean(ws), root: ws?.root ?? null, db: ctx.dbPath() };
 }
+
+/** Node, git, the Claude CLI and its sign-in (?refresh=1 checks again now). */
+on('GET', '/api/system', async (_req, res, url, ctx) => ctx.json(res, 200, await systemStatus(url.searchParams.get('refresh') === '1')));
 
 on('GET', '/api/workspace', (_req, res, _url, ctx) => ctx.json(res, 200, workspaceView(ctx)));
 
