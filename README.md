@@ -53,7 +53,7 @@ When it's done you'll see:
   Port        7900
   Workspace   not chosen yet: the app asks for a folder the first time you open it
   Claude      Signed in (max plan)
-  Log         ~/.ai-brain/daemon.log
+  Log         ~/.drydock/daemon.log
 
   Forgot the address? Run drydock status or drydock open
   Stop it with drydock stop
@@ -114,7 +114,7 @@ This downloads the latest version, reinstalls, rebuilds and restarts Drydock. Yo
 
 ## Good to know
 
-- **It's private to your computer.** Drydock only listens on `localhost`: other devices on your network can't open it. Your data stays in your workspace folder, plus a small settings folder at `~/.ai-brain/`.
+- **It's private to your computer.** Drydock only listens on `localhost`: other devices on your network can't open it. Your data stays in your workspace folder, plus a small settings folder at `~/.drydock/`.
 - **Agents use your Claude plan.** Settings → Usage alerts pauses work before you run out. Auto mode on a project uses more, because nobody waits for you between steps.
 - **You stay in control.** Anything risky (running commands outside a project, deleting things, sending email, using a secret) shows an approval popup first.
 - **Email and calendar** come from your Claude account's connectors (claude.ai → Settings → Connectors). Settings → Integrations shows what's connected and lets you sign in to others.
@@ -127,7 +127,7 @@ This downloads the latest version, reinstalls, rebuilds and restarts Drydock. Yo
 | Red banner: "Claude isn't signed in" | Run `claude auth login` in Terminal, then click **Check again** in the banner |
 | `drydock: command not found` | Open a new Terminal window. Still missing? Run `./install.sh` again inside the `drydock` folder |
 | The page won't load | `drydock status`: if it says not running, `drydock start` |
-| `drydock start` says it did not start | It prints the end of its log. The full log is `~/.ai-brain/daemon.log` (or `drydock logs`) |
+| `drydock start` says it did not start | It prints the end of its log. The full log is `~/.drydock/daemon.log` (or `drydock logs`) |
 | `npm install` failed on a Mac | `xcode-select --install`, then `./install.sh` again |
 | Something else is odd | `drydock restart`. Still stuck? Send the output of `drydock status` and the last lines of `drydock logs` |
 
@@ -138,7 +138,7 @@ drydock stop
 npm unlink -g drydock 2>/dev/null; rm -f ~/.local/bin/drydock ~/.local/bin/brain
 ```
 
-Then delete the `drydock` folder and the `~/.ai-brain` settings folder. Your workspace folder is yours: delete it only if you no longer want your ideas and projects.
+Then delete the `drydock` folder and the `~/.drydock` settings folder. Your workspace folder is yours: delete it only if you no longer want your ideas and projects.
 
 ---
 

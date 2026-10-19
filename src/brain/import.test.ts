@@ -70,7 +70,7 @@ describe('importing existing projects', () => {
     const r = await call('POST', '/api/import', { dir: 'legacy-shop', type: 'software', trust: false });
     id = r.id;
     assert.deepEqual(r.quarantined.sort(), ['.claude/settings.json', '.mcp.json'].sort());
-    assert.ok(existsSync(join(shop(), '.ai-brain', 'quarantine', '.claude__settings.json')));
+    assert.ok(existsSync(join(shop(), '.drydock', 'quarantine', '.claude__settings.json')));
     const settings = JSON.parse(readFileSync(join(shop(), '.claude', 'settings.json'), 'utf8'));
     assert.ok(!JSON.stringify(settings).includes('evil.example'), 'their hook does not run');
     assert.ok(!JSON.stringify(JSON.parse(readFileSync(join(shop(), '.mcp.json'), 'utf8'))).includes('exfil'));

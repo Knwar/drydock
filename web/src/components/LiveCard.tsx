@@ -94,7 +94,7 @@ export function LiveCard({ projectId }: { projectId: string }) {
 
       {!l.runnable && (
         <div className="muted" style={{ fontSize: 13, lineHeight: 1.5 }}>
-          {l.message ?? 'Not runnable yet.'} The developer adds a run recipe (<span className="mono">.ai-brain/run.json</span>) while building; common setups (Vite, Next.js, Flutter web, Django) are detected on their own.
+          {l.message ?? 'Not runnable yet.'} The developer adds a run recipe (<span className="mono">.drydock/run.json</span>) while building; common setups (Vite, Next.js, Flutter web, Django) are detected on their own.
         </div>
       )}
       {l.runnable && l.message && l.status !== 'live' && <div className={l.status === 'error' || l.status === 'crashed' ? 'error' : 'muted'} style={{ fontSize: 12.5 }}>{l.message}</div>}
@@ -108,7 +108,7 @@ export function LiveCard({ projectId }: { projectId: string }) {
               <button className="link-btn" style={{ fontSize: 11.5, color: 'var(--r-fg)' }} onClick={() => setReset(d)}>Reset</button>
             </span>
           ))}
-          {l.recipe && <span className="muted">{l.recipe === 'file' ? 'Runs from .ai-brain/run.json' : 'Run setup detected automatically'} · restarts on each merge</span>}
+          {l.recipe && <span className="muted">{l.recipe === 'file' ? 'Runs from .drydock/run.json' : 'Run setup detected automatically'} · restarts on each merge</span>}
         </div>
       )}
 

@@ -6,7 +6,7 @@
 // after a merge or a crash (giving up after 3 crashes in 10 minutes and telling
 // the PM), and bringing running apps back after a restart.
 //
-// How to run a project comes from <project>/.ai-brain/run.json (written by the
+// How to run a project comes from <project>/.drydock/run.json (written by the
 // developer agent, see save_run_recipe), or is detected for common stacks.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -26,7 +26,7 @@ import { cli, getSecret, readSecrets, redact } from './secrets.js';
 import { dockerStart, dockerStop, freePort, projectDatabases, resolveNeed, type Need } from './services.js';
 import { getSetting } from './settings.js';
 import { notify } from './usage.js';
-import { currentWorkspace, isInside } from './workspace.js';
+import { currentWorkspace, dataDir, isInside } from './workspace.js';
 
 defineSchema(`
 CREATE TABLE IF NOT EXISTS live_apps (
@@ -127,7 +127,7 @@ export function detectRecipe(root: string): Recipe | null {
 }
 
 export function readRecipe(root: string): { recipe: Recipe | null; source: 'file' | 'detected' | null; error?: string } {
-  const file = join(root, '.ai-brain', 'run.json');
+  const file = join(dataDir(root), 'run.json');
   if (existsSync(file)) {
     try {
       return { recipe: validateRecipe(JSON.parse(readFileSync(file, 'utf8')), root), source: 'file' };
@@ -141,8 +141,8 @@ export function readRecipe(root: string): { recipe: Recipe | null; source: 'file
 
 export function saveRecipe(root: string, recipe: unknown): Recipe {
   const r = validateRecipe(recipe, root);
-  mkdirSync(join(root, '.ai-brain'), { recursive: true });
-  writeFileSync(join(root, '.ai-brain', 'run.json'), JSON.stringify(r, null, 2) + '\n');
+  mkdirSync(dataDir(root), { recursive: true });
+  writeFileSync(join(dataDir(root), 'run.json'), JSON.stringify(r, null, 2) + '\n');
   return r;
 }
 
@@ -221,7 +221,7 @@ function logTo(a: App, lines: string[], text: string, svc?: string) {
   if (lines.length > LOG_LINES) lines.splice(0, lines.length - LOG_LINES);
   const ws = currentWorkspace();
   if (ws) {
-    const dir = join(ws.root, '.ai-brain', 'logs', 'live');
+    const dir = join(ws.data, 'logs', 'live');
     mkdirSync(dir, { recursive: true });
     appendFileSync(join(dir, `${a.slug}.log`), clean.endsWith('\n') ? clean : clean + '\n');
   }
@@ -303,7 +303,7 @@ async function start(db: DB, a: App, opts: { by: 'user' | 'auto' | 'agent'; appr
   };
   const { recipe, error } = readRecipe(a.root);
   if (error) return fail('error', error);
-  if (!recipe || recipe.kind === 'none') return fail('stopped', 'Not runnable yet: no run recipe. The developer adds .ai-brain/run.json (save_run_recipe).');
+  if (!recipe || recipe.kind === 'none') return fail('stopped', 'Not runnable yet: no run recipe. The developer adds .drydock/run.json (save_run_recipe).');
   const running = [...apps.values()].filter((x) => x.projectId !== projectId && ['live', 'starting', 'installing', 'paused'].includes(x.status)).length;
   if (running >= liveSettings(db).maxRunning) return fail('error', `${running} apps are already running (your limit). Stop one first, or raise the limit in Settings › Local services.`);
 

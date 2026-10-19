@@ -61,7 +61,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your first name" />
         </label>
         <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
-          Creates <span className="mono">vault/</span>, <span className="mono">projects/</span> and <span className="mono">.ai-brain/</span> inside the folder. Existing files are left alone.
+          Creates <span className="mono">vault/</span>, <span className="mono">projects/</span> and <span className="mono">.drydock/</span> inside the folder. Existing files are left alone.
         </div>
         {error && <div className="error">{error}</div>}
         <button className="btn primary" style={{ height: 40 }} disabled={busy || !path.trim()}>

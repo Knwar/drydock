@@ -7,7 +7,8 @@
 // - lifecycle status: active / paused / review (close-out) / closed
 import { projectType, TYPES } from './plugins.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
+import { dataDir } from './workspace.js';
 import * as board from '../core/board.js';
 import type { DB } from '../core/db.js';
 import { getBus } from './bus.js';
@@ -376,13 +377,14 @@ export function writeProjectMemory(db: DB, projectId: string): void {
     return;
   }
   const digest = memoryDigest(db, projectId);
-  mkdirSync(join(ref.root, '.ai-brain'), { recursive: true });
-  writeFileSync(join(ref.root, '.ai-brain', 'memory.md'), digest + '\n');
+  const data = dataDir(ref.root);
+  mkdirSync(data, { recursive: true });
+  writeFileSync(join(data, 'memory.md'), digest + '\n');
   const claude = join(ref.root, 'CLAUDE.md');
-  const marker = '<!-- ai-brain:memory -->';
   if (existsSync(claude)) {
     const text = readFileSync(claude, 'utf8');
-    if (!text.includes(marker)) writeFileSync(claude, `${marker}\n@.ai-brain/memory.md\n\n${text}`);
+    // projects from before the rename carry the ai-brain marker (and keep their .ai-brain folder)
+    if (!text.includes('<!-- drydock:memory -->') && !text.includes('<!-- ai-brain:memory -->')) writeFileSync(claude, `<!-- drydock:memory -->\n@${basename(data)}/memory.md\n\n${text}`);
   }
   const all = listLessons(db, projectId);
   mkdirSync(join(ref.vault, 'memory'), { recursive: true });

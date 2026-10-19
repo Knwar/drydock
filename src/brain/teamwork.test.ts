@@ -129,10 +129,10 @@ describe('team, learning and close-out', () => {
   });
 
   it('writes a compact memory digest into the project (imported by CLAUDE.md) and the full register into the vault', async () => {
-    const digest = readFileSync(join(root, '.ai-brain', 'memory.md'), 'utf8');
+    const digest = readFileSync(join(root, '.drydock', 'memory.md'), 'utf8');
     assert.match(digest, /Add a test for every webhook signature check — check: webhook test in CI/);
     assert.ok(digest.length <= 6200);
-    assert.match(readFileSync(join(root, 'CLAUDE.md'), 'utf8'), /^<!-- ai-brain:memory -->\n@\.ai-brain\/memory\.md/);
+    assert.match(readFileSync(join(root, 'CLAUDE.md'), 'utf8'), /^<!-- drydock:memory -->\n@\.drydock\/memory\.md/);
     assert.ok(existsSync(join(tmp, 'ws', 'vault', 'projects', 'shop', 'memory', 'lessons.md')));
   });
 
@@ -156,7 +156,7 @@ describe('team, learning and close-out', () => {
     await call('POST', '/api/roles', { template: 'pm' });
     await call('POST', '/api/channels', { name: 'build', members: ['pm'], project_id: p2.id });
     const db = await import('better-sqlite3');
-    const conn = new db.default(join(tmp, 'ws', '.ai-brain', 'board.db'));
+    const conn = new db.default(join(tmp, 'ws', '.drydock', 'board.db'));
     conn.prepare(`UPDATE brain_projects SET stage = 'build', updated_at = ? WHERE project_id = ?`).run(Date.now() - 3 * 3600_000, p2.id);
     conn.prepare(`UPDATE messages SET created_at = ? WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id = ?)`).run(Date.now() - 3 * 3600_000, p2.id);
     conn.close();

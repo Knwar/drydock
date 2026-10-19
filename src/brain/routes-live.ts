@@ -67,7 +67,7 @@ on('GET', '/api/projects/:id/live/logs', (_q, res, url, ctx, p) => {
   ctx.json(res, 200, { log: appLogs(p.id, url.searchParams.get('service') ?? undefined, Math.min(2000, Number(url.searchParams.get('lines')) || 300)) });
 });
 
-/** The developer agent's save_run_recipe: validated, then written to <project>/.ai-brain/run.json. */
+/** The developer agent's save_run_recipe: validated, then written to <project>/.drydock/run.json. */
 on('POST', '/api/projects/:id/live/recipe', async (req, res, _u, ctx, p) => {
   const root = ref(ctx.db(), p.id).root;
   const b = await ctx.readBody(req);

@@ -113,7 +113,7 @@ describe('the Idea board', () => {
     const run = runs().find((r) => r.system?.includes('This chat shapes an idea'));
     assert.ok(run, 'the Main agent ran with the idea rules');
     assert.match(run.system, /You lead it, and you do the shaping yourself/);
-    for (const skill of ['ai-brain:c4-system-design', 'ai-brain:ui-mockups', 'ai-brain:brand-guidelines']) assert.ok(run.system.includes(skill), `the lead carries ${skill}`);
+    for (const skill of ['drydock:c4-system-design', 'drydock:ui-mockups', 'drydock:brand-guidelines']) assert.ok(run.system.includes(skill), `the lead carries ${skill}`);
     assert.ok(existsSync(join(run.plugin, 'skills', 'ui-mockups', 'SKILL.md')), 'and can load it');
     assert.match(run.system, new RegExp(id));
   });

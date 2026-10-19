@@ -2,12 +2,12 @@
 // model threats, plan a story...). Most are adapted from public skill repos;
 // each records its source, commit, license and what was changed, and keeps
 // the original files for a diff. The app ships the library in skills/; each
-// workspace gets its own copy in .ai-brain/skills/, which is what the user
+// workspace gets its own copy in .drydock/skills/, which is what the user
 // edits and what agents load. Unedited copies follow app updates; edited
 // ones are kept and show that a newer original exists.
 //
 // Agents get only their role's skills, as a Claude Code plugin made per run
-// (skills appear as ai-brain:<id> and load on demand).
+// (skills appear as drydock:<id> and load on demand).
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -16,8 +16,8 @@ import type { ProjectType } from './plugins.js';
 import type { Role } from './roles.js';
 
 export const LIBRARY_DIR = process.env.BRAIN_SKILLS_DIR ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills');
-/** The plugin name agents see: skills are ai-brain:<id>. */
-export const PLUGIN = 'ai-brain';
+/** The plugin name agents see: skills are drydock:<id>. */
+export const PLUGIN = 'drydock';
 
 export interface SkillSource {
   repo: string;

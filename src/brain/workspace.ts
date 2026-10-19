@@ -1,7 +1,7 @@
 // The workspace: the one folder the user picks at onboarding (D9). Everything
 // Drydock creates lives inside it, and agents are kept inside it by the
 // boundary hook. The only file outside it is the pointer in BRAIN_HOME
-// (~/.ai-brain/config.json), which records where the workspace is.
+// (~/.drydock/config.json), which records where the workspace is.
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -30,10 +30,19 @@ const LAYOUT = [
   'vault/personal/daily',
   'vault/inbox',
   'projects',
-  '.ai-brain',
 ];
 
-export const brainHome = (env: NodeJS.ProcessEnv = process.env): string => env.BRAIN_HOME ?? join(homedir(), '.ai-brain');
+/**
+ * Drydock's own folder inside a root (home, workspace or project): .drydock,
+ * or .ai-brain where an install from before the rename already has one (it is
+ * kept, never moved, so nothing breaks).
+ */
+export function dataDir(root: string): string {
+  const legacy = join(root, '.ai-brain');
+  return existsSync(legacy) && !existsSync(join(root, '.drydock')) ? legacy : join(root, '.drydock');
+}
+
+export const brainHome = (env: NodeJS.ProcessEnv = process.env): string => env.BRAIN_HOME ?? dataDir(homedir());
 
 const configFile = (env: NodeJS.ProcessEnv) => join(brainHome(env), 'config.json');
 
@@ -51,8 +60,8 @@ export function workspacePaths(root: string): WorkspacePaths {
     root,
     vault: join(root, 'vault'),
     projects: join(root, 'projects'),
-    data: join(root, '.ai-brain'),
-    db: join(root, '.ai-brain', 'board.db'),
+    data: dataDir(root),
+    db: join(dataDir(root), 'board.db'),
   };
 }
 
@@ -124,6 +133,7 @@ export function setupWorkspace(folder: string, env: NodeJS.ProcessEnv = process.
   mkdirSync(target, { recursive: true });
   const root = realpathSync(target);
   for (const dir of LAYOUT) mkdirSync(join(root, dir), { recursive: true });
+  mkdirSync(dataDir(root), { recursive: true });
 
   const settings = join(root, '.claude', 'settings.json');
   if (!existsSync(settings)) {
@@ -135,7 +145,7 @@ export function setupWorkspace(folder: string, env: NodeJS.ProcessEnv = process.
     writeFileSync(
       readme,
       '# Drydock workspace\n\nEverything Drydock creates lives in this folder, and its agents cannot read or write outside it.\n\n' +
-        '- `vault/`: documents, notes, decisions and the Daily\n- `projects/`: one folder per project\n- `.ai-brain/`: database, logs and settings\n',
+        '- `vault/`: documents, notes, decisions and the Daily\n- `projects/`: one folder per project\n- `.drydock/`: database, logs and settings\n',
     );
   }
 

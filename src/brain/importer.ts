@@ -2,7 +2,7 @@
 // folder copied in from elsewhere on this Mac, or a git clone. Imported code is
 // untrusted until the user says otherwise: its own Claude Code settings (hooks
 // run commands when an agent starts there) and .mcp.json servers are moved to
-// .ai-brain/quarantine/ unless the user trusts them, and nothing is installed
+// .drydock/quarantine/ unless the user trusts them, and nothing is installed
 // or run until the user starts it. Git history and remotes are kept; nothing
 // is pushed. Then the Main agent describes what exists (requirements v1 "as
 // is"), finds how to run and check it, and for software asks the Architect to
@@ -20,7 +20,7 @@ import { projectRef, saveRequirements, slugify, type ProjectRef } from './pipeli
 import { isType, TYPES, type ProjectType } from './plugins.js';
 import { setStage } from './projects.js';
 import { respond } from './runner.js';
-import { currentWorkspace, isInside } from './workspace.js';
+import { currentWorkspace, dataDir, isInside } from './workspace.js';
 
 const run = promisify(execFile);
 const INIT = join(import.meta.dirname, '..', '..', 'scripts', 'init-project.sh');
@@ -216,13 +216,13 @@ export async function snapshot(dir: string): Promise<void> {
   // never sweep secrets into the snapshot
   ignoreEnv(full, readdirSync(full).filter((f) => /^\.env(\..+)?$/.test(f) && !/\.(example|sample)$/.test(f)));
   await run('git', ['-C', full, 'add', '-A']);
-  await run('git', ['-C', full, '-c', 'user.name=Drydock', '-c', 'user.email=ai-brain@localhost', 'commit', '-qm', 'Snapshot before Drydock import']).catch(() => undefined);
+  await run('git', ['-C', full, '-c', 'user.name=Drydock', '-c', 'user.email=drydock@localhost', 'commit', '-qm', 'Snapshot before Drydock import']).catch(() => undefined);
 }
 
 /** Move the project's own Claude settings and MCP servers aside (restorable), so none of them run. */
 function quarantine(dir: string): string[] {
   const moved: string[] = [];
-  const q = join(dir, '.ai-brain', 'quarantine');
+  const q = join(dataDir(dir), 'quarantine');
   for (const rel of ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json']) {
     const f = join(dir, rel);
     if (!existsSync(f)) continue;
@@ -230,7 +230,7 @@ function quarantine(dir: string): string[] {
     renameSync(f, join(q, rel.replace(/\//g, '__')));
     moved.push(rel);
   }
-  if (moved.length && existsSync(join(dir, '.git'))) appendFileSync(join(dir, '.git', 'info', 'exclude'), '\n.ai-brain/quarantine/\n');
+  if (moved.length && existsSync(join(dir, '.git'))) appendFileSync(join(dir, '.git', 'info', 'exclude'), `\n${basename(dataDir(dir))}/quarantine/\n`);
   return moved;
 }
 
@@ -271,7 +271,7 @@ export async function importProject(db: DB, dir: string, opts: { type: ProjectTy
   const facts = [
     info.git ? `git: ${info.git.commits} commits on ${info.git.branch ?? 'HEAD'}${info.git.remote ? `, remote ${info.git.remote} (never push)` : ''}` : 'it had no git history; Drydock started one',
     `${info.files}${info.truncated ? '+' : ''} files`,
-    quarantined.length ? `its own ${quarantined.join(', ')} were moved to .ai-brain/quarantine/ (untrusted) and replaced by Drydock's` : '',
+    quarantined.length ? `its own ${quarantined.join(', ')} were moved to .drydock/quarantine/ (untrusted) and replaced by Drydock's` : '',
     info.risks.envFiles.length ? `.env files found: ${info.risks.envFiles.join(', ')}` : '',
   ].filter(Boolean);
   const steps =

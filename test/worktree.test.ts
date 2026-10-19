@@ -104,9 +104,9 @@ describe('worktree verify gate', () => {
     git(repo, 'init', '-b', 'main');
     git(repo, 'config', 'user.name', 'Test');
     git(repo, 'config', 'user.email', 'test@example.com');
-    mkdirSync(join(repo, '.ai-brain'));
+    mkdirSync(join(repo, '.drydock'));
     // the check: fails while broken.txt exists in the tree
-    writeFileSync(join(repo, '.ai-brain', 'run.json'), JSON.stringify({ kind: 'none', verify: 'for i in $(seq 1 100); do echo noise $i; done; test ! -e broken.txt || { echo "TEST FAILED: broken.txt"; exit 1; }' }));
+    writeFileSync(join(repo, '.drydock', 'run.json'), JSON.stringify({ kind: 'none', verify: 'for i in $(seq 1 100); do echo noise $i; done; test ! -e broken.txt || { echo "TEST FAILED: broken.txt"; exit 1; }' }));
     git(repo, 'add', '.');
     git(repo, 'commit', '-m', 'init');
   });
@@ -134,7 +134,7 @@ describe('worktree verify gate', () => {
   });
 
   it('uses package.json scripts when no verify is set, and passes when there is nothing to run', () => {
-    writeFileSync(join(repo, '.ai-brain', 'run.json'), JSON.stringify({ kind: 'none' }));
+    writeFileSync(join(repo, '.drydock', 'run.json'), JSON.stringify({ kind: 'none' }));
     assert.match(run('verify', '.').out, /no check set/);
     writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: { lint: 'echo linted', test: 'echo tested' } }));
     const r = run('verify', '.');

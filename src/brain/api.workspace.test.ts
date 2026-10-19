@@ -37,9 +37,9 @@ describe('/api/workspace (onboarding)', () => {
     const r = await call('POST', '/api/workspace', { path: ws });
     assert.equal(r.status, 200);
     assert.equal(r.body.root, ws);
-    assert.equal(r.body.db, join(ws, '.ai-brain', 'board.db'));
+    assert.equal(r.body.db, join(ws, '.drydock', 'board.db'));
     assert.ok(existsSync(join(ws, 'vault', 'projects')));
-    assert.ok(existsSync(join(ws, '.ai-brain', 'board.db')));
+    assert.ok(existsSync(join(ws, '.drydock', 'board.db')));
     // the board API keeps working on the new DB
     const projects = await fetch(d.base + '/projects');
     assert.equal(projects.status, 200);

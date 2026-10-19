@@ -1,4 +1,4 @@
-> Reference for the board engine that Drydock is forked from. In this fork the CLI is `brain`, the daemon port is 7900, and data lives in `~/.ai-brain`. The text below still uses kankanban's names.
+> Reference for the board engine that Drydock is forked from. In this fork the people-facing command is `drydock` (agents use `brain`), the daemon port is 7900, and data lives in `~/.drydock` and the workspace’s `.drydock/` (`.ai-brain` on installs from before the rename). The text below still uses kankanban's names.
 
 # kankan (engine reference)
 

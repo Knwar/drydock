@@ -21,7 +21,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DAEMON_URL = process.env.DAEMON_URL ?? 'http://localhost:7900';
 const PORT = new URL(DAEMON_URL).port || '7900';
-const DATA_DIR = process.env.BRAIN_HOME ?? join(homedir(), '.ai-brain');
+/** Drydock's folder inside a root: .drydock, or .ai-brain where an older install has one (as in src/brain/workspace.ts). */
+const dataDir = (root) => (existsSync(join(root, '.ai-brain')) && !existsSync(join(root, '.drydock')) ? join(root, '.ai-brain') : join(root, '.drydock'));
+const DATA_DIR = process.env.BRAIN_HOME ?? dataDir(homedir());
 const PID_FILE = join(DATA_DIR, 'daemon.pid');
 const LOG_FILE = join(DATA_DIR, 'daemon.log');
 
@@ -37,7 +39,7 @@ function workspaceRoot() {
 }
 const dbPath = () => {
   const ws = workspaceRoot();
-  return process.env.DB_PATH ?? (ws ? join(ws, '.ai-brain', 'board.db') : join(DATA_DIR, 'bootstrap.db'));
+  return process.env.DB_PATH ?? (ws ? join(dataDir(ws), 'board.db') : join(DATA_DIR, 'bootstrap.db'));
 };
 const daemonCmd = () => [join(ROOT, 'node_modules', '.bin', 'tsx'), join(ROOT, 'src', 'daemon', 'server.ts')];
 

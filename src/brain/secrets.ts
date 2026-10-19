@@ -140,10 +140,10 @@ async function authBin(): Promise<string> {
   if (process.env.BRAIN_AUTH_BIN) return process.env.BRAIN_AUTH_BIN;
   const ws = currentWorkspace();
   if (!ws) throw new SecretError('no workspace', 'not_configured');
-  const out = join(ws.root, '.ai-brain', 'bin', 'brain-auth');
+  const out = join(ws.data, 'bin', 'brain-auth');
   const src = join(import.meta.dirname, '..', '..', 'scripts', 'brain-auth.swift');
   if (existsSync(out) && statSync(out).mtimeMs >= statSync(src).mtimeMs) return out;
-  mkdirSync(join(ws.root, '.ai-brain', 'bin'), { recursive: true });
+  mkdirSync(join(ws.data, 'bin'), { recursive: true });
   const r = await cli('swiftc', ['-O', '-o', out, src], { timeoutMs: 180_000 });
   if (r.code !== 0) throw new SecretError('Could not build the Touch ID check (needs the Xcode command line tools: xcode-select --install)', 'not_configured');
   return out;

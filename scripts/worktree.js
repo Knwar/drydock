@@ -29,12 +29,15 @@ function excludeTrees() {
 }
 
 /**
- * The project's verify command: "verify" in .ai-brain/run.json, else the
+ * The project's verify command: "verify" in .drydock/run.json, else the
  * package.json scripts that exist (lint, typecheck, test). null = none set.
  */
+/** Drydock's folder inside a root: .drydock, or .ai-brain where an older install has one (as in src/brain/workspace.ts). */
+const dataDir = (root) => (existsSync(join(root, '.ai-brain')) && !existsSync(join(root, '.drydock')) ? join(root, '.ai-brain') : join(root, '.drydock'));
+
 function verifyCommand(dir) {
   try {
-    const r = JSON.parse(readFileSync(join(dir, '.ai-brain', 'run.json'), 'utf8'));
+    const r = JSON.parse(readFileSync(join(dataDir(dir), 'run.json'), 'utf8'));
     if (typeof r.verify === 'string' && r.verify.trim()) return r.verify;
   } catch {
     /* no recipe */
@@ -54,7 +57,7 @@ function verifyCommand(dir) {
 function verify(dir) {
   const command = verifyCommand(dir);
   if (!command) {
-    console.log('verify: no check set (add "verify" to .ai-brain/run.json, e.g. "npm run lint && npm test")');
+    console.log('verify: no check set (add "verify" to .drydock/run.json, e.g. "npm run lint && npm test")');
     return true;
   }
   const r = spawnSync('/bin/bash', ['-lc', command], { cwd: dir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 30 * 60_000 });

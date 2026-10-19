@@ -355,7 +355,7 @@ export async function resolveNeed(db: DB, project: { id: string; slug: string },
 }
 
 /**
- * Dump a database Drydock made into <workspace>/.ai-brain/backups. Uses the
+ * Dump a database Drydock made into <workspace>/.drydock/backups. Uses the
  * container's own dump tool for Docker databases, and pg_dump / mysqldump /
  * mongodump when they are installed for server ones. Returns the file, or null
  * with the reason when it cannot.
@@ -367,7 +367,7 @@ export async function backupDatabase(db: DB, id: number): Promise<{ file: string
   const ws = currentWorkspace();
   const r = db.prepare('SELECT * FROM service_databases WHERE id = ?').get(id) as any;
   if (!ws || !r) return { file: null, reason: 'nothing to back up' };
-  const dir = join(ws.root, '.ai-brain', 'backups');
+  const dir = join(ws.data, 'backups');
   mkdirSync(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const type = r.service_id.startsWith('docker:') ? r.service_id.slice(7) : getService(db, r.service_id)?.type;

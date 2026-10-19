@@ -663,7 +663,7 @@ function Workspace() {
       <section className="panel">
         <div className="field"><span className="muted">Folder</span><span className="mono">{ws.data?.root}</span></div>
         <div className="field"><span className="muted">Database</span><span className="mono">{ws.data?.db}</span></div>
-        <div className="field"><span className="muted">Layout</span><span className="mono">vault/ · projects/ · .ai-brain/</span></div>
+        <div className="field"><span className="muted">Layout</span><span className="mono">vault/ · projects/ · .drydock/</span></div>
         <div className="muted" style={{ fontSize: 12.5 }}>To move it, run <span className="mono">brain setup &lt;new folder&gt;</span>. Existing files are not moved automatically.</div>
       </section>
     </>

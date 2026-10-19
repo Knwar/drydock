@@ -3,7 +3,7 @@
 // a path outside it is blocked (exit 2); Claude sees the reason and adjusts.
 //
 // Workspace root: $BRAIN_WORKSPACE, else the pointer in $BRAIN_HOME/config.json
-// (~/.ai-brain by default). No workspace configured → nothing to enforce.
+// (~/.drydock by default; ~/.ai-brain on older installs). No workspace configured → nothing to enforce.
 //
 // Bash is checked heuristically (paths that are absolute, start with ~ or
 // $HOME, or climb with ..). It is a guard rail for honest agents, not a
@@ -101,10 +101,13 @@ export function checkToolCall({ root, cwd, tool, input, home = homedir() }) {
   return null;
 }
 
+/** Drydock's folder inside a root: .drydock, or .ai-brain where an older install has one (as in src/brain/workspace.ts). */
+const dataDir = (root) => (existsSync(join(root, '.ai-brain')) && !existsSync(join(root, '.drydock')) ? join(root, '.ai-brain') : join(root, '.drydock'));
+
 export function workspaceRoot(env = process.env) {
   if (env.BRAIN_WORKSPACE) return env.BRAIN_WORKSPACE;
   try {
-    const cfg = JSON.parse(readFileSync(join(env.BRAIN_HOME ?? join(homedir(), '.ai-brain'), 'config.json'), 'utf8'));
+    const cfg = JSON.parse(readFileSync(join(env.BRAIN_HOME ?? dataDir(homedir()), 'config.json'), 'utf8'));
     return typeof cfg.workspace === 'string' && existsSync(cfg.workspace) ? cfg.workspace : null;
   } catch {
     return null;

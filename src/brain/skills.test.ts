@@ -68,7 +68,7 @@ describe('skill library and workspace copies', () => {
     assert.deepEqual(S.runSkills({ id: 'pm', skills: JSON.stringify(['editorial', 'gone']) }, 'software'), ['editorial']);
     assert.deepEqual(S.subagentSkills('builder', 'general'), []);
     const dir = S.pluginDir(data, ['spec-writing', 'verification'])!;
-    assert.equal(JSON.parse(readFileSync(join(dir, '.claude-plugin', 'plugin.json'), 'utf8')).name, 'ai-brain');
+    assert.equal(JSON.parse(readFileSync(join(dir, '.claude-plugin', 'plugin.json'), 'utf8')).name, 'drydock');
     assert.ok(lstatSync(join(dir, 'skills', 'spec-writing')).isSymbolicLink());
     assert.equal(S.pluginDir(data, ['verification', 'spec-writing']), dir, 'same set, same folder');
     assert.equal(S.pluginDir(data, []), null);
@@ -109,7 +109,7 @@ describe('contracts: the user’s persona and skills never replace how a role wo
     assert.ok(run, 'the CTO ran');
     const sys: string = run.system;
     assert.ok(sys.indexOf('Your job: CTO') < sys.indexOf('You are a pirate'), 'contract before persona');
-    assert.ok(sys.indexOf('You are a pirate') < sys.indexOf('ai-brain:editorial'), 'skills after persona');
+    assert.ok(sys.indexOf('You are a pirate') < sys.indexOf('drydock:editorial'), 'skills after persona');
     assert.match(sys, /the rules above win/);
     assert.ok(existsSync(join(run.plugin, 'skills', 'editorial', 'SKILL.md')));
   });

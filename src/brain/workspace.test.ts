@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, mkdirSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { isInside, readConfig, resolveDbPath, setupWorkspace } from './workspace.js';
+import { brainHome, dataDir, isInside, readConfig, resolveDbPath, setupWorkspace } from './workspace.js';
 // @ts-expect-error plain JS hook, no types
 import { checkToolCall } from '../../.claude/hooks/boundary.js';
 
@@ -16,12 +16,24 @@ describe('setupWorkspace', () => {
   it('creates the layout, root settings and the pointer, and moves the DB into the workspace', () => {
     assert.equal(resolveDbPath(env), join(tmp, 'home', 'bootstrap.db'));
     const ws = setupWorkspace(join(tmp, 'ws'), env);
-    for (const d of ['vault/projects', 'vault/personal/daily', 'projects', '.ai-brain']) assert.ok(existsSync(join(ws.root, d)), d);
+    for (const d of ['vault/projects', 'vault/personal/daily', 'projects', '.drydock']) assert.ok(existsSync(join(ws.root, d)), d);
     const settings = JSON.parse(readFileSync(join(ws.root, '.claude', 'settings.json'), 'utf8'));
     assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /boundary\.js/);
     assert.equal(readConfig(env).workspace, ws.root);
-    assert.equal(resolveDbPath(env), join(ws.root, '.ai-brain', 'board.db'));
+    assert.equal(resolveDbPath(env), join(ws.root, '.drydock', 'board.db'));
     assert.equal(resolveDbPath({ ...env, DB_PATH: '/x/y.db' }), '/x/y.db');
+  });
+
+  it('keeps a .ai-brain folder from before the rename, and uses .drydock everywhere else', () => {
+    const old = join(tmp, 'old-install');
+    mkdirSync(join(old, '.ai-brain'), { recursive: true });
+    assert.equal(dataDir(old), join(old, '.ai-brain'));
+    const ws = setupWorkspace(old, env);
+    assert.equal(ws.db, join(old, '.ai-brain', 'board.db'));
+    assert.ok(!existsSync(join(old, '.drydock')), 'no second folder next to the old one');
+    assert.equal(dataDir(join(tmp, 'fresh')), join(tmp, 'fresh', '.drydock'));
+    assert.equal(brainHome({ BRAIN_HOME: '/x' } as NodeJS.ProcessEnv), '/x');
+    setupWorkspace(join(tmp, 'ws'), env); // the pointer back to the main test workspace
   });
 
   it('is idempotent and keeps files the user changed', () => {

@@ -141,7 +141,7 @@ export async function promoteIdea(db: DB, ideaId: string): Promise<ProjectRef> {
     copyFileSync(join(ref.vault, 'design', 'system-design.md'), join(ref.root, 'docs', 'system-design.md'));
   }
   await execFileAsync('git', ['-C', ref.root, 'add', '-A'], { timeout: 30_000 });
-  await execFileAsync('git', ['-C', ref.root, '-c', 'user.name=Drydock', '-c', 'user.email=ai-brain@localhost', 'commit', '-qm', 'Add what was shaped on the Idea board: requirements, features, design, brand and UI'], { timeout: 30_000 }).catch(() => undefined);
+  await execFileAsync('git', ['-C', ref.root, '-c', 'user.name=Drydock', '-c', 'user.email=drydock@localhost', 'commit', '-qm', 'Add what was shaped on the Idea board: requirements, features, design, brand and UI'], { timeout: 30_000 }).catch(() => undefined);
   if (listRequirements(db, ref.id)[0]) finalizeRequirements(db, ref.id);
   getBus().emit({ type: 'brain_project', project_id: ref.id });
   return ref;

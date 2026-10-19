@@ -15,7 +15,9 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BRAIN = join(ROOT, 'bin', 'brain.js');
-const DATA_DIR = process.env.BRAIN_HOME ?? join(homedir(), '.ai-brain');
+/** Drydock's folder inside a root: .drydock, or .ai-brain where an older install has one (as in src/brain/workspace.ts). */
+const dataDir = (root) => (existsSync(join(root, '.ai-brain')) && !existsSync(join(root, '.drydock')) ? join(root, '.ai-brain') : join(root, '.drydock'));
+const DATA_DIR = process.env.BRAIN_HOME ?? dataDir(homedir());
 const PORT_FILE = join(DATA_DIR, 'port');
 const LOG_FILE = join(DATA_DIR, 'daemon.log');
 const DEFAULT_PORT = 7900;

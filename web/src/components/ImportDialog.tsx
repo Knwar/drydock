@@ -90,7 +90,7 @@ export function ImportDialog({ onClose, onImported }: { onClose: () => void; onI
           {risky && (
             <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12.5, marginTop: 4 }}>
               <input type="checkbox" checked={trust} onChange={(e) => setTrust(e.target.checked)} />
-              <span>I trust this project's own Claude settings and MCP servers. <span className="muted">Off (recommended): they are moved to <span className="mono">.ai-brain/quarantine/</span>, where you can restore them later.</span></span>
+              <span>I trust this project's own Claude settings and MCP servers. <span className="muted">Off (recommended): they are moved to <span className="mono">.drydock/quarantine/</span>, where you can restore them later.</span></span>
             </label>
           )}
         </section>
