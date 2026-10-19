@@ -506,13 +506,61 @@ function ScopeMap({ d, readOnly }: { d: Data; readOnly: boolean }) {
   );
 }
 
-export function IdeaOverview({ d, analyses, run }: { d: Data; analyses: Analysis[]; run: (kind: string) => void }) {
+/** A new idea while the Main agent works it through: the basics you gave, and the step it is on. */
+function Thinking({ d }: { d: Data }) {
+  const qs = d.questions ?? [];
+  const basics = qs.filter((q) => q.kind === 'intake' && q.status === 'answered');
+  const steps: [string, boolean][] = [
+    ['Reading your idea', qs.length > 0 || d.sections.length > 0],
+    ['Restating the problem and who it is for', d.sections.some((x) => x.kind === 'problem' && x.status === 'done')],
+    ['Fanning out the features', d.featureList.length > 0],
+    ['Writing the requirements', (d.requirements?.version ?? 0) > 1],
+    ['Finding what you need to decide', qs.some((q) => q.kind === 'decision')],
+  ];
+  const at = steps.findIndex(([, done]) => !done);
+  return (
+    <section className="panel think" style={{ gap: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span className="spin" aria-hidden />
+        <h2 style={{ margin: 0 }}>Thinking it through</h2>
+      </div>
+      <div className="muted" style={{ fontSize: 13 }}>The Main agent is turning your idea into the problem, features and requirements. This board fills in as it goes.</div>
+      {basics.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div className="eyebrow" style={{ fontWeight: 700 }}>What you told us</div>
+          {basics.map((q) => (
+            <div key={q.id} style={{ fontSize: 13, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <span className="muted">{q.text}</span>
+              <strong>{q.answer}</strong>
+            </div>
+          ))}
+        </div>
+      )}
+      <ol className="think-steps">
+        {steps.map(([label, done], i) => (
+          <li key={label} className={done ? 'done' : i === at ? 'now' : ''}>
+            <span className="think-dot" aria-hidden>{done ? '✓' : i === at ? <span className="spin sm" /> : ''}</span>
+            {label}{i === at && <span className="typing" />}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+export function IdeaOverview({ d, analyses, run, working = false }: { d: Data; analyses: Analysis[]; run: (kind: string) => void; working?: boolean }) {
   const readOnly = d.status === 'promoted';
   // while the basics are being asked they are the one thing to do, so they lead the page
   const intake = (d.questions ?? []).some((q) => q.kind === 'intake' && q.status === 'open');
+  // until the first features land, the agent's progress leads the page; after that a slim line says it is working
+  const first = working && !intake && d.featureList.length === 0;
   return (
     <>
       {intake && <StillOpen d={d} readOnly={readOnly} />}
+      {first && <Thinking d={d} />}
+      {working && !intake && !first && (
+        <div className="think-bar"><span className="spin sm" aria-hidden /> The Main agent is updating this board<span className="typing" /></div>
+      )}
       <Progress d={d} analyses={analyses} run={run} readOnly={readOnly} />
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-start' }}>
         <Built d={d} />

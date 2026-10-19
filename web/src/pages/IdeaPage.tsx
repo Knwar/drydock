@@ -214,7 +214,7 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
                 Start by telling the Main agent about the idea in the chat: the problem, who it is for, how you see it working. Or press a quick action: competitors, the MVP cut, risks… This board fills in as you talk: what will be built, what was decided, and what is still open.
               </div>
             )}
-            <IdeaOverview d={d} analyses={analyses.data ?? []} run={run} />
+            <IdeaOverview d={d} analyses={analyses.data ?? []} run={run} working={Boolean(conv?.working)} />
           </>
         )}
         {tab === 'requirements' && (

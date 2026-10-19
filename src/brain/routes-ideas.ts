@@ -70,6 +70,11 @@ on('POST', '/api/ideas', async (req, res, _u, ctx) => {
   const idea = attempt(() => captureIdea(ctx.db(), { title: String(b.title), pitch: b.pitch, type: b.type, source: b.source ?? null }));
   // the first thinking (from the chat it came up in) becomes its starting requirements
   if (typeof b.notes === 'string' && b.notes.trim()) attempt(() => saveRequirements(ctx.db(), idea.id, /^#\s/.test(b.notes.trim()) ? b.notes : `# ${idea.title}\n\n${b.notes}`, String(b.role ?? 'main')));
+  // an agent captured it while you were talking to it: the app switches to the new idea's board
+  if (b.source) {
+    const said = ctx.db().prepare("SELECT MAX(created_at) AS at FROM messages WHERE conversation_id = ? AND author = 'user'").get(String(b.source)) as { at: number | null };
+    if (said.at && Date.now() - said.at < 10 * 60_000) ctx.broadcast({ type: 'idea_opened', idea_id: idea.id });
+  }
   ctx.json(res, 200, card(ctx.db(), idea.id));
 });
 

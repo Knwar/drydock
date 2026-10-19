@@ -17,6 +17,7 @@ import { Personal } from './pages/Personal';
 import { ProjectPage } from './pages/ProjectPage';
 import { IdeaPage } from './pages/IdeaPage';
 import { CaptureIdeaDialog, ideaEvents } from './components/Ideas';
+import { onLive } from './lib/live';
 import { SettingsWindow } from './pages/Settings';
 
 const projectEvents = (m: any) => ['card', 'card_removed', 'phases', 'project_removed', 'workspace', 'brain_project', 'design'].includes(m?.type);
@@ -82,6 +83,8 @@ export function App() {
   // the messenger slides over the page and closes when you go somewhere else
   const [messenger, setMessenger] = useState(false);
   useEffect(() => setMessenger(false), [path]);
+  // an agent just captured an idea you were telling it about: watch it take shape on its board
+  useEffect(() => onLive((m: any) => { if (m?.type === 'idea_opened') navigate(`/idea/${m.idea_id}`); }), []);
   const [cmd, setCmd] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

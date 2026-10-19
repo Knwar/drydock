@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { WebSocket } from 'ws';
 import { startDaemon, type TestDaemon } from '../daemon/test-daemon.js';
 
 const FAKE = join(import.meta.dirname, '..', '..', 'test', 'fixtures', 'fake-claude.mjs');
@@ -35,6 +36,23 @@ describe('the Idea board', () => {
   after(async () => {
     await d?.stop();
     rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
+
+  it('opens an idea an agent captures while you are talking to it, and only then', async () => {
+    const sock = new WebSocket(d.base.replace(/^http/, 'ws') + '/ws');
+    const opened: string[] = [];
+    sock.on('message', (m) => {
+      const msg = JSON.parse(m.toString());
+      if (msg.type === 'idea_opened') opened.push(msg.idea_id);
+    });
+    await new Promise((r) => sock.once('open', r));
+    const quiet = await call('POST', '/api/ideas', { title: 'Quiet one', type: 'general', source: 'dm:main' });
+    await call('POST', '/api/conversations/dm:main/messages', { text: 'an idea: a tea podcast' });
+    const told = await call('POST', '/api/ideas', { title: 'Tea podcast', type: 'general', source: 'dm:main' });
+    await until(async () => opened.length > 0, 3000);
+    sock.terminate();
+    assert.deepEqual(opened, [told.id]);
+    for (const i of [quiet, told]) await call('DELETE', `/api/ideas/${i.id}`);
   });
 
   let id = '';
