@@ -2,10 +2,14 @@
 // what was decided and what is still open (answered with a tap), and the
 // scope map of features. The Main agent drafts every story; the user
 // confirms them here, one tap each, instead of writing them.
-import { useState } from 'react';
+import { createContext, useContext, useState } from 'react';
 import { api } from '../lib/api';
 import { Markdown } from '../lib/md';
 import { Modal } from './Dialogs';
+
+/** Who leads the idea's chat, for the board's wording: the Main agent, or (a feature idea) the project's PM. */
+const Lead = createContext('the Main agent');
+const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
 
 export interface Feature {
   id: string;
@@ -65,7 +69,7 @@ const PRIORITY: Record<Feature['priority'], { label: string; color: string }> = 
 const toCheck = (f: Feature) => !f.confirmed && (f.stories.length > 0 || f.acceptance.length > 0);
 
 /** Short names for the progress strip (the full name is in its tooltip). */
-const SHORT: Record<string, string> = { problem: 'Problem', competitors: 'Competitors', market: 'Market', 'pr-faq': 'Working backwards', assumptions: 'Assumptions', risks: 'Risks', business: 'Business model', metrics: 'Metrics', features: 'Features', mvp: 'MVP cut', estimate: 'Effort', decision: 'Go / park / kill' };
+const SHORT: Record<string, string> = { problem: 'Problem', competitors: 'Competitors', market: 'Market', 'pr-faq': 'Working backwards', impact: 'Impact', assumptions: 'Assumptions', risks: 'Risks', business: 'Business model', metrics: 'Metrics', features: 'Features', mvp: 'MVP cut', estimate: 'Effort', decision: 'Go / park / kill' };
 
 /** The first lines under a requirements heading that matches (who it is for, what is out of scope). */
 function under(markdown: string | undefined, heading: RegExp): string | null {
@@ -86,6 +90,7 @@ function under(markdown: string | undefined, heading: RegExp): string | null {
 
 /** "How far the thinking has come": the analyses in order; done ones open, the rest can be run. */
 function Progress({ d, analyses, run, readOnly }: { d: Data; analyses: Analysis[]; run: (kind: string) => void; readOnly: boolean }) {
+  const lead = useContext(Lead);
   const [open, setOpen] = useState<Analysis | null>(null);
   const state = (k: string) => d.sections.find((x) => x.kind === k);
   const done = analyses.filter((a) => state(a.kind)?.status === 'done').length;
@@ -106,7 +111,7 @@ function Progress({ d, analyses, run, readOnly }: { d: Data; analyses: Analysis[
           return (
             <button key={a.kind} className={`progress-step${s ? ` s-${s}` : ''}`} onClick={() => setOpen(a)} title={s === 'done' ? `${a.label}: read it` : s === 'running' ? `${a.label}: working on it` : `${a.label}: not run yet`}>
               <span className="progress-bar" />
-              <span>{SHORT[a.kind] ?? a.label}</span>
+              <span>{a.label.length <= 12 ? a.label : SHORT[a.kind] ?? a.label}</span>
             </button>
           );
         })}
@@ -119,7 +124,7 @@ function Progress({ d, analyses, run, readOnly }: { d: Data; analyses: Analysis[
               <Markdown text={sec.markdown} />
             </>
           ) : sec?.status === 'running' ? (
-            <div className="muted" style={{ fontSize: 13 }}>The Main agent is working on it; it shows here when it is done.</div>
+            <div className="muted" style={{ fontSize: 13 }}>{cap(lead)} is working on it; it shows here when it is done.</div>
           ) : (
             <div style={{ fontSize: 13, lineHeight: 1.55 }}>{sec?.status === 'stalled' ? 'The last run ended without saving a result.' : 'Not run yet.'} <span className="muted">{open.ask}</span></div>
           )}
@@ -137,6 +142,7 @@ function Progress({ d, analyses, run, readOnly }: { d: Data; analyses: Analysis[
 
 /** What will be built: features per module, first release against later. */
 function Built({ d }: { d: Data }) {
+  const lead = useContext(Lead);
   const live = d.featureList.filter((f) => f.priority !== 'wont');
   const modules = [...new Set(live.map((f) => f.module))];
   const rows = modules.map((m) => ({ m, mvp: live.filter((f) => f.module === m && f.mvp).length, later: live.filter((f) => f.module === m && !f.mvp).length }));
@@ -151,7 +157,7 @@ function Built({ d }: { d: Data }) {
         {live.length > 0 && <span className="muted" style={{ fontSize: 12 }}>{live.length} feature{live.length === 1 ? '' : 's'} in {modules.length} module{modules.length === 1 ? '' : 's'}{mvp ? ` · ${mvp} in the first release` : ''}</span>}
       </div>
       {!live.length ? (
-        <div className="muted" style={{ fontSize: 13, lineHeight: 1.6 }}>Nothing broken down yet. Press <strong>Feature breakdown</strong> in the chat, or just describe what it should do: the Main agent splits it into modules and features and drafts their stories for you to check.</div>
+        <div className="muted" style={{ fontSize: 13, lineHeight: 1.6 }}>Nothing broken down yet. Press <strong>{lead === 'the PM' ? 'Stories' : 'Feature breakdown'}</strong> in the chat, or just describe what it should do: {lead} splits it into features and drafts their stories for you to check.</div>
       ) : (
         <>
           <div className="built-legend">
@@ -176,6 +182,39 @@ function Built({ d }: { d: Data }) {
               {notIn && <div><span className="eyebrow">Not in this version</span><span>{notIn}</span></div>}
             </div>
           )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/** A feature idea: what the change touches in the app, as the Architect sees it. */
+function Impact({ d, run, readOnly }: { d: Data; run: (kind: string) => void; readOnly: boolean }) {
+  const [open, setOpen] = useState(false);
+  const s = d.sections.find((x) => x.kind === 'impact');
+  const size = s?.status === 'done' ? /^\s*(small|medium|large)\b/i.exec(s.summary)?.[1]?.toLowerCase() : undefined;
+  return (
+    <section className="panel" style={{ gap: 10 }}>
+      <div className="panel-head">
+        <h2>Impact on the app</h2>
+        {size && <span className={`pill ${size === 'small' ? 't-g' : size === 'medium' ? 't-a' : 't-r'}`}>{size[0].toUpperCase() + size.slice(1)}</span>}
+      </div>
+      {s?.status === 'running' ? (
+        <div className="muted" style={{ fontSize: 13 }}><span className="spin sm" aria-hidden /> The Architect is checking what this touches<span className="typing" /></div>
+      ) : s?.status === 'done' ? (
+        <>
+          <div style={{ fontSize: 13, lineHeight: 1.5 }}>{s.summary.replace(/^\s*(small|medium|large)\s*[:.\-–]\s*/i, '')}</div>
+          <button className="link-btn" style={{ alignSelf: 'flex-start', fontSize: 12.5 }} onClick={() => setOpen(true)}>Read the assessment</button>
+          {open && (
+            <Modal title="Impact on the app" onClose={() => setOpen(false)} width={720}>
+              <div className="doc"><Markdown text={s.markdown} /></div>
+            </Modal>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="muted" style={{ fontSize: 13, lineHeight: 1.5 }}>What this changes in the app as built: the parts it touches, data and schema changes, what could break, and a rough size. The Architect checks it once the shape is clear.</div>
+          {!readOnly && <button className="btn sm" style={{ alignSelf: 'flex-start' }} onClick={() => run('impact')}>Ask the Architect now</button>}
         </>
       )}
     </section>
@@ -212,6 +251,7 @@ function Decided({ d }: { d: Data }) {
 const LEAVE_MS = 320;
 
 function StillOpen({ d, readOnly }: { d: Data; readOnly: boolean }) {
+  const lead = useContext(Lead);
   const [other, setOther] = useState<string | null>(null);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
@@ -265,7 +305,7 @@ function StillOpen({ d, readOnly }: { d: Data; readOnly: boolean }) {
         <h2>{basics.length ? 'A few basics first' : 'Still open'}</h2>
         {deck.length > 0 && <span style={{ fontSize: 12 }}>{deck.length} to answer{readOnly ? '' : ' · tap one'}</span>}
       </div>
-      {basics.length > 0 && <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>Answer these and the Main agent lays the idea out: the problem, users, core flow, features and the decisions that matter.</div>}
+      {basics.length > 0 && <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>Answer these and {lead} lays it out: the need, who it is for, the flow, the features and the decisions that matter.</div>}
       {top && (
         <div className="q-deck" style={{ paddingBottom: Math.min(deck.length - 1, 2) * 11 }}>
           {deck.slice(0, 3).map((q, i) => (
@@ -331,6 +371,7 @@ async function sendReview(ideaId: string, items: Verdict[]) {
 
 /** The spec of one feature, with the review buttons while it is a draft. */
 function Spec({ d, f, readOnly }: { d: Data; f: Feature; readOnly: boolean }) {
+  const lead = useContext(Lead);
   const [mode, setMode] = useState<'idle' | 'change' | 'drop'>('idle');
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
@@ -386,7 +427,7 @@ function Spec({ d, f, readOnly }: { d: Data; f: Feature; readOnly: boolean }) {
       )}
       {mode === 'drop' && (
         <div className="review-change">
-          <span style={{ fontSize: 12.5 }}>Remove <strong>{f.id} {f.title}</strong>? The Main agent takes it out and updates the requirements.</span>
+          <span style={{ fontSize: 12.5 }}>Remove <strong>{f.id} {f.title}</strong>? {cap(lead)} takes it out and updates the requirements.</span>
           <div style={{ display: 'flex', gap: 6 }}>
             <button className="btn sm danger" disabled={busy} onClick={() => send({ id: f.id, verdict: 'drop' })}>Yes, remove it</button>
             <button className="btn sm" onClick={() => setMode('idle')}>Cancel</button>
@@ -399,6 +440,7 @@ function Spec({ d, f, readOnly }: { d: Data; f: Feature; readOnly: boolean }) {
 
 /** Go through the drafted features one at a time; changes and drops are sent together at the end. */
 function Review({ d, drafts, onClose }: { d: Data; drafts: Feature[]; onClose: () => void }) {
+  const lead = useContext(Lead);
   const [i, setI] = useState(0);
   const [done, setDone] = useState<Verdict[]>([]);
   const [changing, setChanging] = useState(false);
@@ -435,7 +477,7 @@ function Review({ d, drafts, onClose }: { d: Data; drafts: Feature[]; onClose: (
         <>
           <div style={{ fontSize: 14, lineHeight: 1.55 }}>
             {result.confirmed} confirmed, {result.changed} to change, {result.dropped} removed.
-            {result.changed + result.dropped > 0 && ' The Main agent is working on the changes; rewritten stories come back here as drafts.'}
+            {result.changed + result.dropped > 0 && ` ${cap(lead)} is working on the changes; rewritten stories come back here as drafts.`}
           </div>
           <button className="btn primary" style={{ alignSelf: 'flex-start' }} onClick={onClose}>Back to the board</button>
         </>
@@ -467,7 +509,7 @@ function Review({ d, drafts, onClose }: { d: Data; drafts: Feature[]; onClose: (
             <button className="btn" style={{ color: 'var(--r-fg)' }} disabled={busy} onClick={() => next({ id: f.id, verdict: 'drop' })}>Not this</button>
             {done.length > 0 && <button className="btn sm" style={{ marginLeft: 'auto' }} disabled={busy} onClick={() => finish(done)}>Stop here and save</button>}
           </div>
-          <span className="muted" style={{ fontSize: 11.5 }}>Not this removes it once you finish. Changes and removals go to the Main agent together.</span>
+          <span className="muted" style={{ fontSize: 11.5 }}>Not this removes it once you finish. Changes and removals go to {lead} together.</span>
         </>
       ) : null}
     </Modal>
@@ -539,7 +581,7 @@ function ScopeMap({ d, readOnly }: { d: Data; readOnly: boolean }) {
 }
 
 /** A new idea while the Main agent works it through: the basics you gave, and the step it is on. */
-function Thinking({ d }: { d: Data }) {
+function Thinking({ d, who }: { d: Data; who: string }) {
   const qs = d.questions ?? [];
   const basics = qs.filter((q) => q.kind === 'intake' && q.status === 'answered');
   const steps: [string, boolean][] = [
@@ -556,7 +598,7 @@ function Thinking({ d }: { d: Data }) {
         <span className="spin" aria-hidden />
         <h2 style={{ margin: 0 }}>Thinking it through</h2>
       </div>
-      <div className="muted" style={{ fontSize: 13 }}>The Main agent is turning your idea into the problem, features and requirements. This board fills in as it goes.</div>
+      <div className="muted" style={{ fontSize: 13 }}>{who} is turning your idea into the problem, features and requirements. This board fills in as it goes.</div>
       {basics.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div className="eyebrow" style={{ fontWeight: 700 }}>What you told us</div>
@@ -580,29 +622,33 @@ function Thinking({ d }: { d: Data }) {
   );
 }
 
-export function IdeaOverview({ d, analyses, run, working = false }: { d: Data; analyses: Analysis[]; run: (kind: string) => void; working?: boolean }) {
-  const readOnly = d.status === 'promoted';
+export function IdeaOverview({ d, analyses, run, working = false, feature = false }: { d: Data; analyses: Analysis[]; run: (kind: string) => void; working?: boolean; feature?: boolean }) {
+  const readOnly = d.status === 'promoted' || d.status === 'added';
+  // a feature idea's chat is led by the project's PM
+  const who = feature ? 'The PM' : 'The Main agent';
+  const lead = feature ? 'the PM' : 'the Main agent';
   // while the basics are being asked they are the one thing to do, so they lead the page
   const intake = (d.questions ?? []).some((q) => q.kind === 'intake' && q.status === 'open');
   // until the first features land, the agent's progress leads the page; after that a slim line says it is working
   const first = working && !intake && d.featureList.length === 0;
   return (
-    <>
+    <Lead.Provider value={lead}>
       {intake && <StillOpen d={d} readOnly={readOnly} />}
-      {first && <Thinking d={d} />}
+      {first && <Thinking d={d} who={who} />}
       {working && !intake && !first && (
-        <div className="think-bar"><span className="spin sm" aria-hidden /> The Main agent is updating this board<span className="typing" /></div>
+        <div className="think-bar"><span className="spin sm" aria-hidden /> {who} is updating this board<span className="typing" /></div>
       )}
       <Progress d={d} analyses={analyses} run={run} readOnly={readOnly} />
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-start' }}>
         <Built d={d} />
         <div style={{ flex: '1 1 300px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {feature && <Impact d={d} run={run} readOnly={readOnly} />}
           <Decided d={d} />
           {!intake && <StillOpen d={d} readOnly={readOnly} />}
         </div>
       </div>
       <ScopeMap d={d} readOnly={readOnly} />
-    </>
+    </Lead.Provider>
   );
 }
 

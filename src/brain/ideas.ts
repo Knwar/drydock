@@ -90,10 +90,13 @@ CREATE TABLE IF NOT EXISTS idea_screens (
     addMissingColumns(db, 'idea_features', { confirmed: 'INTEGER NOT NULL DEFAULT 0', source: 'TEXT' });
     // intake: the basics asked before the first pass; decision: everything after
     addMissingColumns(db, 'idea_questions', { kind: `TEXT NOT NULL DEFAULT 'decision'` });
+    // a feature idea: a proposed change to an existing project, shaped inside it (its PM leads)
+    addMissingColumns(db, 'ideas', { parent_project_id: 'TEXT' });
   },
 );
 
-export type IdeaStatus = 'raw' | 'shaping' | 'parked' | 'promoted';
+/** added: a feature idea the user approved into its project */
+export type IdeaStatus = 'raw' | 'shaping' | 'parked' | 'promoted' | 'added';
 
 export interface Idea {
   id: string;
@@ -106,6 +109,8 @@ export interface Idea {
   source: string | null;
   brand_id: string | null;
   project_id: string | null;
+  /** set on feature ideas: the project it would change */
+  parent_project_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -125,7 +130,13 @@ export const getIdea = (db: DB, id: string) => db.prepare('SELECT * FROM ideas W
 export const ideaForConversation = (db: DB, conversationId: string) => db.prepare('SELECT * FROM ideas WHERE conversation_id = ?').get(conversationId) as Idea | undefined;
 
 export function listIdeas(db: DB, opts: { all?: boolean } = {}): Idea[] {
-  return db.prepare(`SELECT * FROM ideas ${opts.all ? '' : "WHERE status != 'promoted'"} ORDER BY updated_at DESC`).all() as Idea[];
+  // the Idea board: feature ideas live inside their project instead
+  return db.prepare(`SELECT * FROM ideas WHERE parent_project_id IS NULL ${opts.all ? '' : "AND status != 'promoted'"} ORDER BY updated_at DESC`).all() as Idea[];
+}
+
+/** A project's feature ideas, newest first (added and parked ones included). */
+export function listFeatureIdeas(db: DB, projectId: string): Idea[] {
+  return db.prepare('SELECT * FROM ideas WHERE parent_project_id = ? ORDER BY updated_at DESC').all(projectId) as Idea[];
 }
 
 /** The idea's folder in the vault (its requirements, design, brand and UI files). */
@@ -147,7 +158,7 @@ export function ideaChanged(db: DB, id: string): void {
   touch(db, id);
 }
 
-export function captureIdea(db: DB, input: { title: string; pitch?: string; type?: string; source?: string | null }): Idea {
+export function captureIdea(db: DB, input: { title: string; pitch?: string; type?: string; source?: string | null; parent?: { projectId: string; brandId: string | null } }): Idea {
   const title = input.title.trim().replace(/\s+/g, ' ').slice(0, 80);
   const base = slugify(title);
   if (!base) throw new Error('the idea needs a title');
@@ -156,7 +167,7 @@ export function captureIdea(db: DB, input: { title: string; pitch?: string; type
   const id = `idea-${randomBytes(5).toString('hex')}`;
   const now = Date.now();
   const type: ProjectType = isType(input.type) ? input.type : 'software';
-  db.prepare('INSERT INTO ideas (id, slug, title, pitch, type, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, slug, title, (input.pitch ?? '').trim(), type, input.source ?? null, now, now);
+  db.prepare('INSERT INTO ideas (id, slug, title, pitch, type, source, created_at, updated_at, parent_project_id, brand_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, slug, title, (input.pitch ?? '').trim(), type, input.source ?? null, now, now, input.parent?.projectId ?? null, input.parent?.brandId ?? null);
   mkdirSync(ideaDir(db, id), { recursive: true });
   getBus().emit({ type: 'idea', idea_id: id });
   return getIdea(db, id)!;
@@ -166,6 +177,7 @@ export function updateIdea(db: DB, id: string, patch: { title?: string; pitch?: 
   const idea = getIdea(db, id);
   if (!idea) throw new Error(`unknown idea ${id}`);
   if (idea.status === 'promoted') throw new Error('this idea is already a project');
+  if (idea.status === 'added') throw new Error('this feature is already added to its project');
   if (patch.title !== undefined && !patch.title.trim()) throw new Error('the idea needs a title');
   if (patch.type !== undefined && !isType(patch.type)) throw new Error('type must be software or general');
   // parking and unparking only; shaping and promotion happen by themselves
@@ -187,6 +199,7 @@ export function deleteIdea(db: DB, id: string): void {
   const idea = getIdea(db, id);
   if (!idea) return;
   if (idea.status === 'promoted') throw new Error('this idea is already a project');
+  if (idea.status === 'added') throw new Error('this feature is already added to its project');
   const dir = ideaDir(db, id);
   db.transaction(() => {
     for (const t of ['requirements', 'design_elements', 'design_relations', 'design_snapshots']) db.prepare(`DELETE FROM ${t} WHERE project_id = ?`).run(id);
@@ -227,7 +240,15 @@ export const ANALYSES: Analysis[] = [
   { kind: 'estimate', label: 'Effort & cost', group: 'Define', ask: 'Estimate the build: a size per feature (S/M/L, with what makes the large ones large), a phase plan for the MVP, the riskiest technical parts, and running costs (hosting, services, APIs) at small scale. State assumptions; these are estimates.' },
   { kind: 'decision', label: 'Go / park / kill', group: 'Define', ask: 'Recommend go, park or kill, with a short scorecard (value, confidence, effort, strategic fit, risk) based on what has been worked out so far, the strongest reason against, and what would change your mind. Do not decide for the user.' },
 ];
-export const analysisByKind = (kind: string) => ANALYSES.find((a) => a.kind === kind);
+/** A feature idea's analyses: the app already exists, so it is about the need, the change and what it touches. */
+export const FEATURE_ANALYSES: Analysis[] = [
+  { kind: 'problem', label: 'Need & users', group: 'Understand', ask: 'Who in this app needs this, in which moment of their work, and what they do today instead. Name the existing users (from the project requirements) it is for.' },
+  { kind: 'impact', label: 'Impact on the app', group: 'Understand', ask: 'Assess what this change touches in the existing system: the containers, components and modules; data and schema changes (and migrations); APIs; screens; what could break in what works today; and a rough effort. Read the current design (get_design with the project_id) and the code first. Start the summary with Small, Medium or Large.' },
+  { kind: 'features', label: 'Stories', group: 'Define', ask: 'Break the change into features, each detailed enough to build from without guessing: summary, user stories, acceptance criteria (Given/When/Then), edge cases, the data it needs, and open questions. Tie each one to the existing module it extends, or say it is a new module.' },
+  { kind: 'risks', label: 'Risks', group: 'Decide', ask: 'What could go wrong with this change: for current users (behaviour that changes, data that moves), technically, for security and privacy, and for the plan (what it delays). For each: likelihood, impact and a mitigation.' },
+  { kind: 'estimate', label: 'Effort', group: 'Define', ask: 'Estimate the change: a size per feature (S/M/L, with what makes the large ones large), how many cards it is likely to be, and where it fits on the roadmap (the current phase, or a new phase after which one).' },
+];
+export const analysisByKind = (kind: string) => ANALYSES.find((a) => a.kind === kind) ?? FEATURE_ANALYSES.find((a) => a.kind === kind);
 
 export interface Section {
   kind: string;
@@ -552,8 +573,9 @@ export function ideaSummary(db: DB, id: string) {
   const brand = getBrand(db, idea.brand_id);
   const screens = listScreens(db, id);
   const missing: string[] = [];
-  if (!req.v) missing.push('requirements');
-  if (idea.type === 'software') {
+  if (!req.v) missing.push(idea.parent_project_id ? 'changes' : 'requirements');
+  // a feature idea inherits its project's design and brand; new screens are optional
+  if (idea.type === 'software' && !idea.parent_project_id) {
     if (!design.n) missing.push('system design');
     if (!brand) missing.push('brand');
     if (!screens.length) missing.push('UI');
@@ -570,8 +592,11 @@ export function ideaThread(db: DB, id: string): string {
   const conv = `ch:idea-${idea.slug}`;
   const now = Date.now();
   if (!getConversation(db, conv)) {
-    db.prepare(`INSERT INTO conversations (id, kind, project_id, name, created_at, last_at, idea_id) VALUES (?, 'channel', NULL, ?, ?, ?, ?)`).run(conv, idea.title, now, now, id);
-    db.prepare(`INSERT OR IGNORE INTO conversation_members (conversation_id, role_id) VALUES (?, 'main')`).run(conv);
+    // a feature idea is shaped inside its project: the PM leads, the Architect assesses the impact
+    db.prepare(`INSERT INTO conversations (id, kind, project_id, name, created_at, last_at, idea_id) VALUES (?, 'channel', ?, ?, ?, ?, ?)`).run(conv, idea.parent_project_id, idea.title, now, now, id);
+    const lead = idea.parent_project_id ? ['pm', 'architect'] : ['main'];
+    const exists = lead.filter((role) => db.prepare('SELECT 1 FROM roles WHERE id = ?').get(role));
+    for (const role of exists.length ? exists : ['main']) db.prepare(`INSERT OR IGNORE INTO conversation_members (conversation_id, role_id) VALUES (?, ?)`).run(conv, role);
   }
   db.prepare(`UPDATE ideas SET conversation_id = ?, status = CASE WHEN status = 'raw' THEN 'shaping' ELSE status END WHERE id = ?`).run(conv, id);
   touch(db, id);

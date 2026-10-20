@@ -6,6 +6,8 @@ import { getBus } from './bus.js';
 import {
   analysisByKind,
   ANALYSES,
+  FEATURE_ANALYSES,
+  listFeatureIdeas,
   answerQuestion,
   askQuestion,
   confirmFeatures,
@@ -34,7 +36,8 @@ import {
 } from './ideas.js';
 import { listRequirements, NeedsRole, projectRef, promoteIdea, saveRequirements } from './pipeline.js';
 import { getRole } from './roles.js';
-import { FIRST_PASS, ideaIntake } from './contracts.js';
+import { FEATURE_FIRST_PASS, featureIntake, FIRST_PASS, ideaIntake } from './contracts.js';
+import { addToProject, captureFeatureIdea, makeOwnIdea } from './feature-ideas.js';
 import { HttpError, on } from './router.js';
 import { activeRuns, respond } from './runner.js';
 
@@ -64,17 +67,71 @@ on('GET', '/api/ideas', (_q, res, url, ctx) => {
   ctx.json(res, 200, listIdeas(db, { all: url.searchParams.get('all') === '1' }).map((i) => card(db, i.id)));
 });
 
+/** Letters and digits only, for comparing names ("Quick Video Cutter v2" ~ "quick-video-cutter"). */
+const plain = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+const sameThing = (a: string, b: string) => {
+  const [x, y] = [plain(a), plain(b)];
+  return x.length >= 4 && y.length >= 4 && (x === y || x.includes(y) || y.includes(x));
+};
+
+/** The first thinking (from the chat it came up in) becomes its starting requirements. */
+function startingNotes(ctx: any, idea: { id: string; title: string }, b: any): void {
+  if (typeof b.notes === 'string' && b.notes.trim()) attempt(() => saveRequirements(ctx.db(), idea.id, /^#\s/.test(b.notes.trim()) ? b.notes : `# ${idea.title}\n\n${b.notes}`, String(b.role ?? 'main')));
+}
+
+/** An agent captured it while you were talking to it: the app switches to its board. */
+function openIfTalking(ctx: any, source: unknown, open: Record<string, string>): void {
+  if (!source) return;
+  const said = ctx.db().prepare("SELECT MAX(created_at) AS at FROM messages WHERE conversation_id = ? AND author = 'user'").get(String(source)) as { at: number | null };
+  if (said.at && Date.now() - said.at < 10 * 60_000) ctx.broadcast({ type: 'idea_opened', ...open });
+}
+
 on('POST', '/api/ideas', async (req, res, _u, ctx) => {
   const b = await ctx.readBody(req);
   if (!b?.title) throw new HttpError(400, 'title required');
-  const idea = attempt(() => captureIdea(ctx.db(), { title: String(b.title), pitch: b.pitch, type: b.type, source: b.source ?? null }));
-  // the first thinking (from the chat it came up in) becomes its starting requirements
-  if (typeof b.notes === 'string' && b.notes.trim()) attempt(() => saveRequirements(ctx.db(), idea.id, /^#\s/.test(b.notes.trim()) ? b.notes : `# ${idea.title}\n\n${b.notes}`, String(b.role ?? 'main')));
-  // an agent captured it while you were talking to it: the app switches to the new idea's board
-  if (b.source) {
-    const said = ctx.db().prepare("SELECT MAX(created_at) AS at FROM messages WHERE conversation_id = ? AND author = 'user'").get(String(b.source)) as { at: number | null };
-    if (said.at && Date.now() - said.at < 10 * 60_000) ctx.broadcast({ type: 'idea_opened', idea_id: idea.id });
+  const db = ctx.db();
+  // an agent about to capture something that already exists is told so (the user, typing a title, is not stopped)
+  if (b.source && !b.different) {
+    const project = (db.prepare('SELECT id, name FROM projects').all() as { id: string; name: string }[]).find((p) => sameThing(p.name, String(b.title)));
+    if (project) throw new HttpError(409, `This looks like the existing project "${project.name}" (project_id ${project.id}). If it adds to that app, call capture_feature_idea with that project_id instead; its PM shapes it there. If it really is a separate product, call capture_idea again with different: true.`);
+    const twin = listIdeas(db).find((i) => sameThing(i.title, String(b.title)));
+    if (twin) throw new HttpError(409, `This looks like the idea "${twin.title}" (idea_id ${twin.id}) already on the Idea board. Add to that one instead; if it really is a different idea, call capture_idea again with different: true.`);
   }
+  const idea = attempt(() => captureIdea(db, { title: String(b.title), pitch: b.pitch, type: b.type, source: b.source ?? null }));
+  startingNotes(ctx, idea, b);
+  openIfTalking(ctx, b.source, { idea_id: idea.id });
+  ctx.json(res, 200, card(db, idea.id));
+});
+
+// ── feature ideas: new ideas for a project that exists, shaped inside it ──
+
+on('GET', '/api/projects/:id/ideas', (_q, res, _u, ctx, p) => {
+  const db = ctx.db();
+  ctx.json(res, 200, listFeatureIdeas(db, p.id).map((i) => card(db, i.id)));
+});
+
+on('POST', '/api/projects/:id/ideas', async (req, res, _u, ctx, p) => {
+  const b = await ctx.readBody(req);
+  if (!b?.title) throw new HttpError(400, 'title required');
+  const db = ctx.db();
+  const idea = attempt(() => captureFeatureIdea(db, p.id, { title: String(b.title), pitch: b.pitch, source: b.source ?? null }));
+  startingNotes(ctx, idea, b);
+  openIfTalking(ctx, b.source, { idea_id: idea.id, project_id: p.id });
+  ctx.json(res, 200, card(db, idea.id));
+});
+
+/** The user's approval: the feature joins the project and goes to its roadmap. The app confirms first. */
+on('POST', '/api/ideas/:id/add-to-project', (_q, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  const r = attempt(() => addToProject(ctx.db(), p.id));
+  ctx.broadcast({ type: 'conversations' });
+  ctx.json(res, 200, r);
+});
+
+/** A feature idea that turned out to be a product of its own moves to the Idea board. */
+on('POST', '/api/ideas/:id/own-idea', (_q, res, _u, ctx, p) => {
+  need(ctx.db(), p.id);
+  const idea = attempt(() => makeOwnIdea(ctx.db(), p.id));
   ctx.json(res, 200, card(ctx.db(), idea.id));
 });
 
@@ -108,8 +165,8 @@ on('POST', '/api/ideas/:id/thread', (_q, res, _u, ctx, p) => {
   const fresh = !idea.conversation_id;
   const conv = attempt(() => ideaThread(db, p.id));
   // a new idea's chat opens with the intake: the lead asks the missing basics (or lays it out if nothing is missing)
-  if (fresh && idea.status !== 'promoted') {
-    const m = addMessage(db, conv, 'system', ideaIntake(p.id));
+  if (fresh && idea.status !== 'promoted' && idea.status !== 'added') {
+    const m = addMessage(db, conv, 'system', idea.parent_project_id ? featureIntake(p.id) : ideaIntake(p.id));
     ctx.broadcast({ type: 'chat', conversation: conv, message: m });
     respond(conv, '');
   }
@@ -121,7 +178,7 @@ function startFirstPass(ctx: any, ideaId: string): void {
   const db = ctx.db();
   const conv = attempt(() => ideaThread(db, ideaId));
   const basics = listQuestions(db, ideaId).filter((q) => q.kind === 'intake' && q.status === 'answered');
-  const m = addMessage(db, conv, 'user', [`The basics:`, ...basics.map((q) => `- ${q.text} ${q.answer}`), '', FIRST_PASS].join('\n'));
+  const m = addMessage(db, conv, 'user', [`The basics:`, ...basics.map((q) => `- ${q.text} ${q.answer}`), '', getIdea(db, ideaId)?.parent_project_id ? FEATURE_FIRST_PASS : FIRST_PASS].join('\n'));
   ctx.broadcast({ type: 'chat', conversation: conv, message: m });
   respond(conv, '');
 }
@@ -140,7 +197,7 @@ on('POST', '/api/ideas/:id/intake/skip', (_q, res, _u, ctx, p) => {
 
 on('POST', '/api/ideas/:id/promote', async (_q, res, _u, ctx, p) => {
   const db = ctx.db();
-  need(db, p.id);
+  if (need(db, p.id).parent_project_id) throw new HttpError(400, 'a feature idea is added to its project, not promoted');
   try {
     const ref = await promoteIdea(db, p.id);
     ctx.broadcast({ type: 'conversations' });
@@ -152,7 +209,7 @@ on('POST', '/api/ideas/:id/promote', async (_q, res, _u, ctx, p) => {
 
 // ── analyses and features ──
 
-on('GET', '/api/idea-analyses', (_q, res, _u, ctx) => ctx.json(res, 200, ANALYSES));
+on('GET', '/api/idea-analyses', (_q, res, url, ctx) => ctx.json(res, 200, url.searchParams.get('feature') === '1' ? FEATURE_ANALYSES : ANALYSES));
 
 /** A pill: ask the idea's lead for one analysis; its card shows as working until the result is saved. */
 on('POST', '/api/ideas/:id/sections/:kind/run', (_q, res, _u, ctx, p) => {
@@ -161,6 +218,7 @@ on('POST', '/api/ideas/:id/sections/:kind/run', (_q, res, _u, ctx, p) => {
   const a = analysisByKind(p.kind);
   if (!a) throw new HttpError(404, 'unknown analysis');
   if (idea.status === 'promoted') throw new HttpError(400, 'this idea is already a project');
+  if (idea.status === 'added') throw new HttpError(400, 'this feature is already added to its project');
   const conv = attempt(() => ideaThread(db, p.id));
   markSectionRunning(db, p.id, a.kind);
   const save = a.kind === 'features'
@@ -168,7 +226,8 @@ on('POST', '/api/ideas/:id/sections/:kind/run', (_q, res, _u, ctx, p) => {
     : `Save the result with save_idea_section (kind "${a.kind}"): a one-line summary and the full write-up in Markdown.`;
   const m = addMessage(db, conv, 'user', `**${a.label}**: ${a.ask}\n\n${save} Then reply here in two or three lines.`);
   ctx.broadcast({ type: 'chat', conversation: conv, message: m });
-  respond(conv, '', { onDone: () => markSectionStalled(getBus().db(), p.id, a.kind) });
+  // the impact of a feature idea is the Architect's to assess
+  respond(conv, a.kind === 'impact' && members(db, conv).includes('architect') ? '@Architect' : '', { onDone: () => markSectionStalled(getBus().db(), p.id, a.kind) });
   ctx.json(res, 200, { conversation: conv, kind: a.kind });
 });
 

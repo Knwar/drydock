@@ -194,6 +194,20 @@ export function saveRequirements(db: DB, projectId: string, markdown: string, au
   return listRequirements(db, projectId)[0];
 }
 
+/** Add to a project's requirements as a new version, keeping it final when it was (an approved feature joins the agreed scope). */
+export function appendRequirements(db: DB, projectId: string, addition: string, author: string | null): RequirementsVersion {
+  const latest = listRequirements(db, projectId)[0];
+  const markdown = `${(latest?.markdown ?? `# ${projectRef(db, projectId).name}`).trimEnd()}\n\n${addition.trim()}\n`;
+  const version = (latest?.version ?? 0) + 1;
+  db.prepare('INSERT INTO requirements (project_id, version, markdown, author, final, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(projectId, version, markdown, author, latest?.final ? 1 : 0, Date.now());
+  const dir = join(docsDir(db, projectId), 'requirements');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `v${version}.md`), markdown);
+  writeFileSync(join(dir, 'current.md'), markdown);
+  getBus().emit({ type: 'requirements', project_id: projectId });
+  return listRequirements(db, projectId)[0];
+}
+
 // ── design model (C4) ────────────────────────────────────────────
 
 export const ELEMENT_KINDS = ['person', 'container', 'component', 'store', 'queue', 'external'] as const;

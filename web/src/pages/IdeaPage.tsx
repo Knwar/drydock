@@ -82,7 +82,11 @@ export function Brand({ d }: { d: Detail }) {
   );
 }
 
-export function Screens({ d }: { d: Detail }) {
+/** One screen: in a project's UI tab it can come from another idea (an added feature), shown under its group. */
+type ScreenItem = { id: string; title: string; idea?: string; group?: string };
+const screenKey = (d: Detail, s: ScreenItem) => `${s.idea ?? d.id}/${s.id}`;
+
+export function Screens({ d, empty }: { d: Detail; empty?: string }) {
   const [cur, setCur] = useState<string | null>(null);
   const [width, setWidth] = useState<'mobile' | 'desktop'>('desktop');
   const [stamp, setStamp] = useState(0);
@@ -94,16 +98,19 @@ export function Screens({ d }: { d: Detail }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [full]);
-  const screen = d.screenList.find((s) => s.id === cur) ?? d.screenList[0];
-  if (!screen) return <div className="empty" style={{ padding: 30 }}>No screens yet. Ask in the chat (for example "sketch the home and settings screens"); the Main agent draws them as clickable mockups.</div>;
-  const at = d.screenList.indexOf(screen);
+  const items: ScreenItem[] = d.screenList;
+  const screen = items.find((s) => screenKey(d, s) === cur) ?? items[0];
+  const groups = [...new Set(items.map((s) => s.group).filter(Boolean))] as string[];
+  const option = (s: ScreenItem) => <option key={screenKey(d, s)} value={screenKey(d, s)}>{items.indexOf(s) + 1}. {s.title}</option>;
+  if (!screen) return <div className="empty" style={{ padding: 30 }}>{empty ?? 'No screens yet. Ask in the chat (for example "sketch the home and settings screens"); the Main agent draws them as clickable mockups.'}</div>;
+  const at = items.indexOf(screen);
   // screens in a dropdown (the list can grow long), the size, and full screen
   const bar = (
     <div className="mockup-bar">
-      <select className="input mockup-pick" aria-label="Screen" value={screen.id} onChange={(e) => setCur(e.target.value)}>
-        {d.screenList.map((s, i) => <option key={s.id} value={s.id}>{i + 1}. {s.title}</option>)}
+      <select className="input mockup-pick" aria-label="Screen" value={screenKey(d, screen)} onChange={(e) => setCur(e.target.value)}>
+        {groups.length > 1 ? groups.map((g) => <optgroup key={g} label={g}>{items.filter((s) => s.group === g).map(option)}</optgroup>) : items.map(option)}
       </select>
-      <span className="muted" style={{ fontSize: 12 }}>{at + 1} of {d.screenList.length}</span>
+      <span className="muted" style={{ fontSize: 12 }}>{at + 1} of {items.length}</span>
       <div className="seg" style={{ marginLeft: 'auto' }}>
         <button aria-pressed={width === 'mobile'} onClick={() => setWidth('mobile')}>Mobile</button>
         <button aria-pressed={width === 'desktop'} onClick={() => setWidth('desktop')}>Desktop</button>
@@ -116,7 +123,7 @@ export function Screens({ d }: { d: Detail }) {
     </div>
   );
   /* fully sandboxed and served without scripts: links between screens work, nothing else can */
-  const frame = <iframe key={`${screen.id}-${stamp}`} title={`${screen.title} mockup`} sandbox="" src={`/api/ideas/${d.id}/ui/${screen.id}.html?v=${stamp}`} style={{ width: width === 'mobile' ? 390 : '100%' }} />;
+  const frame = <iframe key={`${screenKey(d, screen)}-${stamp}`} title={`${screen.title} mockup`} sandbox="" src={`/api/ideas/${screen.idea ?? d.id}/ui/${screen.id}.html?v=${stamp}`} style={{ width: width === 'mobile' ? 390 : '100%' }} />;
   return (
     <section className="panel" style={{ gap: 10 }}>
       {!full && bar}
@@ -135,26 +142,33 @@ export function Screens({ d }: { d: Detail }) {
 
 export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id: string; tab: string; sub: string | null; roles: Role[]; conversations: Conversation[]; projects: ProjectSummary[] }) {
   const idea = useApi<Detail>(`/api/ideas/${id}`, (m) => ideaEvents(m));
-  const analyses = useApi<Analysis[]>('/api/idea-analyses');
+  // a feature idea (inside a project) has its own, smaller set of analyses
+  const feature = idea.data?.parent_project_id ?? null;
+  const analyses = useApi<Analysis[]>(idea.data ? `/api/idea-analyses${feature ? '?feature=1' : ''}` : null);
 
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState('');
   const [pitch, setPitch] = useState('');
-  const [modal, setModal] = useState<'promote' | 'delete' | null>(null);
+  const [modal, setModal] = useState<'promote' | 'delete' | 'add' | 'own' | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const d = idea.data;
   // the idea's one chat exists as soon as you open it (opening it costs nothing)
   useEffect(() => {
-    if (d && !d.conversation_id && d.status !== 'promoted') void api(`/api/ideas/${id}/thread`, { method: 'POST' });
+    if (d && !d.conversation_id && d.status !== 'promoted' && d.status !== 'added') void api(`/api/ideas/${id}/thread`, { method: 'POST' });
   }, [d?.conversation_id, d?.status, id]);
   if (idea.error) return <div className="empty">This idea is gone. <a href={href('/')} onClick={go('/')}>Back to Home</a></div>;
   if (!d) return null;
   const conv = conversations.find((c) => c.id === d.conversation_id) ?? null;
   const software = d.type === 'software';
-  const tabs: [string, string][] = [['', 'Board'], ['requirements', 'Requirements'], ...(software ? ([['design', 'System design']] as [string, string][]) : []), ['brand', 'Brand'], ...(software ? ([['ui', 'UI']] as [string, string][]) : [])];
+  // a feature idea inherits its project's design and brand: it has its changes and the screens it adds
+  const tabs: [string, string][] = feature
+    ? [['', 'Board'], ['changes', 'Changes'], ...(software ? ([['screens', 'Screens']] as [string, string][]) : [])]
+    : [['', 'Board'], ['requirements', 'Requirements'], ...(software ? ([['design', 'System design']] as [string, string][]) : []), ['brand', 'Brand'], ...(software ? ([['ui', 'UI']] as [string, string][]) : [])];
   const run = (kind: string) => act(() => api(`/api/ideas/${id}/sections/${kind}/run`, { method: 'POST' }));
-  const base = `/idea/${id}`;
+  const project = feature ? projects.find((p) => p.id === feature) : undefined;
+  const projectBase = `/project/${feature}`;
+  const base = feature ? `${projectBase}/ideas/${id}` : `/idea/${id}`;
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
@@ -166,14 +180,22 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
       setBusy(false);
     }
   };
-  const promoted = d.status === 'promoted';
+  // promoted to a project, or (a feature idea) added to its project: read-only from then on
+  const promoted = d.status === 'promoted' || d.status === 'added';
   return (
     <div className="docked-page idea-page">
       <div className="docked-main">
-        <div className="eyebrow" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <a href={href('/')} onClick={go('/')}>Idea board</a> ›
+        <div className="eyebrow" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {feature ? (
+            <>
+              <a href={href(projectBase)} onClick={go(projectBase)}>{project?.name ?? 'Project'}</a> ›
+              <a href={href(`${projectBase}/ideas`)} onClick={go(`${projectBase}/ideas`)}>Ideas</a> ›
+            </>
+          ) : (
+            <><a href={href('/')} onClick={go('/')}>Idea board</a> ›</>
+          )}
           <span className={`pill ${STATUS[d.status].tone}`}>{STATUS[d.status].label}</span>
-          <span className="pill t-n">{software ? 'Software' : 'General'}</span>
+          {!feature && <span className="pill t-n">{software ? 'Software' : 'General'}</span>}
           {d.working && <span className="pill t-g">agents working</span>}
         </div>
         {editing ? (
@@ -189,8 +211,18 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
               <div className="muted" style={{ fontSize: 14 }}>{d.pitch || 'No one-line pitch yet.'}</div>
               <div style={{ marginTop: 8 }}><Shaped i={d} /></div>
             </div>
-            {promoted ? (
+            {d.status === 'added' ? (
+              <a className="btn primary" href={href(`${projectBase}/board`)} onClick={go(`${projectBase}/board`)}>Open the board</a>
+            ) : promoted ? (
               <a className="btn primary" href={href(`/project/${d.project_id}`)} onClick={go(`/project/${d.project_id}`)}>Open the project</a>
+            ) : feature ? (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button className="btn primary" disabled={busy} onClick={() => setModal('add')}>Add to project</button>
+                <button className="btn" disabled={busy} onClick={() => (setTitle(d.title), setPitch(d.pitch), setEditing(true))}>Edit</button>
+                <button className="btn" disabled={busy} onClick={() => act(() => api(`/api/ideas/${id}`, { body: { status: d.status === 'parked' ? 'shaping' : 'parked' } }))}>{d.status === 'parked' ? 'Bring back' : 'Park'}</button>
+                <button className="btn" disabled={busy} onClick={() => setModal('own')} title="It is really a product of its own">Make it its own idea</button>
+                <button className="btn" style={{ color: 'var(--r-fg)' }} disabled={busy} onClick={() => setModal('delete')}>Delete</button>
+              </div>
             ) : (
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 <button className="btn primary" disabled={busy} onClick={() => setModal('promote')}>Promote to project</button>
@@ -211,12 +243,20 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
           <>
             {!d.requirements && !d.featureList.length && !d.sections.length && (
               <div className="banner t-b" style={{ fontSize: 13, lineHeight: 1.6 }}>
-                Start by telling the Main agent about the idea in the chat: the problem, who it is for, how you see it working. Or press a quick action: competitors, the MVP cut, risks… This board fills in as you talk: what will be built, what was decided, and what is still open.
+                {feature
+                  ? `Tell the PM what you have in mind for ${project?.name ?? 'the app'}: what it adds or changes, and who it is for. It knows the app, the roadmap and what is being built, and the Architect checks what the change touches. This board fills in as you talk.`
+                  : 'Start by telling the Main agent about the idea in the chat: the problem, who it is for, how you see it working. Or press a quick action: competitors, the MVP cut, risks… This board fills in as you talk: what will be built, what was decided, and what is still open.'}
               </div>
             )}
-            <IdeaOverview d={d} analyses={analyses.data ?? []} run={run} working={Boolean(conv?.working)} />
+            <IdeaOverview d={d} analyses={analyses.data ?? []} run={run} working={Boolean(conv?.working)} feature={Boolean(feature)} />
           </>
         )}
+        {tab === 'changes' && feature && (
+          <section className="panel">
+            {d.requirements ? <Markdown text={d.requirements.markdown} /> : <div className="muted" style={{ fontSize: 13.5, lineHeight: 1.6 }}>No changes written yet. The PM writes what this adds, changes and removes in the app as you talk it through.</div>}
+          </section>
+        )}
+        {tab === 'screens' && feature && software && <Screens d={d} empty="No new or changed screens yet. When the stories are agreed, the PM offers to draw the screens this adds or changes, in the app's brand." />}
         {tab === 'requirements' && (
           <section className="panel">
             {d.requirements ? <Markdown text={d.requirements.markdown} /> : <div className="muted" style={{ fontSize: 13.5, lineHeight: 1.6 }}>No requirements yet. They appear here and grow with every message in the chat.</div>}
@@ -229,7 +269,7 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
       {/* the idea's chat with the Main agent, always open on the right; quick actions sit above its input */}
       <aside className="idea-chat" aria-label="Chat about this idea">
         {conv ? (
-          <ChatPanel conversation={conv} roles={roles} projects={projects} onClose={() => navigate(base)} bare={{ above: promoted ? undefined : <Pills d={d} analyses={analyses.data ?? []} run={run} />, placeholder: promoted ? 'This idea is a project now.' : 'Talk the idea through: a feature, a change, a question…' }} />
+          <ChatPanel conversation={conv} roles={roles} projects={projects} onClose={() => navigate(base)} bare={{ above: promoted ? undefined : <Pills d={d} analyses={analyses.data ?? []} run={run} />, placeholder: d.status === 'added' ? 'This feature is part of the project now.' : promoted ? 'This idea is a project now.' : feature ? 'Talk the feature through: what it adds, who it is for, a question…' : 'Talk the idea through: a feature, a change, a question…' }} />
         ) : (
           <div className="muted" style={{ padding: 16 }}>Opening the chat…</div>
         )}
@@ -256,11 +296,41 @@ export function IdeaPage({ id, tab, sub, roles, conversations, projects }: { id:
           </div>
         </Modal>
       )}
+      {modal === 'add' && (
+        <Modal title={`Add "${d.title}" to ${project?.name ?? 'the project'}?`} onClose={() => setModal(null)}>
+          <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>
+            This is your approval to build it:
+            <ul className="md-list" style={{ margin: '6px 0' }}>
+              <li>{d.requirementsVersion ? 'Its changes join the project’s requirements as a new version' : 'It has no written changes yet: its pitch joins the requirements'}</li>
+              <li>{d.features ? `${d.features} ${d.features === 1 ? 'story' : 'stories'} go to docs/features/${d.slug}.md, which the builders work from` : 'No stories yet: the PM works from its changes'}</li>
+              {software && d.screens > 0 && <li>{d.screens} new or changed {d.screens === 1 ? 'screen joins' : 'screens join'} the project’s UI tab</li>}
+              <li>The PM places it on the roadmap: in auto mode it plans it in and the build goes ahead; otherwise it proposes where it goes and waits for you.</li>
+            </ul>
+            This chat stays as its history.
+          </div>
+          {d.missing.length > 0 && <div className="banner t-a" style={{ fontSize: 12.5 }}>Not shaped yet: {d.missing.join(', ')}.</div>}
+          {error && <div className="error">{error}</div>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn primary" autoFocus disabled={busy} onClick={() => act(async () => { await api(`/api/ideas/${id}/add-to-project`, { method: 'POST' }); setModal(null); })}>{busy ? 'Adding…' : 'Add to project'}</button>
+            <button className="btn" onClick={() => setModal(null)}>Cancel</button>
+          </div>
+        </Modal>
+      )}
+      {modal === 'own' && (
+        <Modal title={`Make "${d.title}" an idea of its own?`} onClose={() => setModal(null)}>
+          <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>It leaves {project?.name ?? 'the project'} and moves to the Idea board as a separate idea. The Main agent leads it from there, and everything shaped so far goes with it. Use this when it has turned out to be a product of its own.</div>
+          {error && <div className="error">{error}</div>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn primary" autoFocus disabled={busy} onClick={() => act(async () => { await api(`/api/ideas/${id}/own-idea`, { method: 'POST' }); setModal(null); navigate(`/idea/${id}`); })}>Move to the Idea board</button>
+            <button className="btn" onClick={() => setModal(null)}>Cancel</button>
+          </div>
+        </Modal>
+      )}
       {modal === 'delete' && (
         <Modal title={`Delete "${d.title}"?`} onClose={() => setModal(null)}>
           <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>It leaves the Idea board. Its files move to <span className="mono">vault/ideas/.deleted/</span>, so nothing is lost by accident. Park it instead if you might come back to it.</div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn danger" autoFocus disabled={busy} onClick={() => act(async () => { await api(`/api/ideas/${id}`, { method: 'DELETE' }); setModal(null); navigate('/'); })}>Delete idea</button>
+            <button className="btn danger" autoFocus disabled={busy} onClick={() => act(async () => { await api(`/api/ideas/${id}`, { method: 'DELETE' }); setModal(null); navigate(feature ? `${projectBase}/ideas` : '/'); })}>Delete idea</button>
             <button className="btn" onClick={() => setModal(null)}>Cancel</button>
           </div>
         </Modal>

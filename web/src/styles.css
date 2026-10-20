@@ -652,3 +652,6 @@ body.no-scroll { overflow: hidden; }
 .q-count { font-size: 11px; color: var(--a-fg); font-weight: 600; letter-spacing: 0.02em; }
 .q-later { align-self: flex-end; font-size: 12px; }
 @media (prefers-reduced-motion: reduce) { .q-card { transition: opacity 0.2s ease; } .q-card.out-answer, .q-card.out-later { transform: none; } }
+
+/* a tab's count (a project's feature ideas being shaped) */
+.tab-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px; border-radius: 999px; background: var(--b-bg); color: var(--b-fg); font-size: 11px; font-weight: 700; vertical-align: 1px; }

@@ -15,7 +15,7 @@ import { effectiveEffort, getRole, listRoles, type Role } from './roles.js';
 import { blockedServers, listServers, recordTools, toolPolicies } from './integrations.js';
 import { activeLearnings, isAuto, memoryDigest, projectMembers } from './teamwork.js';
 import { disabledTools, projectPlugins, projectType } from './plugins.js';
-import { AUTO_RULES, contractFor, ideaChatRules } from './contracts.js';
+import { AUTO_RULES, contractFor, featureChatRules, ideaChatRules } from './contracts.js';
 import { getIdea, ideaDir } from './ideas.js';
 import { fits, PLUGIN, pluginDir, runSkills, skillById, subagentSkills } from './skills.js';
 import { onRateLimit } from './usage.js';
@@ -32,6 +32,8 @@ const CLAUDE_BIN = process.env.BRAIN_CLAUDE_BIN ?? 'claude';
 export const ALWAYS_ALLOWED = ['Read', 'Glob', 'Grep', 'LS', 'WebSearch', 'WebFetch', 'TodoWrite', 'Skill', 'mcp__brain'];
 /** Project roles also run the board, its subagents and per-card worktrees without asking. */
 export const PROJECT_ALLOWED = ['mcp__kanban', 'Task', 'Bash(brain worktree:*)', 'Bash(brain verify:*)', 'Bash(brain security-scan:*)'];
+/** What a project role may read without asking while it shapes a feature idea. */
+export const BOARD_READ = ['mcp__kanban__get_phases', 'mcp__kanban__get_board', 'mcp__kanban__get_workspace_summary'];
 /** Secrets are reached only through the brain secret tools (approval + Touch ID), never the managers' CLIs or the Keychain directly. */
 export const ALWAYS_DENIED = ['Bash(op:*)', 'Bash(bw:*)', 'Bash(bws:*)', 'Bash(security find-generic-password:*)', 'Bash(security find-internet-password:*)', 'Bash(security dump-keychain:*)'];
 
@@ -90,8 +92,11 @@ function systemPrompt(role: Role, conversationId: string): string {
   // the contract (app-owned) leads; the user's persona and the skills follow and never override it
   const lines = [contractFor(role)];
   const idea = conv.idea_id ? getIdea(db, conv.idea_id) : undefined;
-  if (idea) lines.push('', ideaChatRules(idea, members(db, conversationId)[0] === role.id, ideaDir(db, idea.id)));
-  if (isAuto(db, conv.project_id)) lines.push('', AUTO_RULES);
+  const lead = members(db, conversationId)[0] === role.id;
+  const parent = idea?.parent_project_id ? (db.prepare('SELECT id, name, root_path AS root FROM projects WHERE id = ?').get(idea.parent_project_id) as { id: string; name: string; root: string } | undefined) : undefined;
+  if (idea) lines.push('', parent ? featureChatRules(idea, parent, lead, ideaDir(db, idea.id)) : ideaChatRules(idea, lead, ideaDir(db, idea.id)));
+  // auto mode builds approved work; shaping a feature idea always waits for the user
+  if (isAuto(db, conv.project_id) && !idea) lines.push('', AUTO_RULES);
   if (role.persona.trim()) lines.push('', '## About you (set by the user)', role.persona.trim());
   const sk = agentSkills(role, conv.project_id, conv.idea_id);
   if (sk.own.length || role.skill) {
@@ -144,6 +149,8 @@ function systemPrompt(role: Role, conversationId: string): string {
 
 /** What the lead of an idea's chat uses to shape it (each still filtered by the idea's type). */
 const IDEA_LEAD_SKILLS = ['spec-writing', 'c4-system-design', 'architecture-decisions', 'brand-guidelines', 'design-system-tokens', 'ui-mockups', 'cited-research', 'story-planning', 'editorial-calendar'];
+/** A feature idea inherits its project's design and brand: its lead writes the change and draws new screens only. */
+const FEATURE_LEAD_SKILLS = ['spec-writing', 'ui-mockups', 'story-planning'];
 const conversationIdFor = (ideaId: string) => getIdea(getBus().db(), ideaId)?.conversation_id ?? '';
 
 /** The library skills a run gets: the role's own, plus (for the PM) those it hands its builders and reviewers. */
@@ -153,7 +160,8 @@ function agentSkills(role: Role, projectId: string | null, ideaId?: string | nul
   const pm = role.id === 'pm' && Boolean(projectId);
   // the lead of an idea's chat shapes every part itself, so it carries the shaping skills too
   const lead = ideaId ? members(db, conversationIdFor(ideaId))[0] === role.id : false;
-  const own = lead ? [...new Set([...runSkills(role, type), ...IDEA_LEAD_SKILLS.filter((id) => skillById(id) && fits(id, type))])] : runSkills(role, type);
+  const shaping = ideaId && getIdea(db, ideaId)?.parent_project_id ? FEATURE_LEAD_SKILLS : IDEA_LEAD_SKILLS;
+  const own = lead ? [...new Set([...runSkills(role, type), ...shaping.filter((id) => skillById(id) && fits(id, type))])] : runSkills(role, type);
   return { own, builder: pm ? subagentSkills('builder', type) : [], reviewer: pm ? subagentSkills('reviewer', type) : [] };
 }
 
@@ -331,11 +339,13 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
     if (p) cwd = p.root_path;
   }
   const projectRole = Boolean(conv.project_id && role.scope === 'project');
+  // shaping a feature idea reads the board but never builds: no subagents or worktrees without asking
+  const shaping = Boolean(conv.idea_id);
   void listServers(); // refreshes in the background; role access uses the cached list
   const policies = toolPolicies(db);
   const globalAllow = Object.keys(policies).filter((t) => policies[t] === 'allow');
   const globalDeny = Object.keys(policies).filter((t) => policies[t] === 'deny');
-  const allowed = [...ALWAYS_ALLOWED, ...(projectRole ? PROJECT_ALLOWED : []), ...globalAllow, ...standingTools(db, roleId, 'allow')];
+  const allowed = [...ALWAYS_ALLOWED, ...(projectRole ? (shaping ? BOARD_READ : PROJECT_ALLOWED) : []), ...globalAllow, ...standingTools(db, roleId, 'allow')];
   const denied = [...ALWAYS_DENIED, ...globalDeny, ...blockedServers(db, roleId), ...standingTools(db, roleId, 'deny')];
   const model = modelOverride ?? role.model;
   const effort = effortOverride ?? effectiveEffort(role);

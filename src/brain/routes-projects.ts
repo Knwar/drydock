@@ -88,6 +88,14 @@ on('GET', '/api/projects/:id', (_q, res, _u, ctx, p) => {
     // shaped on the Idea board: its brand and UI mockups stay with the idea
     auto: autoState(db, p.id),
     idea_id: (db.prepare('SELECT id FROM ideas WHERE project_id = ?').get(p.id) as { id: string } | undefined)?.id ?? null,
+    // feature ideas still being shaped (the Ideas tab's count), and every screen: the original UI plus what added features drew
+    featureIdeas: (db.prepare(`SELECT COUNT(*) AS n FROM ideas WHERE parent_project_id = ? AND status IN ('raw', 'shaping')`).get(p.id) as { n: number }).n,
+    uiScreens: db
+      .prepare(
+        `SELECT s.idea_id, i.title AS idea_title, i.parent_project_id IS NOT NULL AS feature, s.id, s.title FROM idea_screens s JOIN ideas i ON i.id = s.idea_id
+         WHERE i.project_id = ? OR (i.parent_project_id = ? AND i.status = 'added') ORDER BY feature, i.updated_at, s.position, s.id`,
+      )
+      .all(p.id, p.id),
     requirementsVersion: latest?.version ?? null,
     requirementsOpen: latest ? [...latest.markdown.matchAll(/^## (.+)\n+_To discuss\._/gm)].map((m) => m[1].trim()) : [],
     team: projectMembers(db, p.id),

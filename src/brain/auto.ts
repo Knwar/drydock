@@ -62,7 +62,8 @@ function kick(db: DB, projectId: string, text: string): void {
 }
 
 /** The project's conversations with an agent working in them now. */
-const busy = (db: DB, projectId: string) => activeRuns().filter((r) => getConversation(db, r.conversation)?.project_id === projectId);
+// a feature idea being shaped is not the project's work in progress
+const busy = (db: DB, projectId: string) => activeRuns().filter((r) => { const c = getConversation(db, r.conversation); return c?.project_id === projectId && !c.idea_id; });
 
 /**
  * Take the next gate the user would: after the final requirements and the
@@ -94,7 +95,8 @@ function say(db: DB, projectId: string, text: string): void {
 
 /** An approval is waiting on the user in an auto project: say so, since nobody is watching. */
 export function autoWaiting(db: DB, conversationId: string | null, summary: string): void {
-  const projectId = conversationId ? getConversation(db, conversationId)?.project_id : null;
+  const c = conversationId ? getConversation(db, conversationId) : undefined;
+  const projectId = c && !c.idea_id ? c.project_id : null;
   if (projectId && isAuto(db, projectId)) say(db, projectId, `waiting for you: ${summary}`);
 }
 
@@ -106,7 +108,9 @@ const RISKY = /(^|[\s;&|(`$])(sudo|rm\s+-\w*[rf]|git\s+push|git\s+reset\s+--hard
 
 /** Whether auto mode lets this tool call run without asking: file edits and commands confined to the project folder. */
 export function autoAllows(db: DB, conversationId: string | null, tool: string, input: any): boolean {
-  const projectId = conversationId ? getConversation(db, conversationId)?.project_id : null;
+  const c = conversationId ? getConversation(db, conversationId) : undefined;
+  // auto mode covers approved work only, never a feature idea being shaped
+  const projectId = c && !c.idea_id ? c.project_id : null;
   const r = projectId ? row(db, projectId) : undefined;
   if (!r?.auto_mode || r.status !== 'active') return false;
   const root = projectRef(db, projectId!).root;

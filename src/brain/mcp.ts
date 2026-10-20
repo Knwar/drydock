@@ -270,11 +270,29 @@ server.registerTool(
       pitch: z.string().describe('One sentence: what it is and for whom'),
       type: z.enum(['software', 'general']).describe('software for apps, sites, APIs, tools; general for anything else'),
       notes: z.string().optional().describe('Your first thinking in Markdown (problem, users, rough approach, open questions): saved as the idea\'s starting requirements'),
+      different: z.boolean().optional().describe('Only after being told it looks like an existing project or idea, when it really is a separate one'),
     },
   },
   async (b) => {
     const i = await call('/api/ideas', { ...b, source: CONVERSATION, role: ROLE });
     return text(`Saved to the Idea board: ${i.title} (idea_id ${i.id})${b.notes ? ', with your notes as its starting requirements' : ''}.`);
+  },
+);
+
+server.registerTool(
+  'capture_feature_idea',
+  {
+    description: "Save a new idea for a project that already exists (a feature or change to that app) as a feature idea inside the project. The project's PM shapes it with the user there; nothing is built until the user adds it to the project.",
+    inputSchema: {
+      project_id: z.string(),
+      title: z.string(),
+      pitch: z.string().describe('One sentence: what it adds or changes, and for whom'),
+      notes: z.string().optional().describe('Your first thinking in Markdown: saved as its starting changes'),
+    },
+  },
+  async ({ project_id, ...b }) => {
+    const i = await call(`/api/projects/${encodeURIComponent(project_id)}/ideas`, { ...b, source: CONVERSATION, role: ROLE });
+    return text(`Saved as a feature idea on the project: ${i.title} (idea_id ${i.id}). It is on the project's Ideas tab; its PM takes it from here.`);
   },
 );
 

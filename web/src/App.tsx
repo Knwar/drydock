@@ -85,7 +85,7 @@ export function App() {
   const [messenger, setMessenger] = useState(false);
   useEffect(() => setMessenger(false), [path]);
   // an agent just captured an idea you were telling it about: watch it take shape on its board
-  useEffect(() => onLive((m: any) => { if (m?.type === 'idea_opened') navigate(`/idea/${m.idea_id}`); }), []);
+  useEffect(() => onLive((m: any) => { if (m?.type === 'idea_opened') navigate(m.project_id ? `/project/${m.project_id}/ideas/${m.idea_id}` : `/idea/${m.idea_id}`); }), []);
   const [cmd, setCmd] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -106,7 +106,7 @@ export function App() {
   const projectThread = (() => {
     if (!onProject) return null;
     const p = list.find((x) => x.id === parts[1]);
-    const threads = conversations.filter((c) => c.kind === 'channel' && c.project_id === parts[1]);
+    const threads = conversations.filter((c) => c.kind === 'channel' && c.project_id === parts[1] && !c.idea_id);
     const want = p?.stage === 'design' ? 'design' : p?.stage === 'plan' || p?.stage === 'build' ? 'build' : null;
     return (want && threads.find((c) => c.name === want || c.name.endsWith(`-${want}`))) || threads[0] || null;
   })();
@@ -114,7 +114,9 @@ export function App() {
   const current = (linked ? conversations.find((c) => c.id === linked) : onProject ? projectThread : conversations.find((c) => c.id === convId)) ?? conversations.find((c) => c.id === 'dm:main') ?? null;
   const onOverview = onProject && !parts[2];
   // an idea page has its own chat beside it
-  const onIdea = parts[0] === 'idea' && Boolean(parts[1]);
+  // an idea, or a project's feature idea (/project/:id/ideas/:idea): both have their own chat beside them
+  const onFeature = onProject && parts[2] === 'ideas' && Boolean(parts[3]);
+  const onIdea = (parts[0] === 'idea' && Boolean(parts[1])) || onFeature;
   const onHome = parts.length === 0;
   // the Main agent's own page, separate from Home (sending from Home opens it)
   const onChat = parts[0] === 'chat';
@@ -160,6 +162,7 @@ export function App() {
         <ChatPanel conversation={mainConv} roles={roles.data ?? []} projects={list} onSent={convs.reload} onClose={() => navigate('/')} draftText={draft} onDraftUsed={() => setDraft(undefined)} />
       </div>
     );
+  else if (onFeature) page = <IdeaPage key={parts[3]} id={parts[3]} tab={parts[4] ?? ''} sub={parts[5] ?? null} roles={roles.data ?? []} conversations={conversations} projects={list} />;
   else if (parts[0] === 'project' && parts[1])
     page = <ProjectPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} openConversation={select} newThread={() => setNewThread({ project: parts[1] })} side={{ open: sideOpen, toggle: () => setSide(!sideOpen) }} />;
   else if (onIdea) page = <IdeaPage key={parts[1]} id={parts[1]} tab={parts[2] ?? ''} sub={parts[3] ?? null} roles={roles.data ?? []} conversations={conversations} projects={list} />;

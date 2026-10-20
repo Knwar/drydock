@@ -12,6 +12,7 @@ import { Markdown } from '../lib/md';
 import { go, href, navigate, openSettings } from '../lib/router';
 import type { Role } from '../lib/types';
 import { Brand, Screens, type Detail as IdeaDetail } from './IdeaPage';
+import { FeatureIdeas } from '../components/FeatureIdeas';
 
 const TABS = PROJECT_TABS;
 
@@ -53,6 +54,10 @@ interface Detail {
   /** the idea it was promoted from: its brand and UI mockups are shown here */
   idea_id: string | null;
   auto: { on: boolean; paused_until: number | null; waiting: boolean };
+  /** feature ideas still being shaped */
+  featureIdeas: number;
+  /** every screen: the original UI, then those that added features drew */
+  uiScreens: { idea_id: string; idea_title: string; feature: number; id: string; title: string }[];
 }
 
 const AUTO_STEPS = [
@@ -112,6 +117,12 @@ function FromIdea({ ideaId, part }: { ideaId: string; part: 'brand' | 'ui' }) {
   if (idea.error) return <div className="error">{idea.error}</div>;
   if (!idea.data) return null;
   return part === 'brand' ? <Brand d={idea.data} /> : <Screens d={idea.data} />;
+}
+
+/** The project's UI: the screens shaped before it existed and those added features drew, in one picker. */
+function ProjectScreens({ p }: { p: Detail }) {
+  const list = p.uiScreens.map((s) => ({ id: s.id, title: s.title, idea: s.idea_id, group: s.feature ? `Feature: ${s.idea_title}` : 'The app' }));
+  return <Screens d={{ id: p.idea_id ?? list[0]?.idea ?? '', screenList: list, screens: list.length, updated_at: p.last_activity } as unknown as IdeaDetail} />;
 }
 
 const refresh = (id: string) => (m: any) =>
@@ -1143,9 +1154,10 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
         </div>
       </div>
       <nav aria-label="Project sections" className={`tabs${tabsMore}`} ref={tabsRef} onScroll={measureTabs}>
-        {[...TABS.slice(0, 2), ...(p.plugins?.includes('design') ? [['design', 'System design']] : []), ...(p.idea_id ? [['brand', 'Brand'], ['ui', 'UI']] : []), ...TABS.slice(2)].map(([t, label]) => (
+        {[...TABS.slice(0, 2), ['ideas', 'Ideas'], ...(p.plugins?.includes('design') ? [['design', 'System design']] : []), ...(p.idea_id ? [['brand', 'Brand']] : []), ...(p.idea_id || p.uiScreens.length ? [['ui', 'UI']] : []), ...TABS.slice(2)].map(([t, label]) => (
           <a key={t} aria-current={tab === t ? 'page' : undefined} className={`tab${tab === t ? ' on' : ''}`} href={href(t ? `${base}/${t}` : base)} onClick={go(t ? `${base}/${t}` : base)}>
             {label}
+            {t === 'ideas' && p.featureIdeas > 0 && <span className="tab-count">{p.featureIdeas}</span>}
           </a>
         ))}
       </nav>
@@ -1154,7 +1166,9 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
       {tab === 'design' && (p.plugins?.includes('design') ? <SystemDesign p={p} focus={sub} openConversation={openConversation} /> : <PluginOff p={p} id="design" />)}
       {tab === 'live' && (p.plugins?.includes('live') ? <LiveCard projectId={p.id} /> : <PluginOff p={p} id="live" />)}
       {tab === 'board' && <Board p={p} />}
-      {(tab === 'brand' || tab === 'ui') && (p.idea_id ? <FromIdea ideaId={p.idea_id} part={tab} /> : <div className="empty">This project was not shaped on the Idea board, so it has no brand or UI mockups here.</div>)}
+      {tab === 'ideas' && <FeatureIdeas projectId={p.id} projectName={p.name} />}
+      {tab === 'brand' && (p.idea_id ? <FromIdea ideaId={p.idea_id} part="brand" /> : <div className="empty">This project was not shaped on the Idea board, so it has no brand here.</div>)}
+      {tab === 'ui' && (p.uiScreens.length ? <ProjectScreens p={p} /> : <div className="empty">No UI mockups yet. Screens drawn on the Idea board, and those added features draw, show here.</div>)}
       {tab === 'roles' && <Roles p={p} roles={roles} openConversation={openConversation} openTeam={() => setTeamOpen(true)} />}
       {tab === 'memory' && <Memory p={p} />}
       {teamOpen && p.recommendation && (

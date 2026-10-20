@@ -76,10 +76,12 @@ export interface IdeaCard {
   title: string;
   pitch: string;
   type: 'software' | 'general';
-  status: 'raw' | 'shaping' | 'parked' | 'promoted';
+  status: 'raw' | 'shaping' | 'parked' | 'promoted' | 'added';
   conversation_id: string | null;
   brand_id: string | null;
   project_id: string | null;
+  /** set on a feature idea: the project it would change */
+  parent_project_id: string | null;
   updated_at: number;
   requirementsVersion: number | null;
   designElements: number;

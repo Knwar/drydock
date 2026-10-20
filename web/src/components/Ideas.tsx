@@ -14,16 +14,18 @@ export const STATUS: Record<IdeaCard['status'], { label: string; tone: string }>
   shaping: { label: 'Shaping', tone: 't-v' },
   parked: { label: 'Parked', tone: 't-a' },
   promoted: { label: 'Project', tone: 't-g' },
+  added: { label: 'Added', tone: 't-g' },
 };
 
 /** What has been shaped so far, in a line of small chips. */
 export function Shaped({ i }: { i: IdeaCard }) {
   const parts = [
-    i.requirementsVersion ? `Requirements v${i.requirementsVersion}` : null,
+    // a feature idea has changes and new screens; its design and brand are the project's
+    i.requirementsVersion ? `${i.parent_project_id ? 'Changes' : 'Requirements'} v${i.requirementsVersion}` : null,
     i.features ? `Features · ${i.features}${i.mvpFeatures ? ` (${i.mvpFeatures} MVP)` : ''}` : null,
     i.type === 'software' && i.designElements ? `Design · ${i.designElements}` : null,
-    i.brand ? `Brand · ${i.brand.name}` : null,
-    i.screens ? `UI · ${i.screens} screen${i.screens === 1 ? '' : 's'}` : null,
+    i.brand && !i.parent_project_id ? `Brand · ${i.brand.name}` : null,
+    i.screens ? `${i.parent_project_id ? 'Screens' : 'UI'} · ${i.screens} screen${i.screens === 1 ? '' : 's'}` : null,
   ].filter(Boolean);
   if (!parts.length) return <span className="muted" style={{ fontSize: 12 }}>Not shaped yet</span>;
   return (

@@ -343,6 +343,74 @@ describe('the Idea board', () => {
     assert.ok((await messages(build)).some((m) => m.author === 'system' && /@Architect: apply it/.test(m.body)));
   });
 
+  let feature = '';
+  it('a feature idea is shaped inside its project: the PM leads with the feature rules, off the Idea board', async () => {
+    await call('POST', '/api/roles', { template: 'architect' });
+    const f = await call('POST', `/api/projects/${project}/ideas`, { title: 'Weekly digest email', pitch: 'A Sunday summary of the week for each parent.' });
+    feature = f.id;
+    assert.equal(f.parent_project_id, project);
+    assert.equal(f.type, 'software');
+    assert.deepEqual(f.missing, ['changes'], 'design and brand come from the project');
+    assert.ok(!(await call('GET', '/api/ideas')).some((i: any) => i.id === feature), 'not on the Idea board');
+    assert.deepEqual((await call('GET', `/api/projects/${project}/ideas`)).map((i: any) => i.id), [feature]);
+    assert.equal((await call('GET', `/api/projects/${project}`)).featureIdeas, 1);
+    const fconv = (await call('POST', `/api/ideas/${feature}/thread`)).conversation;
+    const chat = (await call('GET', '/api/conversations')).find((c: any) => c.id === fconv);
+    assert.deepEqual(chat.members, ['pm', 'architect']);
+    assert.equal(chat.project_id, project);
+    await until(async () => runs().some((r) => r.system?.includes('shapes a feature idea')));
+    const run = runs().find((r) => r.system?.includes('shapes a feature idea'));
+    assert.match(run.system, /You lead it, as the project's PM/);
+    assert.match(run.system, /never change them from this chat/);
+    assert.ok(run.system.includes('drydock:ui-mockups') && !run.system.includes('drydock:brand-guidelines'), 'new screens, not a new brand');
+    assert.match(run.prompt, /new feature idea/, 'its own intake');
+    assert.equal((await raw('POST', `/api/ideas/${feature}/promote`)).status, 400, 'added, never promoted');
+    assert.deepEqual((await call('GET', '/api/idea-analyses?feature=1')).map((a: any) => a.kind), ['problem', 'impact', 'features', 'risks', 'estimate']);
+  });
+
+  it('Add to project merges its changes, writes its spec and sends it to the roadmap', async () => {
+    await until(async () => !(await call('GET', `/api/ideas/${feature}`)).working);
+    assert.equal((await raw('POST', `/api/ideas/${feature}/add-to-project`)).status, 400, 'nothing shaped yet');
+    await call('POST', `/api/projects/${feature}/requirements`, { markdown: '# Weekly digest email\n\n## Adds\n- A Sunday email per parent\n', author: 'pm' });
+    await call('POST', `/api/ideas/${feature}/features`, { features: [{ id: 'W1', module: 'Habits', title: 'Sunday digest', priority: 'must', stories: ['As a parent, I want a weekly summary, so that I see the trend'] }] });
+    const before = (await call('GET', `/api/projects/${project}/requirements`))[0];
+    const r = await call('POST', `/api/ideas/${feature}/add-to-project`);
+    const req = (await call('GET', `/api/projects/${project}/requirements`))[0];
+    assert.equal(req.version, before.version + 1);
+    assert.equal(req.final, 1, 'approved scope stays final');
+    assert.match(req.markdown, /## Feature: Weekly digest email\n/);
+    assert.match(req.markdown, /### Adds\n- A Sunday email per parent/, 'its headings sit under the feature');
+    const root = (await call('GET', `/api/projects/${project}`)).root;
+    assert.match(readFileSync(join(root, 'docs', 'features', 'weekly-digest-email.md'), 'utf8'), /Sunday digest/);
+    assert.equal(r.thread, 'ch:habit-app-build');
+    const brief = (await messages(r.thread)).filter((m) => m.author === 'user').at(-1);
+    assert.match(brief.body, /^@PM A feature idea was approved/);
+    assert.match(brief.body, /wait for my approval before creating cards/, 'not in auto mode: the PM proposes first');
+    assert.equal((await call('GET', `/api/ideas/${feature}`)).status, 'added');
+    assert.equal((await call('GET', `/api/projects/${project}`)).featureIdeas, 0);
+    assert.equal((await raw('POST', `/api/ideas/${feature}/add-to-project`)).status, 400, 'not twice');
+  });
+
+  it('a feature idea that is really its own product moves to the Idea board, led by the Main agent', async () => {
+    const f = await call('POST', `/api/projects/${project}/ideas`, { title: 'Parenting podcast' });
+    const fconv = (await call('POST', `/api/ideas/${f.id}/thread`)).conversation;
+    const moved = await call('POST', `/api/ideas/${f.id}/own-idea`);
+    assert.equal(moved.parent_project_id, null);
+    assert.ok((await call('GET', '/api/ideas')).some((i: any) => i.id === f.id));
+    const chat = (await call('GET', '/api/conversations')).find((c: any) => c.id === fconv);
+    assert.deepEqual(chat.members, ['main']);
+    assert.equal(chat.project_id, null);
+  });
+
+  it('tells an agent when what it is capturing already exists', async () => {
+    const r = await raw('POST', '/api/ideas', { title: 'Habit app v2', type: 'software', source: 'dm:main' });
+    assert.equal(r.status, 409);
+    assert.match(JSON.parse(r.text).error, /capture_feature_idea/);
+    const ok = await call('POST', '/api/ideas', { title: 'Habit app v2', type: 'software', source: 'dm:main', different: true });
+    assert.ok(ok.id);
+    assert.ok(await call('POST', '/api/ideas', { title: 'Habit app v3', type: 'software' }), 'typing a title yourself is never stopped');
+  });
+
   it('parks and deletes ideas, keeping the files', async () => {
     const i = await call('POST', '/api/ideas', { title: 'Podcast about tea', type: 'general' });
     assert.equal((await call('POST', `/api/ideas/${i.id}`, { status: 'parked' })).status, 'parked');
