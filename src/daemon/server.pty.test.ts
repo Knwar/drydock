@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import WebSocket from 'ws';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 // POST /pty/agent (types `claude` into a project's shell) and POST /pty/reset
 // are command execution → gated exactly like the /pty upgrade.
@@ -147,7 +147,7 @@ describe('/pty routes with the terminal enabled', () => {
     const res = await fetch(`${daemon!.base}/project?root=${encodeURIComponent(projDir2)}`);
     const p2 = ((await res.json()) as { project_id: string }).project_id;
     // attach over the /pty WebSocket (spawns the shell) and type a partial line
-    const ws = new WebSocket(`ws://127.0.0.1:${daemon!.port}/pty?project=${p2}&token=${token}`);
+    const ws = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/pty?project=${p2}&token=${token}`));
     t.after(() => ws.close());
     let out = '';
     ws.on('message', (raw) => {

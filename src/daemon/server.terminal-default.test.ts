@@ -3,7 +3,7 @@ import { networkInterfaces } from 'node:os';
 import { after, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import WebSocket from 'ws';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 // The embedded terminal is ON by default; only KANKAN_TERMINAL=0 turns it off.
 // It also stays off when node-pty can't load here — those cases skip.
@@ -77,7 +77,7 @@ function nonLoopbackIPv4(): string | null {
 /** Try a /pty upgrade (no Origin); resolves true if it opened, false if refused. */
 function wsOpens(url: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(...wsAuth(url));
     ws.once('open', () => {
       ws.terminate();
       resolve(true);
@@ -114,10 +114,10 @@ describe('embedded terminal is loopback-only (HOST=0.0.0.0)', () => {
     if (!token) return t.skip('terminal not on');
     if (!ip) return t.skip('no non-loopback IPv4 interface on this host');
     const lan = `http://${ip}:${d!.port}`;
-    const cfg = (await (await fetch(`${lan}/config`)).json()) as { terminal: boolean; token: string | null };
-    assert.equal(cfg.token, null);
-    assert.equal((await fetch(`${lan}/pty/agent?${q()}`, { method: 'POST' })).status, 403);
-    assert.equal((await fetch(`${lan}/pty/reset?${q()}`, { method: 'POST' })).status, 403);
+    // a device on the network has no token: /config and the terminal routes refuse it outright
+    assert.equal((await fetch(`${lan}/config`)).status, 401);
+    assert.equal((await fetch(`${lan}/pty/agent?${q()}`, { method: 'POST' })).status, 401);
+    assert.equal((await fetch(`${lan}/pty/reset?${q()}`, { method: 'POST' })).status, 401);
     assert.equal(await wsOpens(`ws://${ip}:${d!.port}/pty?${q()}`), false);
   });
 });

@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 // Git in temp repos must not depend on the user's global config (identity, signing).
 const GIT_ENV = {
@@ -77,7 +77,7 @@ describe('daemon workspace/vertical routes', () => {
   });
 
   it('POST /vertical creates a vertical and broadcasts verticals to the workspace', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?project=${workspaceId}`);
+    const ws = new WebSocket(...wsAuth(`ws://127.0.0.1:${port}/ws?project=${workspaceId}`));
     sockets.push(ws);
     const got = new Promise<any>((resolve) =>
       ws.on('message', (raw) => {
@@ -177,7 +177,7 @@ describe('daemon workspace/vertical routes', () => {
     const v = await post('/vertical', { workspace_id: ws2, name: 'web', root: v2Root });
     const v2 = ((await v.json()) as { project_id: string }).project_id;
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?project=${ws2}`);
+    const ws = new WebSocket(...wsAuth(`ws://127.0.0.1:${port}/ws?project=${ws2}`));
     sockets.push(ws);
     const got = new Promise<any>((resolve) =>
       ws.on('message', (raw) => {

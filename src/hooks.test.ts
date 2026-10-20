@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocket } from 'ws';
-import { startDaemon, type TestDaemon } from './daemon/test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './daemon/test-daemon.js';
 
 // Hook project resolution: a KANKAN_PROJECT_ID env binding wins when valid,
 // otherwise the cwd decides. Hooks run as real child processes against a real
@@ -23,7 +23,7 @@ describe('hook project resolution', () => {
 
   // explicit env: never inherit a KANKAN_PROJECT_ID from the parent process
   const env = (projectId?: string) => {
-    const e: Record<string, string> = { PATH: process.env.PATH ?? '', DAEMON_URL: daemon!.base };
+    const e: Record<string, string> = { PATH: process.env.PATH ?? '', DAEMON_URL: daemon!.base, DAEMON_TOKEN: daemon!.token };
     if (projectId) e.KANKAN_PROJECT_ID = projectId;
     return e;
   };
@@ -104,7 +104,7 @@ describe('hook project resolution', () => {
       const r = spawnSync('sh', [script, target, 'scope-test'], {
         env: {
           ...process.env,
-          DAEMON_URL: daemon!.base,
+          DAEMON_URL: daemon!.base, DAEMON_TOKEN: daemon!.token,
           KANKAN_UPDATE: '',
           GIT_AUTHOR_NAME: 't',
           GIT_AUTHOR_EMAIL: 't@t',
@@ -166,7 +166,7 @@ describe('hook project resolution', () => {
       child.stdin.end(JSON.stringify({ hook_event_name: 'Notification', cwd, ...extra }));
     });
   const statusSocket = async () => {
-    const ws = new WebSocket(`${daemon!.base.replace('http', 'ws')}/ws`);
+    const ws = new WebSocket(...wsAuth(`${daemon!.base.replace('http', 'ws')}/ws`));
     const statuses: { agent: string; verb: string; detail: string }[] = [];
     ws.on('message', (raw) => {
       const msg = JSON.parse(String(raw));
@@ -266,7 +266,7 @@ describe('init-project.sh: first commit + registration', { timeout: 180_000 }, (
     spawnSync('sh', [script, target, 'init-test'], {
       env: {
         ...process.env,
-        DAEMON_URL: daemon!.base,
+        DAEMON_URL: daemon!.base, DAEMON_TOKEN: daemon!.token,
         KANKAN_UPDATE: update,
         GIT_AUTHOR_NAME: 't',
         GIT_AUTHOR_EMAIL: 't@t',
@@ -446,7 +446,7 @@ describe('on-build-stop: per-model token breakdown', () => {
     const cardId = ((await created.json()) as { task_id: string }).task_id;
     const r = spawnSync(process.execPath, [join(HOOKS, 'on-build-stop.js')], {
       input: JSON.stringify({ cwd: root, agent_type: 'builder', agent_id: 'a1', agent_transcript_path: fixture, description: `.trees/${cardId}` }),
-      env: { PATH: process.env.PATH ?? '', DAEMON_URL: daemon!.base },
+      env: { PATH: process.env.PATH ?? '', DAEMON_URL: daemon!.base, DAEMON_TOKEN: daemon!.token },
       encoding: 'utf8',
     });
     assert.equal(r.status, 0, r.stderr);

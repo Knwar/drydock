@@ -21,8 +21,8 @@ import { getBus, isShuttingDown } from './bus.js';
 import { addMessage, getConversation } from './chat.js';
 import { projectRef } from './pipeline.js';
 import { respond } from './runner.js';
-import { defineSchema } from './schema.js';
-import { cli, getSecret, readSecrets, redact } from './secrets.js';
+import { addMissingColumns, defineSchema } from './schema.js';
+import { cli, confirmOnMac, getSecret, readSecrets, redact, secretSettings } from './secrets.js';
 import { dockerStart, dockerStop, freePort, projectDatabases, resolveNeed, type Need } from './services.js';
 import { getSetting } from './settings.js';
 import { notify } from './usage.js';
@@ -39,7 +39,10 @@ CREATE TABLE IF NOT EXISTS live_apps (
   pgids      TEXT NOT NULL DEFAULT '[]',       -- process groups, to clean up after a crash of Drydock itself
   updated_at INTEGER NOT NULL
 );
-`);
+`,
+  // the run recipe the user last started by hand: changed commands wait for them
+  (db) => addMissingColumns(db, 'live_apps', { recipe_ok: 'TEXT' }),
+);
 
 // ── recipe ───────────────────────────────────────────────────────
 
@@ -188,12 +191,12 @@ export interface LiveSettings {
 export const liveSettings = (db: DB): LiveSettings => ({ maxRunning: 6, idleHours: 0, ...getSetting<Partial<LiveSettings>>(db, 'brain.live', {}) });
 
 const row = (db: DB, projectId: string) =>
-  (db.prepare('SELECT * FROM live_apps WHERE project_id = ?').get(projectId) as any) ?? { project_id: projectId, desired: 'stopped', approved: '[]', lock_hash: null, head: null, ports: '{}', pgids: '[]' };
+  (db.prepare('SELECT * FROM live_apps WHERE project_id = ?').get(projectId) as any) ?? { project_id: projectId, desired: 'stopped', approved: '[]', lock_hash: null, head: null, ports: '{}', pgids: '[]', recipe_ok: null };
 function saveRow(db: DB, projectId: string, patch: Record<string, unknown>) {
   const cur = { ...row(db, projectId), ...patch, updated_at: Date.now() };
   db.prepare(
-    `INSERT INTO live_apps (project_id, desired, approved, lock_hash, head, ports, pgids, updated_at) VALUES (@project_id, @desired, @approved, @lock_hash, @head, @ports, @pgids, @updated_at)
-     ON CONFLICT(project_id) DO UPDATE SET desired = excluded.desired, approved = excluded.approved, lock_hash = excluded.lock_hash, head = excluded.head, ports = excluded.ports, pgids = excluded.pgids, updated_at = excluded.updated_at`,
+    `INSERT INTO live_apps (project_id, desired, approved, lock_hash, head, ports, pgids, recipe_ok, updated_at) VALUES (@project_id, @desired, @approved, @lock_hash, @head, @ports, @pgids, @recipe_ok, @updated_at)
+     ON CONFLICT(project_id) DO UPDATE SET desired = excluded.desired, approved = excluded.approved, lock_hash = excluded.lock_hash, head = excluded.head, ports = excluded.ports, pgids = excluded.pgids, recipe_ok = excluded.recipe_ok, updated_at = excluded.updated_at`,
   ).run(cur);
 }
 
@@ -304,6 +307,12 @@ async function start(db: DB, a: App, opts: { by: 'user' | 'auto' | 'agent'; appr
   const { recipe, error } = readRecipe(a.root);
   if (error) return fail('error', error);
   if (!recipe || recipe.kind === 'none') return fail('stopped', 'Not runnable yet: no run recipe. The developer adds .drydock/run.json (save_run_recipe).');
+  // the recipe's commands run on this Mac: new or changed ones run only after the user starts it once by hand
+  const fingerprint = createHash('sha256').update(JSON.stringify(recipe)).digest('hex');
+  if (opts.by !== 'user' && row(db, projectId).recipe_ok !== fingerprint) {
+    a.needsApproval = [];
+    return fail('needs_approval', 'Its run commands are new or changed. Press Start to check and run them; after that it restarts by itself again.');
+  }
   const running = [...apps.values()].filter((x) => x.projectId !== projectId && ['live', 'starting', 'installing', 'paused'].includes(x.status)).length;
   if (running >= liveSettings(db).maxRunning) return fail('error', `${running} apps are already running (your limit). Stop one first, or raise the limit in Settings › Local services.`);
 
@@ -323,7 +332,18 @@ async function start(db: DB, a: App, opts: { by: 'user' | 'auto' | 'agent'; appr
   if (missing.length) return fail('error', `Missing secrets: ${missing.join(', ')}. Add them in Settings › Secrets.`);
   const r = row(db, projectId);
   let approved = new Set<string>(JSON.parse(r.approved));
-  if (opts.by === 'user' && opts.approve) approved = new Set([...approved, ...opts.approve.filter((n) => secretNames.includes(n))]);
+  if (opts.by === 'user' && opts.approve?.length) {
+    const adding = opts.approve.filter((n) => secretNames.includes(n) && !approved.has(n));
+    // the user's own confirmation on this Mac, when they asked for it (Settings › Secrets)
+    if (adding.length && secretSettings(db).confirmOnMac) {
+      try {
+        await confirmOnMac(`let ${a.slug} use ${adding.join(', ')}`);
+      } catch (e) {
+        return fail('needs_approval', (e as Error).message);
+      }
+    }
+    approved = new Set([...approved, ...adding]);
+  }
   const unapproved = secretNames.filter((n) => !approved.has(n));
   if (unapproved.length) {
     a.needsApproval = unapproved;
@@ -331,7 +351,7 @@ async function start(db: DB, a: App, opts: { by: 'user' | 'auto' | 'agent'; appr
     return { ...fail('needs_approval', `Approve the secrets this app may use: ${unapproved.join(', ')}`), needsApproval: unapproved };
   }
   a.needsApproval = [];
-  saveRow(db, projectId, { approved: JSON.stringify([...approved]), desired: 'running' });
+  saveRow(db, projectId, { approved: JSON.stringify([...approved]), desired: 'running', ...(opts.by === 'user' ? { recipe_ok: fingerprint } : {}) });
 
   let values: Record<string, string>;
   try {

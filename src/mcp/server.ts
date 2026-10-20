@@ -1,17 +1,31 @@
 // Thin stdio MCP client of the board daemon. Never touches SQLite.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { z } from 'zod';
+import { brainHome } from '../brain/workspace.js';
 
 const DAEMON_URL = process.env.DAEMON_URL ?? 'http://localhost:7900';
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
 /** Call the daemon; degrade to a readable error if it's down or rejects. */
+/** An agent run's token, else the user's local token (their own Claude Code sessions). */
+function daemonToken(): string {
+  if (process.env.DAEMON_TOKEN) return process.env.DAEMON_TOKEN;
+  try {
+    return readFileSync(join(brainHome(), 'token'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
 async function api(method: string, path: string, body?: unknown): Promise<ToolResult> {
   try {
     const res = await fetch(`${DAEMON_URL}${path}`, {
       method,
+      headers: { authorization: `Bearer ${daemonToken()}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await res.text();

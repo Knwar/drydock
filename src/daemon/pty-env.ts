@@ -23,7 +23,7 @@ const DAEMON_ONLY = new Set(['PORT', 'HOST', 'DB_PATH', 'KANKAN_TERMINAL', 'KANK
 /** The terminal's env: base minus undefined values and daemon-only vars, with the
  *  vertical bound via KANKAN_PROJECT_ID, DAEMON_URL pointing at this daemon (both
  *  overriding any inherited value) and TERM set. */
-export function sessionEnv(base: NodeJS.ProcessEnv, projectId: string, daemonUrl: string): Record<string, string> {
+export function sessionEnv(base: NodeJS.ProcessEnv, projectId: string, daemonUrl: string, token?: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) {
     if (v !== undefined && !DAEMON_ONLY.has(k)) env[k] = v;
@@ -31,5 +31,7 @@ export function sessionEnv(base: NodeJS.ProcessEnv, projectId: string, daemonUrl
   env.TERM = 'xterm-256color';
   env.KANKAN_PROJECT_ID = projectId;
   env.DAEMON_URL = daemonUrl;
+  // the user's own session: its hooks and board tools reach the daemon with the local token
+  if (token) env.DAEMON_TOKEN = token;
   return env;
 }

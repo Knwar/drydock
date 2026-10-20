@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import WebSocket from 'ws';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 const send = (url: string, method: string, body: unknown) => fetch(url, { method, body: JSON.stringify(body) });
 
@@ -33,7 +33,7 @@ describe('/project/:id/settings + lane_since', () => {
   });
 
   it('PUT merges, persists and broadcasts', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${project}`);
+    const ws = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws?project=${project}`));
     const msgs: { type: string; settings?: unknown }[] = [];
     ws.on('message', (raw) => msgs.push(JSON.parse(raw.toString())));
     await new Promise((r) => ws.once('open', r));
@@ -76,7 +76,7 @@ describe('/project/:id/settings + lane_since', () => {
   it('cards carry lane_since on /board and on the card broadcast', async () => {
     const created = await send(`${daemon!.base}/task`, 'POST', { project_id: project, title: 'A' });
     const { task_id } = (await created.json()) as { task_id: string };
-    const ws = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${project}`);
+    const ws = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws?project=${project}`));
     const msgs: { type: string; card?: { id: string; lane: string; lane_since: number } }[] = [];
     ws.on('message', (raw) => msgs.push(JSON.parse(raw.toString())));
     await new Promise((r) => ws.once('open', r));

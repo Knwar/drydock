@@ -113,7 +113,15 @@ fi
 PROJECT_LINE=""
 urlenc() { node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$1"; }
 if command -v curl > /dev/null; then
-  RESP=$(curl -s --max-time 2 "$DAEMON_URL/project?root=$(urlenc "$TARGET")&name=$(urlenc "$NAME")" 2>/dev/null || true)
+  # the daemon's token: passed in by the daemon or the CLI, else the user's local token file
+  if [ -z "${DAEMON_TOKEN:-}" ]; then
+    _home="${BRAIN_HOME:-}"
+    if [ -z "$_home" ]; then
+      if [ -d "$HOME/.ai-brain" ] && [ ! -d "$HOME/.drydock" ]; then _home="$HOME/.ai-brain"; else _home="$HOME/.drydock"; fi
+    fi
+    DAEMON_TOKEN=$(cat "$_home/token" 2>/dev/null || true)
+  fi
+  RESP=$(curl -s --max-time 2 -H "Authorization: Bearer ${DAEMON_TOKEN}" "$DAEMON_URL/project?root=$(urlenc "$TARGET")&name=$(urlenc "$NAME")" 2>/dev/null || true)
   PROJECT_ID=$(printf %s "$RESP" | sed -nE 's/.*"project_id":"([^"]+)".*/\1/p')
   if [ -n "$PROJECT_ID" ]; then
     PROJECT_LINE="overlay:   $DAEMON_URL/?project=$PROJECT_ID"

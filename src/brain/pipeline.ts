@@ -463,7 +463,7 @@ export async function finalizeDesign(db: DB, projectId: string): Promise<string>
     if (!existsSync(join(folder, 'README.md'))) writeFileSync(join(folder, 'README.md'), `# ${c.name}\n\n${c.description ?? ''}\n\nTechnology: ${c.technology ?? 'tbd'}\n`);
     const res = await fetch(`${getBus().daemonUrl}/vertical`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...getBus().selfHeaders?.() },
       body: JSON.stringify({ workspace_id: projectId, name: c.name, root: folder }),
     });
     if (!res.ok) throw new Error(`could not create vertical ${c.name}: ${(await res.json().catch(() => ({}))).error ?? res.status}`);

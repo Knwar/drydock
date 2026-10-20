@@ -33,7 +33,8 @@ import { serveApp } from '../brain/static.js';
 import { bindBus, markShuttingDown } from '../brain/bus.js';
 import { stopAllRuns } from '../brain/runner.js';
 import { proxyHttp, proxyUpgrade, stopAllForShutdown } from '../brain/live.js';
-import { resolveDbPath } from '../brain/workspace.js';
+import { brainHome, resolveDbPath } from '../brain/workspace.js';
+import { allowed, asAgent, Auth, levelOf, type Principal } from './auth.js';
 import { cardLines } from '../core/lines.js';
 import { cachedCodeVersion, readCodeVersion } from './code-version.js';
 import { parseCompare, withPrevious, type WindowedFilter, type WithPrevious } from '../core/compare.js';
@@ -86,7 +87,18 @@ function switchDb(path: string): void {
   console.log(`db switched to ${path}`);
 }
 
-bindBus({ db: () => db, emit: (msg) => broadcaster.sendAll(msg), daemonUrl: `http://127.0.0.1:${PORT}` });
+// who is calling (daemon/auth.ts): the user's session cookie, the local token, or one agent run's token
+const auth = new Auth(brainHome());
+const principals = new WeakMap<IncomingMessage, Principal>();
+const principalOf = (req: IncomingMessage): Principal => principals.get(req) ?? { kind: 'none' };
+bindBus({
+  db: () => db,
+  emit: (msg) => broadcaster.sendAll(msg),
+  daemonUrl: `http://127.0.0.1:${PORT}`,
+  agentToken: (info) => auth.mintAgent(info),
+  revokeToken: (t) => auth.revoke(t),
+  selfHeaders: () => ({ authorization: `Bearer ${auth.localToken}` }),
+});
 
 // ── embedded terminal (on by default; KANKAN_TERMINAL=0 disables) ───
 // node-pty is an OPTIONAL native dep: the board runs fine without it, and a
@@ -134,7 +146,7 @@ function getPtySession(projectId: string, root: string): PtySession {
   const proc = ptySpawn!(shell, [], {
     name: 'xterm-256color',
     cwd: sessionCwd(root),
-    env: sessionEnv(process.env, projectId, `http://localhost:${PORT}`),
+    env: sessionEnv(process.env, projectId, `http://localhost:${PORT}`, auth.localToken),
     cols: 80,
     rows: 24,
   });
@@ -469,7 +481,7 @@ function projectRoot(projectId: string): string | null {
 /** Run the kit installer (`brain init`) on a folder, registering it with THIS
  *  daemon (DAEMON_URL from our own PORT). Shared by /project/new and /vertical. */
 function runInit(root: string) {
-  return execFileAsync('sh', [INIT_SCRIPT, root], { env: { ...process.env, DAEMON_URL: `http://localhost:${PORT}` } });
+  return execFileAsync('sh', [INIT_SCRIPT, root], { env: { ...process.env, DAEMON_URL: `http://localhost:${PORT}`, DAEMON_TOKEN: auth.localToken } });
 }
 
 /** Canonical path for comparisons: git reports toplevels with symlinks resolved
@@ -704,7 +716,7 @@ async function attachRepo(root: string, url: string): Promise<{ ok: boolean; act
     const empty = !existsSync(root) || readdirSync(root).length === 0;
     if (empty) {
       mkdirSync(root, { recursive: true });
-      await execFileAsync('git', ['clone', url, root]);
+      await execFileAsync('git', ['clone', '--', url, root]); // '--': a URL starting with - is never an option
       return { ok: true, action: 'cloned' };
     }
     if (!existsSync(join(root, '.git'))) await execFileAsync('git', ['-C', root, 'init']);
@@ -884,7 +896,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     res.writeHead(302, { location: '/app/' });
     return void res.end();
   }
+  // the web app's session: a same-origin browser request gets the cookie (the gate already refused other sites)
+  if (method === 'GET' && pathname === '/api/session') {
+    const site = req.headers['sec-fetch-site'];
+    // only a browser on this Mac: a device on the network (HOST=0.0.0.0) never gets the user's session
+    if ((site !== 'same-origin' && site !== 'none') || !isLoopback(req)) return json(res, 403, { error: 'only Drydock\'s own app on this Mac gets a session' });
+    res.setHeader('Set-Cookie', auth.sessionCookie());
+    return json(res, 200, { ok: true });
+  }
   if (pathname.startsWith('/api/')) {
+    const principal = principalOf(req);
     const handled = await handleApi(req, res, url, {
       db: () => db,
       dbPath: () => DB_PATH,
@@ -892,7 +913,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       explicitDb: Boolean(process.env.DB_PATH),
       broadcast: (msg) => broadcaster.sendAll(msg),
       json,
-      readBody,
+      // an agent speaks only as itself: role, author and conversation come from its token
+      readBody: principal.kind === 'agent' ? async (r: IncomingMessage) => asAgent(await readBody(r), principal) : readBody,
+      principal,
     });
     if (handled) return;
   }
@@ -900,9 +923,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (method === 'GET' && pathname === '/config') {
     // token goes to loopback callers only (a LAN host could otherwise curl it),
     // and same-origin only (no CORS headers) → stays out of cross-origin pages.
+    const who = principalOf(req).kind;
     return json(res, 200, {
       terminal: terminalReady(),
-      token: isLoopback(req) ? terminalToken : null,
+      // the terminal token goes to the user only (the web app, the CLI), never to an agent or an app
+      token: isLoopback(req) && (who === 'user' || who === 'local') ? terminalToken : null,
       version: isLoopback(req) ? RUNNING_VERSION : null,
     });
   }
@@ -968,7 +993,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (repo && wasEmpty) {
       try {
         mkdirSync(root, { recursive: true });
-        await execFileAsync('git', ['clone', repo, root]);
+        await execFileAsync('git', ['clone', '--', repo, root]); // '--': a URL starting with - is never an option
       } catch (err) {
         return json(res, 500, { error: `clone failed: ${(err as Error).message}` });
       }
@@ -2644,6 +2669,17 @@ const server = createServer((req, res) => {
     logRefusal(req, refused);
     return json(res, 403, { error: `refused: ${refused}` });
   }
+  const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
+  const principal = auth.resolve(req);
+  const level = levelOf(req.method ?? 'GET', url.pathname, url.searchParams);
+  if (!allowed(level, principal, isLoopback(req))) {
+    logRefusal(req, principal.kind === 'none' ? 'no valid token' : `${principal.kind} may not use a ${level} route`);
+    return json(res, principal.kind === 'none' ? 401 : 403, { error: principal.kind === 'none' ? 'this request needs a Drydock token or session' : `not allowed for this caller (${principal.kind})` });
+  }
+  principals.set(req, principal);
+  // the app's own pages hand the browser its session, so its first API call already has it
+  const site = req.headers['sec-fetch-site'];
+  if (level === 'public' && isLoopback(req) && req.headers['sec-fetch-dest'] === 'document' && (site === 'none' || site === 'same-origin')) res.setHeader('Set-Cookie', auth.sessionCookie());
   route(req, res).catch((err: Error) =>
     json(res, err instanceof PayloadTooLargeError ? err.status : 400, { error: err.message }),
   );
@@ -2711,6 +2747,14 @@ server.on('upgrade', (req, socket, head) => {
   if (refused) {
     logRefusal(req, refused);
     socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return;
+  }
+  // the live board needs a caller (the app's session, the CLI, an agent); the terminal needs the user
+  const who = auth.resolve(req).kind;
+  const wsPath = new URL(req.url ?? '/', `http://localhost:${PORT}`).pathname;
+  if (who === 'none' || (wsPath === '/pty' && who === 'agent')) {
+    logRefusal(req, who === 'none' ? 'no valid token' : 'agents may not open a terminal');
+    socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     return;
   }
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);

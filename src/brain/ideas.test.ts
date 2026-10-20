@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
-import { startDaemon, type TestDaemon } from '../daemon/test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from '../daemon/test-daemon.js';
 
 const FAKE = join(import.meta.dirname, '..', '..', 'test', 'fixtures', 'fake-claude.mjs');
 
@@ -39,7 +39,7 @@ describe('the Idea board', () => {
   });
 
   it('opens an idea an agent captures while you are talking to it, and only then', async () => {
-    const sock = new WebSocket(d.base.replace(/^http/, 'ws') + '/ws');
+    const sock = new WebSocket(...wsAuth(d.base.replace(/^http/, 'ws') + '/ws'));
     const opened: string[] = [];
     sock.on('message', (m) => {
       const msg = JSON.parse(m.toString());

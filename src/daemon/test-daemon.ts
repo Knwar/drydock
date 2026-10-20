@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -12,6 +13,30 @@ import { fileURLToPath } from 'node:url';
 
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), 'server.ts');
 
+// Every test daemon gets its own local token (DRYDOCK_TOKEN), and the test
+// process's fetch adds it to requests for that daemon's port, as the CLI would.
+// A test about refusals sends its own Authorization header, or uses rawFetch.
+export const rawFetch = globalThis.fetch;
+const tokens = new Map<number, string>();
+globalThis.fetch = ((input: any, init?: any) => {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url;
+  const port = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)/.exec(url ?? '')?.[1];
+  const token = port ? tokens.get(Number(port)) : undefined;
+  if (token) {
+    const headers = new Headers(init?.headers ?? (typeof input === 'object' && !(input instanceof URL) ? input.headers : undefined));
+    if (!headers.has('authorization')) headers.set('authorization', `Bearer ${token}`);
+    return rawFetch(input, { ...init, headers });
+  }
+  return rawFetch(input, init);
+}) as typeof fetch;
+
+/** For `new WebSocket(...wsAuth(url))`: the daemon's token on the handshake (ws does not use fetch). */
+export function wsAuth(url: string): [string, { headers: Record<string, string> }] {
+  const port = /:(\d+)/.exec(url.replace(/^wss?:\/\//, ''))?.[1];
+  const token = port ? tokens.get(Number(port)) : undefined;
+  return [url, { headers: token ? { authorization: `Bearer ${token}` } : {} }];
+}
+
 export interface TestDaemon {
   base: string;
   port: number;
@@ -21,6 +46,8 @@ export interface TestDaemon {
   exitCode(): number | null;
   /** Everything the daemon has written to stdout + stderr so far. */
   output(): string;
+  /** The daemon's local token (what the CLI and hooks send). */
+  token: string;
 }
 
 /** A free TCP port (bind :0, read it back, release it). */
@@ -75,6 +102,7 @@ export async function startDaemon(opts: { env?: Record<string, string | undefine
     BRAIN_NO_SCHEDULER: '1', // no Daily scheduler or `claude mcp list` in tests
     BRAIN_NO_NOTIFY: '1',
     ...opts.env,
+    DRYDOCK_TOKEN: opts.env?.DRYDOCK_TOKEN ?? randomBytes(24).toString('base64url'),
     PORT: String(port),
     DB_PATH: opts.dbPath === null ? undefined : (opts.dbPath ?? join(dbDir, 'board.db')),
   };
@@ -106,14 +134,16 @@ export async function startDaemon(opts: { env?: Record<string, string | undefine
         clearTimeout(timer);
       }
       rmSync(dbDir, { recursive: true, force: true });
+      tokens.delete(port);
     })());
 
   const base = `http://127.0.0.1:${port}`;
+  tokens.set(port, env.DRYDOCK_TOKEN!);
   try {
     await waitForUp(base, () => exited);
   } catch (err) {
     await stop();
     throw err;
   }
-  return { base, port, dbDir, stop, exitCode: () => code, output: () => out };
+  return { base, port, dbDir, stop, exitCode: () => code, output: () => out, token: env.DRYDOCK_TOKEN! };
 }

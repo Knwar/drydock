@@ -5,7 +5,7 @@ import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 // POST /project/:id/split-preview, /project/:id/split and /verticals/merge
 // against the REAL daemon (temp DB, random port).
@@ -268,7 +268,7 @@ describe('split / merge routes', () => {
       const api = await c.vertical(wsId, 'api', join(ws, 'apps/api'));
       const card = await c.task(api, 'api card');
 
-      const sock = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws`); // all projects
+      const sock = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws`)); // all projects
       const removed = new Promise<any>((resolve) =>
         sock.on('message', (raw) => {
           const msg = JSON.parse(raw.toString());
@@ -477,15 +477,15 @@ describe('split / merge write routes are loopback-only', () => {
     await daemon?.stop();
   });
 
-  it('a non-loopback caller gets 403 on split-preview, split, merge and /vertical', async (t) => {
+  it('a device on the network without a token is refused (401), reads too', async (t) => {
     const ip = nonLoopbackIPv4();
     if (!ip) return t.skip('no non-loopback IPv4 interface on this host');
     const lan = `http://${ip}:${daemon!.port}`;
     const post = (path: string, body: unknown) =>
       fetch(`${lan}${path}`, { method: 'POST', body: JSON.stringify(body) });
-    assert.equal((await post('/project/any/split-preview', { targets: [] })).status, 403);
-    assert.equal((await post('/project/any/split', { targets: [], assignments: {} })).status, 403);
-    assert.equal((await post('/vertical', { workspace_id: 'a', name: 'b', root: '/tmp' })).status, 403);
-    assert.equal((await post('/verticals/merge', { from: 'a', into: 'b', phases: 'append' })).status, 403);
+    assert.equal((await post('/project/any/split-preview', { targets: [] })).status, 401);
+    assert.equal((await post('/project/any/split', { targets: [], assignments: {} })).status, 401);
+    assert.equal((await post('/vertical', { workspace_id: 'a', name: 'b', root: '/tmp' })).status, 401);
+    assert.equal((await post('/verticals/merge', { from: 'a', into: 'b', phases: 'append' })).status, 401);
   });
 });

@@ -4,7 +4,7 @@ import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 // /decisions + /risks routes against the REAL daemon (temp DB, random port).
 
@@ -127,7 +127,7 @@ describe('/decisions + /risks routes', () => {
   });
 
   it('a WS client on a vertical receives governance for a workspace-level write', async () => {
-    const sock = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${webId}`);
+    const sock = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws?project=${webId}`));
     const seen: any[] = [];
     sock.on('message', (raw) => seen.push(JSON.parse(raw.toString())));
     await new Promise((r) => sock.once('open', r));
@@ -146,7 +146,7 @@ describe('/decisions + /risks routes', () => {
   });
 
   it('a WS client on the workspace receives governance for a vertical’s write', async () => {
-    const sock = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${wsId}`);
+    const sock = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws?project=${wsId}`));
     const seen: any[] = [];
     const waitFor = (pred: (m: any) => boolean) =>
       new Promise<any>((resolve) => {
@@ -201,17 +201,17 @@ describe('/decisions + /risks writes are loopback-only', () => {
     await daemon?.stop();
   });
 
-  it('a non-loopback caller gets 403 on writes, but may read', async (t) => {
+  it('a device on the network without a token is refused (401), reads too', async (t) => {
     const ip = nonLoopbackIPv4();
     if (!ip) return t.skip('no non-loopback IPv4 interface on this host');
     const lan = `http://${ip}:${daemon!.port}`;
     const call = (method: string, path: string, body?: unknown) =>
       fetch(`${lan}${path}`, { method, body: body === undefined ? undefined : JSON.stringify(body) });
-    assert.equal((await call('POST', '/decisions', { project_id: 'a', title: 't', decision: 'd' })).status, 403);
-    assert.equal((await call('PATCH', '/decisions/any', { title: 'x' })).status, 403);
-    assert.equal((await call('POST', '/decisions/any/supersede', {})).status, 403);
-    assert.equal((await call('POST', '/risks', { project_id: 'a' })).status, 403);
-    assert.equal((await call('PATCH', '/risks/any', {})).status, 403);
-    assert.equal((await call('GET', '/decisions?project=nope')).status, 404, 'reads are open');
+    assert.equal((await call('POST', '/decisions', { project_id: 'a', title: 't', decision: 'd' })).status, 401);
+    assert.equal((await call('PATCH', '/decisions/any', { title: 'x' })).status, 401);
+    assert.equal((await call('POST', '/decisions/any/supersede', {})).status, 401);
+    assert.equal((await call('POST', '/risks', { project_id: 'a' })).status, 401);
+    assert.equal((await call('PATCH', '/risks/any', {})).status, 401);
+    assert.equal((await call('GET', '/decisions?project=nope')).status, 401);
   });
 });

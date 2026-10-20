@@ -7,7 +7,7 @@ import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { WebSocket } from 'ws';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 // Lines written per card through the real routes: each build run's activity post
 // re-measures the card's whole change (no double counting across rounds), and
@@ -138,7 +138,7 @@ describe('daemon line counts: slow git', () => {
     await git(tree, 'commit', '-m', 'a');
     const stats = async () => ((await (await fetch(`${base}/stats?project=${project}`)).json()) as any).totals;
 
-    const sock = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws`);
+    const sock = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws`));
     await new Promise((r) => sock.once('open', r));
     try {
       const cardMsg = new Promise<void>((resolve) =>

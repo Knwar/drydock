@@ -198,7 +198,7 @@ describe('workspace mode end-to-end', { timeout: 180_000 }, () => {
     const out = await new Promise<string>((done, fail) => {
       const child = spawn(process.execPath, [INJECT_BOARD], {
         cwd: repo,
-        env: { PATH: process.env.PATH ?? '', DAEMON_URL: daemon.base, KANKAN_PROJECT_ID: webId },
+        env: { PATH: process.env.PATH ?? '', DAEMON_URL: daemon.base, DAEMON_TOKEN: daemon.token, KANKAN_PROJECT_ID: webId },
         stdio: ['pipe', 'pipe', 'inherit'],
       });
       let stdout = '';

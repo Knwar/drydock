@@ -5,7 +5,7 @@ import { after, before, describe, it } from 'node:test';
 import WebSocket from 'ws';
 import { builtinTemplates } from '../core/dashboard.js';
 import type { DashboardLayout } from '../core/types.js';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 const send = (url: string, method: string, body?: unknown) =>
   fetch(url, { method, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -57,7 +57,7 @@ describe('/project/:id/layout + /dashboard/templates', () => {
   });
 
   it('PUT saves, broadcasts {type:layout} and GET then returns it', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${solo}`);
+    const ws = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws?project=${solo}`));
     const msgs: { type: string; project_id?: string }[] = [];
     ws.on('message', (raw) => msgs.push(JSON.parse(raw.toString())));
     await new Promise((r) => ws.once('open', r));

@@ -4,7 +4,7 @@ import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 // /plan-drafts routes against the REAL daemon (temp DB, random port).
 
@@ -169,7 +169,7 @@ describe('/plan-drafts routes', () => {
 
   it('a WS client on the workspace receives plan_draft on PATCH and plan_draft_removed on DELETE', async () => {
     const d = await create('Live');
-    const sock = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${wsId}`);
+    const sock = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws?project=${wsId}`));
     const seen: any[] = [];
     const waitFor = (type: string) =>
       new Promise<any>((resolve) => {
@@ -219,14 +219,14 @@ describe('/plan-drafts writes are loopback-only', () => {
     await daemon?.stop();
   });
 
-  it('a non-loopback caller gets 403 on POST, PATCH and DELETE', async (t) => {
+  it('a device on the network without a token is refused (401), reads too', async (t) => {
     const ip = nonLoopbackIPv4();
     if (!ip) return t.skip('no non-loopback IPv4 interface on this host');
     const lan = `http://${ip}:${daemon!.port}`;
     const call = (method: string, path: string, body?: unknown) =>
       fetch(`${lan}${path}`, { method, body: body === undefined ? undefined : JSON.stringify(body) });
-    assert.equal((await call('POST', '/plan-drafts', { workspace: 'a', title: 'b' })).status, 403);
-    assert.equal((await call('PATCH', '/plan-drafts/any', { ops: [] })).status, 403);
-    assert.equal((await call('DELETE', '/plan-drafts/any')).status, 403);
+    assert.equal((await call('POST', '/plan-drafts', { workspace: 'a', title: 'b' })).status, 401);
+    assert.equal((await call('PATCH', '/plan-drafts/any', { ops: [] })).status, 401);
+    assert.equal((await call('DELETE', '/plan-drafts/any')).status, 401);
   });
 });

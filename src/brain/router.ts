@@ -1,5 +1,6 @@
 // Tiny /api router: feature modules register routes with on(); the daemon
 // calls handleApi for every /api/ request.
+import type { Principal } from '../daemon/auth.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { DB } from '../core/db.js';
 import { ensureSchema } from './schema.js';
@@ -13,6 +14,8 @@ export interface ApiCtx {
   broadcast: (msg: unknown) => void;
   json: (res: ServerResponse, status: number, body: unknown) => void;
   readBody: (req: IncomingMessage) => Promise<any>;
+  /** who is calling (daemon/auth.ts); an agent's body already speaks only as itself */
+  principal: Principal;
 }
 
 type Handler = (req: IncomingMessage, res: ServerResponse, url: URL, ctx: ApiCtx, params: Record<string, string>) => Promise<void> | void;

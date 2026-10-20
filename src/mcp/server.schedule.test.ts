@@ -36,7 +36,7 @@ describe('MCP update_phase target_date', () => {
       new StdioClientTransport({
         command: process.execPath,
         args: ['--import', 'tsx', SERVER],
-        env: { ...(process.env as Record<string, string>), DAEMON_URL: daemon.base },
+        env: { ...(process.env as Record<string, string>), DAEMON_URL: daemon.base, DAEMON_TOKEN: daemon.token },
         stderr: 'ignore',
       }),
     );

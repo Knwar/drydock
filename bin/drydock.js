@@ -54,9 +54,18 @@ function fail(msg) {
   process.exit(1);
 }
 
+/** The user's local token (the daemon writes it at start; readable by the user only). */
+function token() {
+  try {
+    return readFileSync(join(DATA_DIR, 'token'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
 async function get(base, path) {
   try {
-    const res = await fetch(base + path, { signal: AbortSignal.timeout(path === '/api/system' ? 30_000 : 1500) });
+    const res = await fetch(base + path, { headers: { authorization: `Bearer ${token()}` }, signal: AbortSignal.timeout(path === '/api/system' ? 30_000 : 1500) });
     return res.ok ? await res.json() : null;
   } catch {
     return null;

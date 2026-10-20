@@ -37,7 +37,8 @@ on('GET', '/api/projects/:id/live', (_q, res, _u, ctx, p) => {
 on('POST', '/api/projects/:id/live/start', async (req, res, _u, ctx, p) => {
   ref(ctx.db(), p.id);
   const b = await ctx.readBody(req);
-  const by = b?.by === 'agent' ? 'agent' : 'user';
+  // who started it comes from who is calling: an agent never counts as the user
+  const by = ctx.principal.kind === 'agent' || b?.by === 'agent' ? 'agent' : 'user';
   const r = await guard(() => startApp(ctx.db(), p.id, { by, approve: by === 'user' && Array.isArray(b?.approve) ? b.approve.map(String) : undefined }));
   ctx.json(res, 200, { ...r, app: appStatus(ctx.db(), p.id) });
 });

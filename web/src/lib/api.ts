@@ -2,11 +2,18 @@ import { useCallback, useEffect, useState } from 'react';
 import { onLive } from './live';
 
 export async function api<T = any>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
-  const res = await fetch(path, {
-    method: init?.method ?? (init?.body !== undefined ? 'POST' : 'GET'),
-    headers: init?.body !== undefined ? { 'content-type': 'application/json' } : undefined,
-    body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
-  });
+  const send = () =>
+    fetch(path, {
+      method: init?.method ?? (init?.body !== undefined ? 'POST' : 'GET'),
+      headers: init?.body !== undefined ? { 'content-type': 'application/json' } : undefined,
+      body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
+    });
+  let res = await send();
+  // a tab opened before the daemon (re)started has no session yet: get one and try once more
+  if (res.status === 401) {
+    await fetch('/api/session');
+    res = await send();
+  }
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) throw new Error(data?.error ?? `${res.status} ${res.statusText}`);

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import WebSocket from 'ws';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 const postJson = (url: string, body: unknown) =>
   fetch(url, { method: 'POST', body: JSON.stringify(body) });
@@ -29,7 +29,7 @@ describe('POST /project/:id/autopilot', () => {
   });
 
   it('turns autopilot on → 200, broadcast, and /workspace/summary shows it', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${project}`);
+    const ws = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws?project=${project}`));
     const msgs: { type: string; project_id?: string; on?: boolean }[] = [];
     ws.on('message', (raw) => msgs.push(JSON.parse(raw.toString())));
     await new Promise((r) => ws.once('open', r));
@@ -110,7 +110,7 @@ describe('autopilot nudges an idle session through the pty (fake claude)', () =>
     };
     assert.equal((await postJson(`${base}/task/${task_id}/move`, { lane: 'queued' })).status, 200);
 
-    const ws = new WebSocket(`ws://127.0.0.1:${daemon!.port}/pty?project=${project}&token=${token}`);
+    const ws = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/pty?project=${project}&token=${token}`));
     t.after(() => ws.close());
     let out = '';
     ws.on('message', (raw) => {
@@ -130,7 +130,7 @@ describe('autopilot nudges an idle session through the pty (fake claude)', () =>
 
     // count nudges via the board broadcast (deterministic); the pty output
     // proves the prompt was actually typed into the fake claude
-    const board = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${project}`);
+    const board = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws?project=${project}`));
     t.after(() => board.close());
     let nudges = 0;
     board.on('message', (raw) => {

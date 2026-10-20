@@ -10,10 +10,13 @@ const DAEMON = process.env.BRAIN_DAEMON_URL ?? 'http://127.0.0.1:7900';
 const ROLE = process.env.BRAIN_ROLE ?? 'main';
 const CONVERSATION = process.env.BRAIN_CONVERSATION ?? null;
 
+/** This run's token (daemon/auth.ts): the daemon knows the caller's role from it. */
+const AUTH = { authorization: `Bearer ${process.env.BRAIN_TOKEN ?? ''}` };
+
 async function call(path: string, body?: unknown): Promise<any> {
   const res = await fetch(DAEMON + path, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    headers: body === undefined ? AUTH : { ...AUTH, 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
@@ -243,7 +246,7 @@ server.registerTool(
   'remove_design_item',
   { description: 'Remove an element (with its children and relations) or a relation by id.', inputSchema: { project_id: z.string(), id: z.string() } },
   async ({ project_id, id }) => {
-    const res = await fetch(`${DAEMON}/api/projects/${project_id}/design/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const res = await fetch(`${DAEMON}/api/projects/${project_id}/design/${encodeURIComponent(id)}`, { method: 'DELETE', headers: AUTH });
     if (!res.ok) throw new Error(`remove failed: ${res.status}`);
     return text(`Removed ${id}.`);
   },
@@ -398,7 +401,7 @@ server.registerTool(
   'remove_feature',
   { description: 'Remove a feature from an idea.', inputSchema: { idea_id: z.string(), id: z.string() } },
   async ({ idea_id, id }) => {
-    const res = await fetch(`${DAEMON}/api/ideas/${idea_id}/features/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const res = await fetch(`${DAEMON}/api/ideas/${idea_id}/features/${encodeURIComponent(id)}`, { method: 'DELETE', headers: AUTH });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? String(res.status));
     return text(`Removed ${id}.`);
   },
@@ -462,7 +465,7 @@ server.registerTool(
   'remove_screen',
   { description: 'Remove a UI mockup screen from an idea.', inputSchema: { idea_id: z.string(), id: z.string() } },
   async ({ idea_id, id }) => {
-    const res = await fetch(`${DAEMON}/api/ideas/${idea_id}/screens/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const res = await fetch(`${DAEMON}/api/ideas/${idea_id}/screens/${encodeURIComponent(id)}`, { method: 'DELETE', headers: AUTH });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? String(res.status));
     return text(`Removed screen ${id}.`);
   },

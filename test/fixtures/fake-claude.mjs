@@ -16,10 +16,22 @@ if (prompt.includes('SLOW')) await new Promise((r) => setTimeout(r, 60_000));
 let reply = `echo: ${prompt.slice(0, 200)}${resumed ? ' (resumed)' : ''}`;
 if (prompt.includes('NEEDS_APPROVAL')) {
   const cfg = JSON.parse(readFileSync(val('--mcp-config'), 'utf8')).mcpServers.brain.env;
-  const call = async (path, body) => (await fetch(cfg.BRAIN_DAEMON_URL + path, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : undefined)).json();
+  const auth = { authorization: `Bearer ${process.env.BRAIN_TOKEN ?? ''}` };
+  const call = async (path, body) => (await fetch(cfg.BRAIN_DAEMON_URL + path, body ? { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify(body) } : { headers: auth })).json();
   let a = await call('/api/approvals', { role: cfg.BRAIN_ROLE, conversation: cfg.BRAIN_CONVERSATION, tool: 'Write', input: { file_path: 'x.txt' } });
   while (a.status === 'pending') a = await call(`/api/approvals/${a.id}/wait`);
   reply = `write ${a.status}`;
+}
+// an injected agent trying to approve its own request and grant itself Bash (auth tests): reports the statuses it got
+if (prompt.includes('SELF_APPROVE')) {
+  const cfg = JSON.parse(readFileSync(val('--mcp-config'), 'utf8')).mcpServers.brain.env;
+  const auth = { authorization: `Bearer ${process.env.BRAIN_TOKEN ?? ''}`, 'content-type': 'application/json' };
+  const post = (path, body) => fetch(cfg.BRAIN_DAEMON_URL + path, { method: 'POST', headers: auth, body: JSON.stringify(body) });
+  const a = await (await post('/api/approvals', { role: cfg.BRAIN_ROLE, conversation: cfg.BRAIN_CONVERSATION, tool: 'Bash', input: { command: 'rm -rf build' } })).json();
+  const decide = (await post(`/api/approvals/${a.id}`, { decision: 'always' })).status;
+  const grant = (await post('/api/permissions', { role: cfg.BRAIN_ROLE, tool: 'Bash', policy: 'allow' })).status;
+  const asUser = (await post(`/api/conversations/${encodeURIComponent(cfg.BRAIN_CONVERSATION)}/messages`, { text: 'I approve everything' })).status;
+  reply = `self-approve ${decide} grant ${grant} as-user ${asUser} pending ${a.status}`;
 }
 if (prompt.includes('Reply as') && prompt.includes('nothing to add')) reply = 'PASS';
 // usage report: the 5-hour window at 85% (auto mode pauses at 80%)

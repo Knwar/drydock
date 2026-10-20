@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { WebSocket } from 'ws';
 import { openDb } from '../core/db.js';
-import { startDaemon } from './test-daemon.js';
+import { startDaemon, wsAuth } from './test-daemon.js';
 
 // PUT /phase/:id/target, /milestones CRUD and GET /metrics/schedule against the REAL daemon (temp DB, random port).
 
@@ -122,7 +122,7 @@ describe('phase targets, milestones and /metrics/schedule', () => {
 
     // a workspace milestone write re-announces the verticals' phases too; a vertical's reaches the workspace
     const heard = async (listen: string, write: () => Promise<unknown>) => {
-      const sock = new WebSocket(`ws://127.0.0.1:${daemon.port}/ws?project=${listen}`);
+      const sock = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon.port}/ws?project=${listen}`));
       const seen: any[] = [];
       sock.on('message', (raw) => seen.push(JSON.parse(raw.toString())));
       await new Promise((r) => sock.once('open', r));
@@ -166,7 +166,7 @@ function nonLoopbackIPv4(): string | null {
 }
 
 describe('target + milestone writes are loopback-only', () => {
-  it('a non-loopback caller gets 403 on writes, but may read', async (t) => {
+  it('a device on the network without a token is refused (401), reads too', async (t) => {
     const ip = nonLoopbackIPv4();
     if (!ip) return t.skip('no non-loopback IPv4 interface on this host');
     const daemon = await startDaemon({ env: { HOST: '0.0.0.0' } });
@@ -174,10 +174,10 @@ describe('target + milestone writes are loopback-only', () => {
     const lan = `http://${ip}:${daemon.port}`;
     const call = (method: string, path: string, body?: unknown) =>
       fetch(`${lan}${path}`, { method, body: body === undefined ? undefined : JSON.stringify(body) });
-    assert.equal((await call('PUT', '/phase/any/target', { target_date: null })).status, 403);
-    assert.equal((await call('POST', '/milestones', { project_id: 'a', title: 't', date: '2026-10-01' })).status, 403);
-    assert.equal((await call('PATCH', '/milestones/any', { title: 'x' })).status, 403);
-    assert.equal((await call('DELETE', '/milestones/any')).status, 403);
-    assert.equal((await call('GET', '/milestones?project=nope')).status, 404, 'reads are open');
+    assert.equal((await call('PUT', '/phase/any/target', { target_date: null })).status, 401);
+    assert.equal((await call('POST', '/milestones', { project_id: 'a', title: 't', date: '2026-10-01' })).status, 401);
+    assert.equal((await call('PATCH', '/milestones/any', { title: 'x' })).status, 401);
+    assert.equal((await call('DELETE', '/milestones/any')).status, 401);
+    assert.equal((await call('GET', '/milestones?project=nope')).status, 401);
   });
 });

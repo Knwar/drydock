@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
 import { openDb } from '../core/db.js';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 // /plan-drafts/:id/{diff,commit,run} against the REAL daemon (temp DB, random port).
 
@@ -247,7 +247,7 @@ describe('/plan-drafts commit + run routes', () => {
     assert.equal((await send('POST', `/plan-drafts/${id}/run`, { mode: 'go' })).status, 400);
 
     // the workspace board's socket: it gets its own card/autopilot messages plus the verticals list
-    const sock = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${wsId}`);
+    const sock = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws?project=${wsId}`));
     const seen: any[] = [];
     sock.on('message', (raw) => seen.push(JSON.parse(raw.toString())));
     const waitFor = (pred: (m: any) => boolean, ms = 5000) =>
@@ -295,7 +295,7 @@ describe('/plan-drafts commit + run routes', () => {
 
   it('commit announces cards, phases and the draft over WS', async () => {
     const id = await seed('Live');
-    const sock = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${wsId}`);
+    const sock = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws?project=${wsId}`));
     const seen: any[] = [];
     sock.on('message', (raw) => seen.push(JSON.parse(raw.toString())));
     const waitFor = (pred: (m: any) => boolean, ms = 5000) =>
@@ -341,12 +341,12 @@ describe('/plan-drafts diff/commit/run are loopback-only', () => {
     await daemon?.stop();
   });
 
-  it('a non-loopback caller gets 403', async (t) => {
+  it('a device on the network without a token is refused (401), reads too', async (t) => {
     const ip = nonLoopbackIPv4();
     if (!ip) return t.skip('no non-loopback IPv4 interface on this host');
     const lan = `http://${ip}:${daemon!.port}`;
-    assert.equal((await fetch(`${lan}/plan-drafts/any/diff`)).status, 403);
-    assert.equal((await fetch(`${lan}/plan-drafts/any/commit`, { method: 'POST', body: '{"version":1}' })).status, 403);
-    assert.equal((await fetch(`${lan}/plan-drafts/any/run`, { method: 'POST', body: '{"mode":"queue"}' })).status, 403);
+    assert.equal((await fetch(`${lan}/plan-drafts/any/diff`)).status, 401);
+    assert.equal((await fetch(`${lan}/plan-drafts/any/commit`, { method: 'POST', body: '{"version":1}' })).status, 401);
+    assert.equal((await fetch(`${lan}/plan-drafts/any/run`, { method: 'POST', body: '{"mode":"queue"}' })).status, 401);
   });
 });

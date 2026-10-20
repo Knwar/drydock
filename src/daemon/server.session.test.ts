@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 // End-to-end coverage for the in-memory session-state cache: POST /status
 // records + broadcasts (with project_id), GET /session reads it back, and
@@ -48,7 +48,7 @@ describe('daemon session state (/status, /session)', () => {
   });
 
   it('POST /status broadcasts project_id + session to an all-projects subscriber', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const ws = new WebSocket(...wsAuth(`ws://127.0.0.1:${port}/ws`));
     sockets.push(ws);
     const got = new Promise<any>((resolve) =>
       ws.on('message', (raw) => {

@@ -70,8 +70,8 @@ describe('daemon network boundary', () => {
     // and /deliveries + /subscriptions/:id are gated the same way
     assert.equal((await fetch(`http://${ip}:${port}/deliveries`)).status, 401);
     assert.equal((await fetch(`http://${ip}:${port}/subscriptions/x`)).status, 401);
-    // a pre-existing route is still reachable from the LAN (only the 3 new routes are gated)
-    assert.equal((await fetch(`http://${ip}:${port}/board`)).status, 400);
+    // and so is every other route: a device on the network has no token (daemon/auth.ts)
+    assert.equal((await fetch(`http://${ip}:${port}/board`)).status, 401);
   });
 
   it('caps oversized request bodies with 413 and leaves small bodies unaffected', async () => {

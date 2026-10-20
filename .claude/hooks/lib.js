@@ -2,8 +2,20 @@
 // or fields missing must never break the session — degrade to exit 0.
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const DAEMON = process.env.DAEMON_URL ?? 'http://localhost:7900';
+
+/** The daemon token: an agent run's own (DAEMON_TOKEN), else the user's local token file. */
+function daemonToken() {
+  if (process.env.DAEMON_TOKEN) return process.env.DAEMON_TOKEN;
+  const home = process.env.BRAIN_HOME ?? (existsSync(join(homedir(), '.ai-brain')) && !existsSync(join(homedir(), '.drydock')) ? join(homedir(), '.ai-brain') : join(homedir(), '.drydock'));
+  try {
+    return readFileSync(join(home, 'token'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
 
 export async function readStdin() {
   let raw = '';
@@ -19,6 +31,7 @@ export async function api(method, path, body) {
   try {
     const res = await fetch(`${DAEMON}${path}`, {
       method,
+      headers: { authorization: `Bearer ${daemonToken()}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(1500),
     });

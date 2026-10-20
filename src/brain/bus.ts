@@ -7,6 +7,11 @@ export interface Bus {
   db: () => DB;
   emit: (msg: unknown) => void;
   daemonUrl: string;
+  /** a token for one agent run: its processes call the daemon as that role (daemon/auth.ts) */
+  agentToken?: (info: { role: string; conversation: string | null; project: string | null }) => string;
+  revokeToken?: (token: string) => void;
+  /** headers for the daemon calling its own HTTP routes */
+  selfHeaders?: () => Record<string, string>;
 }
 
 let bus: Bus | null = null;

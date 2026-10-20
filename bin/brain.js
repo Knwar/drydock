@@ -24,6 +24,16 @@ const PORT = new URL(DAEMON_URL).port || '7900';
 /** Drydock's folder inside a root: .drydock, or .ai-brain where an older install has one (as in src/brain/workspace.ts). */
 const dataDir = (root) => (existsSync(join(root, '.ai-brain')) && !existsSync(join(root, '.drydock')) ? join(root, '.ai-brain') : join(root, '.drydock'));
 const DATA_DIR = process.env.BRAIN_HOME ?? dataDir(homedir());
+/** The daemon token: an agent run's own (DAEMON_TOKEN), else the user's local token file. */
+const TOKEN = () => {
+  if (process.env.DAEMON_TOKEN) return process.env.DAEMON_TOKEN;
+  try {
+    return readFileSync(join(DATA_DIR, 'token'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+};
+const AUTH = () => ({ authorization: `Bearer ${TOKEN()}` });
 const PID_FILE = join(DATA_DIR, 'daemon.pid');
 const LOG_FILE = join(DATA_DIR, 'daemon.log');
 
@@ -46,7 +56,7 @@ const daemonCmd = () => [join(ROOT, 'node_modules', '.bin', 'tsx'), join(ROOT, '
 async function up() {
   try {
     // ask for something only this daemon answers (the bare address redirects to the app, and another program could hold the port)
-    const res = await fetch(`${DAEMON_URL}/api/workspace`, { signal: AbortSignal.timeout(700) });
+    const res = await fetch(`${DAEMON_URL}/api/workspace`, { headers: AUTH(), signal: AbortSignal.timeout(700) });
     return res.ok && 'configured' in (await res.json());
   } catch {
     return false;
@@ -139,7 +149,7 @@ function isSetup(dir) {
 
 async function fetchJson(path) {
   try {
-    const res = await fetch(`${DAEMON_URL}${path}`, { signal: AbortSignal.timeout(1500) });
+    const res = await fetch(`${DAEMON_URL}${path}`, { headers: AUTH(), signal: AbortSignal.timeout(1500) });
     return res.ok ? await res.json() : null;
   } catch {
     return null;
@@ -201,7 +211,7 @@ async function main() {
     if (!(await up()) && !(await start())) process.exit(1);
     const res = await fetch(`${DAEMON_URL}/api/workspace`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...AUTH(), 'content-type': 'application/json' },
       body: JSON.stringify({ path: resolve(rest[0]) }),
     });
     const body = await res.json();
@@ -218,7 +228,7 @@ async function main() {
     if (!(await up()) && !(await start())) process.exit(1);
     const args = [join(ROOT, 'scripts', 'init-project.sh'), target];
     if (rest[1]) args.push(rest[1]);
-    const res = spawnSync('sh', args, { stdio: 'inherit', env: { ...process.env, DAEMON_URL } });
+    const res = spawnSync('sh', args, { stdio: 'inherit', env: { ...process.env, DAEMON_URL, DAEMON_TOKEN: TOKEN() } });
     process.exit(res.status ?? 0);
   }
 
@@ -230,7 +240,7 @@ async function main() {
     }
     const res = spawnSync('sh', [join(ROOT, 'scripts', 'init-project.sh'), target], {
       stdio: 'inherit',
-      env: { ...process.env, DAEMON_URL, KANKAN_UPDATE: '1' },
+      env: { ...process.env, DAEMON_URL, DAEMON_TOKEN: TOKEN(), KANKAN_UPDATE: '1' },
     });
     process.exit(res.status ?? 0);
   }

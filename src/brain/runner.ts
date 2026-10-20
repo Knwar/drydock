@@ -19,7 +19,7 @@ import { AUTO_RULES, contractFor, featureChatRules, ideaChatRules } from './cont
 import { getIdea, ideaDir } from './ideas.js';
 import { fits, PLUGIN, pluginDir, runSkills, skillById, subagentSkills } from './skills.js';
 import { onRateLimit } from './usage.js';
-import { currentWorkspace } from './workspace.js';
+import { brainHome, currentWorkspace } from './workspace.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MCP_SERVER = join(HERE, 'mcp.ts');
@@ -346,7 +346,9 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
   const globalAllow = Object.keys(policies).filter((t) => policies[t] === 'allow');
   const globalDeny = Object.keys(policies).filter((t) => policies[t] === 'deny');
   const allowed = [...ALWAYS_ALLOWED, ...(projectRole ? (shaping ? BOARD_READ : PROJECT_ALLOWED) : []), ...globalAllow, ...standingTools(db, roleId, 'allow')];
-  const denied = [...ALWAYS_DENIED, ...globalDeny, ...blockedServers(db, roleId), ...standingTools(db, roleId, 'deny')];
+  // Drydock's home holds the local token and the session key: no agent reads or changes it
+  const home = `/${brainHome()}/**`;
+  const denied = [...ALWAYS_DENIED, `Read(${home})`, `Edit(${home})`, ...globalDeny, ...blockedServers(db, roleId), ...standingTools(db, roleId, 'deny')];
   const model = modelOverride ?? role.model;
   const effort = effortOverride ?? effectiveEffort(role);
   const base = [
@@ -361,10 +363,15 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
   const sk = agentSkills(role, conv.project_id, conv.idea_id);
   const plugin = pluginDir(ws.data, [...sk.own, ...sk.builder, ...sk.reviewer]);
   if (plugin) base.push('--plugin-dir', plugin);
+  // this run's own token: its tool servers, hooks and `brain` calls reach the daemon as this role only (daemon/auth.ts)
+  const token = getBus().agentToken?.({ role: roleId, conversation: conversationId, project: conv.project_id }) ?? '';
+  const { DRYDOCK_TOKEN: _local, ...parentEnv } = process.env; // never the user's own token
   const env = {
-    ...process.env,
+    ...parentEnv,
     PATH: `${shimDir(ws.data)}:${process.env.PATH ?? ''}`,
     DAEMON_URL: getBus().daemonUrl,
+    BRAIN_TOKEN: token,
+    DAEMON_TOKEN: token,
     BRAIN_WORKSPACE: ws.root,
     MCP_TOOL_TIMEOUT: String(24 * 3600 * 1000),
   };
@@ -475,6 +482,7 @@ async function runTurnInner(roleId: string, conversationId: string, modelOverrid
   });
   if (buf) onLine(buf);
   running.delete(conversationId);
+  if (token) getBus().revokeToken?.(token);
   // cut off by a shutdown: keep the run recorded (it resumes on the next start) and post nothing
   if (isShuttingDown()) return null;
   clearRun(conversationId);

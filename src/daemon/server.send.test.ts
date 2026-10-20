@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import WebSocket from 'ws';
-import { startDaemon, type TestDaemon } from './test-daemon.js';
+import { startDaemon, type TestDaemon, wsAuth } from './test-daemon.js';
 
 // POST /pty/send types text into a project's Claude session: gated like
 // /pty/agent, sanitized, and only into a verified idle Claude foreground.
@@ -98,7 +98,7 @@ describe('POST /pty/send with the terminal enabled (fake claude)', () => {
     // no pty session yet → nothing to type into
     assert.deepEqual(await (await send(project, token, { text: 'hi' })).json(), { error: 'no claude session' });
 
-    const ws = new WebSocket(`ws://127.0.0.1:${daemon!.port}/pty?project=${project}&token=${token}`);
+    const ws = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/pty?project=${project}&token=${token}`));
     t.after(() => ws.close());
     let out = '';
     ws.on('message', (raw) => {
@@ -116,7 +116,7 @@ describe('POST /pty/send with the terminal enabled (fake claude)', () => {
       await new Promise((r) => setTimeout(r, 100));
     }
 
-    const boardWs = new WebSocket(`ws://127.0.0.1:${daemon!.port}/ws?project=${project}`);
+    const boardWs = new WebSocket(...wsAuth(`ws://127.0.0.1:${daemon!.port}/ws?project=${project}`));
     t.after(() => boardWs.close());
     const events: { type: string; payload: unknown }[] = [];
     boardWs.on('message', (raw) => {

@@ -170,12 +170,12 @@ describe('daemon cost routes', () => {
     assert.equal((await send('GET', `/metrics/usage-burn?phase=${phaseId}`)).status, 400);
   });
 
-  it('a non-loopback caller gets 403 on PUT prices and PUT budget (GET prices stays open)', async (t) => {
+  it('a device on the network without a token is refused (401), reads too', async (t) => {
     const ip = nonLoopbackIPv4();
     if (!ip) return t.skip('no non-loopback IPv4 interface on this host');
     const lan = `http://${ip}:${daemon!.port}`;
-    assert.equal((await fetch(`${lan}/settings/prices`, { method: 'PUT', body: JSON.stringify(PRICES) })).status, 403);
-    assert.equal((await fetch(`${lan}/phase/${phaseId}/budget`, { method: 'PUT', body: '{"budget_usd":1}' })).status, 403);
-    assert.equal((await fetch(`${lan}/settings/prices`)).status, 200);
+    assert.equal((await fetch(`${lan}/settings/prices`, { method: 'PUT', body: JSON.stringify(PRICES) })).status, 401);
+    assert.equal((await fetch(`${lan}/phase/${phaseId}/budget`, { method: 'PUT', body: '{"budget_usd":1}' })).status, 401);
+    assert.equal((await fetch(`${lan}/settings/prices`)).status, 401);
   });
 });
