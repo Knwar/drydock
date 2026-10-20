@@ -1145,34 +1145,34 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
   const base = `/project/${id}`;
   const needs = overview.data?.needs ?? [];
   const groups: { title: string; items: NavItem[] }[] = [
-    { title: '', items: [{ id: '', label: 'Overview' }] },
+    { title: '', items: [{ id: '', label: 'Overview', icon: 'overview' }] },
     {
       title: 'PLAN',
       items: [
-        { id: 'requirements', label: 'Requirements', meta: p.requirementsVersion ? `v${p.requirementsVersion}` : undefined },
-        { id: 'ideas', label: 'Feature ideas', meta: p.featureIdeas ? String(p.featureIdeas) : undefined },
-        ...(p.plugins?.includes('design') ? [{ id: 'design', label: 'System design' }] : []),
-        ...(p.idea_id || p.uiScreens.length ? [{ id: 'ui', label: 'UI and brand', meta: p.uiScreens.length ? String(p.uiScreens.length) : undefined }] : []),
+        { id: 'requirements', label: 'Requirements', icon: 'doc', meta: p.requirementsVersion ? `v${p.requirementsVersion}` : undefined },
+        { id: 'ideas', label: 'Feature ideas', icon: 'idea', meta: p.featureIdeas ? String(p.featureIdeas) : undefined },
+        ...(p.plugins?.includes('design') ? [{ id: 'design', label: 'System design', icon: 'diagram' as const }] : []),
+        ...(p.idea_id || p.uiScreens.length ? [{ id: 'ui', label: 'UI and brand', icon: 'palette' as const, meta: p.uiScreens.length ? String(p.uiScreens.length) : undefined }] : []),
       ],
     },
     {
       title: 'BUILD',
       items: [
-        { id: 'board', label: 'Board', meta: p.cards.total ? `${p.cards.done}/${p.cards.total}` : undefined, alert: needs.length },
-        ...(p.verticals.length ? [{ id: 'verticals', label: 'Verticals', meta: String(p.verticals.length) }] : []),
-        { id: 'roadmap', label: 'Roadmap', meta: p.phase ? `${p.phase.index}/${p.phase.count}` : undefined },
-        { id: 'agents', label: 'Agents', meta: p.liveAgents ? String(p.liveAgents) : undefined },
-        ...(p.plugins?.includes('live') ? [{ id: 'live', label: 'On this Mac' }] : []),
+        { id: 'board', label: 'Board', icon: 'board', meta: p.cards.total ? `${p.cards.done}/${p.cards.total}` : undefined, alert: needs.length },
+        ...(p.verticals.length ? [{ id: 'verticals', label: 'Verticals', icon: 'vertical' as const, meta: String(p.verticals.length) }] : []),
+        { id: 'roadmap', label: 'Roadmap', icon: 'flag', meta: p.phase ? `${p.phase.index}/${p.phase.count}` : undefined },
+        { id: 'agents', label: 'Agents', icon: 'agent', meta: p.liveAgents ? String(p.liveAgents) : undefined },
+        ...(p.plugins?.includes('live') ? [{ id: 'live', label: 'On this Mac', icon: 'laptop' as const }] : []),
       ],
     },
     {
       title: 'KNOWLEDGE',
       items: [
-        { id: 'roles', label: 'Team', meta: String(p.team.length) },
-        { id: 'decisions', label: 'Decisions' },
-        { id: 'memory', label: 'Memory' },
-        { id: 'docs', label: 'Docs' },
-        { id: 'settings', label: 'Settings' },
+        { id: 'roles', label: 'Team', icon: 'role', meta: String(p.team.length) },
+        { id: 'decisions', label: 'Decisions', icon: 'decision' },
+        { id: 'memory', label: 'Memory', icon: 'book' },
+        { id: 'docs', label: 'Docs', icon: 'files' },
+        { id: 'settings', label: 'Settings', icon: 'settings' },
       ],
     },
   ];

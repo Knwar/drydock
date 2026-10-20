@@ -25,6 +25,12 @@ const PATHS = {
   idea: 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z',
   play: 'M8 5.5v13l10.5-6.5z',
   stop: 'M7 7h10v10H7z',
+  palette: 'M12 3a9 9 0 1 0 0 18c1 0 1.5-.8 1.5-1.6 0-1.1-.9-1.4-.9-2.4 0-.9.7-1.5 1.6-1.5H17a4 4 0 0 0 4-4c0-4.7-4-8.5-9-8.5zM7.5 11.5h.01M10 7.5h.01M14.5 7.5h.01',
+  flag: 'M5 21V4M5 4h11l-2 4 2 4H5',
+  laptop: 'M5 5h14v10H5zM3 19h18',
+  decision: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8.5 12l2.5 2.5 4.5-5',
+  book: 'M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11',
+  files: 'M8 3h8l4 4v11H8zM15 3v5h5M4 7v13a1 1 0 0 0 1 1h10',
 } as const;
 
 export type IconName = keyof typeof PATHS;

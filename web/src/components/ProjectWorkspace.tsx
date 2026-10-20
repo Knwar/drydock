@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, useApi } from '../lib/api';
 import { go, href, navigate } from '../lib/router';
 import { when } from '../lib/time';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
 
 export interface OverviewData {
   needs: { card: string; project_id: string; title: string; reason: string; command: string | null; vertical: string; since: number }[];
@@ -31,6 +31,7 @@ async function unblock(projectId: string, card: string) {
 export interface NavItem {
   id: string;
   label: string;
+  icon: IconName;
   meta?: string;
   alert?: number;
 }
@@ -53,6 +54,7 @@ export function ProjectNav({ name, sub, color, groups, tab, base, foot }: { name
               const on = tab === i.id || (i.id === 'ui' && tab === 'brand');
               return (
                 <a key={i.id} className={`ws-nav-item${on ? ' on' : ''}`} aria-current={on ? 'page' : undefined} href={href(to)} onClick={go(to)}>
+                  <Icon name={i.icon} className="ws-nav-icon" />
                   <span className="ws-nav-label">{i.label}</span>
                   {Boolean(i.alert) && <span className="ws-alert" aria-label={`${i.alert} waiting on you`}>{i.alert}</span>}
                   {i.meta && <span className="ws-meta">{i.meta}</span>}

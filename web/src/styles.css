@@ -780,3 +780,6 @@ button.ws-job { cursor: pointer; }
   .ws-right { position: static; }
 }
 @media (prefers-reduced-motion: reduce) { .ws-pulse { animation: none; } }
+/* menu icons: quiet line icons, full colour only where you are */
+.ws-nav-icon { flex: none; color: var(--muted); }
+.ws-nav-item:hover .ws-nav-icon, .ws-nav-item.on .ws-nav-icon { color: var(--text); }
