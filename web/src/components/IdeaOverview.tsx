@@ -208,14 +208,23 @@ function Decided({ d }: { d: Data }) {
 }
 
 /** Still open: the lead's questions with likely answers; a tap (or a few words) answers. */
+/** How long a card takes to leave the deck (matches .q-card in styles.css). */
+const LEAVE_MS = 320;
+
 function StillOpen({ d, readOnly }: { d: Data; readOnly: boolean }) {
   const [other, setOther] = useState<string | null>(null);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const open = (d.questions ?? []).filter((q) => q.status === 'open');
+  // answered here and on their way out (the reload drops them for good); "Later" sends a card to the back
+  const [gone, setGone] = useState<string[]>([]);
+  const [later, setLater] = useState<string[]>([]);
+  const [leaving, setLeaving] = useState<{ id: string; how: 'answer' | 'later' } | null>(null);
+  const open = (d.questions ?? []).filter((q) => q.status === 'open' && !gone.includes(q.id));
   // the basics come first: answering the last one (or skipping) starts the first pass
   const basics = open.filter((q) => q.kind === 'intake');
+  const queue = [...basics, ...open.filter((q) => q.kind !== 'intake')];
+  const deck = [...queue.filter((q) => !later.includes(q.id)), ...later.flatMap((id) => queue.filter((q) => q.id === id))];
   const skip = async () => {
     setBusy('skip');
     setError(null);
@@ -230,45 +239,68 @@ function StillOpen({ d, readOnly }: { d: Data; readOnly: boolean }) {
   const answered = (d.questions ?? []).filter((q) => q.status === 'answered').slice(-2);
   // older ideas keep their open questions as notes on features
   const notes = d.featureList.flatMap((f) => f.open_questions.map((q) => ({ f: f.id, q }))).slice(0, 4);
-  const answer = async (id: string, value: string) => {
-    if (!value.trim()) return;
-    setBusy(id);
-    setError(null);
-    try {
-      await api(`/api/ideas/${d.id}/questions/${id}/answer`, { body: { answer: value } });
-      setOther(null);
-      setText('');
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(null);
-    }
+  /** The top card flies off; the next one moves up. */
+  const leave = (id: string, how: 'answer' | 'later', then: () => void) => {
+    setLeaving({ id, how });
+    setOther(null);
+    setText('');
+    setTimeout(() => (then(), setLeaving(null)), LEAVE_MS);
   };
-  if (!open.length && !answered.length && !notes.length) return null;
+  const answer = (id: string, value: string) => {
+    if (!value.trim() || leaving) return;
+    setError(null);
+    leave(id, 'answer', () => setGone((g) => [...g, id]));
+    api(`/api/ideas/${d.id}/questions/${id}/answer`, { body: { answer: value } }).catch((e) => {
+      // it comes back to the top of the deck
+      setGone((g) => g.filter((x) => x !== id));
+      setError((e as Error).message);
+    });
+  };
+  const putBack = (id: string) => !leaving && leave(id, 'later', () => setLater((l) => [...l.filter((x) => x !== id), id]));
+  if (!deck.length && !answered.length && !notes.length) return null;
+  const top = deck[0];
   return (
     <section className="panel still-open" style={{ gap: 12 }}>
       <div className="panel-head">
         <h2>{basics.length ? 'A few basics first' : 'Still open'}</h2>
-        {open.length > 0 && <span style={{ fontSize: 12 }}>{open.length} to answer{readOnly ? '' : ' · tap one'}</span>}
+        {deck.length > 0 && <span style={{ fontSize: 12 }}>{deck.length} to answer{readOnly ? '' : ' · tap one'}</span>}
       </div>
       {basics.length > 0 && <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>Answer these and the Main agent lays the idea out: the problem, users, core flow, features and the decisions that matter.</div>}
-      {[...basics, ...open.filter((q) => q.kind !== 'intake')].map((q) => (
-        <div key={q.id} style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-          <span style={{ fontSize: 13, lineHeight: 1.45 }}>{q.text}{q.affects.length > 0 && <span className="affects"> · {q.affects.join(', ')}</span>}</span>
-          {!readOnly && (
-            <div className="answer-chips">
-              {q.options.map((o) => <button key={o} disabled={busy === q.id} onClick={() => answer(q.id, o)}>{o}</button>)}
-              <button className="other" disabled={busy === q.id} onClick={() => (setOther(other === q.id ? null : q.id), setText(''))} aria-expanded={other === q.id}>Something else…</button>
+      {top && (
+        <div className="q-deck" style={{ paddingBottom: Math.min(deck.length - 1, 2) * 11 }}>
+          {deck.slice(0, 3).map((q, i) => (
+            <div
+              key={q.id}
+              className={`q-card${i === 0 ? ' top' : ''}${leaving?.id === q.id ? ` out-${leaving.how}` : ''}`}
+              style={{ '--i': i, zIndex: 3 - i } as React.CSSProperties}
+              aria-hidden={i > 0 || undefined}
+              inert={i > 0 || undefined}
+            >
+              <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                {i === 0 && <span className="q-count">Question {gone.length + 1} of {gone.length + deck.length}</span>}
+                {q.kind === 'intake' && <span className="q-count">· basics</span>}
+              </div>
+              <span style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{q.text}</span>
+              {q.affects.length > 0 && <span className="affects">Changes {q.affects.join(', ')}</span>}
+              {i === 0 && !readOnly && (
+                <div className="answer-chips">
+                  {q.options.map((o) => <button key={o} disabled={Boolean(leaving)} onClick={() => answer(q.id, o)}>{o}</button>)}
+                  <button className="other" disabled={Boolean(leaving)} onClick={() => (setOther(other === q.id ? null : q.id), setText(''))} aria-expanded={other === q.id}>Something else…</button>
+                </div>
+              )}
+              {i === 0 && other === q.id && (
+                <form style={{ display: 'flex', gap: 6 }} onSubmit={(e) => (e.preventDefault(), answer(q.id, text))}>
+                  <input className="input" autoFocus aria-label={`Your answer to: ${q.text}`} placeholder="In a few words" value={text} onChange={(e) => setText(e.target.value)} style={{ flex: 1, height: 34 }} />
+                  <button className="btn sm primary" disabled={!text.trim()}>Answer</button>
+                </form>
+              )}
+              {i === 0 && deck.length > 1 && (
+                <button className="link-btn q-later" disabled={Boolean(leaving)} onClick={() => putBack(q.id)}>{readOnly ? 'Next →' : 'Later →'}</button>
+              )}
             </div>
-          )}
-          {other === q.id && (
-            <form style={{ display: 'flex', gap: 6 }} onSubmit={(e) => (e.preventDefault(), void answer(q.id, text))}>
-              <input className="input" autoFocus aria-label={`Your answer to: ${q.text}`} placeholder="In a few words" value={text} onChange={(e) => setText(e.target.value)} style={{ flex: 1, height: 34 }} />
-              <button className="btn sm primary" disabled={!text.trim() || busy === q.id}>Answer</button>
-            </form>
-          )}
+          ))}
         </div>
-      ))}
+      )}
       {basics.length > 0 && !readOnly && (
         <button className="btn sm" style={{ alignSelf: 'flex-start' }} disabled={busy === 'skip'} onClick={skip}>Skip, use your best guesses</button>
       )}

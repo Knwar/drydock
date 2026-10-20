@@ -641,3 +641,14 @@ body.no-scroll { overflow: hidden; }
 .sys-mark { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; flex: none; }
 .sys-mark.ok { background: var(--g-bg); color: var(--g-fg); border: 1px solid var(--g-line); }
 .sys-mark.bad { background: var(--r-bg); color: var(--r-fg); border: 1px solid var(--r-fg); }
+
+/* Still open: one question at a time, the rest stacked behind it */
+.q-deck { display: grid; }
+.q-card { grid-area: 1 / 1; display: flex; flex-direction: column; gap: 9px; padding: 14px 16px; border-radius: 12px; background: var(--surface); border: 1px solid var(--a-line); box-shadow: 0 6px 18px rgb(0 0 0 / 0.18); transform: translateY(calc(var(--i) * 11px)) scale(calc(1 - var(--i) * 0.04)); transform-origin: 50% 100%; transition: transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.32s ease; }
+.q-card:not(.top) { opacity: calc(1 - var(--i) * 0.3); background: color-mix(in srgb, var(--surface) 80%, var(--a-bg)); pointer-events: none; }
+.q-card:not(.top) > * { visibility: hidden; }
+.q-card.out-answer { transform: translateX(115%) rotate(9deg); opacity: 0; }
+.q-card.out-later { transform: translateY(18px) scale(0.92); opacity: 0; }
+.q-count { font-size: 11px; color: var(--a-fg); font-weight: 600; letter-spacing: 0.02em; }
+.q-later { align-self: flex-end; font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { .q-card { transition: opacity 0.2s ease; } .q-card.out-answer, .q-card.out-later { transform: none; } }
