@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { homedir } from 'node:os';
+import { homedir, hostname, networkInterfaces } from 'node:os';
 import { promisify } from 'node:util';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +40,7 @@ import { parseCompare, withPrevious, type WindowedFilter, type WithPrevious } fr
 import { WORK_TYPES, type CardFilter, type PlanDraft, type Project, type Task, type TimeWindow, type WorkType } from '../core/types.js';
 import { looksLikeClaude, NUDGE_PROMPT, resetsAtMs, shouldNudge, type NudgeInput } from './autopilot.js';
 import { Broadcaster } from './broadcast.js';
+import { checkRequest, gatePolicy, type GateRequest } from './request-gate.js';
 import { Dispatcher } from './dispatcher.js';
 import { sessionCwd, sessionEnv } from './pty-env.js';
 import { ptyGroups, shellInfo, stillOurs, ttyGroups, type ShellInfo } from './pty-groups.js';
@@ -2607,9 +2608,42 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   return json(res, 404, { error: 'not found' });
 }
 
+// ── request gate (src/daemon/request-gate.ts) ───────────────────────
+/** This Mac's names besides localhost, when the user opened the daemon to the network (HOST=0.0.0.0 or an address). */
+function networkNames(host: string | undefined): string[] {
+  if (!host || ['127.0.0.1', '::1', 'localhost'].includes(host)) return [];
+  if (!['0.0.0.0', '::'].includes(host)) return [host];
+  const addrs = Object.values(networkInterfaces()).flatMap((list) => (list ?? []).map((a) => a.address));
+  const name = hostname().toLowerCase();
+  return [...addrs, name, name.endsWith('.local') ? name : `${name}.local`];
+}
+const GATE = gatePolicy(PORT, Number(process.env.BRAIN_WEB_PORT ?? 5190), networkNames(process.env.HOST));
+const gateRequest = (req: IncomingMessage, upgrade = false): GateRequest => ({
+  method: req.method ?? 'GET',
+  host: req.headers.host,
+  origin: req.headers.origin,
+  secFetchSite: req.headers['sec-fetch-site'] as string | undefined,
+  contentType: req.headers['content-type'],
+  hasBody: Number(req.headers['content-length'] ?? 0) > 0 || Boolean(req.headers['transfer-encoding']),
+  upgrade,
+});
+const refusedAt = new Map<string, number>();
+/** Say what was refused (once a minute per reason and origin), so a broken caller is easy to spot. */
+function logRefusal(req: IncomingMessage, reason: string): void {
+  const key = `${reason} ${req.headers.origin ?? req.headers.host ?? ''}`;
+  if (Date.now() - (refusedAt.get(key) ?? 0) < 60_000) return;
+  refusedAt.set(key, Date.now());
+  console.warn(`refused ${req.method} ${req.url?.split('?')[0]}: ${reason} (host ${req.headers.host ?? '-'}, origin ${req.headers.origin ?? '-'})`);
+}
+
 // ── server ──────────────────────────────────────────────────────────
 const server = createServer((req, res) => {
   if (proxyHttp(req, res)) return; // <slug>.localhost → a project's running app
+  const refused = checkRequest(gateRequest(req), GATE);
+  if (refused) {
+    logRefusal(req, refused);
+    return json(res, 403, { error: `refused: ${refused}` });
+  }
   route(req, res).catch((err: Error) =>
     json(res, err instanceof PayloadTooLargeError ? err.status : 400, { error: err.message }),
   );
@@ -2673,6 +2707,12 @@ ptyWss.on('connection', (ws, req) => {
 // one HTTP server, two WS endpoints: /ws (board, open) and /pty (terminal, gated).
 server.on('upgrade', (req, socket, head) => {
   if (proxyUpgrade(req, socket, head)) return;
+  const refused = checkRequest(gateRequest(req, true), GATE);
+  if (refused) {
+    logRefusal(req, refused);
+    socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return;
+  }
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
   if (url.pathname === '/ws') {
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
