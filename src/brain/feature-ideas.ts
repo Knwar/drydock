@@ -31,7 +31,7 @@ export function captureFeatureIdea(db: DB, projectId: string, input: { title: st
 }
 
 /** Where the project's work goes on now: its build thread with the PM, else its design thread with the Architect. */
-function leadThread(db: DB, projectId: string): { channel: string; lead: string } | null {
+export function leadThread(db: DB, projectId: string): { channel: string; lead: string } | null {
   const slug = projectRef(db, projectId).slug;
   for (const [suffix, lead] of [['build', '@PM'], ['design', '@Architect']] as const) {
     if (getConversation(db, `ch:${slug}-${suffix}`)) return { channel: `ch:${slug}-${suffix}`, lead };

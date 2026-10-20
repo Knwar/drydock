@@ -1,6 +1,5 @@
 import { when } from '../lib/time';
 import { useEffect, useMemo, useState, useRef } from 'react';
-import { PROJECT_TABS } from '../components/CommandBar';
 import { LiveCard } from '../components/LiveCard';
 import { Diagram, Legend, type Element, type Relation } from '../components/Diagram';
 import { Modal } from '../components/Dialogs';
@@ -13,9 +12,10 @@ import { go, href, navigate, openSettings } from '../lib/router';
 import type { Role } from '../lib/types';
 import { Brand, Screens, type Detail as IdeaDetail } from './IdeaPage';
 import { FeatureIdeas } from '../components/FeatureIdeas';
+import { NeedsYou, ProjectBar, ProjectNav, RunPanel, Usage, useOverview, Verticals, WorkingNow, type NavItem, type OverviewData } from '../components/ProjectWorkspace';
 
-const TABS = PROJECT_TABS;
 
+const STATUS_NAMES: Record<string, string> = { active: 'Active', paused: 'Paused', review: 'Close-out', closed: 'Closed' };
 const STAGE_NAMES: Record<string, string> = { idea: 'Idea', create: 'Create', requirements: 'Requirements', design: 'Design', plan: 'Plan', build: 'Build' };
 
 interface Detail {
@@ -151,7 +151,7 @@ interface GateAction {
   warning?: string;
 }
 
-function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: (id: string) => void; openTeam: () => void }) {
+function Gate({ p, openConversation, openTeam, hideAuto }: { p: Detail; openConversation: (id: string) => void; openTeam: () => void; hideAuto?: boolean }) {
   const design = p.plugins?.includes('design') ?? true;
   const [confirming, setConfirming] = useState<GateAction | null>(null);
   const [busy, setBusy] = useState(false);
@@ -251,7 +251,7 @@ function Gate({ p, openConversation, openTeam }: { p: Detail; openConversation: 
           {a.label}
         </button>
       ))}
-      {(p.status === 'active' || p.status === 'paused') && p.auto && <AutoSwitch p={p} />}
+      {!hideAuto && (p.status === 'active' || p.status === 'paused') && p.auto && <AutoSwitch p={p} />}
       {pausable && (
         <button className="btn sm" onClick={() => setConfirming({ label: 'Pause project', confirm: 'Pause project', hint: '', path: `${base}/status`, body: { status: 'paused' }, steps: ['Check-ins stop for this project.', 'Agents already working finish their current reply; nobody starts new work until you resume.', 'You can resume any time.'] })}>
           Pause
@@ -381,30 +381,12 @@ function PhaseDetail({ p, id, index, onClose }: { p: Detail; id: string; index: 
   );
 }
 
-function Overview({ p, openConversation, newThread }: { p: Detail; openConversation: (id: string) => void; newThread: () => void }) {
+/** The roadmap: every phase, with its goal and progress; a phase opens its cards. */
+function Roadmap({ p }: { p: Detail }) {
   const [phase, setPhase] = useState<string | null>(null);
-  const kpis = [
-    { label: 'Stage', value: STAGE_NAMES[p.stage], sub: p.description ?? '' },
-    { label: 'Current phase', value: p.phase ? `${p.phase.index} of ${p.phase.count}` : '—', sub: p.phase?.title ?? 'Not planned yet' },
-    { label: 'Cards this phase', value: p.cards.total ? `${p.cards.done} / ${p.cards.total}` : '—', sub: `${p.inReview} in review · ${p.blocked} blocked` },
-    { label: 'Live agents', value: String(p.liveAgents), sub: p.channels.length ? `${p.channels.length} discussion${p.channels.length === 1 ? '' : 's'}` : 'No discussions yet' },
-  ];
   return (
     <>
-      {p.plugins?.includes('live') && <LiveCard projectId={p.id} />}
-      <div className="kpis">
-        {kpis.map((k) => (
-          <div key={k.label} className="kpi">
-            <div className="muted" style={{ fontSize: 12 }}>{k.label}</div>
-            <div className="kpi-value">{k.value}</div>
-            <div className="muted" style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{k.sub}</div>
-          </div>
-        ))}
-      </div>
-      <div className="row">
-        <div className="grow2" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <section className="panel">
-            <h2>Roadmap</h2>
             {p.phases.length ? (
               <div className="phases">
                 {p.phases.map((ph, i) => {
@@ -430,55 +412,100 @@ function Overview({ p, openConversation, newThread }: { p: Detail; openConversat
             )}
           </section>
           {phase && <PhaseDetail p={p} id={phase} index={p.phases.findIndex((x) => x.id === phase)} onClose={() => setPhase(null)} />}
-          {p.plugins?.includes('design') && (
-          <section className="panel">
-            <div className="panel-head">
-              <h2>Verticals</h2>
-              <a className="btn sm" href={href(`/project/${p.id}/design`)} onClick={go(`/project/${p.id}/design`)}>Open system design</a>
-            </div>
-            {p.verticals.length ? (
-              <div className="grid-cards">
-                {p.verticals.map((v) => {
-                  const pct = v.total ? Math.round((v.done / v.total) * 100) : 0;
-                  return (
-                    <div key={v.id} className="mini-card">
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>{v.name}</strong><span className="mono">{pct}%</span></div>
-                      <div className="bar"><div style={{ width: `${pct}%` }} /></div>
-                      <span className="muted" style={{ fontSize: 12 }}>{v.done}/{v.total} cards done</span>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="empty">Verticals are created from the system design when you finalise it.</div>
-            )}
-          </section>
-          )}
-        </div>
-        <div className="grow1" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          <section className="panel">
-            <h2>Recent decisions</h2>
+    </>
+  );
+}
+
+/** The status in one sentence: where the project is, and whether it waits on you. */
+function headline(p: Detail, waiting: number): string {
+  const you = waiting ? `; ${waiting === 1 ? 'one card waits' : `${waiting} cards wait`} on you` : '';
+  if (p.status === 'paused') return 'Paused. Nobody starts new work until you resume it.';
+  if (p.status === 'closed') return `Closed${p.closed_reason ? `: ${p.closed_reason}` : ''}.`;
+  if (p.status === 'review') return 'Built. Waiting for your sign-off.';
+  if (p.stage === 'build') return p.phase ? `Building phase ${p.phase.index} of ${p.phase.count}. ${p.cards.done} of ${p.cards.total} cards are done${you}.` : `Building${you}.`;
+  if (p.stage === 'plan') return p.phases.length ? `The PM proposed ${p.phases.length} phases. Approve the roadmap to start building.` : 'The PM is drafting the roadmap.';
+  if (p.stage === 'design') return 'The Architect is designing the system.';
+  if (p.stage === 'requirements') return p.requirementsFinal ? 'Requirements are final. Pick the team to start the design.' : 'Shaping the requirements.';
+  return 'Setting up.';
+}
+
+function WorkspaceOverview({ p, ov, openConversation, openTeam, base }: { p: Detail; ov: OverviewData | null; openConversation: (id: string) => void; openTeam: () => void; base: string }) {
+  const needs = ov?.needs ?? [];
+  const lead = p.team.find((m) => m.role_id === 'pm') ? 'PM' : p.team.find((m) => m.role_id === 'architect') ? 'Architect' : null;
+  return (
+    <div className="ws-overview">
+      <div className="ws-left">
+        <section className="ws-intro">
+          <h1 className="ws-name">{p.name}</h1>
+          {p.description && <p className="ws-desc">{p.description}</p>}
+          <div className="ws-facts">
+            {lead && <span>Lead <b>{lead}</b></span>}
+            <span>Team <b>{p.team.length}</b></span>
+            {p.verticals.length > 0 && <span>Verticals <b>{p.verticals.length}</b></span>}
+            {p.requirementsVersion && <span>Requirements <b>v{p.requirementsVersion}{p.requirementsFinal ? ', final' : ''}</b></span>}
+            <span>{p.typeName}</span>
+          </div>
+          <h2 className="ws-headline">{headline(p, needs.length)}</h2>
+          <StageSteps stage={p.stage} type={p.type} />
+          <Gate p={p} openConversation={openConversation} openTeam={openTeam} hideAuto />
+        </section>
+        <NeedsYou projectId={p.id} needs={needs} />
+        {ov && <Verticals verticals={ov.verticals} base={base} />}
+        <div className="ws-two">
+          {ov && <Usage usage={ov.usage} />}
+          <section className="ws-section" aria-labelledby="ws-dec-h">
+            <h2 id="ws-dec-h" className="ws-h">Latest decisions</h2>
             {p.decisions.length ? (
-              p.decisions.map((d) => (
-                <div key={d.id} className="list-row">
-                  <Icon name="check" style={{ color: 'var(--g-fg)', flex: '0 0 16px', marginTop: 2 }} />
-                  <div><div style={{ fontWeight: 600, fontSize: 13 }}>{d.title}</div><div className="muted" style={{ fontSize: 12 }}>{new Date(d.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}{d.why ? ` · ${d.why.slice(0, 80)}` : ''}</div></div>
-                </div>
-              ))
+              <>
+                {p.decisions.slice(0, 5).map((d) => (
+                  <div key={d.id} className="ws-row"><span>{d.title}</span><span className="ws-dim">{new Date(d.created_at).toLocaleDateString([], { day: 'numeric', month: 'short' })}</span></div>
+                ))}
+                <a className="ws-link" href={href(`${base}/decisions`)} onClick={go(`${base}/decisions`)}>All decisions</a>
+              </>
             ) : (
-              <div className="muted" style={{ fontSize: 13 }}>Decisions agreed in chat appear here.</div>
+              <span className="ws-dim">Decisions agreed in the chat appear here.</span>
             )}
           </section>
-          <section className="panel">
-            <div className="panel-head"><h2>Discussions</h2><button className="btn sm" onClick={newThread}>+ New thread</button></div>
-            {p.channels.length ? p.channels.map((c) => (
-              <button key={c.id} className="nav-row" onClick={() => openConversation(c.id)}><span className="muted">#</span><span className="label">{shortThread(c.name, p.slug)}</span></button>
-            )) : <div className="muted" style={{ fontSize: 13 }}>Threads about this project appear here: the stage threads the agents start, and any you open with your team.</div>}
-          </section>
-          <Plugins p={p} />
         </div>
       </div>
-    </>
+      <aside className="ws-right" aria-label="Live">
+        <RunPanel projectId={p.id} enabled={Boolean(p.plugins?.includes('live'))} base={base} />
+        <WorkingNow data={ov} openConversation={openConversation} waiting={needs.length} />
+      </aside>
+    </div>
+  );
+}
+
+/** Every decision, newest first, with why it was made. */
+function Decisions({ p }: { p: Detail }) {
+  if (!p.decisions.length) return <div className="empty">Decisions agreed in the chat appear here.</div>;
+  return (
+    <section className="ws-section">
+      {p.decisions.map((d) => (
+        <div key={d.id} className="ws-decision">
+          <span className="ws-dim">{new Date(d.created_at).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+          <strong>{d.title}</strong>
+          {d.why && <span className="ws-desc">{d.why}</span>}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+/** The project's plugins and its threads. */
+function ProjectSettings({ p, openConversation, newThread }: { p: Detail; openConversation: (id: string) => void; newThread: () => void }) {
+  return (
+    <div className="ws-overview">
+      <div className="ws-left"><Plugins p={p} /></div>
+      <aside className="ws-right">
+        <section className="panel">
+          <div className="panel-head"><h2>Discussions</h2><button className="btn sm" onClick={newThread}>+ New thread</button></div>
+          {p.channels.length ? p.channels.map((c) => (
+            <button key={c.id} className="nav-row" onClick={() => openConversation(c.id)}><span className="muted">#</span><span className="label">{shortThread(c.name, p.slug)}</span></button>
+          )) : <div className="muted" style={{ fontSize: 13 }}>Threads about this project appear here.</div>}
+        </section>
+      </aside>
+    </div>
   );
 }
 
@@ -1105,18 +1132,7 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
   const p = detail.data;
   const [teamOpen, setTeamOpen] = useState(false);
   const [autoShown, setAutoShown] = useState(false);
-  const tabsRef = useRef<HTMLElement>(null);
-  const [tabsMore, setTabsMore] = useState('');
-  const measureTabs = () => {
-    const el = tabsRef.current;
-    if (!el) return;
-    setTabsMore((el.scrollLeft > 4 ? ' more-left' : '') + (el.scrollLeft + el.clientWidth < el.scrollWidth - 4 ? ' more-right' : ''));
-  };
-  useEffect(() => {
-    measureTabs();
-    window.addEventListener('resize', measureTabs);
-    return () => window.removeEventListener('resize', measureTabs);
-  });
+  const overview = useOverview(id);
   // the team step: open the recommendation once, as soon as requirements are final
   useEffect(() => {
     if (!autoShown && p && p.stage === 'requirements' && p.requirementsFinal && p.recommendation?.status === 'open') {
@@ -1127,55 +1143,88 @@ export function ProjectPage({ id, tab, sub, roles, openConversation, newThread, 
   if (detail.error) return <div className="error">{detail.error}</div>;
   if (!p) return null;
   const base = `/project/${id}`;
+  const needs = overview.data?.needs ?? [];
+  const groups: { title: string; items: NavItem[] }[] = [
+    { title: '', items: [{ id: '', label: 'Overview' }] },
+    {
+      title: 'PLAN',
+      items: [
+        { id: 'requirements', label: 'Requirements', meta: p.requirementsVersion ? `v${p.requirementsVersion}` : undefined },
+        { id: 'ideas', label: 'Feature ideas', meta: p.featureIdeas ? String(p.featureIdeas) : undefined },
+        ...(p.plugins?.includes('design') ? [{ id: 'design', label: 'System design' }] : []),
+        ...(p.idea_id || p.uiScreens.length ? [{ id: 'ui', label: 'UI and brand', meta: p.uiScreens.length ? String(p.uiScreens.length) : undefined }] : []),
+      ],
+    },
+    {
+      title: 'BUILD',
+      items: [
+        { id: 'board', label: 'Board', meta: p.cards.total ? `${p.cards.done}/${p.cards.total}` : undefined, alert: needs.length },
+        ...(p.verticals.length ? [{ id: 'verticals', label: 'Verticals', meta: String(p.verticals.length) }] : []),
+        { id: 'roadmap', label: 'Roadmap', meta: p.phase ? `${p.phase.index}/${p.phase.count}` : undefined },
+        { id: 'agents', label: 'Agents', meta: p.liveAgents ? String(p.liveAgents) : undefined },
+        ...(p.plugins?.includes('live') ? [{ id: 'live', label: 'On this Mac' }] : []),
+      ],
+    },
+    {
+      title: 'KNOWLEDGE',
+      items: [
+        { id: 'roles', label: 'Team', meta: String(p.team.length) },
+        { id: 'decisions', label: 'Decisions' },
+        { id: 'memory', label: 'Memory' },
+        { id: 'docs', label: 'Docs' },
+        { id: 'settings', label: 'Settings' },
+      ],
+    },
+  ];
+  const here = groups.flatMap((g) => g.items).find((i) => i.id === tab || (tab === 'brand' && i.id === 'ui'));
+  const section = here?.label ?? 'Overview';
+  const where = p.status !== 'active' ? STATUS_NAMES[p.status] : `${STAGE_NAMES[p.stage]}${p.stage === 'build' && p.phase ? ` · phase ${p.phase.index} of ${p.phase.count}` : ''}`;
   return (
-    <>
-      {/* breadcrumb and chat; title; description; then one status bar: the stages, and the gate with its actions */}
-      <div className="proj-head">
-        <div className="proj-top">
-          <div className="muted" style={{ fontSize: 12 }}>Projects / {p.name}</div>
-          <button className={`btn sm${side.open ? ' on' : ''}`} aria-pressed={side.open} onClick={side.toggle} title={side.open ? 'Hide the chat panel' : tab ? 'Show the chat panel over this page' : 'Show the chat panel'}>
-            <Icon name="chat" size={14} /> {side.open ? 'Hide chat' : 'Chat'}
-          </button>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>{p.name}</h1>
-            {/* the stage itself shows in the status bar below */}
-            {p.phase && <span className="pill t-g">Phase {p.phase.index} of {p.phase.count}</span>}
-            {p.status !== 'active' && <span className={`pill ${p.status === 'review' ? 't-v' : p.status === 'paused' ? 't-a' : 't-n'}`}>{p.status === 'review' ? 'Close-out' : p.status === 'paused' ? 'Paused' : `Closed${p.closed_reason ? ` · ${p.closed_reason}` : ''}`}</span>}
-            {p.rag && p.status === 'active' && <span className={`pill ${p.rag === 'green' ? 't-g' : p.rag === 'amber' ? 't-a' : 't-r'}`} title="Status reported by the PM">{p.rag}</span>}
-            <span className="mono muted" style={{ fontSize: 12 }}>{p.root.split('/').slice(-2).join('/')}</span>
-          </div>
-          {p.description && <div className="muted" style={{ fontSize: 13 }}>{p.description}</div>}
-        </div>
-        <div className="proj-status">
-          <StageSteps stage={p.stage} type={p.type} />
-          <Gate p={p} openConversation={openConversation} openTeam={() => setTeamOpen(true)} />
+    <div className="ws">
+      <ProjectNav name={p.name} sub={where} color="var(--accent)" groups={groups} tab={tab} base={base} foot={(p.status === 'active' || p.status === 'paused') && p.auto ? <AutoSwitch p={p} /> : null} />
+      <div className="ws-main">
+        <ProjectBar
+          projectId={p.id}
+          trail={['Projects', p.name, ...(tab ? [section] : [])]}
+          needs={needs}
+          chat={
+            <button className={`btn sm${side.open ? ' on' : ''}`} aria-pressed={side.open} onClick={side.toggle} title={side.open ? 'Hide the chat panel' : 'Show the chat panel'}>
+              <Icon name="chat" size={14} /> {side.open ? 'Hide chat' : 'Chat'}
+            </button>
+          }
+        />
+        <div className="ws-content">
+          {tab !== '' && tab !== 'settings' && <h1 className="ws-title">{section}</h1>}
+          {tab === '' && <WorkspaceOverview p={p} ov={overview.data} openConversation={openConversation} openTeam={() => setTeamOpen(true)} base={base} />}
+          {tab === 'requirements' && <Requirements p={p} />}
+          {tab === 'ideas' && <FeatureIdeas projectId={p.id} projectName={p.name} />}
+          {tab === 'design' && (p.plugins?.includes('design') ? <SystemDesign p={p} focus={sub} openConversation={openConversation} /> : <PluginOff p={p} id="design" />)}
+          {(tab === 'ui' || tab === 'brand') && (
+            <>
+              {p.uiScreens.length ? <ProjectScreens p={p} /> : <div className="empty">No UI mockups yet. Screens drawn on the Idea board, and those added features draw, show here.</div>}
+              {p.idea_id && <FromIdea ideaId={p.idea_id} part="brand" />}
+            </>
+          )}
+          {tab === 'board' && <Board p={p} />}
+          {tab === 'verticals' && (overview.data ? <Verticals verticals={overview.data.verticals} base={base} /> : null)}
+          {tab === 'roadmap' && <Roadmap p={p} />}
+          {tab === 'live' && (p.plugins?.includes('live') ? <LiveCard projectId={p.id} /> : <PluginOff p={p} id="live" />)}
+          {tab === 'agents' && <Agents p={p} openConversation={openConversation} />}
+          {tab === 'roles' && <Roles p={p} roles={roles} openConversation={openConversation} openTeam={() => setTeamOpen(true)} />}
+          {tab === 'decisions' && <Decisions p={p} />}
+          {tab === 'memory' && <Memory p={p} />}
+          {tab === 'docs' && <Docs p={p} />}
+          {tab === 'settings' && (
+            <>
+              <h1 className="ws-title">Settings</h1>
+              <ProjectSettings p={p} openConversation={openConversation} newThread={newThread} />
+            </>
+          )}
         </div>
       </div>
-      <nav aria-label="Project sections" className={`tabs${tabsMore}`} ref={tabsRef} onScroll={measureTabs}>
-        {[...TABS.slice(0, 2), ['ideas', 'Ideas'], ...(p.plugins?.includes('design') ? [['design', 'System design']] : []), ...(p.idea_id ? [['brand', 'Brand']] : []), ...(p.idea_id || p.uiScreens.length ? [['ui', 'UI']] : []), ...TABS.slice(2)].map(([t, label]) => (
-          <a key={t} aria-current={tab === t ? 'page' : undefined} className={`tab${tab === t ? ' on' : ''}`} href={href(t ? `${base}/${t}` : base)} onClick={go(t ? `${base}/${t}` : base)}>
-            {label}
-            {t === 'ideas' && p.featureIdeas > 0 && <span className="tab-count">{p.featureIdeas}</span>}
-          </a>
-        ))}
-      </nav>
-      {tab === '' && <Overview p={p} openConversation={openConversation} newThread={newThread} />}
-      {tab === 'requirements' && <Requirements p={p} />}
-      {tab === 'design' && (p.plugins?.includes('design') ? <SystemDesign p={p} focus={sub} openConversation={openConversation} /> : <PluginOff p={p} id="design" />)}
-      {tab === 'live' && (p.plugins?.includes('live') ? <LiveCard projectId={p.id} /> : <PluginOff p={p} id="live" />)}
-      {tab === 'board' && <Board p={p} />}
-      {tab === 'ideas' && <FeatureIdeas projectId={p.id} projectName={p.name} />}
-      {tab === 'brand' && (p.idea_id ? <FromIdea ideaId={p.idea_id} part="brand" /> : <div className="empty">This project was not shaped on the Idea board, so it has no brand here.</div>)}
-      {tab === 'ui' && (p.uiScreens.length ? <ProjectScreens p={p} /> : <div className="empty">No UI mockups yet. Screens drawn on the Idea board, and those added features draw, show here.</div>)}
-      {tab === 'roles' && <Roles p={p} roles={roles} openConversation={openConversation} openTeam={() => setTeamOpen(true)} />}
-      {tab === 'memory' && <Memory p={p} />}
       {teamOpen && p.recommendation && (
         <TeamPopup projectId={p.id} projectName={p.name} slug={p.slug} rec={p.recommendation} design={p.plugins?.includes('design') ?? true} onClose={() => setTeamOpen(false)} onStarted={openConversation} />
       )}
-      {tab === 'agents' && <Agents p={p} openConversation={openConversation} />}
-      {tab === 'docs' && <Docs p={p} />}
-    </>
+    </div>
   );
 }

@@ -185,8 +185,9 @@ export function App() {
           ideas={ideas.data ?? []}
           onNewIdea={() => setCapturing(true)}
           settingsOpen={Boolean(settings)}
+          rail={onProject && !onFeature}
         />
-        <main className={`main${onIdea || onHome || onChat ? ' main-docked' : ''}`}>{page}</main>
+        <main className={`main${onIdea || onHome || onChat ? ' main-docked' : ''}${onProject && !onFeature ? ' main-flush' : ''}`}>{page}</main>
         {sideOpen && (
           <div className={onProject && !onOverview ? 'side-drawer' : 'side-dock'}>
             {sideChat ? (

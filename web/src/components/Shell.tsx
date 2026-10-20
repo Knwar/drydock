@@ -147,7 +147,7 @@ function TreeRows({ nodes, depth, open, toggle }: { nodes: TreeNode[]; depth: nu
   );
 }
 
-export function Sidebar({ projects, path, mainOn, onMain, mainWorking, onNewProject, ideas, onNewIdea, settingsOpen }: { projects: ProjectSummary[]; path: string; mainOn: boolean; onMain: () => void; mainWorking: boolean; onNewProject: () => void; ideas: IdeaCard[]; onNewIdea: () => void; settingsOpen: boolean }) {
+export function Sidebar({ projects, path, mainOn, onMain, mainWorking, onNewProject, ideas, onNewIdea, settingsOpen, rail }: { projects: ProjectSummary[]; path: string; mainOn: boolean; onMain: () => void; mainWorking: boolean; onNewProject: () => void; ideas: IdeaCard[]; onNewIdea: () => void; settingsOpen: boolean; rail?: boolean }) {
   const active = ideas.filter((i) => i.status !== 'parked' && i.status !== 'promoted');
   const parked = ideas.length - active.length;
   const [open, setOpen] = useState<Set<string>>(() => new Set(projects[0] ? [projects[0].id] : []));
@@ -160,7 +160,8 @@ export function Sidebar({ projects, path, mainOn, onMain, mainWorking, onNewProj
   // small screens: the icon rail expands on hover and folds away again once you pick something
   const [hold, setHold] = useState(false);
   return (
-    <nav className={`sidebar${hold ? ' hold' : ''}`} aria-label="Main" onClickCapture={() => setHold(true)} onMouseLeave={() => setHold(false)}>
+    // inside a project its own menu takes the room: the sidebar folds to an icon rail that opens on hover
+    <nav className={`sidebar${hold ? ' hold' : ''}${rail ? ' rail' : ''}`} aria-label="Main" onClickCapture={() => setHold(true)} onMouseLeave={() => setHold(false)}>
       {/* everything scrolls except Personal and Settings, which stay at the bottom */}
       <div className="side-scroll">
         <button className={`nav-row${mainOn ? ' on' : ''}`} onClick={onMain} style={{ fontWeight: 600, fontSize: 14, padding: '8px 10px' }}>

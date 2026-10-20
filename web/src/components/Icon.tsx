@@ -23,6 +23,8 @@ const PATHS = {
   close: 'M6 6l12 12M18 6L6 18',
   back: 'M15 6l-6 6 6 6',
   idea: 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z',
+  play: 'M8 5.5v13l10.5-6.5z',
+  stop: 'M7 7h10v10H7z',
 } as const;
 
 export type IconName = keyof typeof PATHS;

@@ -18,6 +18,7 @@ import './routes-live.js';
 import './routes-import.js';
 import './routes-skills.js';
 import './routes-ideas.js';
+import './routes-overview.js';
 import { restoreApps, startLiveWatcher } from './live.js';
 import { startCheckins } from './checkins.js';
 import { startAuto } from './auto.js';
